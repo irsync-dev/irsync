@@ -80,16 +80,13 @@ pub fn check_comment(c: &str) -> Result<(), ManageError> {
 }
 
 /// Load a TOML file for editing; a missing file yields an empty document.
+/// A file open to other users is refused as it is for use (see
+/// [`Config::load`]).
 pub fn load_doc(path: &Path) -> Result<toml_edit::DocumentMut, ManageError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(source) => {
-            return Err(ManageError::Io {
-                path: path.to_path_buf(),
-                source,
-            })
-        }
+    let text = match crate::config::read_optional(path) {
+        Ok(t) => t.unwrap_or_default(),
+        Err(ConfigError::Io { path, source }) => return Err(ManageError::Io { path, source }),
+        Err(e) => return Err(e.into()),
     };
     text.parse::<toml_edit::DocumentMut>()
         .map_err(|source| ManageError::Toml {

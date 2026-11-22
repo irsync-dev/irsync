@@ -26,6 +26,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     use Kind::*;
     Some(match parts.as_slice() {
+        ["unsafe_config_allowed"] => Bool,
         ["identity"] | ["state_dir"] => Path,
         ["client"]
         | ["daemon"]
@@ -95,6 +96,7 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
     let s = Settings::default();
     let one = |v: String| Some(vec![v]);
     match parts.as_slice() {
+        ["unsafe_config_allowed"] => one(s.unsafe_config_allowed.to_string()),
         ["identity"] => one(as_written(&s.identity)),
         // The effective [client] defaults, as book/src/reference/configuration.md lists them.
         ["client", "parallel"] => one(crate::send::DEFAULT_PARALLEL.to_string()),

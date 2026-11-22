@@ -64,6 +64,7 @@ pub fn first_sighting(path: &Path) -> bool {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RawMerged {
+    unsafe_config_allowed: bool,
     identity: Option<PathBuf>,
     state_dir: Option<PathBuf>,
     client: ClientSettings,
@@ -104,6 +105,10 @@ impl Config {
                 "hosts" | "exports" | "all" | "client" | "daemon" | "telemetry" => {
                     format!("{name}: expected a table, found {}", value.type_str())
                 }
+                "unsafe_config_allowed" if value.is_bool() => continue,
+                "unsafe_config_allowed" => {
+                    format!("{name}: expected a boolean, found {}", value.type_str())
+                }
                 "identity" | "state_dir" if value.is_str() => continue,
                 "identity" | "state_dir" => {
                     format!("{name}: expected a string, found {}", value.type_str())
@@ -133,6 +138,7 @@ impl Config {
         let raw: RawMerged = toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
         let defaults = Settings::default();
         let mut settings = Settings {
+            unsafe_config_allowed: raw.unsafe_config_allowed,
             // A named identity is the whole answer; the ssh key is only
             // consulted for the built-in default.
             ssh_identity: raw

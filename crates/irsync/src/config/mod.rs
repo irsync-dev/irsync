@@ -35,6 +35,10 @@ pub enum ConfigError {
         line: Option<usize>,
         message: String,
     },
+    /// The config file is open to other users, or another user owns it,
+    /// and it does not set `unsafe_config_allowed`.
+    #[error("{}: {problem}; run: chmod 600 {} (or set unsafe_config_allowed = true in it)", path.display(), path.display())]
+    TooOpen { path: PathBuf, problem: String },
     #[error("unknown host alias {alias:?} (and not an EndpointId); aliases are defined in {}", hosts.display())]
     UnknownAlias { alias: String, hosts: PathBuf },
     #[error("bad peer {0:?}: expected a host alias or an EndpointId")]
@@ -68,10 +72,25 @@ pub(crate) fn toml_err(text: &str, path: &std::path::Path, e: toml::de::Error) -
     }
 }
 
-/// Read a config file; `None` when it does not exist.
+/// True when the text of a config file sets `unsafe_config_allowed = true`
+/// at its top level. Text that is not TOML sets nothing.
+pub(crate) fn unsafe_allowed(text: &str) -> bool {
+    toml::from_str::<toml::Table>(text)
+        .ok()
+        .and_then(|t| t.get("unsafe_config_allowed")?.as_bool())
+        == Some(true)
+}
+
+/// Read a config file; `None` when it does not exist. A file that other
+/// users can read or change, or that another user owns, is refused before
+/// anything else in it counts, unless it sets `unsafe_config_allowed`.
 pub(crate) fn read_optional(path: &std::path::Path) -> Result<Option<String>, ConfigError> {
-    match std::fs::read_to_string(path) {
-        Ok(t) => Ok(Some(t)),
+    match crate::fs::private::read_with_problem(path) {
+        Ok((text, Some(problem))) if !unsafe_allowed(&text) => Err(ConfigError::TooOpen {
+            path: path.to_path_buf(),
+            problem,
+        }),
+        Ok((t, _)) => Ok(Some(t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(ConfigError::Io {
             path: path.to_path_buf(),

@@ -89,7 +89,7 @@ fn start_daemon(tmp: &Path, debug_addr: Option<&str>) -> Daemon {
         .unwrap()
         .to_string();
     let debug = debug_addr.map_or(String::new(), |a| format!("debug_addr = {a:?}\n"));
-    std::fs::write(
+    irsync::fs::private::write(
         &config,
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n{debug}\

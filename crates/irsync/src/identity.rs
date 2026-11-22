@@ -26,6 +26,8 @@ pub enum IdentityError {
          use --passphrase-file, or run from a terminal"
     )]
     NoPassphraseSource(PathBuf),
+    #[error("{0}")]
+    TooOpen(String),
     #[error("passphrase file {0} is empty")]
     EmptyPassphraseFile(PathBuf),
     #[error(
@@ -77,11 +79,22 @@ pub fn load_secret_key(path: &Path, passphrase: Option<&str>) -> Result<SecretKe
 /// The passphrase in a `--passphrase-file`: its first line, without the
 /// line ending (LF or CR+LF), nothing else trimmed. An empty file or an
 /// empty first line gives `""`. Unlocking and generating both read it here.
-pub fn read_passphrase_file(path: &Path) -> Result<String, IdentityError> {
-    let text = std::fs::read_to_string(path).map_err(|source| IdentityError::File {
-        path: path.to_path_buf(),
-        source,
-    })?;
+///
+/// A file that other users can read or change, or that another user owns,
+/// is refused (`TooOpen`) unless `allow_open`: whoever reads it can unlock
+/// the key.
+pub fn read_passphrase_file(path: &Path, allow_open: bool) -> Result<String, IdentityError> {
+    let (text, problem) =
+        crate::fs::private::read_with_problem(path).map_err(|source| IdentityError::File {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if let Some(problem) = problem.filter(|_| !allow_open) {
+        return Err(IdentityError::TooOpen(crate::fs::private::refusal(
+            path,
+            &format!("(the passphrase file) {problem}"),
+        )));
+    }
     Ok(text.lines().next().unwrap_or("").to_string())
 }
 
@@ -95,13 +108,18 @@ pub struct PassphraseSource {
     pub env: Option<String>,
     /// Prompt (without echo) on the terminal; only when stdin is a tty.
     pub prompt: bool,
+    /// `unsafe_config_allowed` from the config: use a key file or a
+    /// passphrase file even when it is open to other users.
+    pub allow_open: bool,
 }
 
 impl PassphraseSource {
     /// `--passphrase-file`, `IRSYNC_PASSPHRASE`, and a prompt if stdin is a terminal.
-    pub fn from_env(file: Option<PathBuf>) -> PassphraseSource {
+    /// `allow_open` is the config's `unsafe_config_allowed`.
+    pub fn from_env(file: Option<PathBuf>, allow_open: bool) -> PassphraseSource {
         use std::io::IsTerminal;
         PassphraseSource {
+            allow_open,
             file,
             env: std::env::var("IRSYNC_PASSPHRASE").ok(),
             prompt: std::io::stdin().is_terminal(),
@@ -110,7 +128,7 @@ impl PassphraseSource {
 
     fn passphrase(&self, key: &Path) -> Result<String, IdentityError> {
         if let Some(f) = &self.file {
-            return read_passphrase_file(f);
+            return read_passphrase_file(f, self.allow_open);
         }
         if let Some(p) = &self.env {
             return Ok(p.clone());
@@ -126,11 +144,23 @@ impl PassphraseSource {
 }
 
 /// Loads an identity, asking `src` for a passphrase only if the key is
-/// encrypted.
+/// encrypted. A key file that other users can read or change, or that
+/// another user owns, is refused (`TooOpen`) unless `src.allow_open`.
 pub fn load_identity_interactive(
     path: &Path,
     src: &PassphraseSource,
 ) -> Result<SecretKey, IdentityError> {
+    // A file that cannot be looked at is reported by the read below.
+    if let Some(problem) = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| crate::fs::private::open_file_problem(&m))
+        .filter(|_| !src.allow_open)
+    {
+        return Err(IdentityError::TooOpen(crate::fs::private::refusal(
+            path,
+            &format!("(a private key) {problem}"),
+        )));
+    }
     match load_secret_key(path, None) {
         Err(IdentityError::PassphraseRequired) => {}
         r => return r,

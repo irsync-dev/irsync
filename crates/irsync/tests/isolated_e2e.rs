@@ -143,7 +143,7 @@ fn start_daemon(tmp: &Path) -> Daemon {
         .unwrap()
         .to_string();
 
-    std::fs::write(
+    irsync::fs::private::write(
         tmp.join("irsync.toml"),
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
@@ -425,7 +425,7 @@ fn unresolvable_address_fails_before_the_identity_is_needed() {
     for d in ["src", "home", "xdg"] {
         std::fs::create_dir_all(tmp.join(d)).unwrap();
     }
-    std::fs::write(tmp.join("empty_config"), b"").unwrap();
+    irsync::fs::private::write(tmp.join("empty_config"), b"").unwrap();
     // An encrypted key: loading it without a passphrase would fail, so the
     // address error can only come first if resolution runs before loading.
     let key = tmp.join("enc_key");
@@ -495,7 +495,7 @@ fn no_listening_line_when_startup_fails_after_bind() {
     std::fs::create_dir_all(tmp.join("dst")).unwrap();
     // state_dir is a regular file, so opening the export index fails.
     std::fs::write(tmp.join("state"), b"not a directory").unwrap();
-    std::fs::write(
+    irsync::fs::private::write(
         tmp.join("irsync.toml"),
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
@@ -532,7 +532,7 @@ fn no_exports_warning_names_the_config_file() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
     std::fs::create_dir_all(tmp.join("state")).unwrap();
-    std::fs::write(
+    irsync::fs::private::write(
         tmp.join("irsync.toml"),
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\

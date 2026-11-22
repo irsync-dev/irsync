@@ -52,7 +52,7 @@ fn encrypted_key_needs_passphrase() {
 fn rsa_key_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("rsa");
-    std::fs::write(&path, include_str!("fixtures/rsa_test_key")).unwrap();
+    irsync::fs::private::write(&path, include_str!("fixtures/rsa_test_key")).unwrap();
     assert!(matches!(
         load_secret_key(&path, None),
         Err(IdentityError::NotEd25519)
@@ -92,7 +92,7 @@ fn keys_from_earlier_versions_keep_their_endpoint_id() {
         ),
     ] {
         let path = dir.path().join(name);
-        std::fs::write(&path, key).unwrap();
+        irsync::fs::private::write(&path, key).unwrap();
         let want = parse_endpoint_id(id).unwrap();
         let src = PassphraseSource {
             env: Some(pass.into()),
@@ -132,7 +132,7 @@ fn keys_from_earlier_versions_keep_their_endpoint_id() {
 fn generate_refuses_existing_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("id");
-    std::fs::write(&path, "precious").unwrap();
+    irsync::fs::private::write(&path, "precious").unwrap();
     assert!(matches!(
         generate_openssh(&path, "c"),
         Err(IdentityError::AlreadyExists(_))
@@ -196,11 +196,12 @@ fn encrypted_identity_via_env_and_file() {
     assert_eq!(sk.public().as_bytes(), &want);
     // From a file (first line, trailing newline ignored); it wins over env.
     let file = dir.path().join("pass");
-    std::fs::write(&file, "hunter2\n").unwrap();
+    irsync::fs::private::write(&file, "hunter2\n").unwrap();
     let from_file = PassphraseSource {
         file: Some(file),
         env: Some("wrong".into()),
         prompt: false,
+        allow_open: false,
     };
     let sk = load_identity_interactive(&path, &from_file).unwrap();
     assert_eq!(sk.public().as_bytes(), &want);
@@ -229,7 +230,7 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
         .write_openssh_file(&id, LineEnding::LF)
         .unwrap();
     let cfg = dir.path().join("d.toml");
-    std::fs::write(
+    irsync::fs::private::write(
         &cfg,
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n",
@@ -272,7 +273,7 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
     );
     // --passphrase-file, as for a sync and the daemon, on `id show` and `show`.
     let pf = dir.path().join("pass");
-    std::fs::write(&pf, "s3cret\n").unwrap();
+    irsync::fs::private::write(&pf, "s3cret\n").unwrap();
     // `show` also needs the client key, which the flag will not generate on
     // the side: make it (encrypted) first.
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
@@ -323,13 +324,13 @@ fn an_ssh_key_that_does_not_unlock_is_named_in_the_error() {
         .write_openssh_file(&ssh, LineEnding::LF)
         .unwrap();
     let cfg = dir.path().join("c.toml");
-    std::fs::write(
+    irsync::fs::private::write(
         &cfg,
         format!("state_dir = {:?}\n", dir.path().join("state")),
     )
     .unwrap();
     let pf = dir.path().join("pass");
-    std::fs::write(&pf, "another\n").unwrap();
+    irsync::fs::private::write(&pf, "another\n").unwrap();
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
         .args(["show", "--config"])
         .arg(&cfg)
@@ -522,7 +523,7 @@ fn generate_without_a_passphrase_is_unencrypted_as_before() {
 fn nothing_is_generated_on_the_side_with_a_passphrase_file() {
     let d = tempfile::tempdir().unwrap();
     let pf = d.path().join("p");
-    std::fs::write(&pf, "hunter2\n").unwrap();
+    irsync::fs::private::write(&pf, "hunter2\n").unwrap();
     let with_file = PassphraseSource {
         file: Some(pf.clone()),
         ..PassphraseSource::default()
@@ -582,24 +583,24 @@ fn the_passphrase_file_is_read_up_to_its_first_line_ending() {
         ("", ""),
         ("\nhunter2\n", ""),
     ] {
-        std::fs::write(&f, text).unwrap();
-        assert_eq!(read_passphrase_file(&f).unwrap(), want, "{text:?}");
+        irsync::fs::private::write(&f, text).unwrap();
+        assert_eq!(read_passphrase_file(&f, false).unwrap(), want, "{text:?}");
     }
-    assert!(read_passphrase_file(&d.path().join("missing")).is_err());
+    assert!(read_passphrase_file(&d.path().join("missing"), false).is_err());
 }
 
 #[test]
 fn a_key_made_with_one_line_ending_unlocks_with_the_other() {
     let d = tempfile::tempdir().unwrap();
     let (unix, windows) = (d.path().join("unix"), d.path().join("windows"));
-    std::fs::write(&unix, "hunter2\n").unwrap();
-    std::fs::write(&windows, "hunter2\r\n").unwrap();
+    irsync::fs::private::write(&unix, "hunter2\n").unwrap();
+    irsync::fs::private::write(&windows, "hunter2\r\n").unwrap();
     for (made_with, opened_with) in [(&unix, &windows), (&windows, &unix)] {
         let path = d.path().join(format!(
             "key-{}",
             made_with.file_name().unwrap().to_str().unwrap()
         ));
-        let pass = read_passphrase_file(made_with).unwrap();
+        let pass = read_passphrase_file(made_with, false).unwrap();
         let secret = generate_openssh_with(&path, "irsync", Some(&pass)).unwrap();
         let src = PassphraseSource {
             file: Some(opened_with.to_path_buf()),
@@ -625,4 +626,91 @@ fn a_key_other_users_can_read_is_noticed() {
         assert!(irsync::identity::open_to_others(&p), "{open:o}");
     }
     assert!(!irsync::identity::open_to_others(&d.path().join("missing")));
+}
+
+/// A private key and a passphrase file are for their owner only. One that
+/// other users can read or change is refused, encrypted or not, unless the
+/// config allows it.
+#[test]
+fn a_key_or_passphrase_file_open_to_other_users_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let chmod = |p: &std::path::Path, mode: u32| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    let strict = PassphraseSource::default();
+    let allowed = PassphraseSource {
+        allow_open: true,
+        ..PassphraseSource::default()
+    };
+
+    let plain = d.path().join("plain");
+    let want = generate_openssh(&plain, "test@irsync").unwrap().public();
+    assert_eq!(
+        load_identity_interactive(&plain, &strict).unwrap().public(),
+        want
+    );
+    for mode in [0o640, 0o604, 0o620, 0o602, 0o644] {
+        chmod(&plain, mode);
+        let e = load_identity_interactive(&plain, &strict).unwrap_err();
+        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}");
+        let text = e.to_string();
+        assert!(text.contains(&format!("has mode {mode:04o}")));
+        assert!(text.contains("chmod 600"));
+        assert!(text.contains(plain.to_str().unwrap()));
+        // The same through the calls the commands make.
+        let e = load_or_generate(&plain, &strict, "irsync").unwrap_err();
+        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}");
+        let e = load_client_identity(&d.path().join("none"), Some(&plain), &strict, "irsync")
+            .unwrap_err();
+        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}");
+        assert_eq!(
+            load_identity_interactive(&plain, &allowed)
+                .unwrap()
+                .public(),
+            want
+        );
+    }
+
+    // An encrypted key is refused too, before its passphrase is asked for.
+    let locked = d.path().join("locked");
+    let want = generate_openssh_with(&locked, "test@irsync", Some("hunter2"))
+        .unwrap()
+        .public();
+    let pf = d.path().join("pf");
+    irsync::fs::private::write(&pf, "hunter2\n").unwrap();
+    let with = |allow_open| PassphraseSource {
+        file: Some(pf.clone()),
+        allow_open,
+        ..PassphraseSource::default()
+    };
+    chmod(&locked, 0o644);
+    let e = load_identity_interactive(&locked, &with(false)).unwrap_err();
+    assert!(e.to_string().contains("a private key"));
+    chmod(&locked, 0o600);
+
+    // The passphrase file.
+    assert_eq!(
+        load_identity_interactive(&locked, &with(false))
+            .unwrap()
+            .public(),
+        want
+    );
+    for mode in [0o640, 0o604, 0o644] {
+        chmod(&pf, mode);
+        let e = load_identity_interactive(&locked, &with(false)).unwrap_err();
+        assert!(matches!(e, IdentityError::TooOpen(_)), "{mode:o}");
+        assert!(e.to_string().contains("the passphrase file"));
+        assert!(matches!(
+            read_passphrase_file(&pf, false),
+            Err(IdentityError::TooOpen(_))
+        ));
+        assert_eq!(read_passphrase_file(&pf, true).unwrap(), "hunter2");
+        assert_eq!(
+            load_identity_interactive(&locked, &with(true))
+                .unwrap()
+                .public(),
+            want
+        );
+    }
 }

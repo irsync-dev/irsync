@@ -685,7 +685,7 @@ async fn immediate_push_then_resume_uses_index() {
         let client = common::client_endpoint().await;
         let config_dir = tempfile::tempdir().unwrap();
         let config = config_dir.path().join("irsync.toml");
-        fs::write(
+        irsync::fs::private::write(
             &config,
             format!("[immediate]\nrw = [\"{}\"]\n", client.id()),
         )

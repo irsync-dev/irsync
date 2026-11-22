@@ -17,14 +17,16 @@ daemon run system-wide is given `--config` (see
 | `daemon_ed25519`, `daemon_ed25519.pub` | The daemon's key, `[daemon] identity`, generated when missing by the daemon, `irsync export add` or `irsync show`, or on demand by `irsync id generate --daemon`. |
 
 Generated private keys are written with mode 0600, in OpenSSH format. irsync
-warns when an unencrypted key it loads can be read or written by other users.
+refuses a key that other users can read or write; see
+[File permissions](configuration.md#file-permissions).
 The `.pub` file beside each holds the public key line. `irsync id show` prints the
 `EndpointId` of either key, under a `client:` or `daemon:` label; see
 [the `id` commands](management.md#id).
 
 A new `irsync.toml` is written with mode 0600, since it names exports, peers
 and grants. An existing one keeps the mode it has when a management command
-saves it.
+saves it. irsync refuses a config file that other users can read or write,
+unless the file sets `unsafe_config_allowed = true`.
 
 ## State directory
 

@@ -26,6 +26,7 @@ into `irsync.toml`.
 Every table, with the defaults except where marked:
 
 ```toml
+unsafe_config_allowed = false   # true: skip the permission checks
 identity = "~/.config/irsync/id_ed25519"
 state_dir = "~/.local/state/irsync"
 
@@ -109,6 +110,37 @@ path = "/srv/music"
 auto = true
 rw = ["myclient"]
 ```
+
+## File permissions
+
+The config file, a private key and a passphrase file are for their owner
+only, as sshd asks of a key. irsync stops when one of them:
+
+- can be read, written or run by its group or by other users (any mode bit
+  beyond `0700`), or
+- belongs to another user who is not root. Root itself may use a file of any
+  owner.
+
+The config file is checked first, before anything else in it counts and
+before irsync does anything else. The error names the file, its mode and
+the fix.
+
+The management commands refuse such a file too, so fix it with `chmod 600`.
+A key or a passphrase file is checked when a command loads it. A key is
+checked whether it is encrypted or not.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `unsafe_config_allowed` | `false` | `true` turns these checks off for the config file itself, the keys and the passphrase file. It goes at the top of the file, outside every table. |
+
+Leave it off unless you have to share a file. Whoever can write the config
+file can grant themselves access, and whoever can read a key or its
+passphrase can act as that identity. A running daemon reads the config file
+for every connection: if the file is opened up while the daemon runs, the
+daemon refuses connections until it is closed again.
+
+Only regular files are checked. A passphrase read from a pipe, such as
+`--passphrase-file <(pass show irsync)`, is used as it is.
 
 ## Identity and state
 

@@ -82,8 +82,22 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
         toml::Value::String(c.client_id.to_string()),
     );
     let config = dir.join("irsync.toml");
-    std::fs::write(&config, settings).with_context(|| format!("writing {}", config.display()))?;
+    write_private(&config, &settings)?;
     Ok(DaemonFiles { config })
+}
+
+/// Writes a config file for its owner only: irsync refuses one that other
+/// users can read.
+pub fn write_private(path: &Path, text: &str) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// Runs `irsync id generate --out <config_dir>/id_ed25519`; returns the private

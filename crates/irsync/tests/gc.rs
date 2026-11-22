@@ -239,7 +239,7 @@ fn id_generate_prints_endpoint_id_matching_pub() {
 fn id_daemon_prints_the_key_line_and_the_id_of_the_configured_identity() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("d.toml");
-    std::fs::write(
+    irsync::fs::private::write(
         &cfg,
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n",
@@ -601,7 +601,7 @@ fn irsync_gc_end_to_end() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(root.join("d")).unwrap();
     let config = d.path().join("irsync.toml");
-    std::fs::write(&config, format!("state_dir = {state:?}\n")).unwrap();
+    irsync::fs::private::write(&config, format!("state_dir = {state:?}\n")).unwrap();
     std::fs::write(root.join("d/.irsync.old.part"), b"x").unwrap();
     touch_ago(&root.join("d/.irsync.old.part"), 8);
     std::fs::write(root.join(".irsync.new.part"), b"x").unwrap();

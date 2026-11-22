@@ -238,6 +238,9 @@ impl Default for DaemonSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    /// True: the config file, a private key and a passphrase file are used
+    /// even when other users can read or change them, or own them.
+    pub unsafe_config_allowed: bool,
     /// The client identity: the key to load, or to generate when nothing
     /// else serves (see `ssh_identity`).
     pub identity: PathBuf,
@@ -255,6 +258,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            unsafe_config_allowed: false,
             identity: paths::config_dir().join("id_ed25519"),
             ssh_identity: paths::ssh_identity(),
             state_dir: paths::state_dir(),

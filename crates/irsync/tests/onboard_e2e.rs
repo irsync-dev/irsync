@@ -92,7 +92,7 @@ impl World {
              [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n{extra}",
             self.port
         );
-        std::fs::write(cfg.join("irsync.toml"), text).unwrap();
+        irsync::fs::private::write(cfg.join("irsync.toml"), text).unwrap();
     }
 
     fn ssh_log(&self) -> PathBuf {
@@ -154,7 +154,7 @@ impl World {
              [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
             self.client_port
         );
-        std::fs::write(cfg.join("irsync.toml"), text).unwrap();
+        irsync::fs::private::write(cfg.join("irsync.toml"), text).unwrap();
     }
 
     /// irsync run in `home` as the machine `name`, with a fake ssh that
@@ -452,7 +452,7 @@ fn two_hosts_with_one_ssh_destination_are_refused() {
         id(7),
         id(8)
     );
-    std::fs::write(cfg.join("irsync.toml"), &text).unwrap();
+    irsync::fs::private::write(cfg.join("irsync.toml"), &text).unwrap();
     let out = w.irsync(&["-a", &w.src_arg(), "192.168.1.5:dest"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
@@ -956,7 +956,7 @@ fn an_address_takes_ssh_and_no_remote_dht() {
     ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     let cfg = w.server.path().join(".config/irsync/irsync.toml");
     let text = std::fs::read_to_string(&cfg).unwrap();
-    std::fs::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
+    irsync::fs::private::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
     let calls = w.ssh_calls();
     for (flag, said) in [
         ("--no-remote-dht", "turned off DHT publishing on myserver"),
@@ -1264,7 +1264,7 @@ fn no_remote_dht_turns_server_publishing_off() {
     let w = World::new();
     let cfg = w.server.path().join(".config/irsync/irsync.toml");
     let text = std::fs::read_to_string(&cfg).unwrap();
-    std::fs::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
+    irsync::fs::private::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
     let dest = w.server.path().join("dest");
     let o = w.irsync(&[
         "-a",
@@ -1318,7 +1318,7 @@ fn ssh_install_false_in_config_does_the_same() {
     let w = World::new();
     let cfg = w.client.path().join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(cfg.join("irsync.toml"), "[client]\nssh_install = false\n").unwrap();
+    irsync::fs::private::write(cfg.join("irsync.toml"), "[client]\nssh_install = false\n").unwrap();
     let dest = w.server.path().join("dest");
     let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
     assert_stopped_by_no_install(&w, &o);
@@ -1332,7 +1332,7 @@ fn first_push_dials_the_address_setup_reports() {
     let w = World::new();
     let cfg = w.client.path().join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(
+    irsync::fs::private::write(
         cfg.join("irsync.toml"),
         "[client]\ndht = false\nmdns = false\nrelay_mode = \"disabled\"\ndial_retries = 0\n",
     )

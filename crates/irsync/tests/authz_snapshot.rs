@@ -66,15 +66,15 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     let e = d.path().join("irsync.toml");
     let a = FileAuthorizer::new(irsync::config::paths::Paths::resolve(Some(&e)));
     assert!(a.snapshot().unwrap().exports.is_empty()); // missing = empty
-    std::fs::write(
+    irsync::fs::private::write(
         &e,
         format!("[exports.x]\npath = \"/x\"\nrw = [\"{}\"]\n", id(1)),
     )
     .unwrap();
     assert!(a.snapshot().unwrap().grants(&id(1)).allows("x", true));
-    std::fs::write(&e, "[x\n").unwrap();
+    irsync::fs::private::write(&e, "[x\n").unwrap();
     assert!(a.snapshot().is_err()); // broken = error, not stale
-    std::fs::write(
+    irsync::fs::private::write(
         &e,
         format!(
             "[exports.x]\npath = \"/x\"\nrw = [\"lap\"]\n[hosts.lap]\nendpoint_id = \"{}\"\n",
