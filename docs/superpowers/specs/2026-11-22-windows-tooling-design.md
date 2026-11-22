@@ -90,6 +90,11 @@ gates, and both store file names as raw bytes.
   zizmor.
 - **Path length:** the MSVC linker fails on a path over 260 characters.
   Keep the checkout and the build directory short in CI.
+- **Line endings:** the repository has no `.gitattributes`, and Git for
+  Windows checks text files out with CRLF by default. `tools/ci.sh` then
+  has CRLF endings, which bash refuses, and a test that compares a file
+  byte for byte can fail. A `.gitattributes` that keeps LF in the working
+  tree comes with the first pull request.
 
 ## Approaches
 
@@ -378,7 +383,8 @@ request merges.
 
 0. **Before any code:** run `cargo deny` with the two Windows targets
    added. See "Needs the maintainer".
-1. `fileset`: the platform module, Unix only, no behaviour change.
+1. `fileset`: the platform module, Unix only, no behaviour change. Also
+   `.gitattributes`.
 2. `filegen`: the same.
 3. `fileset` on Windows: the name conversion, `platform/windows.rs`, the
    `platform` key and the refusal, the tests.
