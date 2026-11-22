@@ -377,7 +377,7 @@ fn encrypted_existing_key_without_passphrase_is_error_not_regenerated() {
     let e = load_or_generate(&p, &PassphraseSource::default(), "irsync").unwrap_err();
     assert!(
         matches!(e, IdentityError::NoPassphraseSource(ref q) if q == &p),
-        "{e}"
+        "another error than the missing passphrase source"
     );
     assert_eq!(std::fs::read(&p).unwrap(), before);
 }
@@ -410,7 +410,10 @@ fn load_or_generate_in_a_read_only_directory_names_the_path() {
     }
     let p = dir.join("id_ed25519");
     let e = load_or_generate(&p, &PassphraseSource::default(), "irsync").unwrap_err();
-    assert!(e.to_string().contains(p.to_str().unwrap()), "{e}");
+    assert!(
+        e.to_string().contains(p.to_str().unwrap()),
+        "the error does not name the key file"
+    );
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -457,7 +460,7 @@ fn an_encrypted_ssh_key_without_a_passphrase_is_an_error_naming_it() {
         load_client_identity(&own, Some(&ssh), &PassphraseSource::default(), "irsync").unwrap_err();
     assert!(
         matches!(e, IdentityError::NoPassphraseSource(ref q) if q == &ssh),
-        "{e}"
+        "another error than the missing passphrase source"
     );
     // The passphrase unlocks it; no irsync key is made either way.
     let src = PassphraseSource {
