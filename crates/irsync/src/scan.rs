@@ -670,8 +670,8 @@ mod tests {
         assert_eq!(summary.errors.len(), 2);
     }
 
-    /// A directory is listed, and then swapped for a link out of the tree
-    /// while the walk is still listing its files. The walk is held there
+    /// The walk is listing a directory's files when the directory is
+    /// swapped for a link out of the tree. The walk is held there
     /// by its own full queue: the directory has more files than the queue
     /// takes, and nothing more is read from it until the swap is done. The
     /// files listed after the swap are still the directory's own, reached
@@ -705,10 +705,12 @@ mod tests {
             },
             None,
         );
-        // Up to the directory's own entry, listed as a directory.
+        // Up to the first file of the directory: the walk has it open now.
+        // (At the directory's own entry it may not have opened it yet, and
+        // would then refuse the link and list nothing below it.)
         loop {
             match rx.recv().await.expect("the walk ended early") {
-                ScanEvent::Entry(i) if i.path.as_bytes() == b"z" => break,
+                ScanEvent::Entry(i) if i.path.as_bytes().starts_with(b"z/f") => break,
                 _ => {}
             }
         }
