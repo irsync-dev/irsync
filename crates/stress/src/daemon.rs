@@ -680,7 +680,10 @@ mod tests {
         let fake = t.path().join("irsync");
         std::fs::write(
             &fake,
-            "#!/bin/sh\necho 'endpoint id: x'\necho 'listening on: 127.0.0.1:1'\necho \"$NETSIM_PROBE\" >&2\nexec sleep 5\n",
+            // The probe goes out before the startup lines: `start_with_env`
+            // returns at those, and the test then stops the child at once,
+            // which could end the shell before a later `echo` ran.
+            "#!/bin/sh\necho \"$NETSIM_PROBE\" >&2\necho 'endpoint id: x'\necho 'listening on: 127.0.0.1:1'\nexec sleep 5\n",
         )
         .unwrap();
         chmod_755(&fake);
