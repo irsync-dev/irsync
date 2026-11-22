@@ -123,7 +123,7 @@ message Config {
 }
 
 message Comment {
-  repeated string above = 1;         // whole lines above, "" for a blank line
+  repeated string above = 1;         // whole lines above, from '#' on
   string trailing = 2;               // at the end of the line
 }
 
@@ -131,7 +131,8 @@ message Comment {
 // GrantTable) has these three besides its keys:
 //   Comment comment;                     the table's own
 //   map<string, Comment> key_comments;   by key name
-//   repeated string tail;                comment lines after its last key
+//   repeated string tail;                comment lines after its last key;
+//                                        "" is a blank line between them
 
 message Entry {                      // one element of a string array
   string value = 1;
@@ -154,6 +155,10 @@ Rules:
   comment of a pasted public key).
 - Hosts and exports are `repeated` with a `name`, not maps: the order in
   the file is kept, and a new entry goes last.
+- A string array also has a flag that says the key is in the file, so
+  `rw = []` stays different from no `rw` at all.
+- Blank lines are kept only inside `header`, `footer` and a `tail`. The
+  writer decides all others.
 - **My call, different from what I first told Mike:** comments sit inside
   the entry they belong to, not in one side table keyed by path. A renamed
   or removed entry then takes its comments with it, with no bookkeeping.
