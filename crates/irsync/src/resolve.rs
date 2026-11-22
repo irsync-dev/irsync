@@ -157,21 +157,18 @@ pub fn containing<'a>(
 /// Both steps for the daemon: `Err(BadPath)`, or `Ok(None)` when the path
 /// cannot be resolved or lies outside every export the peer may use.
 ///
-/// A first component stands for an export when the peer has a grant for
-/// that export, or may use the export's directory through another export
-/// (two exports of one directory, or one nested in the other: the grant is
-/// on the directory). The name of any other export is read as a directory
-/// under the home, as if the export were not there: what a path means to
-/// a peer never depends on exports whose directory it may not use.
+/// A first component stands for an export only when the peer has a grant
+/// for that export. The name of any other export is read as a directory
+/// under the home, as if the export were not there, also when the peer
+/// may use that export's directory through another export: what a path
+/// means to a peer never depends on exports it has no grant for.
 pub fn resolve<'a>(
     path: &[u8],
     home: Option<&Path>,
     exports: &'a BTreeMap<String, Export>,
     grants: &Grants,
 ) -> Result<Option<Resolved<'a>>, ResolveError> {
-    let usable = |name: &str, e: &Export| {
-        grants.access_to(name, e).is_some() || containing(&e.path, exports, grants, None).is_some()
-    };
+    let usable = |name: &str, e: &Export| grants.access_to(name, e).is_some();
     Ok(resolve_path_where(path, home, exports, usable)?
         .and_then(|(abs, named)| containing(&abs, exports, grants, named)))
 }

@@ -40,10 +40,9 @@ The daemon reads `PATH` in this order:
 1. **An export name**, then a path inside it. When the first component of a
    relative `PATH` names an export, the rest is resolved under that export's
    directory: `myserver:photos/2024` is `2024` inside the `photos` export.
-   A name counts only if the client may use that export's directory, through
-   a grant for the export or for another export that contains the directory.
-   Any other export's name is read as in step 2, as if the export were not
-   there.
+   A name counts only if the client has a grant for that export. Any other
+   export's name is read as in step 2, as if the export were not there, also
+   when the client may use that export's directory through another export.
 2. **A path relative to the home directory** of the account the daemon runs
    as. `myserver:Pictures` is `~/Pictures` on the daemon's machine;
    `myserver:` and `myserver:~` are the home directory itself, and
