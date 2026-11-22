@@ -191,6 +191,12 @@ wrong (a relative export path set with `config set`). That is the check a
 save makes before it writes, in place of today's "would this document
 load".
 
+**A file that does not load cannot be repaired by a command** (Mike's
+decision). Today `config unset` and the like need only valid TOML. The
+message cannot hold a wrong value, so such a file is fixed by hand; the
+error gives the line. Hints that tell the user to repair a file that does
+not load with a command are reworded.
+
 ### Writer
 
 `config/writer.rs`: message to text. Fixed order: `header`, top-level
@@ -305,6 +311,17 @@ daemon adding an automatic export.
 After the rewrite an older irsync cannot read the file. The PR description
 says so, for "Upgrading" in the release notes.
 
+**An older daemon that is still running** (Mike's decision): a save that
+would change the file's version is refused while a daemon runs that cannot
+read the new version. The daemon reads the config on every connection, so
+without this it would turn every client away after a harmless `grant
+add`. The daemon's lock records its version (`LockInfo.version`). The
+check sits in `ConfigLock::save`, so it covers the management commands
+and the SSH setup, which leaves a daemon from another executable alone.
+The error says to restart the daemon and run the command again. A constant
+names the first irsync version that reads each file version; version 2's
+is the release stage 2 ships in. The file is left as it was.
+
 ### Typed view and its users
 
 `Config` gets `servers` and `clients` in place of `hosts`.
@@ -368,6 +385,9 @@ daemon, Direct and relay, Troubleshooting; the man pages built from them
 - For each corpus file: the grants (`authz::Snapshot`) read from the old
   file equal those read from the rewritten one.
 - The reader choice: each of the five cases above.
+- A save of a version 1 file while the daemon lock names an older daemon
+  is refused and leaves the file unchanged; with no daemon, or a current
+  one, it goes through.
 - An end-to-end test: a daemon started on a version 1 file lets its
   clients in, adds an automatic export, and the file is then version 2
   and still lets them in.
