@@ -37,6 +37,7 @@ fn same_message(a: &MessageDescriptor, b: &MessageDescriptor) {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "descriptor comparison; no unsafe code involved")]
 fn record_fits_the_envelope() {
     let irsync = pool(irsync_proto::FILE_DESCRIPTOR_SET);
     let pbcap = pool(pbcap::FILE_DESCRIPTOR_SET);
