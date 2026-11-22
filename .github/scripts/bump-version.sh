@@ -5,7 +5,8 @@
 # 1.2.3-beta.1, without a "v") in Cargo.toml ([workspace.package]) and in
 # packaging/dist/dist.toml, updates Cargo.lock and fuzz/Cargo.lock to match,
 # and commits the four files as "Release v<version>" on a new branch,
-# bump-v<version>.
+# bump-v<version>. The release notes are not its work: when CHANGELOG.md has
+# no section for the version yet, it says so at the end.
 #
 # Run it on the branch the release is cut from: release-X.Y for a patch
 # (X.Y.Z with Z > 0), main for everything else (release-branch.sh has the
@@ -91,10 +92,19 @@ git switch --quiet -c "$branch"
 git commit --quiet -m "Release $tag" -- Cargo.toml Cargo.lock fuzz/Cargo.lock packaging/dist/dist.toml
 git log --oneline -1
 
+# The gate refuses a release without its notes, and so does a test in CI.
+notes=
+if ! "$here/changelog-section.sh" "$version" >/dev/null 2>&1; then
+    notes="  # write the release notes in CHANGELOG.md, under the heading '## $tag'
+  # (AGENTS.md, Release notes, says how), then:
+  git commit -m 'Release notes for $tag' -- CHANGELOG.md
+"
+fi
+
 cat <<EOF
 
 Next:
-  git push -u origin $branch
+$notes  git push -u origin $branch
   gh pr create --fill --base $base
   # once "CI result" passes:
   gh pr merge --merge

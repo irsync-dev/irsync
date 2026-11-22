@@ -9,6 +9,8 @@
 #
 # Stops at the first failed check:
 # - The version is valid and Cargo.toml and dist.toml hold it.
+# - CHANGELOG.md has the release notes of the version (see
+#   changelog-section.sh).
 # - The run is on the right branch (see release-branch.sh).
 # - The tag does not exist yet.
 # - No stray release tags exist (see stray-tags.sh).
@@ -27,6 +29,7 @@ branch=$("$here/release-branch.sh" "$version")
 tag=v$version
 prerelease=$("$here/check-release-tag.sh" --versions "$tag")
 prerelease=${prerelease#prerelease=}
+"$here/changelog-section.sh" "$version" >/dev/null
 
 if [ -n "${GITHUB_REF-}" ] && [ "$GITHUB_REF" != "refs/heads/$branch" ]; then
     echo "::error::Run this workflow on $branch: gh workflow run release-gate.yml --ref $branch -f version=$version (this run is on $GITHUB_REF)." >&2

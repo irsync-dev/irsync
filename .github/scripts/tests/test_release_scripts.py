@@ -17,6 +17,7 @@ RESUME = os.path.join(SCRIPTS, "resume-check.sh")
 BUMP = os.path.join(SCRIPTS, "bump-version.sh")
 STRAY = os.path.join(SCRIPTS, "stray-tags.sh")
 START = os.path.join(SCRIPTS, "release-start-check.sh")
+CHANGELOG = os.path.join(SCRIPTS, "changelog-section.sh")
 PIN = os.path.join(SCRIPTS, "pin-release.sh")
 BRANCH = os.path.join(SCRIPTS, "release-branch.sh")
 FORMULA_MAN = os.path.join(SCRIPTS, "formula-man-pages.sh")
@@ -53,8 +54,10 @@ class FakeGh(unittest.TestCase):
                               capture_output=True, text=True)
 
 
-def version_fixture(test, cargo, dist):
-    """A directory holding Cargo.toml and packaging/dist/dist.toml with these versions."""
+def version_fixture(test, cargo, dist, changelog=None):
+    """A directory holding Cargo.toml and packaging/dist/dist.toml with these
+    versions, and a CHANGELOG.md: `changelog`, or notes for the Cargo.toml
+    version."""
     d = tempfile.mkdtemp(prefix="ver-")
     test.addCleanup(shutil.rmtree, d, ignore_errors=True)
     os.makedirs(os.path.join(d, "packaging", "dist"))
@@ -63,6 +66,10 @@ def version_fixture(test, cargo, dist):
                 f'\n[package]\nversion = "9.9.9"\n')
     with open(os.path.join(d, "packaging", "dist", "dist.toml"), "w") as f:
         f.write(f'[package]\nname = "irsync"\nversion = "{dist}"\n')
+    if changelog is None:
+        changelog = f"# Changelog\n\n## v{cargo}\n\nWhat is new.\n"
+    with open(os.path.join(d, "CHANGELOG.md"), "w") as f:
+        f.write(changelog)
     return d
 
 
@@ -190,6 +197,22 @@ class BumpVersionTests(unittest.TestCase):
                          ".github/scripts/sign-release.sh --publish 1.3.0-beta.1")
         self.assertNotIn("git tag", r.stdout)
         self.assertNotIn("git push origin main", r.stdout)
+
+    def test_hint_asks_for_the_release_notes(self):
+        r = self.bump("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("'## v1.3.0-beta.1'", r.stdout)
+        self.assertIn("git commit -m 'Release notes for v1.3.0-beta.1' -- CHANGELOG.md", r.stdout)
+        self.assertLess(r.stdout.index("CHANGELOG.md"), r.stdout.index("git push -u origin"))
+
+    def test_hint_is_quiet_when_the_notes_are_written(self):
+        self.write("CHANGELOG.md", "# Changelog\n\n## v1.3.0-beta.1\n\nNew.\n")
+        self.run_ok("git", "add", "CHANGELOG.md")
+        self.run_ok("git", "commit", "-q", "-m", "notes")
+        r = self.bump("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("CHANGELOG.md", r.stdout)
+        self.assertIn("Next:\n  git push -u origin bump-v1.3.0-beta.1", r.stdout)
 
     def test_bumps_and_commits(self):
         r = self.bump("1.3.0-beta.1")
@@ -478,9 +501,9 @@ class StartCheckTests(FakeGh):
         # On a runner GITHUB_REF is always set; here only where a test sets it.
         self.env.pop("GITHUB_REF", None)
 
-    def start(self, version, ref=None, files=None):
+    def start(self, version, ref=None, files=None, changelog=None):
         files = files or version
-        d = version_fixture(self, files, files)
+        d = version_fixture(self, files, files, changelog)
         if ref:
             self.env["GITHUB_REF"] = ref
         return self.run_script(START, version, cwd=d)
@@ -564,6 +587,68 @@ class StartCheckTests(FakeGh):
         r = self.start("v1.3.0", "refs/heads/main")
         self.assertEqual(r.returncode, 1)
         self.assertIn("without the v", r.stderr)
+
+    def test_no_release_notes(self):
+        # Notes for another version do not count.
+        r = self.start("1.3.0", "refs/heads/main",
+                       changelog="# Changelog\n\n## v1.3.0-beta.1\n\nOlder.\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("CHANGELOG.md has no section '## v1.3.0'", r.stderr)
+        self.assertNotIn("tag=", r.stdout)
+
+
+class ChangelogTests(unittest.TestCase):
+    """changelog-section.sh, in a directory holding only a CHANGELOG.md."""
+
+    def section(self, version, text):
+        d = tempfile.mkdtemp(prefix="notes-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        if text is not None:
+            with open(os.path.join(d, "CHANGELOG.md"), "w") as f:
+                f.write(text)
+        return subprocess.run([CHANGELOG, version], cwd=d, capture_output=True, text=True)
+
+    def refused(self, version, text, message):
+        r = self.section(version, text)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(message, r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_prints_the_section(self):
+        text = ("# Changelog\n\nIntro.\n\n## v1.3.0\n\nNew things.\n\n### Upgrading\n\n- one\n"
+                "\n## v1.3.0-beta.1\n\nOlder.\n")
+        r = self.section("1.3.0", text)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "New things.\n\n### Upgrading\n\n- one")
+        r = self.section("1.3.0-beta.1", text)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "Older.")
+
+    def test_no_file(self):
+        self.refused("1.3.0", None, "There is no CHANGELOG.md")
+
+    def test_no_section(self):
+        self.refused("1.3.0", "# Changelog\n\n## v1.2.0\n\nOld.\n", "has no section '## v1.3.0'")
+
+    def test_longer_version_is_not_a_match(self):
+        # The heading must be the whole line: v1.3.0 is not v1.3.0-beta.1.
+        self.refused("1.3.0", "## v1.3.0-beta.1\n\nText.\n", "has no section '## v1.3.0'")
+        self.refused("1.3.0", "## 1.3.0\n\nText.\n", "has no section '## v1.3.0'")
+
+    def test_empty_section(self):
+        self.refused("1.3.0", "## v1.3.0\n\n   \n## v1.2.0\n\nOld.\n", "is empty")
+        self.refused("1.3.0", "## v1.3.0\n", "is empty")
+
+    def test_heading_twice(self):
+        self.refused("1.3.0", "## v1.3.0\n\nA.\n\n## v1.3.0\n\nB.\n", "2 times")
+
+    def test_this_repo(self):
+        # The same rule as crates/irsync/tests/release_version.rs.
+        with open(os.path.join(ROOT, "Cargo.toml"), "rb") as f:
+            import tomllib
+            version = tomllib.load(f)["workspace"]["package"]["version"]
+        r = subprocess.run([CHANGELOG, version], cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 CODE_CHANGED = os.path.join(SCRIPTS, "code-changed.sh")
