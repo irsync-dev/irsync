@@ -120,8 +120,8 @@ These checks catch a mismatch:
 - A test (`crates/irsync/tests/release_version.rs`) fails if `Cargo.toml` and
   `dist.toml` differ.
 - CI builds with `--locked`, so it fails if `Cargo.lock` is out of date. The
-  release build uses `--locked` too, and would fail later. The `fuzz-build`
-  job does the same for `fuzz/Cargo.lock`.
+  release build uses `--locked` too, and would fail later. The `check` and
+  `fuzz-build` jobs do the same for `fuzz/Cargo.lock`.
 - The release gate stops within seconds if the two files don't hold the
   version you gave it.
 

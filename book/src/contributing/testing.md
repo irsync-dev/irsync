@@ -171,6 +171,19 @@ nightly Rust, so it builds with the nightly named in
 own `Cargo.lock`. `cargo deny` does not check it, because those crates are
 only built for fuzzing and never shipped.
 
+`fuzz/Cargo.lock` follows the main `Cargo.lock`, so that the fuzzed code is
+built with the same dependencies as the released code. After any change to
+`Cargo.lock`, run:
+
+```sh
+tools/sync-fuzz-lock.sh
+```
+
+and commit both files. It writes `fuzz/Cargo.lock` again from a copy of
+`Cargo.lock`. `tools/ci.sh check` runs `tools/sync-fuzz-lock.sh --check`,
+which fails if the two files have a crate at different versions, or if
+`fuzz/Cargo.lock` is out of date. Neither needs the nightly.
+
 To build every target and run each on its *seeds*, the inputs checked in
 under `fuzz/seeds/<target>/`:
 
