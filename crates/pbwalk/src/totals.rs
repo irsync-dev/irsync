@@ -7,8 +7,11 @@ use std::io::{self, Write};
 use pbcap::v1::Direction;
 use prost_reflect::MessageDescriptor;
 
-use crate::render::{field_name, grouped, is_unknown_type, type_label};
+use crate::render::{field_name, grouped, is_unknown_type, plural, type_label};
 use crate::{Entry, Field, Kind, Summary, Value};
+
+/// The envelope's direction field.
+const DIRECTION: u32 = 2;
 
 /// A count and a number of bytes.
 #[derive(Default, Clone, Copy)]
@@ -43,15 +46,23 @@ pub struct Totals {
     sent: Tally,
     received: Tally,
     unspecified: Tally,
+    /// A direction number the envelope does not know.
+    other: Tally,
     groups: Vec<(String, BTreeMap<String, Tally>)>,
 }
 
 impl Totals {
-    /// Totals with one extra table per wrapper field in `group_by`.
-    pub fn new(group_by: &[String]) -> Totals {
+    /// Totals with one extra table per wrapper field in `group_by`, but
+    /// none for the direction field: the By direction table shows it.
+    pub fn new(group_by: &[String], wrapper: &MessageDescriptor) -> Totals {
         Totals {
             groups: group_by
                 .iter()
+                .filter(|f| {
+                    wrapper
+                        .get_field_by_name(f)
+                        .is_none_or(|d| d.number() != DIRECTION)
+                })
                 .map(|f| (f.clone(), BTreeMap::new()))
                 .collect(),
             ..Totals::default()
@@ -69,9 +80,10 @@ impl Totals {
 
         let with_prefix = entry.wire_len.saturating_add(entry.prefix);
         match entry.direction {
-            Direction::Sent => self.sent.add(with_prefix),
-            Direction::Received => self.received.add(with_prefix),
-            Direction::Unspecified => self.unspecified.add(with_prefix),
+            Some(Direction::Sent) => self.sent.add(with_prefix),
+            Some(Direction::Received) => self.received.add(with_prefix),
+            Some(Direction::Unspecified) => self.unspecified.add(with_prefix),
+            None => self.other.add(with_prefix),
         }
         for (field, table) in &mut self.groups {
             let key = entry.header_value(wrapper, field).unwrap_or_default();
@@ -100,7 +112,7 @@ impl Totals {
                 let path = if entry.type_name.is_empty() {
                     format!("({label})")
                 } else {
-                    format!("{} ({label})", entry.type_name)
+                    format!("{} ({label})", type_label(entry))
                 };
                 self.path(path, bytes);
             }
@@ -144,9 +156,9 @@ impl Totals {
         writeln!(
             out,
             "Totals: {} and {} of {} read; {} B on the wire, length prefixes ({} B) included",
-            plural(summary.messages, "message"),
-            plural(events, "event"),
-            plural(summary.packets, "packet"),
+            plural(summary.messages, "message", "messages"),
+            plural(events, "event", "events"),
+            plural(summary.packets, "packet", "packets"),
             grouped(summary.wire_bytes.saturating_add(summary.prefix_bytes)),
             grouped(summary.prefix_bytes),
         )?;
@@ -163,7 +175,14 @@ impl Totals {
                 .map(|(k, t)| Row::counted(k.escape_debug().to_string(), *t))
                 .collect()
         };
-        table(out, "By message", "type", true, rows(&self.by_message))?;
+        table(
+            out,
+            "By message",
+            "type",
+            true,
+            TOTAL,
+            rows(&self.by_message),
+        )?;
         if !self.events.is_empty() {
             writeln!(out)?;
             writeln!(out, "Events (never on the wire)")?;
@@ -176,7 +195,7 @@ impl Totals {
             .iter()
             .map(|(k, b)| Row::bytes(k.escape_debug().to_string(), *b))
             .collect();
-        table(out, "By field", "path", false, fields)?;
+        table(out, "By field", "path", false, TOTAL, fields)?;
 
         let mut overhead = vec![
             Row::bytes("length prefixes".into(), self.prefixes),
@@ -188,31 +207,31 @@ impl Totals {
         if self.undecodable > 0 {
             overhead.push(Row::bytes("not decodable".into(), self.undecodable));
         }
-        table(out, "Overhead", "", false, overhead)?;
+        table(out, "Overhead", "", false, TOTAL, overhead)?;
 
-        let directions = vec![
+        let mut directions = vec![
             Row::counted("sent".into(), self.sent),
             Row::counted("received".into(), self.received),
             Row::counted("unspecified".into(), self.unspecified),
         ];
+        if self.other.count > 0 {
+            directions.push(Row::counted("other".into(), self.other));
+        }
         table(
             out,
             "By direction (with prefixes)",
             "direction",
             true,
+            SUM,
             directions,
         )?;
 
         for (field, values) in &self.groups {
             let title = format!("By {} (with prefixes)", field.escape_debug());
-            table(out, &title, field, true, rows(values))?;
+            table(out, &title, field, true, TOTAL, rows(values))?;
         }
         Ok(())
     }
-}
-
-fn plural(n: u64, one: &str) -> String {
-    format!("{} {one}{}", grouped(n), if n == 1 { "" } else { "s" })
 }
 
 struct Row {
@@ -239,21 +258,22 @@ impl Row {
     }
 }
 
+/// The last line's label: `total` for a table of the whole, `sum` for the
+/// direction table, whose two directions may count one message twice.
+const TOTAL: &str = "total";
+const SUM: &str = "sum";
+
 /// A table sorted by bytes, largest first, with a share of its own total
-/// and a total line; `sum` for the direction table, `total` for the rest.
+/// and a last line labelled `total_label`.
 fn table(
     out: &mut impl Write,
     title: &str,
     key_head: &str,
     counted: bool,
+    total_label: &str,
     mut rows: Vec<Row>,
 ) -> io::Result<()> {
     rows.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.key.cmp(&b.key)));
-    let total_label = if title.starts_with("By direction") {
-        "sum"
-    } else {
-        "total"
-    };
     let count: u64 = rows.iter().fold(0u64, |sum, r| sum.saturating_add(r.count));
     let bytes: u64 = rows.iter().fold(0u64, |sum, r| sum.saturating_add(r.bytes));
     let width = rows

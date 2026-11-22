@@ -5,6 +5,7 @@ use std::io::{self, Write};
 
 use prost_reflect::DescriptorPool;
 
+use crate::account::hex;
 use crate::{Entry, Field, Kind, Sizes, Value};
 
 /// Field labels are padded to this many columns, so sizes line up.
@@ -210,7 +211,7 @@ fn mismatch_text(entry: &Entry) -> String {
     parts.join("; ")
 }
 
-fn plural(n: u64, one: &str, many: &str) -> String {
+pub(crate) fn plural(n: u64, one: &str, many: &str) -> String {
     format!("{} {}", grouped(n), if n == 1 { one } else { many })
 }
 
@@ -371,14 +372,6 @@ fn wire_type_name(wire_type: u8) -> String {
         5 => "fixed32".to_owned(),
         n => format!("wire type {n}"),
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
 }
 
 #[cfg(test)]

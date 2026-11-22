@@ -59,7 +59,7 @@ pub struct Args {
     /// Skip the totals.
     #[arg(long)]
     pub no_totals: bool,
-    /// Print long byte strings and repeated fields in full.
+    /// Print long byte strings, repeated fields and header values in full.
     #[arg(long)]
     pub full: bool,
 }
@@ -180,7 +180,7 @@ impl Pass<'_> {
         summary: &mut Summary,
     ) -> io::Result<()> {
         let pool = self.wrapper.parent_pool();
-        let mut totals = Totals::new(&self.args.group_by);
+        let mut totals = Totals::new(&self.args.group_by, self.wrapper);
         let mut first_ts = None;
         for packet in reader {
             let packet = match packet {
@@ -455,6 +455,46 @@ mod tests {
     }
 
     #[test]
+    fn group_by_direction_adds_nothing() {
+        let file = capture(&[hello_record(1, 1), hello_record(2, 2)]);
+        let (_, plain) = run_on(&[], &file);
+        let (_, grouped) = run_on(&["--group-by", "direction"], &file);
+        assert_eq!(grouped, plain);
+        let (_, out) = run_on(&["--group-by", "direction,stream"], &file);
+        assert_eq!(out.matches("By direction").count(), 1, "{out}");
+        assert!(out.contains("By stream"), "{out}");
+        // Every table but the direction one ends in `total`.
+        let stream = out.split("By stream").nth(1).expect(&out);
+        assert!(
+            stream.lines().any(|l| l.trim_start().starts_with("total")),
+            "{stream}"
+        );
+    }
+
+    #[test]
+    fn unknown_direction_has_its_own_row() {
+        let n = hello().encoded_len() as u64;
+        let (_, out) = run_on(&[], &capture(&[hello_record(1, 7)]));
+        let table = out.split("By direction").nth(1).expect(&out);
+        let row = |key: &str| {
+            table
+                .lines()
+                .find(|l| l.trim_start().starts_with(key))
+                .unwrap_or_else(|| panic!("no {key} row in\n{table}"))
+                .split_whitespace()
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(row("other"), format!("1 {} B 100.0%", n + 1));
+        assert_eq!(row("unspecified"), "0 0 B 0.0%");
+        // Absent when every direction is known.
+        let (_, out) = run_on(&[], &capture(&[hello_record(1, 1)]));
+        let table = out.split("By direction").nth(1).expect(&out);
+        assert!(!table.contains("other"), "{table}");
+    }
+
+    #[test]
     fn totals_only_and_no_totals() {
         let file = capture(&[hello_record(1, 1)]);
         let (s, out) = run_on(&["--totals-only"], &file);
@@ -529,7 +569,14 @@ mod tests {
         let s = run(&args(&[]), &f[..], &mut out).unwrap();
         assert_eq!(s.mismatches, 1);
         let out = String::from_utf8(out).unwrap();
-        assert!(out.contains("8 bytes not decodable") || out.contains("DOES NOT ADD UP"));
+        assert!(
+            out.contains(
+                "DOES NOT ADD UP: the record does not decode as an envelope: \
+                 failed to decode Protobuf message: invalid varint; \
+                 the record ends in bytes that do not parse"
+            ),
+            "{out}"
+        );
     }
 
     #[test]
@@ -629,6 +676,38 @@ mod tests {
         assert_eq!((s.messages, s.wire_bytes, s.mismatches), (1, 5, 0));
         assert!(out.contains("5 bytes, type not in the protos"), "{out}");
         assert!(out.contains("#29 (type not in the protos)"), "{out}");
+    }
+
+    #[test]
+    fn unknown_payload_cut_rows_use_the_type_label() {
+        let mut body = Record {
+            direction: 1,
+            encoded_len: 15,
+            trimmed: Some(Trimmed {
+                original_len: 15,
+                dropped_entries: 2,
+                content: Vec::new(),
+            }),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        // Field 29, 5 bytes: a type these protos do not have.
+        body.extend_from_slice(&[0xea, 0x01, 5, 1, 2, 3, 4, 5]);
+        let mut f = capture(&[]);
+        let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, &body);
+        f.extend(pbcap::write::packet(1, &pdu));
+        let (s, out) = run_on(&["--totals-only"], &f);
+        assert_eq!((s.wire_bytes, s.mismatches), (15, 0));
+        let fields = out.split("By field").nth(1).expect(&out);
+        let row = fields
+            .lines()
+            .find(|l| l.contains("(cut, not itemised)"))
+            .expect(fields);
+        assert_eq!(
+            row.split("  ").find(|p| !p.is_empty()).map(str::trim),
+            Some("#29 (type not in the protos) (cut, not itemised)"),
+            "{row:?}"
+        );
     }
 
     #[test]

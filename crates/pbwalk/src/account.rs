@@ -48,8 +48,8 @@ pub struct Entry<'a> {
     /// The wrapper's own fields as (name, printed value), in file order,
     /// without encoded_len and trimmed. Empty for Raw.
     pub header: Vec<(String, String)>,
-    /// Unspecified for Raw.
-    pub direction: Direction,
+    /// Unspecified for Raw; `None` for a number the envelope does not know.
+    pub direction: Option<Direction>,
     /// The payload's fields; the packet's for Raw.
     pub fields: Vec<Field<'a>>,
     /// Payload bytes in the file.
@@ -157,6 +157,9 @@ pub fn unwrap<'a>(wrapper: &MessageDescriptor, body: &'a [u8], prefix: Prefix) -
                 };
                 payloads.push((number, present, format!("#{number}"), vec![row]));
             }
+            Value::Packed(_) => problems.push(format!(
+                "field {number} is numbered as a message but is a packed repeated field"
+            )),
             _ => problems.push(format!(
                 "field {number} is numbered as a message but is not length-delimited"
             )),
@@ -176,9 +179,9 @@ pub fn unwrap<'a>(wrapper: &MessageDescriptor, body: &'a [u8], prefix: Prefix) -
         kind: Kind::Message,
         type_name: String::new(),
         header,
-        direction: envelope
-            .as_ref()
-            .map_or(Direction::Unspecified, |e| e.direction()),
+        direction: envelope.as_ref().map_or(Some(Direction::Unspecified), |e| {
+            Direction::try_from(e.direction).ok()
+        }),
         fields: Vec::new(),
         present: 0,
         wire_len: encoded_len,
@@ -201,10 +204,15 @@ pub fn unwrap<'a>(wrapper: &MessageDescriptor, body: &'a [u8], prefix: Prefix) -
                 if problems.is_empty() {
                     account_gap(&mut entry, envelope.as_ref(), encoded_len, &mut problems);
                 }
-            } else {
-                // From FIRST_EVENT_FIELD up: never on the wire, counts nothing.
+            } else if number >= pbcap::FIRST_EVENT_FIELD {
+                // Never on the wire, counts nothing.
                 entry.kind = Kind::Event;
                 entry.wire_len = 0;
+                if encoded_len > 0 {
+                    problems.push(format!(
+                        "an event, never on the wire, with encoded_len {encoded_len}"
+                    ));
+                }
             }
         }
         None if encoded_len > 0 => entry.not_captured = encoded_len,
@@ -261,7 +269,7 @@ pub fn raw<'a>(desc: &MessageDescriptor, body: &'a [u8]) -> Entry<'a> {
         kind: Kind::Raw,
         type_name: desc.name().to_owned(),
         header: Vec::new(),
-        direction: Direction::Unspecified,
+        direction: Some(Direction::Unspecified),
         fields: walk(desc, body),
         present: len,
         wire_len: len,
@@ -329,7 +337,8 @@ fn print_default(field: &FieldDescriptor) -> String {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// Bytes as lowercase hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         let _ = write!(out, "{b:02x}");
@@ -383,7 +392,7 @@ mod tests {
         let e = unwrap(&wrapper(), &body, Prefix::Varint);
         assert_eq!((e.kind, e.type_name.as_str()), (Kind::Message, "Hello"));
         assert_eq!((e.present, e.wire_len, e.prefix), (n, n, 1));
-        assert_eq!(e.direction, pbcap::v1::Direction::Sent);
+        assert_eq!(e.direction, Some(pbcap::v1::Direction::Sent));
         assert_eq!(e.fields[0].name.as_deref(), Some("protocol_version"));
         assert!(e.adds_up() && e.mismatch.is_none());
         assert!(e.header.contains(&("side".into(), "SIDE_CLIENT(1)".into())));
@@ -534,7 +543,10 @@ mod tests {
         body.extend_from_slice(&[0xe2, 0x01, 0x00]);
         let e = unwrap(&wrapper(), &body, Prefix::Varint);
         assert_eq!(e.type_name, "Hello");
-        assert!(e.mismatch.is_some());
+        assert_eq!(
+            e.mismatch.as_deref(),
+            Some("the record holds 2 messages, not one; the first is shown")
+        );
     }
 
     /// A record with direction Sent, the given encoded_len, and `tail`
@@ -610,7 +622,51 @@ mod tests {
         let mut body = hello_record(n as u32, None);
         body.extend_from_slice(&[0xff; 3]);
         let e = unwrap(&wrapper(), &body, Prefix::Varint);
-        assert!(e.mismatch.is_some());
+        let why = e.mismatch.unwrap();
+        assert!(
+            why.contains("the record ends in bytes that do not parse"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn event_with_an_encoded_len_is_a_mismatch() {
+        let body = Record {
+            direction: 1,
+            encoded_len: 5,
+            msg: Some(Msg::StreamEvent(StreamEvent {
+                kind: 1,
+                detail: String::new(),
+            })),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        assert_eq!((e.kind, e.wire_len, e.prefix), (Kind::Event, 0, 0));
+        assert_eq!(
+            e.mismatch.as_deref(),
+            Some("an event, never on the wire, with encoded_len 5")
+        );
+    }
+
+    #[test]
+    fn packed_field_from_20_up_is_a_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("w.proto"),
+            "syntax = \"proto3\";\n\
+             message W { uint32 encoded_len = 10; repeated uint32 nums = 20; }\n",
+        )
+        .unwrap();
+        let fds = protox::compile(["w.proto"], [dir.path()]).unwrap();
+        let pool = prost_reflect::DescriptorPool::from_file_descriptor_set(fds).unwrap();
+        let w = pool.get_message_by_name("W").unwrap();
+        // nums (field 20), packed: 1, 2.
+        let e = unwrap(&w, &[0xa2, 0x01, 2, 1, 2], Prefix::Varint);
+        assert_eq!(
+            e.mismatch.as_deref(),
+            Some("field 20 is numbered as a message but is a packed repeated field")
+        );
     }
 
     #[test]
@@ -670,7 +726,7 @@ mod tests {
             (body.len() as u64, body.len() as u64)
         );
         assert!(e.header.is_empty());
-        assert_eq!(e.direction, pbcap::v1::Direction::Unspecified);
+        assert_eq!(e.direction, Some(pbcap::v1::Direction::Unspecified));
         assert!(e.adds_up());
     }
 }
