@@ -7,6 +7,10 @@ full list of changes follows it.
 
 ## v0.1.0-beta.6
 
+irsync and the install script now check a release's signature before they
+install it. The progress block and the summary are right after a resume,
+and the code is checked by more tools.
+
 ### New
 
 - `--bwlimit` now limits a pull too, not only a push. [#111]
