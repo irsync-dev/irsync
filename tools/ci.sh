@@ -162,6 +162,9 @@ job_check() {
     run cargo fmt --all --check
     # The fuzz targets are outside the workspace, so cargo fmt skips them.
     run rustfmt --edition 2021 --check fuzz/fuzz_targets/*.rs
+    # fuzz/Cargo.lock follows Cargo.lock. Here and not only in fuzz-build,
+    # which needs a nightly and runs on Linux only.
+    run tools/sync-fuzz-lock.sh --check
     # Tests tools/dev-setup.sh and tools/build-man.sh. They are Python, so no
     # cargo command runs them. A missing pandoc or mandoc fails here instead
     # of skipping the man page tests.

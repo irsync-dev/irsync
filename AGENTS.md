@@ -114,6 +114,9 @@ cargo test -p netstress -- --include-ignored
 - **GNU rsync 3.1 or newer must be on `PATH`.** Without it,
   `crates/irsync/tests/rsync_compare.rs` passes without checking anything.
   macOS ships an older rsync: `brew install rsync`.
+- **`fuzz/` has a `Cargo.lock` of its own.** After any change to
+  `Cargo.lock`, run `tools/sync-fuzz-lock.sh` and commit both files.
+  `tools/ci.sh check` fails if they differ.
 - **`cargo test -p stress` alone does not build the binaries it needs.** Use
   `cargo test --workspace`, or run `cargo build --workspace` first.
 - **The site holds the book once per release channel**, and `/book/` is
