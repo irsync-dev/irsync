@@ -159,6 +159,14 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertNotIn("paths-ignore", on["pull_request"] or {})
         self.assertIn("paths-ignore", on["push"])
 
+    def test_every_pull_request_checks_the_release_notes(self):
+        # A Markdown-only pull request skips the builds, and with them the
+        # test that reads CHANGELOG.md. The `changes` job always runs.
+        steps = [s for s in jobs(self.ci)["changes"]["steps"]
+                 if ".github/scripts/changelog-section.sh --current" in s.get("run", "")]
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["if"], "github.event_name == 'pull_request'")
+
     def ci_script_runs(self, job, command):
         """ci.yml runs `tools/ci.sh JOB`, and that job runs `command`."""
         runs = [s.get("run", "").strip() for j in jobs(self.ci).values()
