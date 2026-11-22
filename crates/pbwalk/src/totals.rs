@@ -212,8 +212,10 @@ impl Totals {
         let mut directions = vec![
             Row::counted("sent".into(), self.sent),
             Row::counted("received".into(), self.received),
-            Row::counted("unspecified".into(), self.unspecified),
         ];
+        if self.unspecified.count > 0 {
+            directions.push(Row::counted("unspecified".into(), self.unspecified));
+        }
         if self.other.count > 0 {
             directions.push(Row::counted("other".into(), self.other));
         }

@@ -494,9 +494,11 @@ mod tests {
     #[test]
     fn unknown_direction_has_its_own_row() {
         let n = hello().encoded_len() as u64;
-        let (_, out) = run_on(&[], &capture(&[hello_record(1, 7)]));
-        let table = out.split("By direction").nth(1).expect(&out);
-        let row = |key: &str| {
+        let table = |direction: i32| {
+            let (_, out) = run_on(&[], &capture(&[hello_record(1, direction)]));
+            out.split("By direction").nth(1).expect(&out).to_string()
+        };
+        let row = |table: &str, key: &str| {
             table
                 .lines()
                 .find(|l| l.trim_start().starts_with(key))
@@ -506,12 +508,20 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert_eq!(row("other"), format!("1 {} B 100.0%", n + 1));
-        assert_eq!(row("unspecified"), "0 0 B 0.0%");
-        // Absent when every direction is known.
-        let (_, out) = run_on(&[], &capture(&[hello_record(1, 1)]));
-        let table = out.split("By direction").nth(1).expect(&out);
-        assert!(!table.contains("other"), "{table}");
+        let whole = format!("1 {} B 100.0%", n + 1);
+        // A direction this build does not know.
+        let t = table(7);
+        assert_eq!(row(&t, "other"), whole);
+        assert!(!t.contains("unspecified"), "{t}");
+        // No direction at all.
+        let t = table(0);
+        assert_eq!(row(&t, "unspecified"), whole);
+        assert!(!t.contains("other"), "{t}");
+        // Both absent when every direction is known; sent and received stay.
+        let t = table(1);
+        assert!(!t.contains("other"), "{t}");
+        assert!(!t.contains("unspecified"), "{t}");
+        assert_eq!(row(&t, "received"), "0 0 B 0.0%");
     }
 
     #[test]
