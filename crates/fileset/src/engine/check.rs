@@ -139,11 +139,12 @@ pub fn check(
             summary.deleted += 1;
             return Ok(());
         }
-        // A path this system cannot name is not there.
+        // A stored path this system cannot name is an error, never a deleted file.
         let Ok(abs) = platform::rel_to_path(&root, path) else {
-            report.line(&line_del(path))?;
-            summary.deleted += 1;
-            return Ok(());
+            anyhow::bail!(
+                "manifest path {} is not a valid name on this platform",
+                escape(path)
+            );
         };
         match abs.symlink_metadata() {
             Ok(_) => {}

@@ -21,35 +21,44 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_INFO_BY_HANDLE_CLASS,
     FILE_READ_ATTRIBUTES,
 };
+use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_SYMLINK;
 
 use super::{Stat, Xattrs};
 use crate::model::{Kind, Timespec};
 use crate::wtf8;
 
-/// The reparse tag of a symlink. `windows-sys` has it as
-/// `Win32::System::SystemServices::IO_REPARSE_TAG_SYMLINK`, behind a feature
-/// this crate needs for nothing else.
-const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+/// A fixed-size information class and the struct `GetFileInformationByHandleEx`
+/// fills for it. Private to this file, so sealed: implemented only below, for
+/// structs of integer fields.
+trait InfoClass: Copy + Default {
+    const CLASS: FILE_INFO_BY_HANDLE_CLASS;
+}
+
+impl InfoClass for FILE_BASIC_INFO {
+    const CLASS: FILE_INFO_BY_HANDLE_CLASS = FileBasicInfo;
+}
+
+impl InfoClass for FILE_ATTRIBUTE_TAG_INFO {
+    const CLASS: FILE_INFO_BY_HANDLE_CLASS = FileAttributeTagInfo;
+}
 
 /// Reads one fixed-size information class of an open file.
-///
-/// Called only with `(FILE_BASIC_INFO, FileBasicInfo)` and
-/// `(FILE_ATTRIBUTE_TAG_INFO, FileAttributeTagInfo)`.
-fn file_info<T: Copy + Default>(file: &File, class: FILE_INFO_BY_HANDLE_CLASS) -> io::Result<T> {
-    // Both `T` derive `Default`, which zeroes every field.
+fn file_info<T: InfoClass>(file: &File) -> io::Result<T> {
     let mut buf = T::default();
     let size = u32::try_from(std::mem::size_of::<T>()).expect("an information class fits in u32");
     // SAFETY: the handle is that of `file`, which stays open for the borrow,
-    // so it is valid for the whole call. The buffer is `buf`, a zeroed `T`
-    // of exactly `size_of::<T>()` bytes, and that size is what the call is
-    // given, so it writes at most that many bytes, all inside `buf`. Both
-    // `T` it is called with, FILE_BASIC_INFO and FILE_ATTRIBUTE_TAG_INFO,
-    // are `#[repr(C)]` structs of plain integers, valid for any bit pattern,
-    // so whatever the call writes leaves `buf` a valid `T`.
+    // so it is valid for the whole call. The buffer is `buf`, a `T` built by
+    // `Default`, every field zero, and the size the call is given is
+    // `size_of::<T>()`, so it writes at most that many bytes, all inside
+    // `buf`. `T` is one of the two types `InfoClass` is implemented for (it
+    // is sealed): FILE_BASIC_INFO with FileBasicInfo, FILE_ATTRIBUTE_TAG_INFO
+    // with FileAttributeTagInfo, each the struct its class fills. Both are
+    // `#[repr(C)]` structs of integer fields, valid for any bit pattern, so
+    // whatever the call writes leaves `buf` a valid `T`.
     let ok = unsafe {
         GetFileInformationByHandleEx(
             file.as_raw_handle() as HANDLE,
-            class,
+            T::CLASS,
             (&mut buf as *mut T).cast(),
             size,
         )
@@ -97,11 +106,11 @@ fn open_for_metadata(abs: &Path) -> io::Result<File> {
 pub fn lstat(abs: &Path) -> io::Result<Stat> {
     let file = open_for_metadata(abs)?;
     let info = winapi_util::file::information(&file)?;
-    let basic: FILE_BASIC_INFO = file_info(&file, FileBasicInfo)?;
+    let basic: FILE_BASIC_INFO = file_info(&file)?;
     // The attributes are a DWORD; winapi-util widens them.
     let attributes = info.file_attributes() as u32;
     let reparse_tag = if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        let tag: FILE_ATTRIBUTE_TAG_INFO = file_info(&file, FileAttributeTagInfo)?;
+        let tag: FILE_ATTRIBUTE_TAG_INFO = file_info(&file)?;
         Some(tag.ReparseTag)
     } else {
         None

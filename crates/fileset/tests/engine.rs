@@ -91,6 +91,8 @@ for_every_backend! {
     check_ignore_mode_hides_chmod => check_ignore_mode_hides_chmod_sqlite, check_ignore_mode_hides_chmod_fjall, check_ignore_mode_hides_chmod_redb;
     check_require_uid_stays_clean_same_user => check_require_uid_stays_clean_same_user_sqlite, check_require_uid_stays_clean_same_user_fjall, check_require_uid_stays_clean_same_user_redb;
     check_symlink_retarget => check_symlink_retarget_sqlite, check_symlink_retarget_fjall, check_symlink_retarget_redb;
+    #[cfg(windows)]
+    check_fails_on_a_stored_path_not_valid_here => check_fails_on_a_stored_path_not_valid_here_sqlite, check_fails_on_a_stored_path_not_valid_here_fjall, check_fails_on_a_stored_path_not_valid_here_redb;
     check_kind_change => check_kind_change_sqlite, check_kind_change_fjall, check_kind_change_redb;
     check_dir_replaced_by_file_deletes_children => check_dir_replaced_by_file_deletes_children_sqlite, check_dir_replaced_by_file_deletes_children_fjall, check_dir_replaced_by_file_deletes_children_redb;
     check_warns_no_stored_checksum => check_warns_no_stored_checksum_sqlite, check_warns_no_stored_checksum_fjall, check_warns_no_stored_checksum_redb;
@@ -661,6 +663,28 @@ fn update_stores_a_tree_of_exactly_one_batch(b: Backend) {
     let (outcome, out, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
     assert_eq!(out, "");
     assert_eq!(outcome, Outcome::Clean);
+}
+
+/// A stored path that is not a name here (not WTF-8, on Windows) fails `check`; it is
+/// not reported as a deleted file.
+#[cfg(windows)]
+fn check_fails_on_a_stored_path_not_valid_here(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let path = dir.path().join(store_name(b));
+    let mut st = store::open(&path, b, OpenMode::ReadWrite).unwrap();
+    let f = st.get(b"f").unwrap().unwrap();
+    st.put_batch(&[(b"a\xffb".to_vec(), f)]).unwrap();
+    st.close().unwrap();
+    let opts = check_opts(dir.path(), Tier::Default, &[], &[], false);
+    let err = run_check_opts(&opts).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "manifest path {} is not a valid name on this platform",
+            fileset::escape::escape(b"a\xffb")
+        )
+    );
 }
 
 fn check_symlink_retarget(b: Backend) {
