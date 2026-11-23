@@ -2,6 +2,7 @@
 //! and `host rename`. Pure on a message; loading and saving belong to the
 //! caller.
 
+use super::grants::{lists_naming, remove_named, rename_named};
 use super::{id_bytes, id_of};
 use crate::config::hosts::valid_alias;
 use crate::config::settings::RelayMode;
@@ -222,60 +223,4 @@ pub fn host_list(msg: &pb::Config) -> Vec<String> {
         );
     }
     out
-}
-
-/// The grant lists, as the message holds them: `[all]`, `[immediate]` and
-/// every export, with the name `lists_naming` reports them by.
-fn grant_lists(msg: &mut pb::Config) -> Vec<(String, Vec<&mut Vec<pb::Entry>>)> {
-    let mut out = Vec::new();
-    if let Some(t) = msg.all.as_mut() {
-        out.push(("all".to_string(), vec![&mut t.rw, &mut t.ro]));
-    }
-    if let Some(t) = msg.immediate.as_mut() {
-        out.push(("immediate".to_string(), vec![&mut t.rw, &mut t.ro]));
-    }
-    for e in msg.exports.iter_mut() {
-        out.push((format!("exports.{}", e.name), vec![&mut e.rw, &mut e.ro]));
-    }
-    out
-}
-
-/// The tables with a grant entry whose text is `name`: `all`,
-/// `immediate`, then `exports.NAME` in file order.
-fn lists_naming(msg: &pb::Config, name: &str) -> Vec<String> {
-    let mut msg = msg.clone();
-    grant_lists(&mut msg)
-        .into_iter()
-        .filter(|(_, lists)| lists.iter().any(|l| l.iter().any(|e| e.value == name)))
-        .map(|(table, _)| table)
-        .collect()
-}
-
-/// Removes every grant entry whose text is `name`, from `[all]`,
-/// `[immediate]` and every export; the count.
-fn remove_named(msg: &mut pb::Config, name: &str) -> usize {
-    let mut n = 0;
-    for (_, lists) in grant_lists(msg) {
-        for l in lists {
-            let before = l.len();
-            l.retain(|e| e.value != name);
-            n += before - l.len();
-        }
-    }
-    n
-}
-
-/// Writes every grant entry whose text is `old` as `new`, in `[all]`,
-/// `[immediate]` and every export, keeping its comments; the count.
-fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
-    let mut n = 0;
-    for (_, lists) in grant_lists(msg) {
-        for l in lists {
-            for e in l.iter_mut().filter(|e| e.value == old) {
-                e.value = new.to_string();
-                n += 1;
-            }
-        }
-    }
-    n
 }

@@ -2,6 +2,7 @@
 //! editing in the parent module. Pure on a message; loading and saving
 //! belong to the caller.
 
+pub mod grants;
 pub mod hosts;
 
 use iroh::EndpointId;
