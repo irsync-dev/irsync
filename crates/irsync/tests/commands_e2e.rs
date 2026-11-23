@@ -1521,7 +1521,10 @@ fn host_add_renames_existing_grants() {
     let (home, file) = home_with(&d, &format!("[all]\nrw = [\"{id}\"]\n"));
     ok(&home, &["host", "add", "box", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
-    assert!(text.starts_with("[all]\nrw = [\"box\"]\n"), "{text}");
+    assert_eq!(
+        text,
+        format!("[hosts.box]\nendpoint_id = \"{id}\"\n\n[all]\nrw = [\"box\"]\n")
+    );
 }
 
 #[test]
@@ -1586,7 +1589,7 @@ fn host_remove_counts_a_hand_written_id_as_a_grant() {
     );
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        "[all]\nrw = []\n[immediate]\nrw = []\n"
+        "[all]\nrw = []\n\n[immediate]\nrw = []\n"
     );
     // One grant: singular.
     let (home, file) = home_with(
@@ -1662,7 +1665,7 @@ fn host_remove_leaves_an_id_grant_to_another_alias_of_the_same_id() {
     ok(&home, &["host", "remove", "amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!("{}[all]\nrw = [\"zed\"]\n", hosts(&["zed"]))
+        format!("{}\n[all]\nrw = [\"zed\"]\n", hosts(&["zed"]))
     );
     // A grant that names amy itself still stops the removal.
     std::fs::write(
@@ -1681,7 +1684,7 @@ fn host_remove_leaves_an_id_grant_to_another_alias_of_the_same_id() {
     ok(&home, &["config", "unset", "hosts.amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!("{}[all]\nrw = [\"zed\"]\n", hosts(&["zed"]))
+        format!("{}\n[all]\nrw = [\"zed\"]\n", hosts(&["zed"]))
     );
 }
 
@@ -2168,10 +2171,10 @@ fn host_rename_renames_the_host_and_its_grants_in_the_file() {
     assert_eq!(
         std::fs::read_to_string(cfg.join("irsync.toml")).unwrap(),
         format!(
-            "[hosts.work]\nendpoint_id = \"{id}\"\n\
-             [all]\nro = [\"work\"]\n\
-             [immediate]\nrw = [\"work\"]\n\
-             [exports.p]\npath = \"/p\"\nrw = [\"work\"]\n"
+            "[hosts.work]\nendpoint_id = \"{id}\"\n\n\
+             [exports.p]\npath = \"/p\"\nrw = [\"work\"]\n\n\
+             [all]\nro = [\"work\"]\n\n\
+             [immediate]\nrw = [\"work\"]\n"
         )
     );
     // A second rename of the old name fails and changes nothing.

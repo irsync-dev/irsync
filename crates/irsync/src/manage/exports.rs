@@ -1,29 +1,16 @@
-//! Edits of the export tables in `irsync.toml` for `export add` and
-//! `export remove`. All functions are pure on a parsed document; loading
-//! and saving belong to the caller.
+//! Edits of the exports in the config message for `export add` and
+//! `export remove`, and the reading of an `export add` target. The edits
+//! are pure on a message; loading and saving belong to the caller.
 
 use super::ManageError;
 use crate::config::exports::RESERVED;
 use iroh::EndpointId;
+use irsync_proto::config as pb;
 use std::path::{Component, Path, PathBuf};
-use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-/// The `[exports]` table, created (implicit, so only its children print
-/// headers) when missing. An inline `exports = { ... }` is edited in
-/// place; anything else under that key is refused, never overwritten.
-fn exports_table(doc: &mut DocumentMut) -> Result<&mut dyn TableLike, ManageError> {
-    let item = doc.entry("exports").or_insert_with(|| {
-        let mut t = Table::new();
-        t.set_implicit(true);
-        Item::Table(t)
-    });
-    item.as_table_like_mut()
-        .ok_or_else(|| ManageError::NotATable("exports".to_string()))
-}
-
-/// Add `[exports.name]` with `path` and the flags that are true.
+/// Add export `name` with `path` and the flags that are true, last.
 pub fn add_export(
-    doc: &mut DocumentMut,
+    msg: &mut pb::Config,
     name: &str,
     path: &Path,
     read_only: bool,
@@ -32,21 +19,16 @@ pub fn add_export(
     if RESERVED.contains(&name) {
         return Err(ManageError::Reserved(name.to_string()));
     }
-    let exports = exports_table(doc)?;
-    if exports.contains_key(name) {
+    if msg.exports.iter().any(|e| e.name == name) {
         return Err(ManageError::Exists(name.to_string()));
     }
-    let mut t = Table::new();
-    t["path"] = toml_edit::value(path.to_string_lossy().into_owned());
-    if read_only {
-        t["read_only"] = toml_edit::value(true);
-    }
-    if warm_index {
-        t["warm_index"] = toml_edit::value(true);
-    }
-    // Under a header this is `[exports.name]`; inside an inline
-    // `exports = { ... }` toml_edit stores it inline.
-    exports.insert(name, Item::Table(t));
+    msg.exports.push(pb::Export {
+        name: name.to_string(),
+        path: path.to_string_lossy().into_owned(),
+        read_only: read_only.then_some(true),
+        warm_index: warm_index.then_some(true),
+        ..Default::default()
+    });
     Ok(())
 }
 
@@ -94,31 +76,33 @@ pub(crate) fn unique_auto_name(path: &Path, taken: impl Fn(&str) -> bool) -> Str
 /// Add an automatic export of `path`, read-write for `peer`; the name it
 /// got (`-2`, `-3`, ... when the name is taken).
 pub fn add_auto_export(
-    doc: &mut DocumentMut,
+    msg: &mut pb::Config,
     path: &Path,
     peer: EndpointId,
 ) -> Result<String, ManageError> {
-    let exports = exports_table(doc)?;
-    let name = unique_auto_name(path, |n| exports.contains_key(n));
-    let mut t = Table::new();
-    t["path"] = toml_edit::value(path.to_string_lossy().into_owned());
-    t["auto"] = toml_edit::value(true);
-    t["rw"] = toml_edit::value(toml_edit::Array::from_iter([peer.to_string()]));
-    exports.insert(&name, Item::Table(t));
+    let name = unique_auto_name(path, |n| msg.exports.iter().any(|e| e.name == n));
+    msg.exports.push(pb::Export {
+        name: name.clone(),
+        path: path.to_string_lossy().into_owned(),
+        auto: Some(true),
+        rw: vec![pb::Entry {
+            value: peer.to_string(),
+            comment: None,
+        }],
+        rw_set: true,
+        ..Default::default()
+    });
     Ok(name)
 }
 
-/// Remove `[exports.name]` together with its grants. Only an export (a
-/// table under `[exports]`) is removed.
-pub fn remove_export(doc: &mut DocumentMut, name: &str) -> Result<(), ManageError> {
-    let exports = doc.get_mut("exports").and_then(Item::as_table_like_mut);
-    let Some(exports) = exports else {
-        return Err(ManageError::NotFound(name.to_string()));
-    };
-    if !exports.get(name).is_some_and(Item::is_table_like) {
-        return Err(ManageError::NotFound(name.to_string()));
-    }
-    exports.remove(name);
+/// Remove export `name` together with its grants.
+pub fn remove_export(msg: &mut pb::Config, name: &str) -> Result<(), ManageError> {
+    let i = msg
+        .exports
+        .iter()
+        .position(|e| e.name == name)
+        .ok_or_else(|| ManageError::NotFound(name.to_string()))?;
+    msg.exports.remove(i);
     Ok(())
 }
 

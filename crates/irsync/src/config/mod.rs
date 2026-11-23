@@ -77,14 +77,6 @@ pub(crate) fn file_error(path: &std::path::Path, message: String) -> ConfigError
     }
 }
 
-pub(crate) fn toml_err(text: &str, path: &std::path::Path, e: toml::de::Error) -> ConfigError {
-    ConfigError::File {
-        path: path.to_path_buf(),
-        line: e.span().map(|s| line_of(text, s.start)),
-        message: e.message().to_string(),
-    }
-}
-
 /// True when the text of a config file sets `unsafe_config_allowed = true`
 /// at its top level. Text that is not TOML sets nothing.
 pub(crate) fn unsafe_allowed(text: &str) -> bool {

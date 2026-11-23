@@ -9,7 +9,7 @@
 use super::exports::{name_problem, not_absolute};
 use super::hosts::{invalid_alias, needs_an_id, valid_alias};
 use super::settings::{listen_problem, parse_debug_addr};
-use super::{duration, expand_tilde, line_of, toml_err, ConfigError};
+use super::{duration, expand_tilde, line_of, ConfigError};
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
@@ -218,6 +218,23 @@ fn de_opt_debug_addr<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, 
     let s = String::deserialize(d)?;
     parse_debug_addr(&s).map_err(serde::de::Error::custom)?;
     Ok(Some(s))
+}
+
+/// A toml parse error as a config error at its line.
+fn toml_err(text: &str, path: &Path, e: toml::de::Error) -> ConfigError {
+    ConfigError::File {
+        path: path.to_path_buf(),
+        line: e.span().map(|s| line_of(text, s.start)),
+        message: e.message().to_string(),
+    }
+}
+
+/// The segments of a dotted key in TOML's key grammar:
+/// `exports."www.example.com".path` is three. `None` for text that is
+/// no key.
+pub fn dotted_key(key: &str) -> Option<Vec<String>> {
+    let keys = toml_edit::Key::parse(key).ok()?;
+    Some(keys.into_iter().map(|k| k.get().to_string()).collect())
 }
 
 /// Reads the text of the config file into the message, with its

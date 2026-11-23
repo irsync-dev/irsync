@@ -12,6 +12,7 @@ use crate::build::LONG_VERSION;
 use crate::config::hosts::valid_alias;
 use crate::config::paths::Paths;
 use crate::manage::{self, hosts::HostFlags};
+use irsync_proto::config as pb;
 
 /// Why a root account is refused, on the client and by `ssh-setup` on the
 /// server.
@@ -214,36 +215,36 @@ pub fn onboard(
         }
     })?;
     let lock = manage::lock_config(&paths.config)?;
-    let mut doc = lock.load()?;
+    let mut msg = lock.load()?;
     let id = report.endpoint_id;
     let aliases = match alias {
         Some(a) => vec![a.to_string()],
-        None => choose_aliases(dest, p.hostname.as_deref(), id, &|a| saved_id(&doc, a)),
+        None => choose_aliases(dest, p.hostname.as_deref(), id, &|a| saved_id(&msg, a)),
     };
     let typed_ip = ip_of(dest);
     let mut saved = Vec::new();
     for alias in aliases {
         // Saved with a daemon id before: an entry that was a client only
         // is saved as a host now.
-        let before = saved_id(&doc, &alias);
+        let before = saved_id(&msg, &alias);
         let existed = before.is_some();
         // An address goes stale, a name does not: the same daemon, saved
         // with a name to reach it by, keeps that name. It also keeps
         // another spelling of this address (`u@1.2.3.4` for `1.2.3.4`).
         // Only an address that differs is replaced: the old one is stale.
         let kept_ssh = (typed_ip.is_some() && before == Some(id))
-            .then(|| saved_ssh(&doc, &alias))
+            .then(|| saved_ssh(&msg, &alias))
             .flatten()
             .filter(|old| old != dest && ip_of(old).is_none_or(|ip| Some(ip) == typed_ip));
         let host_flags = HostFlags {
             ssh: kept_ssh.is_none().then(|| dest.to_string()),
             ..HostFlags::default()
         };
-        let previous_id = manage::hosts::host_add(&mut doc, &alias, id, &host_flags)
+        let previous_id = manage::hosts::host_add(&mut msg, &alias, id, &host_flags)
             .with_context(|| format!("saving host alias {alias}"))?;
         if kept_ssh.is_some() {
             // So that typing this address again finds the host without ssh.
-            manage::hosts::host_add_ssh_alias(&mut doc, &alias, dest);
+            manage::hosts::host_add_ssh_alias(&mut msg, &alias, dest);
         }
         saved.push(SavedAlias {
             alias,
@@ -255,8 +256,8 @@ pub fn onboard(
     // A check that found a new daemon (the server was rebuilt): the other
     // names saved for that daemon through this ssh destination follow.
     if let (Some(_), Some(old)) = (alias, saved[0].previous_id) {
-        for other in aliases_of(&doc, old, dest) {
-            manage::hosts::host_add(&mut doc, &other, id, &HostFlags::default())
+        for other in aliases_of(&msg, old, dest) {
+            manage::hosts::host_add(&mut msg, &other, id, &HostFlags::default())
                 .with_context(|| format!("saving host alias {other}"))?;
             saved.push(SavedAlias {
                 alias: other,
@@ -266,7 +267,7 @@ pub fn onboard(
             });
         }
     }
-    lock.save(&mut doc)?;
+    lock.save(&mut msg)?;
     Ok(Onboarded {
         alias: saved[0].alias.clone(),
         endpoint_id: id,
@@ -279,32 +280,34 @@ pub fn onboard(
     })
 }
 
-/// The id `[hosts.alias]` holds in `doc`, when it reads as one.
-fn saved_id(doc: &toml_edit::DocumentMut, alias: &str) -> Option<EndpointId> {
-    doc.get("hosts")?
-        .get(alias)?
-        .get("endpoint_id")?
-        .as_str()
-        .and_then(|s| crate::identity::parse_endpoint_id(s).ok())
+/// The host `alias` of `msg`.
+fn saved_host<'a>(msg: &'a pb::Config, alias: &str) -> Option<&'a pb::Host> {
+    msg.hosts.iter().find(|h| h.name == alias)
 }
 
-/// The aliases in `doc` saved with the daemon `id` and `ssh = dest`.
-fn aliases_of(doc: &toml_edit::DocumentMut, id: EndpointId, dest: &str) -> Vec<String> {
-    let Some(hosts) = doc.get("hosts").and_then(toml_edit::Item::as_table_like) else {
-        return Vec::new();
-    };
-    hosts
+/// The id `[hosts.alias]` holds in `msg`.
+fn saved_id(msg: &pb::Config, alias: &str) -> Option<EndpointId> {
+    saved_host(msg, alias)?
+        .endpoint_id
+        .as_deref()
+        .and_then(manage::id_of)
+}
+
+/// The aliases in `msg` saved with the daemon `id` and `ssh = dest`.
+fn aliases_of(msg: &pb::Config, id: EndpointId, dest: &str) -> Vec<String> {
+    msg.hosts
         .iter()
-        .map(|(alias, _)| alias)
-        .filter(|a| saved_id(doc, a) == Some(id) && saved_ssh(doc, a).as_deref() == Some(dest))
-        .map(str::to_string)
+        .filter(|h| {
+            h.endpoint_id.as_deref().and_then(manage::id_of) == Some(id)
+                && h.ssh.as_deref() == Some(dest)
+        })
+        .map(|h| h.name.clone())
         .collect()
 }
 
-/// The `ssh` value `[hosts.alias]` holds in `doc`.
-fn saved_ssh(doc: &toml_edit::DocumentMut, alias: &str) -> Option<String> {
-    let ssh = doc.get("hosts")?.get(alias)?.get("ssh")?.as_str()?;
-    Some(ssh.to_string())
+/// The `ssh` value `[hosts.alias]` holds in `msg`.
+fn saved_ssh(msg: &pb::Config, alias: &str) -> Option<String> {
+    saved_host(msg, alias)?.ssh.clone()
 }
 
 /// Whether `alias` can be saved and `dest` is a host name ssh will not

@@ -1,18 +1,20 @@
-//! Shared editing layer for the config-managing commands: format-preserving
-//! TOML load/save and the interpretation of a command-line "who" argument.
+//! Shared editing layer for the config-managing commands: loading the
+//! config file into its message and saving the message back (in the
+//! writer's form, comments kept), and the interpretation of a command-line
+//! "who" argument.
 
 pub mod config;
 pub mod exports;
 pub mod grants;
 pub mod hosts;
-pub mod msg;
 pub mod show;
 
 use crate::config::file::Config;
 use crate::config::hosts::Hosts;
-use crate::config::ConfigError;
+use crate::config::{reader, writer, ConfigError};
 use crate::identity::{endpoint_id_of_public_key, parse_endpoint_id};
 use iroh::EndpointId;
+use irsync_proto::config as pb;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -27,11 +29,6 @@ pub enum ManageError {
     },
     #[error(transparent)]
     Config(#[from] ConfigError),
-    #[error("{}: {source}", path.display())]
-    Toml {
-        path: PathBuf,
-        source: toml_edit::TomlError,
-    },
     #[error("export {0:?} already exists")]
     Exists(String),
     #[error("no such entry {0:?}")]
@@ -80,20 +77,28 @@ pub fn check_comment(c: &str) -> Result<(), ManageError> {
     Ok(())
 }
 
-/// Load a TOML file for editing; a missing file yields an empty document.
+/// An endpoint id as the message holds it: its 32 bytes.
+pub fn id_bytes(id: EndpointId) -> Vec<u8> {
+    id.as_bytes().to_vec()
+}
+
+/// The id of 32 bytes; `None` for bytes that are no id.
+pub fn id_of(bytes: &[u8]) -> Option<EndpointId> {
+    let b = <[u8; 32]>::try_from(bytes).ok()?;
+    EndpointId::from_bytes(&b).ok()
+}
+
+/// Load the config file for editing; a missing file is the empty message.
 /// A file open to other users is refused as it is for use (see
-/// [`Config::load`]).
-pub fn load_doc(path: &Path) -> Result<toml_edit::DocumentMut, ManageError> {
+/// [`Config::load`]), and a file the reader refuses is that error, with
+/// its line.
+pub fn load_message(path: &Path) -> Result<pb::Config, ManageError> {
     let text = match crate::config::read_optional(path) {
         Ok(t) => t.unwrap_or_default(),
         Err(ConfigError::Io { path, source }) => return Err(ManageError::Io { path, source }),
         Err(e) => return Err(e.into()),
     };
-    text.parse::<toml_edit::DocumentMut>()
-        .map_err(|source| ManageError::Toml {
-            path: path.to_path_buf(),
-            source,
-        })
+    Ok(reader::read(&text, path)?)
 }
 
 /// The mode a saved config gets: the mode the file at `path` has, so a
@@ -105,68 +110,42 @@ fn saved_mode(path: &Path) -> std::fs::Permissions {
     std::fs::Permissions::from_mode(mode)
 }
 
-/// Atomically write `doc` to `path` (temp file in the same directory, then
-/// rename), creating the parent directory. The file keeps its mode; a new
-/// one is 0600.
-pub fn save_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<(), ManageError> {
-    let io = |source| ManageError::Io {
-        path: path.to_path_buf(),
-        source,
-    };
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    std::fs::create_dir_all(parent).map_err(io)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(io)?;
-    tmp.write_all(doc.to_string().as_bytes()).map_err(io)?;
-    tmp.as_file().sync_all().map_err(io)?;
-    std::fs::set_permissions(tmp.path(), saved_mode(path)).map_err(io)?;
-    tmp.persist(path).map_err(|e| ManageError::Io {
-        path: path.to_path_buf(),
-        source: e.error,
-    })?;
-    Ok(())
-}
-
-/// Save the config file, refusing a document that would not load; takes
+/// Save the config file, refusing a message that would not load; takes
 /// and releases the file's lock (see [`lock_config`]). Like
 /// [`ConfigLock::save`], it first writes peers by their aliases.
-pub fn save_config(path: &Path, doc: &mut toml_edit::DocumentMut) -> Result<(), ManageError> {
-    lock_config(path)?.save(doc)
+pub fn save_config(path: &Path, msg: &mut pb::Config) -> Result<(), ManageError> {
+    lock_config(path)?.save(msg)
 }
 
-/// Puts the grants of `doc` into their canonical form (see
-/// [`grants::canonicalize`]) with the `[hosts]` table of `doc` itself, so
-/// an alias added in the same edit already counts. True when `doc`
-/// changed. A document that would not load is an error naming `path`.
-pub fn canonicalize_doc(
-    doc: &mut toml_edit::DocumentMut,
-    path: &Path,
-) -> Result<bool, ManageError> {
-    let config = Config::parse(&doc.to_string(), path).map_err(|reason| ManageError::Invalid {
+/// The typed config of `msg`; one that would not load is an error naming
+/// `path`.
+fn typed(msg: &pb::Config, path: &Path) -> Result<Config, ManageError> {
+    Config::from_message(msg, path).map_err(|reason| ManageError::Invalid {
         path: path.to_path_buf(),
         reason,
-    })?;
-    Ok(grants::canonicalize(doc, &config.hosts))
+    })
 }
 
-/// As [`canonicalize_doc`], for a document that the host `alias` is about
+/// Puts the grants of `msg` into their canonical form (see
+/// [`grants::canonicalize`]) with the hosts of `msg` itself, so an alias
+/// added in the same edit already counts. True when `msg` changed. A
+/// message that would not load is an error naming `path`.
+pub fn canonicalize_doc(msg: &mut pb::Config, path: &Path) -> Result<bool, ManageError> {
+    let config = typed(msg, path)?;
+    Ok(grants::canonicalize(msg, &config.hosts))
+}
+
+/// As [`canonicalize_doc`], for a message that the host `alias` is about
 /// to leave. When another alias has the same EndpointId, `alias` is not
 /// counted: an id written in a grant is then written as that other alias
 /// and so does not stand in the way of the removal. An id that only
 /// `alias` names is written as `alias`, and is found as a grant naming it.
 pub fn canonicalize_without(
-    doc: &mut toml_edit::DocumentMut,
+    msg: &mut pb::Config,
     path: &Path,
     alias: &str,
 ) -> Result<bool, ManageError> {
-    let mut hosts = Config::parse(&doc.to_string(), path)
-        .map_err(|reason| ManageError::Invalid {
-            path: path.to_path_buf(),
-            reason,
-        })?
-        .hosts;
+    let mut hosts = typed(msg, path)?.hosts;
     let shared = hosts.get(alias).map(|e| e.peer_id()).is_some_and(|id| {
         hosts
             .entries
@@ -176,7 +155,7 @@ pub fn canonicalize_without(
     if shared {
         hosts.entries.remove(alias);
     }
-    Ok(grants::canonicalize(doc, &hosts))
+    Ok(grants::canonicalize(msg, &hosts))
 }
 
 /// Exclusive right to edit a config file, held from [`ConfigLock::load`] to
@@ -224,33 +203,29 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
 }
 
 impl ConfigLock {
-    /// The file as it is now (empty when missing).
-    pub fn load(&self) -> Result<toml_edit::DocumentMut, ManageError> {
+    /// The file as it is now (empty when missing); see [`load_message`].
+    pub fn load(&self) -> Result<pb::Config, ManageError> {
         // An edit must not pass a split file by in silence either.
         crate::config::file::warn_ignored_split_files(&self.path);
-        load_doc(&self.path)
+        load_message(&self.path)
     }
 
-    /// Writes `doc` over the file and releases the lock. Peers that
-    /// `[hosts]` has an alias for are written by it first (see
-    /// [`canonicalize_doc`]), so every save leaves the file in one form.
-    /// A document that would not load is refused and the file left as it
-    /// was.
-    pub fn save(mut self, doc: &mut toml_edit::DocumentMut) -> Result<(), ManageError> {
-        let invalid = |reason| ManageError::Invalid {
-            path: self.path.clone(),
-            reason,
-        };
-        if canonicalize_doc(doc, &self.path)? {
+    /// Writes `msg` over the file, in the writer's form, and releases the
+    /// lock. Peers that the hosts have an alias for are written by it
+    /// first (see [`canonicalize_doc`]), so every save leaves the file in
+    /// one form. A message that would not load is refused and the file
+    /// left as it was.
+    pub fn save(mut self, msg: &mut pb::Config) -> Result<(), ManageError> {
+        if canonicalize_doc(msg, &self.path)? {
             // The rewrite only renames and drops entries; checked all the same.
-            Config::parse(&doc.to_string(), &self.path).map_err(invalid)?;
+            typed(msg, &self.path)?;
         }
         let io = |source| ManageError::Io {
             path: self.lock.clone(),
             source,
         };
         let file = self.file.as_mut().expect("held until saved");
-        file.write_all(doc.to_string().as_bytes()).map_err(io)?;
+        file.write_all(writer::write(msg).as_bytes()).map_err(io)?;
         file.sync_all().map_err(io)?;
         std::fs::set_permissions(&self.lock, saved_mode(&self.path)).map_err(io)?;
         std::fs::rename(&self.lock, &self.path).map_err(io)?;

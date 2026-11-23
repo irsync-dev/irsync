@@ -735,7 +735,7 @@ fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
     assert!(e.to_string().contains("expected a boolean"), "{e}");
     // Editing reads the file under the same rule.
     set("[client]\nparallel = 4\n", 0o644).unwrap_err();
-    let e = irsync::manage::load_doc(&paths.config).unwrap_err();
+    let e = irsync::manage::load_message(&paths.config).unwrap_err();
     assert!(e.to_string().contains("has mode 0644"), "{e}");
     let lock = irsync::manage::lock_config(&paths.config).unwrap();
     assert!(lock.load().is_err());

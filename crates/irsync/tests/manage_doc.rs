@@ -1,24 +1,48 @@
-use irsync::manage::{load_doc, save_config, save_doc, ManageError, PeerSpec};
+use irsync::config::reader::read;
+use irsync::config::writer::write;
+use irsync::manage::{load_message, lock_config, save_config, ManageError, PeerSpec};
+use irsync_proto::config as pb;
 use std::path::Path;
-use toml_edit::DocumentMut;
 
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
+}
+
+fn msg(text: &str) -> pb::Config {
+    read(text, Path::new("irsync.toml")).unwrap()
+}
+
+fn export(name: &str, path: &str) -> pb::Export {
+    pb::Export {
+        name: name.into(),
+        path: path.into(),
+        ..Default::default()
+    }
+}
+
+/// A host with neither id: the message holds it, the config refuses it.
+fn host_without_ids(name: &str) -> pb::Host {
+    pb::Host {
+        name: name.into(),
+        ..Default::default()
+    }
 }
 
 #[test]
 fn load_missing_is_empty_and_save_creates_parent_atomically() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("sub/irsync.toml");
-    let mut doc = load_doc(&p).unwrap();
-    assert!(doc.as_table().is_empty());
-    doc["x"] = toml_edit::table();
-    doc["x"]["path"] = toml_edit::value("/x");
-    save_doc(&p, &doc).unwrap();
-    assert_eq!(std::fs::read_to_string(&p).unwrap(), "[x]\npath = \"/x\"\n");
+    let mut m = load_message(&p).unwrap();
+    assert_eq!(m, pb::Config::default());
+    m.exports.push(export("x", "/x"));
+    save_config(&p, &mut m).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "[exports.x]\npath = \"/x\"\n"
+    );
     assert!(
         std::fs::read_dir(p.parent().unwrap()).unwrap().count() == 1,
-        "no temp file left behind"
+        "no temp file or lock left behind"
     );
 }
 
@@ -28,16 +52,62 @@ fn save_preserves_comments_and_order() {
     let p = d.path().join("e.toml");
     irsync::fs::private::write(
         &p,
-        "# top\n[b]\npath = \"/b\" # keep\n\n[a]\npath = \"/a\"\n",
+        "# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\n",
     )
     .unwrap();
-    let mut doc = load_doc(&p).unwrap();
-    doc["a"]["read_only"] = toml_edit::value(true);
-    save_doc(&p, &doc).unwrap();
+    let mut m = load_message(&p).unwrap();
+    m.exports[1].read_only = Some(true);
+    save_config(&p, &mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
-        "# top\n[b]\npath = \"/b\" # keep\n\n[a]\npath = \"/a\"\nread_only = true\n"
+        "# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\nread_only = true\n"
     );
+}
+
+#[test]
+fn a_save_keeps_comments_and_writes_the_writers_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("irsync.toml");
+    irsync::fs::private::write(
+        &path,
+        "[all]\nrw=[]   # nobody yet\n\n\n# the daemon\n[daemon]\nportmap=false\n",
+    )
+    .unwrap();
+    let lock = lock_config(&path).unwrap();
+    let mut m = lock.load().unwrap();
+    lock.save(&mut m).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# the daemon\n[daemon]\nportmap = false\n\n[all]\nrw = [] # nobody yet\n"
+    );
+}
+
+#[test]
+fn a_save_that_would_not_load_leaves_the_file_and_frees_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("irsync.toml");
+    irsync::fs::private::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
+    let lock = lock_config(&path).unwrap();
+    let mut m = lock.load().unwrap();
+    m.exports[0].path = "rel".into();
+    assert!(matches!(
+        lock.save(&mut m),
+        Err(ManageError::Invalid { .. })
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[exports.p]\npath = \"/p\"\n"
+    );
+    lock_config(&path).unwrap();
+}
+
+#[test]
+fn a_file_that_does_not_load_cannot_be_edited() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("irsync.toml");
+    irsync::fs::private::write(&path, "[hosts.nas]\nendpoint_id = \"nope\"\n").unwrap();
+    let e = lock_config(&path).unwrap().load().unwrap_err();
+    assert!(e.to_string().contains("irsync.toml:2:"), "{e}");
 }
 
 #[test]
@@ -88,23 +158,23 @@ fn peer_spec_forms() {
 }
 
 #[test]
-fn save_config_refuses_a_document_that_does_not_load() {
+fn save_config_refuses_a_message_that_does_not_load() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
-    let mut doc: DocumentMut = "[hosts.x]\nendpoint_id = \"nope\"\n".parse().unwrap();
-    let e = save_config(&path, &mut doc).unwrap_err();
+    let mut m = pb::Config {
+        hosts: vec![host_without_ids("x")],
+        ..Default::default()
+    };
+    let e = save_config(&path, &mut m).unwrap_err();
     assert!(e.to_string().contains("refusing to save"), "{e}");
     assert!(!path.exists());
-    let mut doc: DocumentMut = "[client]\nparallel = 2\n[exports.p]\npath = \"/p\"\n"
-        .parse()
-        .unwrap();
-    save_config(&path, &mut doc).unwrap();
+    let mut m = msg("[client]\nparallel = 2\n[exports.p]\npath = \"/p\"\n");
+    save_config(&path, &mut m).unwrap();
     assert!(path.exists());
 }
 
 #[test]
 fn lock_config_excludes_a_second_editor_until_save_or_drop() {
-    use irsync::manage::lock_config;
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("sub/irsync.toml");
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -119,9 +189,9 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
         e.to_string().contains("irsync.toml.lock") && e.to_string().contains("another irsync"),
         "{e}"
     );
-    let mut doc = lock.load().unwrap();
-    doc["client"]["parallel"] = toml_edit::value(8);
-    lock.save(&mut doc).unwrap();
+    let mut m = lock.load().unwrap();
+    m.client.as_mut().unwrap().parallel = Some(8);
+    lock.save(&mut m).unwrap();
     assert!(!lock_file.exists(), "save releases the lock");
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
@@ -137,12 +207,12 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
         "# keep\n[client]\nparallel = 8\n"
     );
 
-    // An invalid document is refused and the lock released.
+    // An invalid message is refused and the lock released.
     let lock = lock_config(&p).unwrap();
-    let mut doc = lock.load().unwrap();
-    doc["client"]["bogus"] = toml_edit::value(1);
+    let mut m = lock.load().unwrap();
+    m.hosts.push(host_without_ids("x"));
     assert!(matches!(
-        lock.save(&mut doc),
+        lock.save(&mut m),
         Err(ManageError::Invalid { .. })
     ));
     assert!(!lock_file.exists());
@@ -157,39 +227,37 @@ fn parse_hosts(
 
 #[test]
 fn save_writes_aliases_for_ids() {
-    use irsync::manage::lock_config;
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
-    let mut doc: DocumentMut = format!(
+    let mut m = msg(&format!(
         "[hosts.box]\nendpoint_id = \"{0}\"\n[all]\nrw = [\"{0}\"]\n",
         id(1)
-    )
-    .parse()
-    .unwrap();
-    lock_config(&path).unwrap().save(&mut doc).unwrap();
+    ));
+    lock_config(&path).unwrap().save(&mut m).unwrap();
     let want = format!(
-        "[hosts.box]\nendpoint_id = \"{}\"\n[all]\nrw = [\"box\"]\n",
+        "[hosts.box]\nendpoint_id = \"{}\"\n\n[all]\nrw = [\"box\"]\n",
         id(1)
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
-    // The caller's document is the one that was written.
-    assert_eq!(doc.to_string(), want);
+    // The caller's message is the one that was written.
+    assert_eq!(write(&m), want);
 }
 
 #[test]
-fn canonicalize_doc_uses_the_hosts_of_the_document() {
+fn canonicalize_doc_uses_the_hosts_of_the_message() {
     use irsync::manage::canonicalize_doc;
     let path = Path::new("irsync.toml");
-    let mut doc: DocumentMut = format!(
+    let mut m = msg(&format!(
         "[hosts.box]\nendpoint_id = \"{0}\"\n[immediate]\nrw = [\"{0}\"]\n",
         id(1)
-    )
-    .parse()
-    .unwrap();
-    assert!(canonicalize_doc(&mut doc, path).unwrap());
-    assert!(doc.to_string().ends_with("rw = [\"box\"]\n"));
-    assert!(!canonicalize_doc(&mut doc, path).unwrap());
-    let mut bad: DocumentMut = "[hosts.box]\nendpoint_id = \"nonsense\"\n".parse().unwrap();
+    ));
+    assert!(canonicalize_doc(&mut m, path).unwrap());
+    assert_eq!(m.immediate.as_ref().unwrap().rw[0].value, "box");
+    assert!(!canonicalize_doc(&mut m, path).unwrap());
+    let mut bad = pb::Config {
+        hosts: vec![host_without_ids("box")],
+        ..Default::default()
+    };
     assert!(matches!(
         canonicalize_doc(&mut bad, path),
         Err(ManageError::Invalid { .. })
@@ -219,35 +287,34 @@ fn written_is_the_alias_of_an_id_that_has_one() {
 /// owner closed. A new config is for the owner only.
 #[test]
 fn save_keeps_the_files_mode_and_a_new_file_is_private() {
-    use irsync::manage::lock_config;
     use std::os::unix::fs::PermissionsExt;
     let d = tempfile::tempdir().unwrap();
     let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
 
     let fresh = d.path().join("new.toml");
-    let mut doc = load_doc(&fresh).unwrap();
-    doc["client"] = toml_edit::table();
-    save_doc(&fresh, &doc).unwrap();
+    let mut m = load_message(&fresh).unwrap();
+    m.client = Some(Default::default());
+    save_config(&fresh, &mut m).unwrap();
     assert_eq!(mode(&fresh), 0o600);
 
     let locked = d.path().join("locked.toml");
     let lock = lock_config(&locked).unwrap();
-    let mut doc = lock.load().unwrap();
-    doc["client"] = toml_edit::table();
-    lock.save(&mut doc).unwrap();
+    let mut m = lock.load().unwrap();
+    m.client = Some(Default::default());
+    lock.save(&mut m).unwrap();
     assert_eq!(mode(&locked), 0o600);
 
     // A file open to other users loads only when it says so itself.
-    doc["unsafe_config_allowed"] = toml_edit::value(true);
+    m.unsafe_config_allowed = Some(true);
     for kept in [0o640, 0o644, 0o600] {
         std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(kept)).unwrap();
-        doc["client"]["parallel"] = toml_edit::value(i64::from(kept));
-        save_doc(&fresh, &doc).unwrap();
-        assert_eq!(mode(&fresh), kept, "save_doc");
+        m.client.as_mut().unwrap().parallel = Some(kept);
+        save_config(&fresh, &mut m).unwrap();
+        assert_eq!(mode(&fresh), kept, "save_config");
         let lock = lock_config(&fresh).unwrap();
-        let mut doc = lock.load().unwrap();
-        doc["client"]["parallel"] = toml_edit::value(1);
-        lock.save(&mut doc).unwrap();
+        let mut m = lock.load().unwrap();
+        m.client.as_mut().unwrap().parallel = Some(1);
+        lock.save(&mut m).unwrap();
         assert_eq!(mode(&fresh), kept, "lock.save");
     }
 }

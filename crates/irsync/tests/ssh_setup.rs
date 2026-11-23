@@ -10,11 +10,13 @@ use common::irsync_bin;
 use iroh::{EndpointId, SecretKey};
 use irsync::config::file::Config;
 use irsync::config::hosts::Hosts;
+use irsync::config::reader::read;
+use irsync::config::writer::write;
 use irsync::daemon_lock::probe;
 use irsync::ssh::setup::{
     check_client_name, grant_client, Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport,
 };
-use toml_edit::DocumentMut;
+use irsync_proto::config as pb;
 
 /// `name` as `--client-name-hex` takes it.
 fn hex(name: &str) -> String {
@@ -437,9 +439,11 @@ fn hosts_from(text: &str) -> Hosts {
 
 #[test]
 fn client_name_rules() {
-    let doc: DocumentMut = format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1))
-        .parse()
-        .unwrap();
+    let doc = read(
+        &format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1)),
+        cfg(),
+    )
+    .unwrap();
     let check = |client, name| check_client_name(&doc, cfg(), client, name);
     assert!(check(id(1), "myclient").is_ok());
     assert!(check(id(2), "other").is_ok());
@@ -478,14 +482,14 @@ fn a_client_joins_the_entry_of_its_own_daemon() {
         "[hosts.desktop]\nendpoint_id = \"{}\"\nssh = \"mike@desktop\"\n",
         id(5)
     );
-    let mut doc: DocumentMut = text.parse().unwrap();
+    let mut doc = read(&text, cfg()).unwrap();
     assert!(grant_client(&mut doc, cfg(), id(2), "desktop").unwrap());
-    let hosts = hosts_from(&doc.to_string());
+    let hosts = hosts_from(&write(&doc));
     let e = hosts.get("desktop").unwrap();
     assert_eq!((e.endpoint_id, e.client_id), (Some(id(5)), Some(id(2))));
     assert_eq!(e.ssh.as_deref(), Some("mike@desktop"));
     assert_eq!(hosts.entries.len(), 1);
-    let t: toml::Table = doc.to_string().parse().unwrap();
+    let t: toml::Table = write(&doc).parse().unwrap();
     assert_eq!(t["immediate"]["rw"][0].as_str(), Some("desktop"));
     assert_eq!(hosts.resolve_peer("desktop").unwrap(), id(2));
 }
@@ -498,19 +502,19 @@ fn a_client_does_not_join_an_entry_that_grants_name() {
         "[hosts.desktop]\nendpoint_id = \"{}\"\n[exports.x]\npath = \"/x\"\nrw = [\"desktop\"]\n",
         id(5)
     );
-    let mut doc: DocumentMut = text.parse().unwrap();
+    let mut doc = read(&text, cfg()).unwrap();
     let e = grant_client(&mut doc, cfg(), id(2), "desktop")
         .unwrap_err()
         .to_string();
     assert!(e.contains("[exports.x]") && e.contains("desktop"), "{e}");
-    assert_eq!(doc.to_string(), text);
+    assert_eq!(doc, read(&text, cfg()).unwrap());
 }
 
 #[test]
 fn grants_the_name() {
-    let mut doc = DocumentMut::new();
+    let mut doc = pb::Config::default();
     assert!(grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
-    let t: toml::Table = doc.to_string().parse().unwrap();
+    let t: toml::Table = write(&doc).parse().unwrap();
     assert_eq!(
         t["hosts"]["myclient"]["client_id"].as_str(),
         Some(&*id(1).to_string())
@@ -534,9 +538,9 @@ fn names_that_need_quoting_round_trip() {
         "a]\\b",
         "'",
     ] {
-        let mut doc = DocumentMut::new();
+        let mut doc = pb::Config::default();
         grant_client(&mut doc, cfg(), id(1), name).unwrap();
-        let text = doc.to_string();
+        let text = write(&doc);
         let t: toml::Table = text.parse().unwrap();
         assert_eq!(t.len(), 2, "{name:?}: {text}");
         assert!(
@@ -551,11 +555,9 @@ fn names_that_need_quoting_round_trip() {
 
 #[test]
 fn a_bare_id_grant_counts() {
-    let mut doc: DocumentMut = format!("[immediate]\nrw = [\"{}\"]\n", id(1))
-        .parse()
-        .unwrap();
+    let mut doc = read(&format!("[immediate]\nrw = [\"{}\"]\n", id(1)), cfg()).unwrap();
     assert!(!grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
-    let t: toml::Table = doc.to_string().parse().unwrap();
+    let t: toml::Table = write(&doc).parse().unwrap();
     assert_eq!(t["immediate"]["rw"].as_array().unwrap().len(), 1);
     assert_eq!(t["immediate"]["rw"][0].as_str(), Some(&*id(1).to_string()));
     assert!(t["hosts"].as_table().unwrap().contains_key("myclient"));
@@ -592,12 +594,12 @@ fn a_leftover_grant_name_is_not_taken_over() {
         "[all]\nro = [\"myclient\"]\n",
         "[exports.photos]\npath = \"/p\"\nrw = [\"myclient\"]\n",
     ] {
-        let mut doc: DocumentMut = text.parse().unwrap();
+        let mut doc = read(text, cfg()).unwrap();
         let e = grant_client(&mut doc, cfg(), id(2), "myclient")
             .unwrap_err()
             .to_string();
         assert!(e.contains("myclient") && e.contains("still"), "{e}");
-        assert_eq!(doc.to_string(), text);
+        assert_eq!(doc, read(text, cfg()).unwrap());
     }
 }
 
@@ -606,9 +608,9 @@ fn a_leftover_grant_name_is_not_taken_over() {
 #[test]
 fn a_name_taken_in_the_document_is_not_overwritten() {
     let text = format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1));
-    let mut doc: DocumentMut = text.parse().unwrap();
+    let mut doc = read(&text, cfg()).unwrap();
     assert!(grant_client(&mut doc, cfg(), id(2), "myclient").is_err());
-    assert_eq!(doc.to_string(), text);
+    assert_eq!(doc, read(&text, cfg()).unwrap());
 }
 
 /// A recheck does not hand a removed client's leftover grant to whoever
@@ -634,7 +636,7 @@ fn recheck_does_not_revive_a_leftover_grant() {
 #[test]
 fn a_taken_name_with_a_daemon_id_is_not_told_to_remove_the_host() {
     let check = |text: &str| {
-        let doc: DocumentMut = text.parse().unwrap();
+        let doc = read(text, cfg()).unwrap();
         check_client_name(&doc, cfg(), id(2), "myclient")
             .unwrap_err()
             .to_string()

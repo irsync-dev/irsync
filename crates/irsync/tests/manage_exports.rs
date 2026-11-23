@@ -1,76 +1,128 @@
-use irsync::manage::exports::{add_export, parse_add_target, remove_export};
+use irsync::config::file::Config;
+use irsync::config::reader::read;
+use irsync::config::writer::write;
+use irsync::manage::exports::parse_add_target;
+use irsync::manage::exports::{add_auto_export, add_export, remove_export};
 use irsync::manage::{ManageError, PeerSpec};
+use irsync_proto::config as pb;
 use std::path::Path;
-use toml_edit::DocumentMut;
 
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
+fn msg(text: &str) -> pb::Config {
+    read(text, Path::new("f")).unwrap()
+}
+fn typed(m: &pb::Config) -> Config {
+    Config::from_message(m, Path::new("f")).unwrap()
+}
 
 #[test]
 fn add_writes_only_what_was_asked_and_refuses_duplicates_and_reserved() {
-    let mut doc = DocumentMut::new();
-    add_export(&mut doc, "photos", Path::new("/srv/photos"), false, false).unwrap();
-    add_export(&mut doc, "docs", Path::new("/srv/docs"), true, true).unwrap();
-    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
+    let mut m = pb::Config::default();
+    add_export(&mut m, "photos", Path::new("/srv/photos"), false, false).unwrap();
+    add_export(&mut m, "docs", Path::new("/srv/docs"), true, true).unwrap();
+    let x = typed(&m).exports;
     assert!(!x.exports["photos"].read_only && !x.exports["photos"].warm_index);
     assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
+    assert_eq!(m.exports[0].read_only, None);
+    assert_eq!(m.exports[1].read_only, Some(true));
     assert!(
-        !doc.to_string().contains("read_only = false"),
-        "only true flags are written:\n{doc}"
+        !write(&m).contains("read_only = false"),
+        "only true flags are written:\n{}",
+        write(&m)
     );
     assert!(matches!(
-        add_export(&mut doc, "photos", Path::new("/x"), false, false),
+        add_export(&mut m, "photos", Path::new("/x"), false, false),
         Err(ManageError::Exists(_))
     ));
     assert!(matches!(
-        add_export(&mut doc, "all", Path::new("/x"), false, false),
+        add_export(&mut m, "all", Path::new("/x"), false, false),
         Err(ManageError::Reserved(_))
     ));
 }
 
 #[test]
 fn add_writes_under_exports_as_a_dotted_header_and_refuses_all() {
-    let mut doc = DocumentMut::new();
-    add_export(&mut doc, "photos", Path::new("/srv/photos"), false, false).unwrap();
-    assert_eq!(
-        doc.to_string(),
-        "[exports.photos]\npath = \"/srv/photos\"\n"
-    );
-    let e = add_export(&mut doc, "all", Path::new("/srv/all"), false, false).unwrap_err();
+    let mut m = pb::Config::default();
+    add_export(&mut m, "photos", Path::new("/srv/photos"), false, false).unwrap();
+    assert_eq!(write(&m), "[exports.photos]\npath = \"/srv/photos\"\n");
+    let e = add_export(&mut m, "all", Path::new("/srv/all"), false, false).unwrap_err();
     assert_eq!(
         e.to_string(),
         "\"all\" is reserved: it is the word `grant add all WHO` uses for every export"
     );
-    assert!(add_export(&mut doc, "rw", Path::new("/srv/rw"), false, false).is_ok());
+    assert!(add_export(&mut m, "rw", Path::new("/srv/rw"), false, false).is_ok());
+}
+
+#[test]
+fn a_new_export_goes_last_and_the_path_stays_as_written() {
+    let mut m = msg("[exports.b]\npath = \"/b\"\n[exports.a]\npath = \"/a\"\n");
+    add_export(&mut m, "c", Path::new("~/c"), false, false).unwrap();
+    let names: Vec<_> = m.exports.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["b", "a", "c"]);
+    assert_eq!(m.exports[2].path, "~/c");
 }
 
 #[test]
 fn remove_last_export_leaves_a_loadable_file() {
-    let mut doc: DocumentMut = "[all]\nrw = [\"x\"]\n[exports.a]\npath = \"/a\"\n"
-        .parse()
-        .unwrap();
-    remove_export(&mut doc, "a").unwrap();
-    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
-    assert!(x.exports.is_empty() && x.rw == vec!["x"]);
+    let mut m = msg("[all]\nrw = [\"x\"]\n[exports.a]\npath = \"/a\"\n");
+    remove_export(&mut m, "a").unwrap();
+    let c = typed(&m);
+    assert!(c.exports.exports.is_empty() && c.exports.rw == vec!["x"]);
     assert!(matches!(
-        remove_export(&mut doc, "all"),
+        remove_export(&mut m, "all"),
         Err(ManageError::NotFound(_))
     ));
 }
 
 #[test]
 fn remove_drops_table_and_its_grants() {
-    let mut doc: DocumentMut =
-        "[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n[exports.b]\npath = \"/b\"\n"
-            .parse()
-            .unwrap();
-    remove_export(&mut doc, "a").unwrap();
-    assert_eq!(doc.to_string(), "[exports.b]\npath = \"/b\"\n");
+    let mut m = msg("[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n[exports.b]\npath = \"/b\"\n");
+    remove_export(&mut m, "a").unwrap();
+    assert_eq!(write(&m), "[exports.b]\npath = \"/b\"\n");
     assert!(matches!(
-        remove_export(&mut doc, "a"),
+        remove_export(&mut m, "a"),
         Err(ManageError::NotFound(_))
     ));
+}
+
+#[test]
+fn remove_only_removes_an_export() {
+    let text = format!(
+        "[all]\nrw = [\"{}\"]\nro = []\n[exports.p]\npath = \"/p\"\n",
+        id(1)
+    );
+    let mut m = msg(&text);
+    for r in ["all", "exports", "rw"] {
+        assert!(
+            matches!(remove_export(&mut m, r), Err(ManageError::NotFound(_))),
+            "{r}"
+        );
+    }
+    // Nothing was removed: the message is as it was read.
+    assert_eq!(m, msg(&text));
+}
+
+#[test]
+fn auto_export_names() {
+    let mut m = pb::Config::default();
+    let mut n = |p: &str| add_auto_export(&mut m, Path::new(p), id(1)).unwrap();
+    assert_eq!(n("/srv/photos"), "auto-srv-photos");
+    assert_eq!(n("/"), "auto-root");
+    assert_eq!(n("/a b/\u{e7}"), "auto-a_b-__");
+    assert_eq!(n("/srv/photos"), "auto-srv-photos-2");
+    let e = &m.exports[0];
+    assert_eq!(e.auto, Some(true));
+    assert!(e.rw_set);
+    assert_eq!(e.rw[0].value, id(1).to_string());
+    assert!(typed(&m).exports.exports["auto-srv-photos"].auto);
+    let text = write(&m);
+    let want = format!(
+        "[exports.auto-srv-photos]\npath = \"/srv/photos\"\nauto = true\nrw = [\"{}\"]\n",
+        id(1)
+    );
+    assert!(text.contains(&want), "{text}");
 }
 
 #[test]
@@ -134,11 +186,27 @@ fn add_target_edge_cases() {
     );
 }
 
+#[test]
+fn add_target_expands_a_leading_tilde() {
+    let home = dirs::home_dir().unwrap();
+    let (name, path) = parse_add_target("home:~", Path::new("/cwd")).unwrap();
+    assert_eq!((name.as_str(), path), ("home", home.clone()));
+    let (_, path) = parse_add_target("x:~/", Path::new("/cwd")).unwrap();
+    assert_eq!(path, home);
+    // `~x` is a plain name, not a user.
+    assert!(matches!(
+        parse_add_target("x:~nobody", Path::new("/cwd")),
+        Err(ManageError::NotADirectory(_))
+    ));
+}
+
 const INJECTED: &str = "laptop\n]\n[etc]\npath = \"/etc\"\nrw = [\"x\"";
 
 #[test]
 fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
-    let hosts = parse_hosts("", Path::new("h")).unwrap();
+    let hosts = irsync::config::file::Config::parse("", Path::new("h"))
+        .unwrap()
+        .hosts;
     let line = irsync::identity::public_key_line(&iroh::SecretKey::from_bytes(&[7; 32]), "x");
     let key = line.rsplit_once(' ').unwrap().0;
     let r = PeerSpec::parse(&format!("{key} {INJECTED}"), &hosts);
@@ -156,120 +224,53 @@ fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
 }
 
 #[test]
-fn save_config_refuses_an_export_document_that_does_not_parse() {
-    let d = tempfile::tempdir().unwrap();
-    let path = d.path().join("irsync.toml");
-    std::fs::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
-    let mut doc: DocumentMut = "[exports.p]\npath = \"/p\"\nbogus = 1\n".parse().unwrap();
-    let e = irsync::manage::save_config(&path, &mut doc).unwrap_err();
-    assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
+fn an_edit_that_makes_the_message_invalid_is_refused_on_load() {
+    let mut m = msg("[exports.p]\npath = \"/p\"\n");
+    assert!(Config::from_message(&m, Path::new("f")).is_ok());
+    m.exports[0].path = "rel/p".to_string();
+    let e = Config::from_message(&m, Path::new("f")).unwrap_err();
     assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "[exports.p]\npath = \"/p\"\n"
-    );
-    let mut ok: DocumentMut = "[exports.q]\npath = \"/q\"\n".parse().unwrap();
-    irsync::manage::save_config(&path, &mut ok).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "[exports.q]\npath = \"/q\"\n"
-    );
-}
-
-#[test]
-fn remove_only_removes_an_export_table() {
-    let text = format!(
-        "[all]\nrw = [\"{}\"]\nro = []\n[exports.p]\npath = \"/p\"\n",
-        id(1)
-    );
-    let mut doc: DocumentMut = text.parse().unwrap();
-    for r in ["all", "exports", "rw"] {
-        assert!(
-            matches!(remove_export(&mut doc, r), Err(ManageError::NotFound(_))),
-            "{r}"
-        );
-    }
-    let mut odd: DocumentMut = "[exports]\nx = 1\n[exports.p]\npath = \"/p\"\n"
-        .parse()
-        .unwrap();
-    assert!(matches!(
-        remove_export(&mut odd, "x"),
-        Err(ManageError::NotFound(_))
-    ));
-    assert_eq!(doc.to_string(), text);
-    assert_eq!(
-        odd.to_string(),
-        "[exports]\nx = 1\n[exports.p]\npath = \"/p\"\n"
+        e.to_string(),
+        "f: [exports.p]: path \"rel/p\" must be absolute"
     );
 }
 
 #[test]
 fn add_and_remove_keep_an_inline_exports_table() {
-    let mut doc: DocumentMut = "exports = { photos = { path = \"/p\", rw = [\"x\"] } }\n"
-        .parse()
-        .unwrap();
-    add_export(&mut doc, "q", Path::new("/q"), false, false).unwrap();
-    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
-    assert_eq!(x.exports["photos"].rw, vec!["x"], "{doc}");
-    assert_eq!(x.exports["q"].path, Path::new("/q"));
+    let mut m = msg("exports = { photos = { path = \"/p\", rw = [\"x\"] } }\n");
+    add_export(&mut m, "q", Path::new("/q"), false, false).unwrap();
+    let c = typed(&m).exports;
+    assert_eq!(c.exports["photos"].rw, vec!["x"]);
+    assert_eq!(c.exports["q"].path, Path::new("/q"));
     assert!(matches!(
-        add_export(&mut doc, "photos", Path::new("/x"), false, false),
+        add_export(&mut m, "photos", Path::new("/x"), false, false),
         Err(ManageError::Exists(_))
     ));
-    remove_export(&mut doc, "photos").unwrap();
-    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
-    assert!(
-        !x.exports.contains_key("photos") && x.exports.contains_key("q"),
-        "{doc}"
-    );
-    // A non-table `exports` is refused, never overwritten.
-    let mut odd: DocumentMut = "exports = 5\n".parse().unwrap();
-    assert!(add_export(&mut odd, "q", Path::new("/q"), false, false).is_err());
-    assert_eq!(odd.to_string(), "exports = 5\n");
-}
-
-#[test]
-fn add_target_expands_a_leading_tilde() {
-    let home = dirs::home_dir().unwrap();
-    let (name, path) = parse_add_target("home:~", Path::new("/cwd")).unwrap();
-    assert_eq!((name.as_str(), path), ("home", home.clone()));
-    let (_, path) = parse_add_target("x:~/", Path::new("/cwd")).unwrap();
-    assert_eq!(path, home);
-    // `~x` is a plain name, not a user.
-    assert!(matches!(
-        parse_add_target("x:~nobody", Path::new("/cwd")),
-        Err(ManageError::NotADirectory(_))
-    ));
-}
-
-#[test]
-fn auto_export_names() {
-    use irsync::manage::exports::add_auto_export;
-    let mut doc = DocumentMut::new();
-    let n = |doc: &mut DocumentMut, p: &str| add_auto_export(doc, Path::new(p), id(1)).unwrap();
-    assert_eq!(n(&mut doc, "/srv/photos"), "auto-srv-photos");
-    assert_eq!(n(&mut doc, "/"), "auto-root");
-    assert_eq!(n(&mut doc, "/a b/\u{e7}"), "auto-a_b-__");
-    assert_eq!(n(&mut doc, "/srv/photos"), "auto-srv-photos-2");
-    let t = &doc["exports"]["auto-srv-photos"];
-    assert_eq!(t["auto"].as_bool(), Some(true));
     assert_eq!(
-        t["rw"].as_array().unwrap().get(0).unwrap().as_str(),
-        Some(id(1).to_string().as_str())
+        write(&m),
+        "[exports.photos]\npath = \"/p\"\nrw = [\"x\"]\n\n[exports.q]\npath = \"/q\"\n"
     );
-    let x = parse_exports(&doc.to_string(), Path::new("e")).unwrap();
-    assert!(x.exports["auto-srv-photos"].auto);
+    remove_export(&mut m, "photos").unwrap();
+    assert_eq!(write(&m), "[exports.q]\npath = \"/q\"\n");
 }
 
-fn parse_hosts(
-    text: &str,
-    path: &std::path::Path,
-) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
-    irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
-}
-
-fn parse_exports(
-    text: &str,
-    path: &std::path::Path,
-) -> Result<irsync::config::exports::Exports, irsync::config::ConfigError> {
-    irsync::config::file::Config::parse(text, path).map(|c| c.exports)
+#[test]
+fn save_config_refuses_an_export_message_that_does_not_load() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("irsync.toml");
+    std::fs::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
+    let mut bad = msg("[exports.p]\npath = \"/p\"\n");
+    bad.exports[0].path = "rel/p".into();
+    let e = irsync::manage::save_config(&path, &mut bad).unwrap_err();
+    assert!(e.to_string().contains(path.to_str().unwrap()), "{e}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[exports.p]\npath = \"/p\"\n"
+    );
+    let mut ok = msg("[exports.q]\npath = \"/q\"\n");
+    irsync::manage::save_config(&path, &mut ok).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[exports.q]\npath = \"/q\"\n"
+    );
 }
