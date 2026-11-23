@@ -22,8 +22,13 @@ noun the flag may stand before the noun, or before or after the verb:
 
 ## Editing rules
 
-- The commands keep the file's comments and layout. A missing file is the
-  same as an empty one; the first edit creates it.
+- The commands keep the file's comments and the order of its hosts and
+  exports. They write the tables in a fixed order and each value in one
+  spelling: a duration `"90"` becomes `"90s"`. Blank lines and inline tables
+  are not kept. URLs and paths stay as you wrote them. The first edit of a
+  file rewrites it this way. A missing file is the same as an empty one; the
+  first edit creates it.
+- A file that does not load must be fixed by hand. The error names the line.
 - While a command edits the file, `irsync.toml.lock` sits beside it, and a
   second editing command is refused. Delete the lock only if no `irsync` is
   running.
@@ -85,7 +90,8 @@ in `[hosts]`.
 
 `WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519 AAAA...` public key
 line, or the path of a `.pub` file holding one. A key's comment is kept as a
-TOML comment beside the entry. A peer that `[hosts]` has an alias for is stored
+TOML comment at the end of the entry's line. Removing the grant removes that
+comment; comment lines above it stay. A peer that `[hosts]` has an alias for is stored
 by that alias, however it was named. There is no open access: `all` and `*` are
 refused as `WHO` in `grant add`.
 
@@ -119,7 +125,7 @@ for the old key stops working.
 | `irsync config get KEY` | Print a key: a bare scalar, one array element per line, or a table's keys as `key = value` lines, all as the file holds them (a path's `~` is not expanded). An unset setting prints its default; a key with no value and no default exits 1. |
 | `irsync config set KEY VALUE...` | Set a key in its type: `true` or `false`, an integer, a duration such as `30m`, a path, a URL, an `EndpointId`. An array key takes one `VALUE` per element, and none for an empty array. Tables are created as needed. |
 | `irsync config unset KEY` | Remove a key, or a whole table (`irsync config unset hosts.myserver`). A table left empty goes with it. Removing a host this way is refused while a grant names it, as with `host remove`. |
-| `irsync config list` | Every key the files set, as `dotted.key = value`, in file order. |
+| `irsync config list` | Every key the files set, as `dotted.key = value`, in the order the file is written in: the tables in a fixed order, and each table's keys in a fixed order. |
 
 `KEY` is a dotted path such as `daemon.listen` or `hosts.myserver.relay`.
 Quote a segment that holds a dot: `exports."www.example.com".path`. An unknown
