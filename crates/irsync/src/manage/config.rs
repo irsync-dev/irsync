@@ -86,8 +86,6 @@ pub fn parse_key(key: &str) -> Result<Vec<String>, ManageError> {
     Ok(keys)
 }
 
-/// The default of a settings key, as `get` prints it (one element per
-/// line); `None` when the key has no default or is not a settings key.
 /// A default path as the file would hold it: the home directory as `~`.
 fn as_written(p: &std::path::Path) -> String {
     match dirs::home_dir().and_then(|h| p.strip_prefix(h).ok()) {
@@ -96,6 +94,8 @@ fn as_written(p: &std::path::Path) -> String {
     }
 }
 
+/// The default of a settings key, as `get` prints it (one element per
+/// line); `None` when the key has no default or is not a settings key.
 pub fn default_of(path: &[String]) -> Option<Vec<String>> {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     let s = Settings::default();

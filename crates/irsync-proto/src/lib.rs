@@ -20,7 +20,7 @@ pub mod config {
     include!(concat!(env!("OUT_DIR"), "/irsync.config.rs"));
 }
 
-/// Encoded `FileDescriptorSet` for the `irsync.v1` and `irsync.capture.v1` packages.
+/// Encoded `FileDescriptorSet` for the `irsync.v1`, `irsync.capture.v1` and `irsync.config` packages.
 pub static FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"));
 
 /// ALPN identifier for the irsync protocol.

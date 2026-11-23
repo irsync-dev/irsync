@@ -603,10 +603,10 @@ fn a_leftover_grant_name_is_not_taken_over() {
     }
 }
 
-/// The name is checked against the document being edited, not against
+/// The name is checked against the config being edited, not against
 /// what `[hosts]` held before the lock was taken.
 #[test]
-fn a_name_taken_in_the_document_is_not_overwritten() {
+fn a_name_taken_in_the_config_is_not_overwritten() {
     let text = format!("[hosts.myclient]\nclient_id = \"{}\"\n", id(1));
     let mut doc = read(&text, cfg()).unwrap();
     assert!(grant_client(&mut doc, cfg(), id(2), "myclient").is_err());
