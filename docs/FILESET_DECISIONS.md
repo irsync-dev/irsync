@@ -431,10 +431,34 @@ What was checked before building, and what came of it:
     migration.
 
   With these, the same 4,000 corruptions gave an error or the stored
-  entries, every time. A smaller run of them is a test. What is not
-  covered: a file crafted to make redb loop. Nothing bounds a read, and
-  none has been seen to loop: the fuzz target below fails on an input that
-  takes over 10 seconds.
+  entries, every time. A smaller run of them is a test. What was not
+  covered then: a file crafted so that a read of it does not end.
+
+  That was tried later (issue #246), by rewriting the child page numbers
+  in the branch pages of a sound manifest:
+
+  - A loop, a page that is its own child or the child of one below it,
+    ends by itself. redb gives up when it has gone 128 pages down, and a
+    scan that is handed an entry a second time stops on the paths that do
+    not rise.
+  - A tree without a loop can still have no end. With every child of each
+    branch set to the next branch, eight levels deep, the one page at the
+    bottom is reached by about 100^8 ways. If that page is empty, redb
+    walks from way to way without handing back an entry, so nothing in
+    `for_each` gets to stop it: `check` and `list` hung. Lookups do not,
+    they only go down. An open for writing does not either: it verifies
+    the page checksums first.
+
+  So a scan of a manifest open for reading only now counts the pages it
+  reads. It reads through a second open of the file, with a storage
+  backend that counts reads and with redb's page cache off, since a page
+  redb holds is walked without a read. A step from one entry to the next
+  that reads more than 10,000 pages is refused; a sound tree needs a
+  handful. Lookups stay on the first open: without the cache one took
+  5 µs where it takes 1.1. On 300,000 entries `list` and `check` take the
+  same time as before (0.55 s and 1.5 s). What this cannot catch is a
+  loop inside redb that reads no page at all; none is known, and the fuzz
+  target below fails on an input that takes over 10 seconds.
 
   There was no fuzz target at first, because under the fuzzer a panic
   inside redb is a crash whatever `fileset` does with it. The panic hook

@@ -401,7 +401,8 @@ before it writes to it. The manifest also holds a checksum of all its entries
 together. `check` and `list` compare it once they have read them all, so an
 entry that damage removed is an error too. These checksums guard against
 damage, not against someone who rewrites the manifest and its checksums to
-match.
+match. A manifest made so that reading all of it would never end is refused
+too: `check` and `list` stop with an error.
 
 ## Exit codes
 

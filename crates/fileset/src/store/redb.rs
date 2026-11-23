@@ -10,9 +10,11 @@ use super::{check_schema, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
 use crate::model::Entry;
 use anyhow::{anyhow, bail, Context, Result};
 use prost::Message;
+use redb::backends::FileBackend;
 use redb::{
-    Builder, CompactionMode, Database, DatabaseError, Durability, ReadOnlyDatabase,
-    ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction,
+    BackendError, Builder, CompactionMode, Database, DatabaseError, Durability, ReadOnlyDatabase,
+    ReadTransaction, ReadableDatabase, ReadableTable, StorageBackend, TableDefinition,
+    WriteTransaction,
 };
 use std::cell::Cell;
 use std::io::Read;
@@ -68,6 +70,7 @@ fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
         }));
     });
     GUARDED.set(GUARDED.get() + 1);
+    READS.set(0);
     let caught = catch_unwind(AssertUnwindSafe(f));
     GUARDED.set(GUARDED.get() - 1);
     match caught {
@@ -86,6 +89,87 @@ thread_local! {
 fn in_redb(file: &str) -> bool {
     file.split(['/', '\\'])
         .any(|part| part.starts_with("redb-"))
+}
+
+/// The most pages a scan of a manifest that is open for reading only may read to get
+/// from one entry to the next. A sound tree needs as many as it is deep, a handful.
+///
+/// A lookup goes down the tree, and redb gives up after 128 pages: a loop in a crafted
+/// file ends there. A scan also goes sideways. A file can be made whose pages lead to
+/// one empty page by more ways than can ever be walked, and redb walks them all without
+/// handing back an entry. This is what ends that.
+const READ_BUDGET: u32 = 10_000;
+
+/// What a scan that went over `READ_BUDGET` says.
+const ENDLESS: &str = "the manifest is damaged: a read of all its entries does not end";
+
+thread_local! {
+    /// Pages this thread has read since the step of its scan began.
+    static READS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// The manifest file as redb reads it for a scan: every read of a page counts against
+/// `READ_BUDGET`. It is opened without redb's page cache, or pages redb holds would be
+/// walked without a read to count. Lookups are not read this way: without the cache
+/// they take four times as long.
+#[derive(Debug)]
+struct Bounded(FileBackend);
+
+type Backed<T> = std::result::Result<T, BackendError>;
+
+impl StorageBackend for Bounded {
+    fn len(&self) -> Backed<u64> {
+        self.0.len()
+    }
+
+    fn read(&self, offset: u64, out: &mut [u8]) -> Backed<()> {
+        let reads = READS.get() + 1;
+        READS.set(reads);
+        if reads > READ_BUDGET {
+            return Err(BackendError::Io(std::io::Error::other(ENDLESS)));
+        }
+        self.0.read(offset, out)
+    }
+
+    fn set_len(&self, len: u64) -> Backed<()> {
+        self.0.set_len(len)
+    }
+
+    fn sync_data(&self) -> Backed<()> {
+        self.0.sync_data()
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> Backed<()> {
+        self.0.write(offset, data)
+    }
+
+    fn close(&self) -> Backed<()> {
+        self.0.close()
+    }
+
+    fn try_lock_range(&self, start: Bound<u64>, end: Bound<u64>) -> Backed<bool> {
+        self.0.try_lock_range(start, end)
+    }
+
+    fn try_lock_shared_range(&self, start: Bound<u64>, end: Bound<u64>) -> Backed<bool> {
+        self.0.try_lock_shared_range(start, end)
+    }
+
+    fn lock_range(&self, start: Bound<u64>, end: Bound<u64>) -> Backed<()> {
+        self.0.lock_range(start, end)
+    }
+
+    fn lock_shared_range(&self, start: Bound<u64>, end: Bound<u64>) -> Backed<()> {
+        self.0.lock_shared_range(start, end)
+    }
+
+    fn unlock_range(&self, start: Bound<u64>, end: Bound<u64>) -> Backed<()> {
+        self.0.unlock_range(start, end)
+    }
+
+    fn query_lock_range(&self, start: Bound<u64>, end: Bound<u64>) -> Backed<bool> {
+        self.0.query_lock_range(start, end)
+    }
 }
 
 /// The database, as `init` and `update` open it or as the commands that only read do.
@@ -400,6 +484,54 @@ impl RedbStore {
     }
 }
 
+/// Visits every entry of `db` in order, and compares their digest with the one stored.
+fn scan(db: &Db, f: &mut dyn FnMut(&[u8], &Entry) -> Result<()>) -> Result<()> {
+    let (txn, table) = guarded(|| {
+        let txn = db.begin_read()?;
+        let table = txn.open_table(ENTRIES)?;
+        Ok((txn, table))
+    })?;
+    let mut rows = guarded(|| Ok(table.iter()?))?;
+    let mut last: Option<Vec<u8>> = None;
+    let mut digest = 0;
+    loop {
+        // Only the read is guarded: what `f` does is not redb's.
+        let entry = guarded(|| {
+            let Some(row) = rows.next() else {
+                return Ok(None);
+            };
+            let (k, v) = row?;
+            let path = k.value();
+            // A sound table gives paths in rising order. A crafted one can hand one
+            // back again, and then never end.
+            anyhow::ensure!(
+                last.as_deref().is_none_or(|p| p < path),
+                "manifest is damaged: entries out of order at {}",
+                crate::escape::escape(path)
+            );
+            let prev = last.get_or_insert_with(Vec::new);
+            prev.clear();
+            prev.extend_from_slice(path);
+            let (entry, mark) = unseal(path, v.value())?;
+            digest ^= mark;
+            Ok(Some(entry))
+        })?;
+        let (Some(entry), Some(path)) = (entry, last.as_deref()) else {
+            break;
+        };
+        f(path, &entry)?;
+    }
+    drop(rows);
+    drop(table);
+    let written = guarded(|| read_digest(&txn.open_table(META)?))?;
+    drop(txn);
+    anyhow::ensure!(
+        digest == written,
+        "manifest is damaged: entries are missing or are not the ones last written"
+    );
+    Ok(())
+}
+
 impl Store for RedbStore {
     fn meta(&self) -> Result<Meta> {
         read_meta(&self.db)
@@ -414,50 +546,29 @@ impl Store for RedbStore {
     }
 
     fn for_each(&self, f: &mut dyn FnMut(&[u8], &Entry) -> Result<()>) -> Result<()> {
-        let (txn, table) = guarded(|| {
-            let txn = self.db.begin_read()?;
-            let table = txn.open_table(ENTRIES)?;
-            Ok((txn, table))
-        })?;
-        let mut rows = guarded(|| Ok(table.iter()?))?;
-        let mut last: Option<Vec<u8>> = None;
-        let mut digest = 0;
-        loop {
-            // Only the read is guarded: what `f` does is not redb's.
-            let entry = guarded(|| {
-                let Some(row) = rows.next() else {
-                    return Ok(None);
-                };
-                let (k, v) = row?;
-                let path = k.value();
-                // A sound table gives paths in rising order. A crafted one can hand one
-                // back again, and then never end.
-                anyhow::ensure!(
-                    last.as_deref().is_none_or(|p| p < path),
-                    "manifest is damaged: entries out of order at {}",
-                    crate::escape::escape(path)
-                );
-                let prev = last.get_or_insert_with(Vec::new);
-                prev.clear();
-                prev.extend_from_slice(path);
-                let (entry, mark) = unseal(path, v.value())?;
-                digest ^= mark;
-                Ok(Some(entry))
-            })?;
-            let (Some(entry), Some(path)) = (entry, last.as_deref()) else {
-                break;
-            };
-            f(path, &entry)?;
+        match &*self.db {
+            // An open for writing has verified every page: the tree is one.
+            Db::Write(_) => scan(&self.db, f),
+            // Nothing has verified this file. The scan reads it through a second open
+            // of it, which counts the pages each step reads (see `READ_BUDGET`).
+            Db::Read(_) => {
+                let counted = guarded(|| {
+                    let file = std::fs::File::open(&self.path)
+                        .with_context(|| format!("opening {}", self.path.display()))?;
+                    Ok(Db::Read(
+                        Builder::new()
+                            .set_cache_size(0)
+                            .open_read_only_with_backend(Bounded(FileBackend::new(file)))
+                            .map_err(|e| open_error(&self.path, OpenMode::ReadOnly, e))?,
+                    ))
+                })?;
+                scan(&counted, f).map_err(|e| match format!("{e:#}").contains(ENDLESS) {
+                    // Without what redb puts before it.
+                    true => anyhow!(ENDLESS),
+                    false => e,
+                })
+            }
         }
-        drop(rows);
-        drop(table);
-        let written = guarded(|| read_digest(&txn.open_table(META)?))?;
-        drop(txn);
-        anyhow::ensure!(
-            digest == written,
-            "manifest is damaged: entries are missing or are not the ones last written"
-        );
-        Ok(())
     }
 
     fn put_batch(&mut self, items: &[(Vec<u8>, Entry)]) -> Result<()> {
