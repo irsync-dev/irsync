@@ -467,7 +467,7 @@ What the book says is in `book/src/fileset/reference.md` ("Windows").
     would use. Bytes that are not WTF-8 are an error, and so is a surrogate
     pair written as two three-byte forms, so every name has one stored form.
     The conversion works on 16-bit units, is safe code in `wtf8.rs`, and is
-    compiled, tested and run under Miri on every platform; only the step
+    compiled and tested on every platform, and run under Miri; only the step
     between units and an `OsString` is in `platform/windows.rs`. Cost if
     wrong: the form is in every Windows manifest, so a change means a migration.
 

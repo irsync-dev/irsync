@@ -213,9 +213,6 @@ A YAML document, written to a temporary file and renamed into place:
 
 - `format_version`: 4. A version 3 state is still read, as a Unix state with
   every capability.
-- `platform` and `caps`: the system the history started on, `unix` or
-  `windows`, and the capabilities found there (`symlinks` and `sparse`, each
-  true or false). A resume must find the same.
 - `seed`: the seed the history started from
 - `steps_done`: steps completed over all runs of this history
 - `rng`: the ChaCha8 chain generator state (`seed`, `stream`, `word_pos`);
@@ -224,6 +221,9 @@ A YAML document, written to a temporary file and renamed into place:
 - `chain_state`: `last_kind` (the previous operation) and `anchor` (the
   escaped relative path of the directory it touched; `''` is the root)
 - `dry_run`: whether a dry run wrote it
+- `platform` and `caps`: the system the history started on, `unix` or
+  `windows`, and the capabilities found there (`symlinks` and `sparse`, each
+  true or false). A resume must find the same.
 - `config`: the effective configuration, fully expanded, with `out_dir` the
   absolute output directory used; usable as `--config`
 - `tree`: `entries` and `total_bytes` as filegen last knew them (advisory)
@@ -394,7 +394,7 @@ There is no polite stop from another process yet: nothing like SIGTERM asks a
 **`unsafe`.** The Windows code has two `unsafe` blocks, each with its
 `// SAFETY:` comment: `GetFileInformationByHandleEx` reads a reparse point's
 tag, and `DeviceIoControl` marks a file sparse and zeroes a range. `punch_hole`
-is crate-private, because its blocks are sound only for the files the crate
+is crate-private, because the second block is sound only for the files the crate
 opens itself.
 
 ### Configuration

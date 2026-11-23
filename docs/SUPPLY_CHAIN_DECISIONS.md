@@ -76,7 +76,7 @@ differ, the code is what shipped.
 9. **cargo-deny fails on any advisory; exceptions need a reason.**
    Unmaintained and yanked crates fail too. Only crates built for the
    platforms irsync and its tools are built for count (`targets` in
-   `deny.toml`, Windows since 31); the licenses of all the others are still
+   `deny.toml`, Windows since 32); the licenses of all the others are still
    checked before a release (`deny-license-check.toml`). Cost if wrong: a
    platform we build for but forgot to list goes unchecked. One advisory is
    accepted today (31).
@@ -347,8 +347,9 @@ differ, the code is what shipped.
     unchecked. We asked upstream to drop it; the tracking issue is #174. Cost
     if wrong: if a real vulnerability appears in `chrono`, the daily check
     still reports it, because the entry names this advisory and no other.
-    Remove the entry when iroh no longer builds `chrono` on Windows; the check
-    fails until then (`-D advisory-not-detected`).
+    Remove the entry when iroh no longer builds `chrono` on Windows: from then
+    on the entry matches nothing, and the check fails (`-D
+    advisory-not-detected`) until it is removed.
 
 32. **Windows joins the targets in `deny.toml`, with a temporary skip of
     `nix` 0.31** (2026-11-23). `filegen` and `fileset` are built for

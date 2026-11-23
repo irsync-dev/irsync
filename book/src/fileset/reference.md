@@ -450,11 +450,11 @@ made it. `irsync` itself does not run on Windows yet.
 | `blake3`, `target` | as on Unix |
 | `ino`, `dev`, `nlink` | the file index, the volume serial number and the link count |
 | `ctime` | the NTFS change time |
-| `mode`, `uid`, `gid`, `rdev`, extended attributes | zero or empty |
+| `mode`, `uid`, `gid`, `rdev`, extended attributes | zero or empty, so never a difference |
 
-Nothing is compared on the last row: a tree on Windows always reads as zero
-there, so a check never reports a difference in `mode`, `uid`, `gid` or
-`rdev`, whatever the tier. `--paranoid` still compares `nlink`.
+Those fields are zero or empty in a Windows manifest and on a Windows tree
+alike, so they never differ and a check never reports a difference in `mode`,
+`uid`, `gid` or `rdev`, whatever the tier. `--paranoid` still compares `nlink`.
 
 No comparison tier uses `ctime`. `update` decides by size, `mtime` and file
 identity whether to hash a file again, on Windows as on Unix. The change time
@@ -491,9 +491,8 @@ The rules for a manifest that came with a tree hold as well, with one change:
 where Unix refuses a symbolic link, Windows refuses any reparse point.
 
 - A manifest found at the root that is a symlink or a junction is refused,
-  with the message `<path> is a symbolic link; a manifest inside the tree must
-  be a real file` (`directory` for fjall). Name a manifest elsewhere with
-  `--manifest`.
+  with a message that starts `<path> is a symbolic link`. Name a manifest
+  elsewhere with `--manifest`.
 - A fjall manifest with a reparse point inside is refused.
 - Hashing opens a file without following a reparse point, and checks that it
   is not one. A link swapped in after the walk makes the hash fail; it is not
@@ -514,12 +513,9 @@ unchanged. A manifest without the key is a Unix manifest, which is what every
 manifest made before the key was.
 
 `check`, `update` and `list` refuse a manifest made on the other family, with
-exit code 2 and this message:
-
-`this manifest was made on unix, and this is windows; fileset cannot use a
-manifest across the two yet`
-
-The other way round, it says `made on windows, and this is unix`. A `platform`
+exit code 2 and a message that starts `this manifest was made on unix, and
+this is windows` (or `made on windows, and this is unix`) and ends
+`fileset cannot use a manifest across the two yet`. A `platform`
 value other than `unix` or `windows` is refused too: `manifest platform
 '<value>' is not known to this fileset`.
 

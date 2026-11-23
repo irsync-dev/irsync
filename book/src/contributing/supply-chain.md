@@ -54,13 +54,12 @@ maintainer can do. Why each choice was made is in
   is left out. Add a platform there when something of ours starts building
   for it.
 
-  Two exceptions are in `deny.toml` today. One advisory is accepted:
-  RUSTSEC-2026-0543, because `chrono` is unmaintained. It is built on
-  Windows only, through `netwatch` (iroh); see
-  [issue 174](https://github.com/irsync-dev/irsync/issues/174). One duplicate
-  is skipped: `nix` 0.31, which `ctrlc` 3.5.2 asks for while everything else
-  is on 0.32. It goes when `ctrlc` moves to 3.5.3, which is not before
-  2026-11-25. The reasons are in `deny.toml` and in
+  One advisory is accepted today: RUSTSEC-2026-0543, because `chrono` is
+  unmaintained. It is built on Windows only, through `netwatch` (iroh); see
+  [issue 174](https://github.com/irsync-dev/irsync/issues/174). Among the
+  accepted duplicates, one is temporary: `nix` 0.31, which `ctrlc` 3.5.2 asks
+  for while everything else is on 0.32. It goes when `ctrlc` moves to 3.5.3,
+  which is not before 2026-11-25. The reasons are in `deny.toml` and in
   [Accepting an advisory](#accepting-an-advisory) and
   [Accepting a second version of a crate](#accepting-a-second-version-of-a-crate).
 - The licenses of every crate in `Cargo.lock`, for every platform, are
@@ -146,7 +145,7 @@ Packaging is: irsync has no package registry).
 | Signed-Releases | 3 | Scorecard looks at the last five releases. Only the two newest are signed, and none has provenance (a signed record of how it was built). | Rises with each signed release. The old ones can't be changed. |
 | Token-Permissions | 0 | `release.yml` is written by dist and has `contents: write` at the top. The release jobs also need their write permissions to publish. Scorecard scores any such write as a failure. | Accepted. |
 | Pinned-Dependencies | 8 | Three downloads are piped into a shell without a hash: the dist installer in `release.yml` (two places) and the rustup install in `tools/dev-setup.sh`. Every Action is pinned. | Accepted. The first two are written by dist, the third is a developer setup script. |
-| Vulnerabilities | 9 | Scorecard reads every entry in `Cargo.lock`, also for crates that are not built for the platforms irsync ships on. One advisory is left: `chrono` is unmaintained. It is built on Windows only, through iroh. `cargo deny` also checks the Windows targets now, so it sees `chrono`; it passes because `deny.toml` accepts that one advisory, with the reason, and nothing else. | We asked upstream to drop it. See [issue 174](https://github.com/irsync-dev/irsync/issues/174). |
+| Vulnerabilities | 9 | Scorecard reads every entry in `Cargo.lock`, also for crates that are not built for the platforms irsync ships on. One advisory is left: `chrono` is unmaintained. It is built on Windows only, through iroh. `cargo deny` also checks the Windows targets now, so it sees `chrono`; it passes because `deny.toml` accepts that one advisory, with the reason, and no other. | We asked upstream to drop it. See [issue 174](https://github.com/irsync-dev/irsync/issues/174). |
 
 The scores move when the repository changes and when Scorecard changes its
 checks, so read the live result for the current numbers.

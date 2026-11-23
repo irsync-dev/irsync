@@ -67,9 +67,8 @@ package manager (`apt`, `brew`, `pkg`). It does not run on Windows; see
 ## Windows
 
 `filegen`, `fileset` and `irsync-glob` build and test on Windows, on x86_64
-and ARM64. `irsync` itself, `irsync-proto`, `irsync-stress` and
-`irsync-netstress` do not yet, so `cargo build --workspace` does not work
-there. Name the three crates:
+and ARM64. The rest of the workspace, `irsync` itself first of all, does not
+yet, so `cargo build --workspace` does not work there. Name the three crates:
 
 ```sh
 cargo test -q -p filegen -p fileset -p irsync-glob --no-fail-fast
@@ -113,7 +112,8 @@ tools/ci.sh check
 On Windows it runs `cargo fmt --all --check`, the fuzz lock check, one clippy
 run, nextest and the doc tests for the three crates, and then a smoke run:
 `filegen` fills and changes a tree, and `fileset` records it and checks it. A
-bare `tools/ci.sh` runs `check` only and says what it leaves out.
+bare `tools/ci.sh` runs `check` only, and prints that on Windows only `check`
+runs, for those three crates.
 
 ## Continuous integration
 
@@ -149,8 +149,7 @@ The `windows` job runs `tools/ci.sh check` on `windows-latest` (x86_64) and
 `windows-11-arm` (ARM64), in Git Bash, with `CARGO_TARGET_DIR` set to `C:\t`.
 It covers `filegen`, `fileset` and `irsync-glob`, as above. It reports on
 pull requests and pushes, but `CI result` does not need it, so a failure there
-does not block a merge. A release run leaves it out. It joins the required
-jobs when `irsync` itself builds on Windows.
+does not block a merge. A release run leaves it out.
 
 The `release-build` job runs the release build itself for the two
 Linux targets (x86_64 and arm64 musl): `dist build`, which runs
