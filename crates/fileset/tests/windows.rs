@@ -148,6 +148,7 @@ fn the_three_symlink_kinds_are_recorded_and_not_followed() {
         assert_eq!(e.kind, Kind::Symlink, "{link:?}");
         assert_eq!(e.target.as_deref(), Some(target), "{link:?}");
         assert_eq!(e.blake3, None, "{link:?}");
+        assert_eq!(e.size, 0, "{link:?}");
     }
     nothing_below(&r, b"to_dir/");
     assert!(entries(&r).iter().any(|(k, _)| k == b"d/inside"));

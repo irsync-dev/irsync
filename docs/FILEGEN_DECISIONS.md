@@ -516,6 +516,15 @@ What the book says is in `book/src/contributing/filegen.md` ("On Windows") and
     (Ctrl-Break to a process group, a stop file, or closed standard input).
     Cost if wrong: a stress run on Windows cannot stop `filegen` cleanly.
 
+59. **A failed step's log line uses `/` in its paths.** The paths of a
+    failed step come from the OS path of the operation, stripped of the
+    root. On Windows that kept `\`, so a failure logged `path="a\\b\\c"`
+    where every other step logs `path="a/b/c"`. `platform::rel_bytes` now
+    joins the names below the root with `/` on Windows; on Unix it is the
+    expression used before, so the bytes do not change there. Stored paths
+    use `/` on both platforms. Cost if wrong: none; a log reader sees one
+    path form.
+
 ## Process notes
 
 - Every commit on the branch ends with the trailer

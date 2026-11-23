@@ -37,7 +37,7 @@ symlinks. A Windows manifest holds these values:
 | Field | Value on Windows |
 | --- | --- |
 | `kind` | `dir`, `file` or `symlink`; any other reparse point, a junction included, is `other` |
-| `size` | the size in bytes; 0 for a directory |
+| `size` | the size in bytes; 0 for a directory and for a symlink |
 | `mtime` | the last write time, in steps of 100 ns |
 | `blake3`, `target` | as on Unix |
 | `ino`, `dev`, `nlink` | the file index, the volume serial number and the link count |
@@ -65,6 +65,15 @@ symlinks. A Windows manifest holds these values:
   [reference](reference.md#windows).
 - **The path may be long.** The tree's root is resolved to the extended form
   (`\\?\`), so the 260-character limit does not apply.
+- **The volume's own folders are skipped.** At the root of the tree,
+  `System Volume Information`, which cannot be read, and `$RECYCLE.BIN`,
+  which holds every user's deleted files, are neither recorded nor entered,
+  whatever their case. See [Built-in excludes](reference.md#built-in-excludes).
+- **Some reparse points hold data.** A cloud placeholder (OneDrive Files
+  On-Demand) or a deduplicated file on Windows Server is a reparse point.
+  `fileset` records it as `other` and does not hash it, so a check compares
+  little for it and never its content. Neither has been tested, OneDrive
+  included.
 
 ## Comparison tiers
 
@@ -103,6 +112,11 @@ pass.
   is recorded, so a change to either is not reported. The same holds for the
   other attributes, the creation time and alternate data streams. A copy that
   loses them passes the check.
+- **Names that differ only in case, on a file system that ignores case.**
+  NTFS, and a case-insensitive macOS volume, find a name in any case. A
+  manifest made where `a` and `A` are two names, checked where they are one,
+  does not report a missing one of the two, and a rename that changes only
+  the case shows as an added entry, with no deleted one.
 - **Anything it did not look at.** Mount points are not crossed unless you
   pass `--cross-mount-points`. A tree with btrfs subvolumes is cut short by
   default. A warning names the directory. `check` reports what lies below as

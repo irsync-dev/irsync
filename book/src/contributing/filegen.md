@@ -323,6 +323,9 @@ file named `.filegen-probe-<pid>` that it removes again:
   elevated process or the symlink privilege.
 - `sparse`: the volume takes sparse files.
 
+If the probe file is there already, left by a run that was killed, the run
+stops with an error that names it. It can be deleted.
+
 A real run tries in the tree. A dry run touches nothing in the tree, so it
 tries in the output directory. If the two are on different volumes, a dry
 run may not predict the real run. On Unix every capability is taken to be
@@ -374,6 +377,13 @@ points that are not symlinks, and entries the start-up walk cannot stat are
 off limits, as on Unix. So is any entry with the read-only attribute: a change
 to it would fail again on every resume. `filegen` never sets that attribute.
 There is no owner check and no mode check, and the mode in a `post=` stat is 0.
+
+**Files another program holds.** Antivirus, the search indexer or any other
+program that holds a file open without sharing it makes a step on that file
+fail with a sharing violation (os error 32). The run stops as on any failed
+step: the log gets the step's `error=` line, the footer and the state are
+written, and `filegen` exits with status 1. Once the file is free, `--resume`
+goes on from the last step that was done.
 
 **Interrupts.** On Windows the first console event lets the step in flight
 finish, writes the log footer and the state, and exits with 130. A second

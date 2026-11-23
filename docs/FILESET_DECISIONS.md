@@ -518,7 +518,50 @@ What the book says is in `book/src/fileset/reference.md` ("Windows").
     component. Reporting such a path as deleted would hide a manifest
     that this system cannot name from the check meant to find it. The error
     exits 2 and names the path. Cost if wrong: a manifest with one bad path
-    fails the whole `check`.
+    fails the whole `check`. A component with a character NTFS does not
+    allow in a name (`< > : " | ? *` or one below U+0020) is refused the
+    same way: `ab:c` would name an alternate data stream of `ab`, not an
+    entry.
+
+50. **`check`'s second pass stats a stored path with the walk's own call.**
+    The pass that looks at stored paths the walk did not report used std's
+    `symlink_metadata`. On Windows that call falls back to the directory
+    listing when opening the file is refused, so a file the walk could not
+    stat (a deny entry for reading, say) looked present, and `check` reported
+    nothing for it. It now calls `platform::lstat`, as the walk does, so the
+    two agree and such a file is `unverified`. On Unix both were the same
+    syscall already. Cost if wrong: none; a stored path that cannot be seen
+    is a difference, as the book says.
+
+51. **The built-in excludes are per platform.** On Windows they are `System
+    Volume Information`, which cannot be read, and `$RECYCLE.BIN`, which
+    holds other users' deleted files, matched in any ASCII case, since NTFS
+    names are case-insensitive. On Unix they stay the five macOS names,
+    compared byte for byte. The platform module holds the list and the
+    matcher, so the walk has no platform branch. As on Unix they apply at the
+    top of a volume, which on Windows is the root of the tree only: the walk
+    enters no mounted volume there. The macOS names are ordinary entries on
+    Windows. Cost if wrong: a tree whose root really holds a folder of one of
+    these names leaves it out unless `--no-builtin-excludes` is given.
+
+52. **Names that differ only in case are documented, not handled.** On
+    NTFS, and on a case-insensitive macOS volume, a manifest that holds `a`
+    and `A` (made where they were two names) cannot be checked reliably: a
+    missing one of the two is not reported, because the other answers to its
+    name, and a rename that changes only the case shows as an added entry.
+    Handling it needs a case-aware comparison, which belongs to the
+    cross-platform step (step 3), where a manifest moves between systems
+    that fold case differently. Cost if wrong: such a check passes, or
+    reports only an addition, where a name is missing.
+
+53. **Reparse points that hold data are `other`.** A cloud placeholder
+    (OneDrive Files On-Demand) or a deduplicated file is a reparse point that
+    is not a symlink, so it is recorded as `other` and not hashed, like a
+    junction. `fileset` follows no reparse point, and opening a placeholder
+    to read it can make the system download its data. A check compares
+    little for such an entry. Telling the tags that hold data apart is left
+    for the NTFS step; none of this has been tested with OneDrive. Cost if
+    wrong: the content of such files is not verified.
 
 ## Parked (real, deferred, not fixed)
 

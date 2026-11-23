@@ -454,7 +454,7 @@ made it. `irsync` itself does not run on Windows yet.
 | Field | Value on Windows |
 | --- | --- |
 | `kind` | `dir`, `file` or `symlink`; any other reparse point, a junction included, is `other` |
-| `size` | the size in bytes; 0 for a directory |
+| `size` | the size in bytes; 0 for a directory and for a symlink |
 | `mtime` | the last write time, in steps of 100 ns |
 | `blake3`, `target` | as on Unix |
 | `ino`, `dev`, `nlink` | the file index, the volume serial number and the link count |
@@ -487,7 +487,19 @@ hashed again.
 - `check` stops with exit code 2, naming the path, when the manifest holds a
   path that is not a valid name on Windows: bytes that are not WTF-8, or a
   component that is not exactly one name, such as `.`, `..`, `C:x`, an empty
-  one or one with a `\`. It does not report the path as deleted.
+  one, one with a `\`, or one with a character NTFS does not allow in a name
+  (`< > : " | ? *` or a control character; `ab:c` would name a stream of
+  `ab`). It does not report the path as deleted.
+- NTFS names are case-insensitive. A manifest can still hold two names that
+  differ only in case, when it was made in a case-sensitive directory; it
+  cannot be checked reliably in an ordinary one. If one of the two is
+  missing, `check` does not report it, because the other answers to its
+  name. A rename that changes only the case shows as an added entry, and the
+  old name is not reported. The same holds on a case-insensitive macOS
+  volume.
+- At the root of the tree, `System Volume Information` and `$RECYCLE.BIN`
+  are skipped, whatever their case (see
+  [Built-in excludes](#built-in-excludes)).
 
 ### Reparse points
 
@@ -495,6 +507,12 @@ hashed again.
 through a symlink, a junction or a mounted volume, so `--cross-mount-points`
 changes nothing on Windows. A symlink is recorded as `symlink` with its
 target. A junction or a mount point is recorded as `other` and not entered.
+
+A reparse point that holds a file's data is recorded as `other` too, and not
+hashed: a cloud placeholder (OneDrive Files On-Demand), and a file of Data
+Deduplication on Windows Server, among others. A check compares little for
+such an entry and never its content. Neither kind has been tested, OneDrive
+included.
 
 The rules for a manifest that came with a tree hold as well, with one change:
 where Unix refuses a symbolic link, Windows refuses any reparse point.
