@@ -4,7 +4,7 @@
 
 use super::grants::{lists_naming, remove_named, rename_named};
 use super::{id_bytes, id_of, ManageError};
-use crate::config::hosts::valid_alias;
+use crate::config::names::valid_alias;
 use crate::config::settings::RelayMode;
 use crate::config::writer;
 use crate::net::addr::HostPort;

@@ -7,7 +7,8 @@
 //! applied later, and paths stay as written (`~` is not expanded).
 
 use super::exports::{name_problem, not_absolute};
-use super::hosts::{invalid_alias, needs_an_id, valid_alias};
+use super::hosts::{invalid_alias, needs_an_id};
+use super::names::valid_alias;
 use super::settings::{listen_problem, parse_debug_addr};
 use super::{duration, expand_tilde, line_of, ConfigError};
 use crate::identity::parse_endpoint_id;

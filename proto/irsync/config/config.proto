@@ -39,6 +39,9 @@ message Config {
   repeated Export exports = 12;
   GrantTable all = 13;
   GrantTable immediate = 14;   // only rw is used
+  optional uint32 config_version = 15;
+  repeated ServerEntry servers = 16;
+  repeated ClientEntry clients = 17;
 }
 
 message Client {
@@ -106,6 +109,34 @@ message Host {
   optional string ssh = 18;
   repeated Entry ssh_aliases = 19;
   bool ssh_aliases_set = 20;
+}
+
+// A daemon to dial.
+message ServerEntry {
+  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
+  string name = 4;
+  bytes endpoint_id = 5;       // empty: missing
+  optional string relay = 6;
+  optional RelayMode relay_mode = 7;
+  optional Congestion congestion = 8;
+  optional PqKeyExchange pq_key_exchange = 9;
+  repeated Entry address = 10;
+  bool address_set = 11;
+  optional uint32 parallel = 12;
+  google.protobuf.Duration reconnect = 13;
+  optional uint32 dial_retries = 14;
+  optional bool dht = 15;
+  optional bool mdns = 16;
+  optional string ssh = 17;
+  repeated Entry ssh_aliases = 18;
+  bool ssh_aliases_set = 19;
+}
+
+// A peer that grants name.
+message ClientEntry {
+  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
+  string name = 4;
+  bytes client_id = 5;         // empty: missing
 }
 
 message Export {

@@ -2,10 +2,12 @@
 //! A `hosts.toml` or `exports.toml` beside it, once read as part of it, is
 //! ignored with a warning.
 
+use super::clients::Clients;
 use super::exports::Exports;
 use super::hosts::Hosts;
 use super::paths::Paths;
 use super::reader::read_values;
+use super::servers::Servers;
 use super::settings::Settings;
 use super::{read_optional, ConfigError};
 use irsync_proto::config as pb;
@@ -18,6 +20,8 @@ use std::sync::Mutex;
 pub struct Config {
     pub settings: Settings,
     pub hosts: Hosts,
+    pub servers: Servers,
+    pub clients: Clients,
     pub exports: Exports,
 }
 
@@ -72,6 +76,8 @@ impl Config {
         Ok(Config {
             settings: Settings::from_message(msg, path)?,
             hosts: Hosts::from_message(&msg.hosts, path)?,
+            servers: Servers::from_message(&msg.servers, path)?,
+            clients: Clients::from_message(&msg.clients, path)?,
             exports: Exports::from_message(msg, path)?,
         })
     }

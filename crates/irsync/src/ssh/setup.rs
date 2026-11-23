@@ -19,7 +19,7 @@ use std::net::SocketAddr;
 
 use crate::build::LONG_VERSION;
 use crate::config::file::Config;
-use crate::config::hosts::short_host_name;
+use crate::config::names::short_host_name;
 use crate::config::paths::Paths;
 use crate::config::settings::RelayMode;
 use crate::daemon_lock::{probe, LockInfo};

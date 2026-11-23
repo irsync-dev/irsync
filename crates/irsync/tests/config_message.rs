@@ -879,3 +879,135 @@ fn a_bare_group_tail_gives_no_blank_lines_to_the_first_entry() {
     let c = commented("[exports]\n# a\n\n# b\n\n[exports.p]\npath = \"/p\"\n");
     assert_eq!(c.exports[0].comment.as_ref().unwrap().above, ["# a", "# b"]);
 }
+
+#[test]
+fn servers_and_clients_build_the_typed_view() {
+    let msg = pb::Config {
+        servers: vec![pb::ServerEntry {
+            name: "nas".into(),
+            endpoint_id: id(1).as_bytes().to_vec(),
+            ..Default::default()
+        }],
+        clients: vec![pb::ClientEntry {
+            name: "nas".into(),
+            client_id: id(2).as_bytes().to_vec(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let c = Config::from_message(&msg, Path::new("irsync.toml")).unwrap();
+    assert_eq!(c.servers.get("nas").unwrap().endpoint_id, id(1));
+    assert_eq!(c.clients.get("nas").unwrap().client_id, id(2));
+    assert_eq!(c.clients.alias_of(&id(2)), Some("nas"));
+    assert_eq!(c.clients.alias_of(&id(1)), None);
+    assert_eq!(c.clients.resolve_peer("nas").unwrap(), id(2));
+    assert_eq!(c.clients.resolve_peer(&id(3).to_string()).unwrap(), id(3));
+    assert_eq!(
+        c.clients.resolve_peer("zed").unwrap_err().to_string(),
+        "unknown client \"zed\" (and not an EndpointId); clients are defined in irsync.toml"
+    );
+}
+
+#[test]
+fn a_server_needs_an_endpoint_id_and_a_client_a_client_id() {
+    let p = Path::new("irsync.toml");
+    let s = pb::Config {
+        servers: vec![pb::ServerEntry {
+            name: "nas".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        Config::from_message(&s, p).unwrap_err().to_string(),
+        "irsync.toml: server \"nas\": needs an endpoint_id"
+    );
+    let c = pb::Config {
+        clients: vec![pb::ClientEntry {
+            name: "lap".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        Config::from_message(&c, p).unwrap_err().to_string(),
+        "irsync.toml: client \"lap\": needs a client_id"
+    );
+}
+
+#[test]
+fn names_are_checked_and_unique_per_table() {
+    let p = Path::new("irsync.toml");
+    let server = |n: &str| pb::ServerEntry {
+        name: n.into(),
+        endpoint_id: id(1).as_bytes().to_vec(),
+        ..Default::default()
+    };
+    let client = |n: &str| pb::ClientEntry {
+        name: n.into(),
+        client_id: id(2).as_bytes().to_vec(),
+        ..Default::default()
+    };
+    let bad = [
+        String::new(),
+        "all".into(),
+        "*".into(),
+        "a:b".into(),
+        "a/b".into(),
+        id(5).to_string(),
+    ];
+    for name in &bad {
+        let want = format!(
+            "irsync.toml: invalid name {name:?}: must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
+        );
+        let s = pb::Config {
+            servers: vec![server(name)],
+            ..Default::default()
+        };
+        assert_eq!(Config::from_message(&s, p).unwrap_err().to_string(), want);
+        let c = pb::Config {
+            clients: vec![client(name)],
+            ..Default::default()
+        };
+        assert_eq!(Config::from_message(&c, p).unwrap_err().to_string(), want);
+    }
+    let s = pb::Config {
+        servers: vec![server("x"), server("x")],
+        ..Default::default()
+    };
+    assert_eq!(
+        Config::from_message(&s, p).unwrap_err().to_string(),
+        "irsync.toml: duplicate server name \"x\""
+    );
+    let c = pb::Config {
+        clients: vec![client("x"), client("x")],
+        ..Default::default()
+    };
+    assert_eq!(
+        Config::from_message(&c, p).unwrap_err().to_string(),
+        "irsync.toml: duplicate client name \"x\""
+    );
+}
+
+#[test]
+fn server_keys_are_read_like_host_keys() {
+    let msg = pb::Config {
+        servers: vec![pb::ServerEntry {
+            name: "nas".into(),
+            endpoint_id: id(1).as_bytes().to_vec(),
+            ssh: Some("me@nas".into()),
+            ssh_aliases: vec![pb::Entry {
+                value: "10.0.0.2".into(),
+                ..Default::default()
+            }],
+            parallel: Some(4),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let c = Config::from_message(&msg, Path::new("irsync.toml")).unwrap();
+    assert_eq!(c.servers.by_ssh("me@nas"), Ok(Some("nas")));
+    assert_eq!(c.servers.by_ssh("10.0.0.2"), Ok(Some("nas")));
+    assert_eq!(c.servers.by_ssh("other"), Ok(None));
+    assert_eq!(c.servers.get("nas").unwrap().parallel, Some(4));
+}

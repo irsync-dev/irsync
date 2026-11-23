@@ -457,9 +457,15 @@ fn message_keys() -> Vec<String> {
             "header",
             "footer",
         ];
+        // The message has them; no file reads or writes them yet (stage 2
+        // of #202). Take them out of this list as they are wired in.
+        const NOT_YET: &[&str] = &["config_version", "servers", "clients"];
         for f in m.fields() {
             let name = f.name();
-            if NOT_KEYS.contains(&name) || name.ends_with("_set") {
+            if NOT_KEYS.contains(&name)
+                || (path.is_empty() && NOT_YET.contains(&name))
+                || name.ends_with("_set")
+            {
                 continue;
             }
             let mut p = path.to_vec();

@@ -1,6 +1,7 @@
 use irsync::config::exports::Exports;
 use irsync::config::file::{first_sighting, ignored_split_files, Config};
-use irsync::config::hosts::{short_host_name, valid_alias, Hosts};
+use irsync::config::hosts::Hosts;
+use irsync::config::names::{short_host_name, valid_alias};
 use irsync::config::paths::Paths;
 use irsync::config::settings::{RelayMode, Settings};
 use irsync::config::ConfigError;

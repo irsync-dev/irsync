@@ -1,5 +1,6 @@
 //! The `[hosts]` table of `irsync.toml`: aliases for daemons.
 
+use super::names::valid_alias;
 use super::settings::{addresses_from, duration_from, url_from};
 use super::{file_error, ConfigError};
 use crate::config::settings::{Congestion, PqKeyExchange, RelayMode};
@@ -59,7 +60,7 @@ pub(crate) fn needs_an_id(alias: &str) -> String {
 }
 
 /// An id of the message: 32 bytes that are a valid key.
-fn endpoint_id_from(bytes: &[u8]) -> Result<EndpointId, IdentityError> {
+pub(super) fn endpoint_id_from(bytes: &[u8]) -> Result<EndpointId, IdentityError> {
     <[u8; 32]>::try_from(bytes)
         .ok()
         .and_then(|b| EndpointId::from_bytes(&b).ok())
@@ -99,30 +100,6 @@ impl HostEntry {
             ssh_aliases: h.ssh_aliases.iter().map(|e| e.value.clone()).collect(),
         })
     }
-}
-
-/// An alias is non-empty, has no `:` or `/`, is not itself an EndpointId,
-/// and is neither `all` nor `*` (the words that mean every peer).
-pub fn valid_alias(s: &str) -> bool {
-    !s.is_empty()
-        && !s.contains([':', '/'])
-        && s != "all"
-        && s != "*"
-        && parse_endpoint_id(s).is_err()
-}
-
-/// A machine's host name as an alias: `raw` up to its first `.`, when
-/// that says something about the machine. `None` for a name that is not
-/// a valid alias, for `localhost`, for one made of digits only (the start
-/// of an IPv4 address), and for one with control characters.
-pub fn short_host_name(raw: &str) -> Option<String> {
-    let name = raw.trim();
-    let name = name.split_once('.').map_or(name, |(first, _)| first).trim();
-    let usable = valid_alias(name)
-        && !name.eq_ignore_ascii_case("localhost")
-        && !name.bytes().all(|b| b.is_ascii_digit())
-        && !name.chars().any(char::is_control);
-    usable.then(|| name.to_string())
 }
 
 impl HostEntry {

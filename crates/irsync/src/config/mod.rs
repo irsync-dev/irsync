@@ -1,12 +1,15 @@
 //! Settings, host aliases and exports (TOML) configuration.
 
+pub mod clients;
 mod comments;
 pub mod duration;
 pub mod exports;
 pub mod file;
 pub mod hosts;
+pub mod names;
 pub mod paths;
 pub mod reader;
+pub mod servers;
 pub mod settings;
 pub mod writer;
 
@@ -44,6 +47,8 @@ pub enum ConfigError {
     TooOpen { path: PathBuf, problem: String },
     #[error("unknown host alias {alias:?} (and not an EndpointId); aliases are defined in {}", hosts.display())]
     UnknownAlias { alias: String, hosts: PathBuf },
+    #[error("unknown client {name:?} (and not an EndpointId); clients are defined in {}", path.display())]
+    UnknownClient { name: String, path: PathBuf },
     #[error("bad peer {0:?}: expected a host alias or an EndpointId")]
     BadPeer(String),
 }

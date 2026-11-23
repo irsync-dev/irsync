@@ -9,7 +9,7 @@ use super::client::{client_host_name, ensure_installed, probe, run_setup, Instal
 use super::payload::Contents;
 use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport};
 use crate::build::LONG_VERSION;
-use crate::config::hosts::valid_alias;
+use crate::config::names::valid_alias;
 use crate::config::paths::Paths;
 use crate::manage::{self, hosts::HostFlags};
 use irsync_proto::config as pb;
