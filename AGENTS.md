@@ -4,6 +4,14 @@ The contributor guide is the book under `book/src/contributing/`. Start with
 `setup.md` and `testing.md`. This file lists the working rules and commands. Releases:
 `book/src/contributing/releasing.md`.
 
+## Product and design
+
+Before you change the landing page or the book's look, read
+[`docs/PRODUCT.md`](docs/PRODUCT.md) (who irsync is for, what it claims,
+and what must not be made up) and [`docs/DESIGN.md`](docs/DESIGN.md) (the
+colours, type, components and rules of the site and the book). The tokens
+themselves live in `site/tokens.json`; `DESIGN.md` describes them.
+
 ## Pull requests
 
 All work goes through a pull request. Work on a branch, push the branch,
