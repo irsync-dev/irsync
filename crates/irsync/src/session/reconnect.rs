@@ -25,8 +25,8 @@ use crate::telemetry::{phase, Phase, PhaseKind, Side};
 /// How long to keep trying, and how long to wait between attempts.
 #[derive(Debug, Clone, Copy)]
 pub struct ReconnectOpts {
-    /// Give up once an outage (time since the session last made progress)
-    /// lasts this long (zero: never reconnect).
+    /// Give up once an outage (from the first connection lost since the
+    /// session last made progress) lasts this long (zero: never reconnect).
     pub max: Duration,
     /// The first wait; it doubles per attempt up to `backoff_max`, jittered.
     pub backoff_min: Duration,
@@ -75,9 +75,12 @@ impl ReconnectOpts {
     }
 }
 
-/// One outage: from the last connection that made progress (or the start)
-/// until the session moves again. A connection the daemon acknowledged but
-/// that moved no data and placed no file does not end it, so a daemon that
+/// One outage: from the first connection lost since the session last made
+/// progress (or since the start) until the session moves again. The time a
+/// connection worked before it was lost is not part of it: a first
+/// connection that planned or sent for longer than `max` without finishing
+/// a file is still redialled. A connection the daemon acknowledged but that
+/// moved no data and placed no file does not end it, so a daemon that
 /// accepts and then drops every connection cannot keep the client retrying
 /// past `max`.
 #[derive(Debug, Clone, Copy)]
@@ -95,9 +98,10 @@ impl Outage {
         }
     }
 
-    /// A connection failed at `now`; `progress`: it moved data or placed a file.
+    /// A connection failed at `now`; `progress`: it moved data or placed a
+    /// file. The first failure since the last progress starts the outage.
     fn failed(&mut self, now: Instant, progress: bool) {
-        if progress {
+        if progress || self.failures == 0 {
             *self = Outage::new(now);
         }
         self.failures += 1;
@@ -819,6 +823,28 @@ mod tests {
         assert_eq!(o.failures, 1);
         assert!(!o.expired(at(5000), max));
         assert!(o.expired(at(7000), max));
+    }
+
+    /// The outage starts when a connection is lost, not when the run (or
+    /// the connection) started: a first connection that worked for longer
+    /// than `max` without counted progress is still redialled.
+    #[test]
+    fn a_long_first_connection_is_not_an_outage() {
+        let max = Duration::from_secs(60);
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut o = Outage::new(t0);
+        o.failed(at(90), false);
+        assert_eq!(o.failures, 1);
+        assert!(!o.expired(at(90), max), "gave up without a redial");
+        // From then on, failures without progress keep the outage running.
+        o.failed(at(120), false);
+        assert!(!o.expired(at(149), max));
+        assert!(o.expired(at(150), max));
+        // `--reconnect 0` still gives up at the first loss.
+        let mut o = Outage::new(t0);
+        o.failed(at(90), false);
+        assert!(o.expired(at(90), Duration::ZERO));
     }
 
     #[test]

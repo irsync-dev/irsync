@@ -101,6 +101,8 @@ pub async fn with_netsim<F: std::future::Future>(
     seed: u64,
     f: F,
 ) -> F::Output {
+    // Walk threads would let the paused clock skip ahead under load.
+    irsync::scan::clock_hold::enable();
     let n = Netsim {
         board: irsync::net::netsim::Switchboard::new(),
         profile,

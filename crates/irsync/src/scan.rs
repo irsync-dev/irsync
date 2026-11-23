@@ -193,10 +193,16 @@ pub fn spawn_thread<T: Send + 'static>(
 ) -> tokio::task::JoinHandle<T> {
     let (tx, rx) = oneshot::channel();
     let name = name.to_string();
+    #[cfg(feature = "netsim")]
+    let held = clock_hold::hold();
     let spawned = std::thread::Builder::new()
         .name(name.clone())
         .spawn(move || {
             let _ = tx.send(f());
+            // Only once the result is sent: the waiting task is woken
+            // before the clock may move again.
+            #[cfg(feature = "netsim")]
+            drop(held);
         });
     tokio::spawn(async move {
         if let Err(e) = spawned {
@@ -207,6 +213,41 @@ pub fn spawn_thread<T: Send + 'static>(
             Err(_) => panic!("thread {name} panicked"),
         }
     })
+}
+
+/// Keeps tokio's paused clock (in-process network tests) from skipping
+/// ahead while a [`spawn_thread`] thread works. The runtime cannot see
+/// such a thread: waiting for it, it finds nothing to do and jumps to its
+/// next timer, again and again, so a walk that a loaded machine runs late
+/// costs a session minutes of virtual time, and its timeouts fire. Work on
+/// tokio's blocking pool holds the clock still; so, with the hold switched
+/// on, every such thread also keeps a pool task waiting until it ends.
+/// Never on in a real run: it would put back the pool use
+/// [`spawn_thread`] avoids.
+#[cfg(feature = "netsim")]
+pub mod clock_hold {
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+
+    /// Switches the hold on for the rest of the process.
+    pub fn enable() {
+        ON.store(true, Relaxed);
+    }
+
+    /// When the hold is on: a guard that keeps the clock still until it
+    /// drops. Must be called within a runtime.
+    pub(super) fn hold() -> Option<std::sync::mpsc::Sender<()>> {
+        if !ON.load(Relaxed) {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        drop(tokio::task::spawn_blocking(move || {
+            // Returns once the sender drops.
+            let _ = rx.recv();
+        }));
+        Some(tx)
+    }
 }
 
 /// Puts a directory's children in file-name order, errors included: the
