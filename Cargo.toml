@@ -94,6 +94,12 @@ rand_xoshiro = "0.8"
 serde-saphyr = { version = "2.1", default-features = false, features = ["serialize", "deserialize"] }
 unicode-normalization = "0.1"
 libc = "0.2"
+# Windows only (fileset): file identity and link count.
+winapi-util = "0.1.11"
+# Windows only (fileset): the change time, which no safe wrapper reads.
+windows-sys = "0.61"
+# Windows only (fileset): the CPU time of a thread.
+cpu-time = "1"
 
 # iroh 1.5.0 plus one commit, taken from upstream: noq reads tokio's
 # clock, so tests on tokio's paused clock can skip ahead

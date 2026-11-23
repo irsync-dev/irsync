@@ -299,6 +299,7 @@ fn cli_unknown_field_exits_2() {
     assert!(e.contains("unknown field 'bogus'"), "{e}");
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_fail_on_warnings() {
     let d = tree();
@@ -337,6 +338,7 @@ fn cli_store_fjall_creates_directory() {
     assert_eq!(code(&["check".as_ref(), t.as_os_str()]), 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_store_redb_creates_one_file_that_reads_where_nothing_can_be_written() {
     let d = tree();

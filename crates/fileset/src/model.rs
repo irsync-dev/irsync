@@ -251,6 +251,7 @@ mod tests {
         assert_eq!(f.0, 3);
     }
 
+    #[cfg(unix)]
     #[test]
     fn from_path_regular_file() {
         let d = tempfile::tempdir().unwrap();
@@ -268,6 +269,7 @@ mod tests {
         assert!(e.flags.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn from_path_keeps_setuid_setgid_and_sticky_bits() {
         let d = tempfile::tempdir().unwrap();

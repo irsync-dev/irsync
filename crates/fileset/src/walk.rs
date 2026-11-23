@@ -810,6 +810,7 @@ mod tests {
         assert!(paths(&e).contains(&b"bad\xff".to_vec()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn walk_unreadable_dir_warns_and_reports_not_descended() {
         let t = tempfile::tempdir().unwrap();
@@ -870,6 +871,7 @@ mod tests {
         assert!(skipped.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn walk_unstatable_entry_warns_and_reports_not_descended() {
         let t = tempfile::tempdir().unwrap();

@@ -639,6 +639,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
+name = "cpu-time"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e393a7668fe1fad3075085b86c781883000b4ede868f43627b34a87c8b7ded"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "cpubits"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1251,6 +1261,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "clap",
+ "cpu-time",
  "crossbeam-channel",
  "fjall",
  "indicatif",
@@ -1263,6 +1274,8 @@ dependencies = [
  "redb",
  "rusqlite",
  "tempfile",
+ "winapi-util",
+ "windows-sys 0.61.2",
  "xattr",
 ]
 

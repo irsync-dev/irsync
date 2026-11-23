@@ -12,3 +12,4 @@ pub mod progress;
 pub mod report;
 pub mod store;
 pub mod walk;
+pub mod wtf8;

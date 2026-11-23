@@ -7,9 +7,7 @@ use fileset::engine::{CommonOpts, Outcome};
 use fileset::progress::NoProgress;
 use fileset::store::{self, Backend, OpenMode, Store};
 use std::fs::{File, FileTimes};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
@@ -30,8 +28,16 @@ pub fn symlink(dir: &Path, name: &str, target: &str) {
     fileset::platform::testutil::symlink(Path::new(target), &dir.join(name)).unwrap();
 }
 
+/// Sets the permission bits of `path`. Unix only: elsewhere it panics, so a
+/// test that needs it fails rather than passes without checking.
 pub fn chmod(path: &Path, mode: u32) {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    #[cfg(unix)]
+    fileset::platform::testutil::set_mode(path, mode);
+    #[cfg(not(unix))]
+    panic!(
+        "chmod {} to {mode:o}: there are no permission bits here",
+        path.display()
+    );
 }
 
 pub fn set_mtime(path: &Path, sec: u64, nsec: u32) {
@@ -44,9 +50,13 @@ pub fn set_mtime(path: &Path, sec: u64, nsec: u32) {
         .unwrap();
 }
 
+/// Creates a FIFO at `path`; panics where there are none.
 pub fn mkfifo(path: &Path) {
-    let status = Command::new("mkfifo").arg(path).status().unwrap();
-    assert!(status.success(), "mkfifo {} failed", path.display());
+    assert!(
+        fileset::platform::testutil::mkfifo(path),
+        "mkfifo {}: there are no FIFOs here",
+        path.display()
+    );
 }
 
 /// Options for `init` when `root` holds no manifest for `backend` yet, else for `update`;

@@ -26,6 +26,11 @@ anyhow = { workspace = true }
 xattr = { workspace = true }
 libc = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+winapi-util = { workspace = true }
+cpu-time = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
 [build-dependencies]
 prost-build = { workspace = true }
 protox = { workspace = true }

@@ -6,7 +6,7 @@ use fileset::engine::check::check;
 use fileset::engine::update::{update, Mode};
 use fileset::engine::Outcome;
 use fileset::model::{Flags, Kind};
-use fileset::platform::{self, testutil};
+use fileset::platform;
 use fileset::progress::NoProgress;
 use fileset::report::fmt_blake3;
 use fileset::store::{self, Backend, OpenMode};
@@ -14,16 +14,19 @@ use std::path::Path;
 
 /// Invokes each backend-generic test once per backend.
 macro_rules! for_every_backend {
-    ($($name:ident => $sqlite:ident, $fjall:ident, $redb:ident;)*) => {
+    ($($(#[$attr:meta])* $name:ident => $sqlite:ident, $fjall:ident, $redb:ident;)*) => {
         $(
+            $(#[$attr])*
             #[test]
             fn $sqlite() {
                 $name(Backend::Sqlite)
             }
+            $(#[$attr])*
             #[test]
             fn $fjall() {
                 $name(Backend::Fjall)
             }
+            $(#[$attr])*
             #[test]
             fn $redb() {
                 $name(Backend::Redb)
@@ -67,6 +70,7 @@ for_every_backend! {
     update_sweeps_stale_generation => update_sweeps_stale_generation_sqlite, update_sweeps_stale_generation_fjall, update_sweeps_stale_generation_redb;
     update_leaves_unchanged_rows_alone => update_leaves_unchanged_rows_alone_sqlite, update_leaves_unchanged_rows_alone_fjall, update_leaves_unchanged_rows_alone_redb;
     update_sweeps_deleted_entries_and_keeps_unchanged_ones => update_sweeps_deleted_entries_and_keeps_unchanged_ones_sqlite, update_sweeps_deleted_entries_and_keeps_unchanged_ones_fjall, update_sweeps_deleted_entries_and_keeps_unchanged_ones_redb;
+    #[cfg(unix)]
     update_rewrites_a_row_whose_xattrs_changed => update_rewrites_a_row_whose_xattrs_changed_sqlite, update_rewrites_a_row_whose_xattrs_changed_fjall, update_rewrites_a_row_whose_xattrs_changed_redb;
     update_reuses_stored_xattrs_while_ctime_is_unchanged => update_reuses_stored_xattrs_while_ctime_is_unchanged_sqlite, update_reuses_stored_xattrs_while_ctime_is_unchanged_fjall, update_reuses_stored_xattrs_while_ctime_is_unchanged_redb;
     update_force_xattr_reads_reads_every_entry => update_force_xattr_reads_reads_every_entry_sqlite, update_force_xattr_reads_reads_every_entry_fjall, update_force_xattr_reads_reads_every_entry_redb;
@@ -268,11 +272,12 @@ fn update_sweeps_deleted_entries_and_keeps_unchanged_ones(b: Backend) {
     assert_eq!(outcome, Outcome::Clean);
 }
 
+#[cfg(unix)]
 fn update_rewrites_a_row_whose_xattrs_changed(b: Backend) {
     let dir = tree(&[("f", "x")]);
     let f = dir.path().join("f");
     run_update(dir.path(), b, false, false);
-    if let Err(e) = testutil::set_xattr(&f, "user.fileset-test", b"v") {
+    if let Err(e) = platform::testutil::set_xattr(&f, "user.fileset-test", b"v") {
         eprintln!("skipping: cannot set an xattr here: {e}");
         return;
     }

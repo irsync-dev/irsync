@@ -8,7 +8,7 @@ use common::*;
 use fileset::compare::Tier;
 use fileset::engine::list::{list, ListOpts};
 use fileset::engine::Outcome;
-use fileset::platform::{self, testutil};
+use fileset::platform;
 use fileset::store::Backend;
 use tempfile::TempDir;
 
@@ -159,8 +159,11 @@ fn a_pattern_selects_by_whole_path() {
 #[test]
 fn verbose_adds_owner_links_and_attributes() {
     let d = files();
+    #[cfg(unix)]
     let with_attr =
-        testutil::set_xattr(&d.path().join("top.jpg"), "user.fileset.test", b"v").is_ok();
+        platform::testutil::set_xattr(&d.path().join("top.jpg"), "user.fileset.test", b"v").is_ok();
+    #[cfg(not(unix))]
+    let with_attr = false;
     run_update(d.path(), Backend::Sqlite, false, false);
     let out = run(&opts(d.path(), None, true));
     for line in out.lines() {
