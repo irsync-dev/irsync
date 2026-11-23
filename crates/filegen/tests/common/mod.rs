@@ -3,10 +3,11 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+// `filegen` is this crate in the unit tests too: `lib.rs` names itself so.
+use filegen::platform::{self, FileKind};
 
 /// Files larger than this are compared by size only.
 const CONTENT_LIMIT: u64 = 1 << 20;
@@ -45,42 +46,28 @@ pub fn snapshot(root: &Path) -> Vec<Entry> {
     while let Some(dir) = stack.pop() {
         for e in fs::read_dir(&dir).unwrap() {
             let path = e.unwrap().path();
-            let md = fs::symlink_metadata(&path).unwrap();
-            let rel = path
-                .strip_prefix(root)
-                .unwrap()
-                .as_os_str()
-                .as_bytes()
-                .to_vec();
-            let ft = md.file_type();
-            let kind = if ft.is_dir() {
-                stack.push(path.clone());
-                'd'
-            } else if ft.is_file() {
-                'f'
-            } else if ft.is_symlink() {
-                'l'
-            } else if ft.is_fifo() {
-                'p'
-            } else if ft.is_char_device() {
-                'c'
-            } else if ft.is_block_device() {
-                'b'
-            } else if ft.is_socket() {
-                's'
-            } else {
-                '?'
+            let md = platform::lstat(&path).unwrap();
+            let rel = platform::path_to_bytes(path.strip_prefix(root).unwrap());
+            let kind = match md.kind {
+                FileKind::Dir => {
+                    stack.push(path.clone());
+                    'd'
+                }
+                FileKind::File => 'f',
+                FileKind::Symlink => 'l',
+                FileKind::Fifo => 'p',
+                FileKind::CharDev => 'c',
+                FileKind::BlockDev => 'b',
+                FileKind::Socket => 's',
+                FileKind::Other => '?',
             };
-            let size = if kind == 'd' { 0 } else { md.size() };
-            let target = (kind == 'l').then(|| {
-                fs::read_link(&path)
-                    .unwrap()
-                    .as_os_str()
-                    .as_bytes()
-                    .to_vec()
-            });
+            let size = if kind == 'd' { 0 } else { md.size };
+            let target = (kind == 'l').then(|| platform::read_link(&path).unwrap());
             let content = (kind == 'f' && size <= CONTENT_LIMIT).then(|| fs::read(&path).unwrap());
-            let mtime = (md.mtime(), md.mtime_nsec());
+            let mtime = (
+                md.mtime_ns.div_euclid(1_000_000_000) as i64,
+                md.mtime_ns.rem_euclid(1_000_000_000) as i64,
+            );
             let from_clock = (lo..=hi).contains(&mtime.0);
             out.push((
                 rel,
@@ -88,7 +75,7 @@ pub fn snapshot(root: &Path) -> Vec<Entry> {
                 size,
                 target,
                 content,
-                md.mode() & 0o7777,
+                md.mode & 0o7777,
                 (!from_clock).then_some(mtime),
             ));
         }

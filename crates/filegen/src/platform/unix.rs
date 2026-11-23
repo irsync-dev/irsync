@@ -16,6 +16,7 @@ use nix::sys::time::TimeSpec;
 use nix::unistd::{fchownat, Gid, Uid};
 
 use super::{FileKind, Stat};
+use crate::caps::Caps;
 
 /// The longest path the system takes, in bytes.
 pub const PATH_MAX: usize = libc::PATH_MAX as usize;
@@ -260,6 +261,12 @@ pub fn set_xattr(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
 /// Removes the extended attribute `name` of `path`.
 pub fn remove_xattr(path: &Path, name: &str) -> io::Result<()> {
     xattr::remove(path, name)
+}
+
+/// The capabilities of this machine in `dir`: all of them on Unix, found
+/// without touching anything.
+pub fn probe_caps(_dir: &Path) -> io::Result<Caps> {
+    Ok(Caps::ALL)
 }
 
 /// The effective user id.

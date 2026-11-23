@@ -94,12 +94,18 @@ rand_xoshiro = "0.8"
 serde-saphyr = { version = "2.1", default-features = false, features = ["serialize", "deserialize"] }
 unicode-normalization = "0.1"
 libc = "0.2"
-# Windows only (fileset): file identity and link count.
+# Windows only (fileset, filegen): file identity and link count.
 winapi-util = "0.1.11"
-# Windows only (fileset): the change time, which no safe wrapper reads.
+# Windows only (fileset, filegen): the change time, reparse tags and hole
+# punching, which no safe wrapper does.
 windows-sys = "0.61"
 # Windows only (fileset): the CPU time of a thread.
 cpu-time = "1"
+# Windows only (filegen): Ctrl-C and the other console events. Pinned to
+# 3.5.2: 3.5.3 was under a week old on 2026-11-23. 3.5.2 asks for nix 0.31,
+# which no target builds but cargo-deny counts once Windows is among its
+# targets; move to 3.5.3 after 2026-11-25 to drop it.
+ctrlc = "=3.5.2"
 
 # iroh 1.5.0 plus one commit, taken from upstream: noq reads tokio's
 # clock, so tests on tokio's paused clock can skip ahead

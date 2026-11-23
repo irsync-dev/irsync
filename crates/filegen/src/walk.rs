@@ -223,6 +223,7 @@ mod tests {
         assert!(!is_off_limits_name(b"x.fileset"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn walk_marks_unlistable_dir_off_limits() {
         let t = tempfile::tempdir().unwrap();
@@ -248,6 +249,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn walk_marks_entries_it_cannot_safely_change_off_limits() {
         if platform::is_root() {

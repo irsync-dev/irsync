@@ -3,7 +3,9 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{Duration, Instant, SystemTime};
+#[cfg(unix)]
+use std::time::Instant;
+use std::time::{Duration, SystemTime};
 
 use common::snapshot;
 use filegen::platform::{self, testutil};
@@ -457,6 +459,7 @@ fn cli_verbose_echoes_steps_quiet_silences() {
     assert!(o.stdout.is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_read_only_files_do_not_stop_the_run() {
     let (_t, root, out) = dirs();

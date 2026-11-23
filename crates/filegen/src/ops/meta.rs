@@ -397,6 +397,7 @@ mod tests {
         assert_matches_disk(tmp.path(), &m);
     }
 
+    #[cfg(unix)]
     /// Every xattr in the tree, by relative path and name.
     fn xattrs(root: &Path, m: &Model) -> Vec<(Vec<u8>, String, Vec<u8>)> {
         let mut out = Vec::new();
@@ -412,6 +413,7 @@ mod tests {
         out
     }
 
+    #[cfg(unix)]
     #[test]
     fn set_xattr_round_trip() {
         let probe = TempDir::new().unwrap();
@@ -477,6 +479,7 @@ mod tests {
         assert_eq!(rng.next_u64(), next, "no draws without ids");
     }
 
+    #[cfg(unix)]
     #[test]
     fn chown_to_own_ids() {
         // An unprivileged user may chown to its own uid and gid.

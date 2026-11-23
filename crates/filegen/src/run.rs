@@ -627,7 +627,9 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::ops::testutil::triples;
-    use crate::platform::testutil::{self, symlink};
+    #[cfg(unix)]
+    use crate::platform::testutil;
+    use crate::platform::testutil::symlink;
     use crate::state;
     use crate::walk::from_disk;
 
@@ -1110,6 +1112,7 @@ mod tests {
         assert_eq!(s.chain_state, c.chain_state);
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_force_keeps_history_when_the_walk_fails() {
         if platform::is_root() {
