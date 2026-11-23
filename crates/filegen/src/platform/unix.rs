@@ -125,6 +125,12 @@ pub fn path_to_bytes(path: &Path) -> Vec<u8> {
     path.as_os_str().as_bytes().to_vec()
 }
 
+/// The bytes of an absolute symlink target naming `path`: the path's own
+/// bytes, which is what [`read_link`] gives back.
+pub fn target_bytes(path: &Path) -> Vec<u8> {
+    path_to_bytes(path)
+}
+
 /// Whether the system takes `name` as a file name, beyond the rules every
 /// platform shares. Any name does here.
 pub fn name_ok(_name: &str) -> bool {

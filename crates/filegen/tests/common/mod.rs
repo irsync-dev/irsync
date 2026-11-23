@@ -35,22 +35,29 @@ pub type Entry = (
     Option<(i64, i64)>,
 );
 
-/// Every entry below `root` (not the root itself), sorted by path, never
-/// following symlinks.
+/// Every entry below `root` (not the root itself), by its stored relative
+/// path (names joined with `/`), sorted by path, never following symlinks.
+/// Read below the canonical root, as filegen works: on Windows that is the
+/// extended form, which names every entry exactly as it is.
 pub fn snapshot(root: &Path) -> Vec<Entry> {
     let now = SystemTime::now();
     let lo = secs(now - CLOCK_WINDOW);
     let hi = secs(now + Duration::from_secs(60));
     let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut stack = vec![(fs::canonicalize(root).unwrap(), Vec::new())];
+    while let Some((dir, dir_rel)) = stack.pop() {
         for e in fs::read_dir(&dir).unwrap() {
-            let path = e.unwrap().path();
+            let e = e.unwrap();
+            let path = e.path();
             let md = platform::lstat(&path).unwrap();
-            let rel = platform::path_to_bytes(path.strip_prefix(root).unwrap());
+            let mut rel: Vec<u8> = dir_rel.clone();
+            if !rel.is_empty() {
+                rel.push(b'/');
+            }
+            rel.extend(platform::os_to_bytes(&e.file_name()));
             let kind = match md.kind {
                 FileKind::Dir => {
-                    stack.push(path.clone());
+                    stack.push((path.clone(), rel.clone()));
                     'd'
                 }
                 FileKind::File => 'f',

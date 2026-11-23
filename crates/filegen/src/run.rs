@@ -270,7 +270,15 @@ impl Runner {
         // directory; a real run probes where it will write.
         let platform = Platform::CURRENT;
         let probe_dir = if opts.dry_run { &out_dir } else { &root };
-        let caps = platform::probe_caps(probe_dir).map_err(RunError::Io)?;
+        let caps = platform::probe_caps(probe_dir).map_err(|e| {
+            RunError::Io(io::Error::new(
+                e.kind(),
+                format!(
+                    "probing what this machine can do in {}: {e}",
+                    probe_dir.display()
+                ),
+            ))
+        })?;
         if let (Some(s), Start::Resume(path)) = (&resumed, &opts.start) {
             if s.platform != platform {
                 return Err(RunError::Usage(format!(
@@ -293,7 +301,7 @@ impl Runner {
         }
         let disabled = caps::disabled(platform, caps);
         let chain = Chain::from_weights(&caps::without(&cfg.weights, &disabled))
-            .map_err(RunError::Config)?;
+            .map_err(|e| RunError::Config(name_disabled(e, &disabled)))?;
 
         let model = walk::from_disk(&root).map_err(RunError::Io)?;
         // Only now that the walk succeeded: a failed start must not
@@ -329,12 +337,8 @@ impl Runner {
         })
         .map_err(RunError::Io)?;
         if !opts.quiet {
-            if !disabled.is_empty() {
-                let names: Vec<&str> = disabled.iter().map(|k| k.name()).collect();
-                eprintln!(
-                    "filegen: not available here, weight set to 0: {}",
-                    names.join(", ")
-                );
+            if let Some(notice) = disabled_notice(&disabled) {
+                eprintln!("{notice}");
             }
             eprintln!("log: {}", log_path.display());
             eprintln!("state: {}", state_path.display());
@@ -551,6 +555,37 @@ impl Runner {
     }
 }
 
+/// The kinds in `disabled`, by name, joined with `, `.
+fn kind_names(disabled: &[OpKind]) -> String {
+    let names: Vec<&str> = disabled.iter().map(|k| k.name()).collect();
+    names.join(", ")
+}
+
+/// The startup notice naming the kinds that cannot run here; `None` when
+/// every kind can (always on Unix).
+fn disabled_notice(disabled: &[OpKind]) -> Option<String> {
+    (!disabled.is_empty()).then(|| {
+        format!(
+            "filegen: not available here, weight set to 0: {}",
+            kind_names(disabled)
+        )
+    })
+}
+
+/// `e`, from building the chain of a weight table with the `disabled` kinds
+/// set to 0, saying so when a row was left with nothing: the table was
+/// valid as given, and only zeroing those kinds emptied it. Unchanged when
+/// nothing was disabled.
+fn name_disabled(e: ConfigError, disabled: &[OpKind]) -> ConfigError {
+    match e {
+        ConfigError::Invalid(msg) if !disabled.is_empty() => ConfigError::Invalid(format!(
+            "{msg} once the kinds not available here were set to 0: {}",
+            kind_names(disabled)
+        )),
+        e => e,
+    }
+}
+
 /// The prefix a state file's name implies: its name without
 /// `.dry.state.yaml` or `.state.yaml`.
 fn prefix_of(state_file: &Path) -> Option<String> {
@@ -674,8 +709,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::caps::Caps;
-    use crate::ops::testutil::triples;
-    #[cfg(unix)]
+    use crate::ops::testutil::{tempdir, triples};
     use crate::platform::testutil;
     use crate::platform::testutil::symlink;
     use crate::platform::Platform;
@@ -752,9 +786,11 @@ mod tests {
         }
     }
 
-    /// A temp dir holding `root/` and the out dirs.
+    /// A temp dir holding `root/` and the out dirs, at its canonical path as
+    /// `run` uses the root (on Windows the extended form, which names every
+    /// entry exactly as it is).
     fn base() -> (TempDir, PathBuf) {
-        let t = TempDir::new().unwrap();
+        let t = tempdir();
         let root = t.path().join("root");
         fs::create_dir(&root).unwrap();
         (t, root)
@@ -915,23 +951,28 @@ mod tests {
         assert_eq!(disk.total_bytes(), r.model().total_bytes());
         r.finish(Outcome::Ok).unwrap();
         let log = text(&out.join("filegen-13.log"));
+        // Every kind on by default that can run here (all of them on Unix).
+        let off = caps::disabled(Platform::CURRENT, platform::probe_caps(&root).unwrap());
         for kind in OpKind::ALL {
             let seen = log.contains(&format!(" op={} ", kind.name()));
-            assert_eq!(seen, kind.default_enabled(), "{}", kind.name());
+            let here = kind.default_enabled() && !off.contains(&kind);
+            assert_eq!(seen, here, "{}", kind.name());
         }
         assert!(log.contains("# stat op=create_file"));
     }
 
-    /// The sizes of every regular file under `dir`.
+    /// The sizes of every regular file under `dir`, each read from the file
+    /// itself (on Windows a directory listing can hold a stale size for a
+    /// file changed through another of its hard links).
     fn file_sizes(dir: &Path) -> Vec<u64> {
         let mut out = Vec::new();
         for e in fs::read_dir(dir).unwrap() {
-            let e = e.unwrap();
-            let ft = e.file_type().unwrap();
-            if ft.is_dir() {
-                out.extend(file_sizes(&e.path()));
-            } else if ft.is_file() {
-                out.push(e.metadata().unwrap().len());
+            let path = e.unwrap().path();
+            let md = platform::lstat(&path).unwrap();
+            match md.kind {
+                platform::FileKind::Dir => out.extend(file_sizes(&path)),
+                platform::FileKind::File => out.push(md.size),
+                _ => {}
             }
         }
         out
@@ -964,6 +1005,9 @@ mod tests {
     #[test]
     fn run_root_symlink_and_trailing_slash() {
         let t = TempDir::new().unwrap();
+        if !testutil::symlinks_available(t.path()) {
+            return;
+        }
         let real = t.path().join("real");
         fs::create_dir(&real).unwrap();
         let link = t.path().join("link");
@@ -980,9 +1024,15 @@ mod tests {
         assert!(!snapshot(&real).is_empty());
         let log = text(&out.join("filegen-17.log"));
         let out_canon = fs::canonicalize(&out).unwrap();
-        assert!(log.contains(&format!("log=\"{}", out_canon.display())));
+        // Paths in the log are escaped (a `\` doubled).
+        let logged = |p: &Path| escape(&platform::path_to_bytes(p));
+        assert!(log.contains(&format!("log=\"{}", logged(&out_canon))));
         // Absolute symlink targets name the real root, never the link.
-        assert!(!log.contains("/link/"), "the root is used through the link");
+        let sep = logged(Path::new(std::path::MAIN_SEPARATOR_STR));
+        assert!(
+            !log.contains(&format!("{sep}link{sep}")),
+            "the root is used through the link"
+        );
         // An out dir inside the real root, named through either path.
         let msg = usage(run(opts(&root, &real.join("o"), 1, Start::Seed(18))));
         assert!(msg.contains("inside"), "{msg}");
@@ -1331,7 +1381,7 @@ mod tests {
                 fs::remove_file(p).unwrap();
             }
         }
-        fs::create_dir_all(root.join("stray/inner")).unwrap();
+        fs::create_dir_all(root.join("stray").join("inner")).unwrap();
         let state_path = out.join("filegen-21.state.yaml");
         run_ok(opts(&root, &out, 200, Start::Resume(state_path.clone())));
         let s = state::read(&state_path).unwrap();
@@ -1453,7 +1503,13 @@ mod tests {
 
     #[test]
     fn run_path_max_check() {
-        let (t, root) = base();
+        let (t, mut root) = base();
+        // A root long enough that the longest max_path_len reaches PATH_MAX:
+        // any root on Unix, where PATH_MAX is 4096; a deep one on Windows.
+        while root.as_os_str().len() + 1 + 4096 < platform::PATH_MAX {
+            root.push("d".repeat(200));
+            fs::create_dir(&root).unwrap();
+        }
         let out = t.path().join("out");
         let o = opts_with(&root, &out, 1, Start::Seed(23), &[("max_path_len", "4096")]);
         let msg = usage(run(o));
@@ -1468,7 +1524,10 @@ mod tests {
         let mut r = Runner::new(opts(&root, &out, 20, Start::Seed(40))).unwrap();
         let log_path = out.join("filegen-40.log");
         let mut deleted = 0;
-        for _ in 0..20 {
+        // The seed's chain differs per platform: on Windows its first
+        // delete comes at step 38.
+        let steps = if cfg!(unix) { 20 } else { 60 };
+        for _ in 0..steps {
             r.step().unwrap();
             let (p, q) = {
                 r.log.flush().unwrap();
@@ -1485,6 +1544,43 @@ mod tests {
             }
         }
         assert!(deleted > 0, "seed should delete a file");
+    }
+
+    #[test]
+    fn the_notice_names_the_kinds_not_available_here() {
+        assert_eq!(disabled_notice(&[]), None);
+        assert_eq!(
+            disabled_notice(&[OpKind::Mkfifo, OpKind::Chmod]).as_deref(),
+            Some("filegen: not available here, weight set to 0: mkfifo, chmod")
+        );
+        assert_eq!(
+            disabled_notice(&caps::disabled(Platform::Windows, Caps::ALL)).as_deref(),
+            Some("filegen: not available here, weight set to 0: mkfifo, chmod, set_xattr, chown, mknod")
+        );
+    }
+
+    #[test]
+    fn a_row_emptied_by_unavailable_kinds_names_them() {
+        // Valid as given: from mkdir, only mkfifo.
+        let mut w = config::default_weights();
+        for (to, v) in w.get_mut(&OpKind::Mkdir).unwrap().iter_mut() {
+            *v = if *to == OpKind::Mkfifo { 1.0 } else { 0.0 };
+        }
+        assert!(Chain::from_weights(&w).is_ok());
+        let off = [OpKind::Mkfifo, OpKind::Chmod];
+        let error = || Chain::from_weights(&caps::without(&w, &off)).unwrap_err();
+        let plain = error().to_string();
+        assert!(
+            plain.contains("row Mkdir has no non-zero weight"),
+            "{plain}"
+        );
+        let named = name_disabled(error(), &off).to_string();
+        assert_eq!(
+            named,
+            format!("{plain} once the kinds not available here were set to 0: mkfifo, chmod")
+        );
+        // With nothing disabled (Unix), the error is as it was.
+        assert_eq!(name_disabled(error(), &[]).to_string(), plain);
     }
 
     #[test]

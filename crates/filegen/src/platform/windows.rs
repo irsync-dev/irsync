@@ -259,14 +259,30 @@ pub fn bytes_to_os(bytes: &[u8]) -> io::Result<OsString> {
 /// The path below `root` of the stored, `/`-separated relative path `rel`.
 /// Each component must name exactly one entry: a stored name that Windows
 /// would read as a drive, a root, `.`, `..` or more than one component is an
-/// error.
+/// error. So is a name that only the extended form (`\\?\`) keeps as it is
+/// (see [`needs_extended`]) below a root not in that form: the path would
+/// name another entry, or a device. filegen's root is canonical, and so in
+/// the extended form.
 pub fn rel_to_path(root: &Path, rel: &[u8]) -> io::Result<PathBuf> {
+    let extended = is_extended(root);
     let mut path = root.to_path_buf();
     for part in rel.split(|&b| b == b'/') {
         let name = bytes_to_os(part)?;
         let mut components = Path::new(&name).components();
         match (components.next(), components.next()) {
-            (Some(Component::Normal(n)), None) if n == name.as_os_str() => path.push(&name),
+            (Some(Component::Normal(n)), None) if n == name.as_os_str() => {
+                if !extended && needs_extended(&name) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "{name:?} is named as it is only below a root in the \
+                             extended form (\\\\?\\), not below {}",
+                            root.display()
+                        ),
+                    ));
+                }
+                path.push(&name);
+            }
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -276,6 +292,85 @@ pub fn rel_to_path(root: &Path, rel: &[u8]) -> io::Result<PathBuf> {
         }
     }
     Ok(path)
+}
+
+/// Whether `path` is in the extended form (`\\?\C:\...`, `\\?\UNC\...`),
+/// which the system takes as it is.
+fn is_extended(path: &Path) -> bool {
+    matches!(path.components().next(), Some(Component::Prefix(p)) if p.kind().is_verbatim())
+}
+
+/// Whether a path not in the extended form would change the name `name`:
+/// such a path drops a trailing dot or space, and may take a reserved
+/// device name (`CON`, `NUL.txt`, `COM1`, ...) for the device.
+fn needs_extended(name: &OsStr) -> bool {
+    let text = name.to_string_lossy();
+    if text.ends_with(['.', ' ']) {
+        return true;
+    }
+    let stem = text.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let stem = stem.to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix).is_some_and(|n| {
+            let mut c = n.chars();
+            matches!(
+                (c.next(), c.next()),
+                (Some('0'..='9' | '\u{B9}' | '\u{B2}' | '\u{B3}'), None)
+            )
+        })
+    };
+    matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || numbered("COM")
+        || numbered("LPT")
+}
+
+/// The bytes of an absolute symlink target naming `path` (a path below the
+/// canonical root, so in the extended form), in the form [`read_link`]
+/// gives back: std's `read_link` drops the `\\?\` prefix where the path
+/// means the same without it and is short enough, and keeps it otherwise
+/// (for a trailing dot or space, or a long path). In that form the target
+/// has the same bytes when it is written, logged and read back
+/// (`absolute_targets_read_back_as_written` holds std to that). A long
+/// target must keep the prefix anyway: the system refuses to make a
+/// symlink to a long path without it.
+pub fn target_bytes(path: &Path) -> Vec<u8> {
+    os_to_bytes(user_form(path).as_os_str())
+}
+
+/// `path` without its extended prefix (`\\?\C:\` to `C:\`, `\\?\UNC\` to
+/// `\\`) when, as std's `read_link` decides it, the extended form is
+/// shorter than `MAX_PATH` units and the system reads the shorter form as
+/// the very same path (`GetFullPathNameW`, which `path::absolute` calls,
+/// leaves it as it is); `path` itself otherwise.
+fn user_form(path: &Path) -> PathBuf {
+    /// The classic limit of a path, in 16-bit units.
+    const MAX_PATH: usize = 260;
+    let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if units.len() >= MAX_PATH {
+        return path.to_path_buf();
+    }
+    let wide = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+    let shorter: Vec<u16> = if units.starts_with(&wide(r"\\?\UNC\")) {
+        [wide(r"\\"), units[8..].to_vec()].concat()
+    } else if units.starts_with(&wide(r"\\?\")) && units.get(5) == Some(&u16::from(b':')) {
+        units[4..].to_vec()
+    } else {
+        return path.to_path_buf();
+    };
+    let shorter = PathBuf::from(OsString::from_wide(&shorter));
+    match std::path::absolute(&shorter) {
+        Ok(full)
+            if full
+                .as_os_str()
+                .encode_wide()
+                .eq(shorter.as_os_str().encode_wide()) =>
+        {
+            shorter
+        }
+        _ => path.to_path_buf(),
+    }
 }
 
 /// The bytes of any path, as the log writes them: WTF-8, separators as
@@ -489,9 +584,10 @@ pub mod testutil {
         }
     }
 
-    /// False when this user may not create symlinks (that needs Developer
-    /// Mode, an elevated process or the symlink privilege); panics instead
-    /// when the environment variable `CI` is set.
+    /// False, saying so on stderr, when this user may not create symlinks
+    /// (that needs Developer Mode, an elevated process or the symlink
+    /// privilege); panics instead when the environment variable `CI` is
+    /// set, so CI cannot pass by skipping.
     pub fn symlinks_available(dir: &Path) -> bool {
         match super::probe_caps(dir) {
             Ok(caps) if caps.symlinks => true,
@@ -499,6 +595,10 @@ pub mod testutil {
                 assert!(
                     std::env::var_os("CI").is_none(),
                     "CI is set, but this user may not create symlinks"
+                );
+                eprintln!(
+                    "skipping: this user may not create symlinks (that needs \
+                     Developer Mode, an elevated process or the symlink privilege)"
                 );
                 false
             }
@@ -598,6 +698,76 @@ mod tests {
         ] {
             assert!(rel_to_path(root, bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn names_only_the_extended_form_keeps_need_an_extended_root() {
+        let plain = Path::new(r"C:\root");
+        let extended = Path::new(r"\\?\C:\root");
+        let surrogate = [b'a', 0xED, 0xA0, 0x80];
+        for name in [
+            &b"x."[..],
+            b"x ",
+            b"CON",
+            b"nul.txt",
+            b"Com1",
+            b"LPT9.log",
+            b"AUX .md",
+        ] {
+            let rel = [b"d/", name].concat();
+            let err = rel_to_path(plain, &rel).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{rel:?}");
+            assert_eq!(
+                path_to_bytes(&rel_to_path(extended, &rel).unwrap()),
+                [&br"\\?\C:\root\d\"[..], name].concat()
+            );
+        }
+        for name in [
+            &b"x.y"[..],
+            b"CONSOLE",
+            b"COM10",
+            b"a.CON",
+            b"x",
+            &surrogate,
+        ] {
+            assert!(rel_to_path(plain, name).is_ok(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn absolute_targets_read_back_as_written() {
+        let d = tempfile::tempdir().unwrap();
+        if !testutil::symlinks_available(d.path()) {
+            return;
+        }
+        let root = fs::canonicalize(d.path()).unwrap();
+        let surrogate = OsString::from_wide(&[0x61, 0xD800]);
+        let mut names: Vec<OsString> = ["f", "x.", "x ", "CON", "NUL.txt"]
+            .into_iter()
+            .map(OsString::from)
+            .chain([surrogate])
+            .collect();
+        // Around MAX_PATH: the extended form shorter, as long, and longer.
+        let room = 260 - root.as_os_str().encode_wide().count() - 1;
+        for len in [room - 2, room - 1, room, room + 1, room + 40] {
+            names.push("n".repeat(len).into());
+        }
+        for (i, name) in names.iter().enumerate() {
+            let target = target_bytes(&root.join(name));
+            let link = root.join(format!("link{i}"));
+            symlink(&target, &link, LinkTarget::File).unwrap();
+            assert_eq!(
+                read_link(&link).unwrap(),
+                target,
+                "{}",
+                String::from_utf8_lossy(&target)
+            );
+        }
+        // A plain name is written without the prefix, a trailing dot with it.
+        assert!(!target_bytes(&root.join("f")).starts_with(br"\\?\"));
+        assert!(target_bytes(&root.join("x.")).starts_with(br"\\?\"));
+        // Not a path in the extended form: as it is.
+        assert_eq!(target_bytes(Path::new(r"C:\a\b.")), br"C:\a\b.");
     }
 
     #[test]
@@ -719,6 +889,48 @@ mod tests {
         assert!(back[65_536..196_608].iter().all(|&b| b == 0));
         assert!(back[196_608..].iter().all(|&b| b == 0xAB));
         f.write_all(b"still writable").unwrap();
+    }
+
+    /// `fsutil sparse <command> <path>`: its output, after checking it
+    /// succeeded.
+    fn fsutil_sparse(command: &str, path: &Path) -> String {
+        let out = std::process::Command::new("fsutil")
+            .args(["sparse", command])
+            .arg(path)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(out.status.success(), "fsutil sparse {command}: {text}");
+        text
+    }
+
+    #[test]
+    fn punch_hole_makes_a_real_hole() {
+        // Checked by the system's own tool rather than by more calls of
+        // ours: the file is sparse and the range is deallocated.
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("f");
+        let len = 1 << 20;
+        fs::write(&p, vec![0x5A; len]).unwrap();
+        let dense = fsutil_sparse("queryflag", &p);
+        let mut f = OpenOptions::new().read(true).write(true).open(&p).unwrap();
+        assert!(punch_hole(&f, 262_144, 524_288).unwrap());
+        let mut back = Vec::new();
+        f.read_to_end(&mut back).unwrap();
+        assert!(back[..262_144].iter().all(|&b| b == 0x5A));
+        assert!(back[262_144..786_432].iter().all(|&b| b == 0));
+        assert!(back[786_432..].iter().all(|&b| b == 0x5A));
+        drop(f);
+        assert_eq!(lstat(&p).unwrap().size, len as u64);
+        // The flag's text is in the system's language: it differs from the
+        // one for the file before, whatever the language.
+        assert_ne!(fsutil_sparse("queryflag", &p), dense);
+        let ranges = fsutil_sparse("queryrange", &p);
+        assert_eq!(
+            ranges.lines().filter(|l| l.contains("0x")).count(),
+            2,
+            "{ranges}"
+        );
     }
 
     #[test]

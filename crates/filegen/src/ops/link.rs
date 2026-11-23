@@ -121,8 +121,14 @@ fn draw_target(ctx: &mut OpCtx, dir: NodeId) -> Target {
             (rel, if class == 0 { "file" } else { "dir" })
         }
         None => {
-            let base = if absolute { ctx.model.root() } else { dir };
-            (dangling(ctx, base), "dangling")
+            // An absolute target is a stored path below the root until it
+            // is named below; a relative one is the target itself.
+            let (base, sep) = if absolute {
+                (ctx.model.root(), b'/')
+            } else {
+                (dir, platform::TARGET_SEP)
+            };
+            (dangling(ctx, base, sep), "dangling")
         }
     };
     let bytes = if absolute {
@@ -134,7 +140,7 @@ fn draw_target(ctx: &mut OpCtx, dir: NodeId) -> Target {
                 ctx.root.display()
             )
         });
-        platform::path_to_bytes(&path)
+        platform::target_bytes(&path)
     } else {
         rel
     };
@@ -145,10 +151,10 @@ fn draw_target(ctx: &mut OpCtx, dir: NodeId) -> Target {
     }
 }
 
-/// A path of 1-3 components of `[a-z0-9]{1,12}` that does not exist
-/// below `base`: its first component is redrawn while `base` holds an
-/// entry folding to it.
-fn dangling(ctx: &mut OpCtx, base: NodeId) -> Vec<u8> {
+/// A path of 1-3 components of `[a-z0-9]{1,12}`, joined by `sep`, that
+/// does not exist below `base`: its first component is redrawn while
+/// `base` holds an entry folding to it.
+fn dangling(ctx: &mut OpCtx, base: NodeId, sep: u8) -> Vec<u8> {
     let n = ctx.rng.random_range(1..=3);
     let mut first = component(ctx);
     for _ in 0..DANGLING_TRIES {
@@ -161,7 +167,7 @@ fn dangling(ctx: &mut OpCtx, base: NodeId) -> Vec<u8> {
     }
     let mut out = first;
     for _ in 1..n {
-        out.push(platform::TARGET_SEP);
+        out.push(sep);
         out.extend(component(ctx));
     }
     out
@@ -201,11 +207,10 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
-    use tempfile::TempDir;
 
     use crate::config::Config;
     use crate::kind::OpKind;
@@ -213,8 +218,9 @@ mod tests {
     use crate::model::{Model, NodeId, NodeKind};
     use crate::ops::testutil::{
         abs, assert_matches_disk, config, detail, done, is_no_target, parent_of, put_dir, put_file,
-        step,
+        step, tempdir,
     };
+    use crate::platform::testutil;
 
     fn caps() -> Config {
         config(&[("max_file_size", "64K"), ("max_total_size", "4M")])
@@ -225,18 +231,34 @@ mod tests {
     fn check_link(root: &Path, m: &Model, a: &crate::ops::Applied) -> (String, bool) {
         let rec: &OpRecord = &a.rec;
         let link = abs(root, &rec.path);
-        let target = fs::read_link(&link).unwrap();
-        let target_bytes = platform::path_to_bytes(&target);
-        assert_eq!(target_bytes, detail(rec, "target").unwrap().as_bytes());
+        let target_bytes = platform::read_link(&link).unwrap();
+        let target = PathBuf::from(platform::bytes_to_os(&target_bytes).unwrap());
+        // The log holds the target's text: its very bytes, unless an edge
+        // name put an unpaired surrogate in it (Windows), logged as U+FFFD.
+        let logged = detail(rec, "target").unwrap();
+        match std::str::from_utf8(&target_bytes) {
+            Err(_) if platform::EDGE_NAMES => {
+                assert_eq!(String::from_utf8_lossy(&target_bytes), logged);
+            }
+            _ => assert_eq!(target_bytes, logged.as_bytes()),
+        }
         let absolute = match detail(rec, "absolute").unwrap() {
             "0" => false,
             "1" => true,
             v => panic!("absolute={v}"),
         };
         if absolute {
-            assert!(target.starts_with(root), "{target:?}");
+            // The root as an absolute target names it: on Windows without
+            // the `\\?\` prefix, unless a name below needs it.
+            let as_target = platform::bytes_to_os(&platform::target_bytes(root)).unwrap();
+            assert!(
+                target.starts_with(root) || target.starts_with(as_target),
+                "{target:?}"
+            );
+            assert!(target.is_absolute(), "{target:?}");
         } else {
             assert!(!target_bytes.starts_with(b"/"));
+            assert!(target.is_relative(), "{target:?}");
         }
         let kind = detail(rec, "target_kind").unwrap().to_string();
         match kind.as_str() {
@@ -264,7 +286,10 @@ mod tests {
 
     #[test]
     fn symlink_targets_resolve_as_declared() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
+        if !testutil::symlinks_available(tmp.path()) {
+            return;
+        }
         let cfg = caps();
         let mut m = Model::new();
         let mut rng = ChaCha8Rng::seed_from_u64(1);
@@ -298,7 +323,10 @@ mod tests {
 
     #[test]
     fn repoint_and_delete_symlink() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
+        if !testutil::symlinks_available(tmp.path()) {
+            return;
+        }
         let cfg = caps();
         let mut m = Model::new();
         let mut rng = ChaCha8Rng::seed_from_u64(2);
@@ -335,19 +363,25 @@ mod tests {
         assert!(is_no_target(
             &delete_symlink(&mut ctx!(tmp, cfg, m, rng)).unwrap()
         ));
-        assert_eq!(fs::read(tmp.path().join("d/f")).unwrap(), b"data");
+        assert_eq!(fs::read(abs(tmp.path(), b"d/f")).unwrap(), b"data");
         assert_matches_disk(tmp.path(), &m);
     }
 
     #[test]
     fn relative_target_climbs_from_link_dir() {
-        assert_eq!(relative(b"a/b", b"a/b/c"), b"c");
-        assert_eq!(relative(b"a/b", b"a/x/y"), b"../x/y");
-        assert_eq!(relative(b"", b"a/b"), b"a/b");
-        assert_eq!(relative(b"a/b", b"z"), b"../../z");
-        assert_eq!(relative(b"a/b", b"a"), b"..");
-        assert_eq!(relative(b"a/b", b"a/b"), b".");
+        // A target's components are joined by the platform's separator.
+        let t = |s: &[u8]| -> Vec<u8> {
+            s.iter()
+                .map(|&b| if b == b'/' { platform::TARGET_SEP } else { b })
+                .collect()
+        };
+        assert_eq!(relative(b"a/b", b"a/b/c"), t(b"c"));
+        assert_eq!(relative(b"a/b", b"a/x/y"), t(b"../x/y"));
+        assert_eq!(relative(b"", b"a/b"), t(b"a/b"));
+        assert_eq!(relative(b"a/b", b"z"), t(b"../../z"));
+        assert_eq!(relative(b"a/b", b"a"), t(b".."));
+        assert_eq!(relative(b"a/b", b"a/b"), t(b"."));
         // Components compare whole, not by prefix.
-        assert_eq!(relative(b"ab", b"a/c"), b"../a/c");
+        assert_eq!(relative(b"ab", b"a/c"), t(b"../a/c"));
     }
 }

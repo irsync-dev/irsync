@@ -313,6 +313,7 @@ pub(crate) mod testutil {
     use std::path::{Path, PathBuf};
 
     use rand_chacha::ChaCha8Rng;
+    use tempfile::TempDir;
 
     use super::{dispatch, Applied, OpCtx, OpOutcome};
     use crate::config::{load, Config};
@@ -320,6 +321,24 @@ pub(crate) mod testutil {
     use crate::log::OpRecord;
     use crate::model::{Model, NodeId, NodeKind};
     use crate::walk::from_disk;
+
+    /// A temp dir at its canonical path, as `run` makes the root: on
+    /// Windows that is the extended form (`\\?\`), below which every name
+    /// filegen draws (a trailing dot, `CON`) names exactly that entry. Its
+    /// entries are named with [`abs`], never with a `/` in `join`.
+    pub fn tempdir() -> TempDir {
+        let base = fs::canonicalize(std::env::temp_dir()).unwrap();
+        tempfile::Builder::new().tempdir_in(base).unwrap()
+    }
+
+    /// `kinds` without the ones that cannot run here (none on Unix), so a
+    /// test cycling through many kinds runs those this platform, with the
+    /// capabilities it has in `root`, can do.
+    pub fn kinds_here(root: &Path, kinds: &[OpKind]) -> Vec<OpKind> {
+        let caps = crate::platform::probe_caps(root).unwrap();
+        let off = crate::caps::disabled(crate::platform::Platform::CURRENT, caps);
+        kinds.iter().copied().filter(|k| !off.contains(k)).collect()
+    }
 
     pub fn config(sets: &[(&str, &str)]) -> Config {
         let sets: Vec<(String, String)> = sets
@@ -412,7 +431,7 @@ pub(crate) mod testutil {
     /// Writes `data` to `rel` on disk and adds it to the model with its
     /// real inode; the parent must already be in the model.
     pub fn put_file(root: &Path, m: &mut Model, rel: &str, data: &[u8]) -> NodeId {
-        let path = root.join(rel);
+        let path = abs(root, rel.as_bytes());
         fs::write(&path, data).unwrap();
         let ino = crate::platform::lstat(&path).unwrap().ino;
         let (dir, name) = parent_and_name(m, rel);
@@ -421,7 +440,7 @@ pub(crate) mod testutil {
 
     /// Creates the directory `rel` on disk and in the model.
     pub fn put_dir(root: &Path, m: &mut Model, rel: &str) -> NodeId {
-        let path = root.join(rel);
+        let path = abs(root, rel.as_bytes());
         fs::create_dir(&path).unwrap();
         let ino = crate::platform::lstat(&path).unwrap().ino;
         let (dir, name) = parent_and_name(m, rel);

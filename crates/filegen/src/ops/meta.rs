@@ -219,19 +219,24 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::fs;
+    // For the helpers of the POSIX-only tests.
+    #[cfg(unix)]
     use std::path::Path;
 
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
-    use tempfile::TempDir;
 
     use crate::config::Config;
     use crate::kind::OpKind;
     use crate::log::OpRecord;
-    use crate::model::{Model, NodeId, NodeKind};
+    #[cfg(unix)]
+    use crate::model::NodeId;
+    use crate::model::{Model, NodeKind};
     use crate::ops::testutil::{
-        abs, assert_matches_disk, config, detail, done, is_no_target, put_file, step, triples,
+        abs, assert_matches_disk, config, detail, done, is_no_target, kinds_here, put_file, step,
+        tempdir, triples,
     };
+    #[cfg(unix)]
     use crate::ops::Applied;
     use crate::platform::{testutil, FileKind, Stat};
     use crate::walk::from_disk;
@@ -243,6 +248,7 @@ mod tests {
     }
 
     /// A tree of dirs, files, symlinks and FIFOs built through the ops.
+    #[cfg(unix)]
     fn populate(root: &Path, cfg: &Config, m: &mut Model, rng: &mut ChaCha8Rng) -> NodeId {
         let mut anchor = m.root();
         let kinds = [
@@ -259,6 +265,7 @@ mod tests {
     }
 
     /// One step of `kind` that must find a target.
+    #[cfg(unix)]
     fn run(
         root: &Path,
         cfg: &Config,
@@ -274,9 +281,11 @@ mod tests {
         jiff::Timestamp::from_nanosecond(md.mtime_ns).unwrap()
     }
 
+    // Permission bits are POSIX-only.
+    #[cfg(unix)]
     #[test]
     fn chmod_keeps_owner_access() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[("chmod.special_weight", "1.0")]);
         let mut m = Model::new();
         let mut rng = ChaCha8Rng::seed_from_u64(1);
@@ -331,7 +340,7 @@ mod tests {
 
     #[test]
     fn chmod_without_modes_is_no_target() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let mut cfg = caps(&[]);
         cfg.chmod.modes.clear();
         let mut m = Model::new();
@@ -342,8 +351,11 @@ mod tests {
 
     #[test]
     fn set_mtime_classes_and_symlinks() {
-        let tmp = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
+        let tmp = tempdir();
+        if !testutil::symlinks_available(tmp.path()) {
+            return;
+        }
+        let outside = tempdir();
         let target = outside.path().join("t");
         fs::write(&target, b"target").unwrap();
         let before = mtime_of(&platform::lstat(&target).unwrap());
@@ -416,7 +428,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn set_xattr_round_trip() {
-        let probe = TempDir::new().unwrap();
+        let probe = tempdir();
         let p = probe.path().join("p");
         fs::write(&p, b"").unwrap();
         if let Err(e) = platform::set_xattr(&p, "user.filegen.probe", b"1") {
@@ -428,7 +440,7 @@ mod tests {
         }
         let cfg = caps(&[("xattr.max_value", "64")]);
         let run_in = |seed: u64| {
-            let tmp = TempDir::new().unwrap();
+            let tmp = tempdir();
             let mut m = Model::new();
             let mut rng = ChaCha8Rng::seed_from_u64(seed);
             let mut anchor = populate(tmp.path(), &cfg, &mut m, &mut rng);
@@ -469,7 +481,7 @@ mod tests {
 
     #[test]
     fn chown_without_ids_is_no_target() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[]);
         let mut m = Model::new();
         let mut rng = ChaCha8Rng::seed_from_u64(5);
@@ -483,7 +495,7 @@ mod tests {
     #[test]
     fn chown_to_own_ids() {
         // An unprivileged user may chown to its own uid and gid.
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let uid = platform::euid();
         let gid = platform::egid();
         let mut cfg = caps(&[]);
@@ -520,7 +532,7 @@ mod tests {
 
     #[test]
     fn mknod_without_root_is_no_target() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[]);
         let mut m = Model::new();
         let mut rng = ChaCha8Rng::seed_from_u64(7);
@@ -557,21 +569,24 @@ mod tests {
 
     #[test]
     fn dry_run_follows_real_run_through_meta_ops() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let mut cfg = caps(&[]);
         cfg.chown.uids = vec![platform::euid()];
-        let kinds = [
-            OpKind::CreateFile,
-            OpKind::Mkdir,
-            OpKind::Chmod,
-            OpKind::Symlink,
-            OpKind::SetMtime,
-            OpKind::Mkfifo,
-            OpKind::Chown,
-            OpKind::Mknod,
-            OpKind::Chmod,
-            OpKind::SetMtime,
-        ];
+        let kinds = kinds_here(
+            tmp.path(),
+            &[
+                OpKind::CreateFile,
+                OpKind::Mkdir,
+                OpKind::Chmod,
+                OpKind::Symlink,
+                OpKind::SetMtime,
+                OpKind::Mkfifo,
+                OpKind::Chown,
+                OpKind::Mknod,
+                OpKind::Chmod,
+                OpKind::SetMtime,
+            ],
+        );
         let go = |dry: bool| {
             let mut m = Model::new();
             let mut rng = ChaCha8Rng::seed_from_u64(8);
@@ -585,7 +600,10 @@ mod tests {
         };
         let (real, real_model, real_tail) = go(false);
         assert_matches_disk(tmp.path(), &real_model);
-        for kind in [OpKind::Chmod, OpKind::SetMtime, OpKind::Chown] {
+        for kind in kinds_here(
+            tmp.path(),
+            &[OpKind::Chmod, OpKind::SetMtime, OpKind::Chown],
+        ) {
             let tag = format!("{kind:?} ");
             assert!(
                 real.iter().any(|l| l.starts_with(&tag)),

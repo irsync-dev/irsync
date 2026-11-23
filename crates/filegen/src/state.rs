@@ -230,8 +230,10 @@ mod tests {
         let yaml = serde_saphyr::to_string(&s).unwrap();
         let mut skipping = false;
         let mut v3 = String::new();
+        // A real version 3 file predates names.edge_rate too.
+        assert!(yaml.contains("  edge_rate: "), "{yaml}");
         for line in yaml.lines() {
-            if line.starts_with("platform:") {
+            if line.starts_with("platform:") || line.trim_start().starts_with("edge_rate:") {
                 continue;
             }
             if line.starts_with("caps:") {
@@ -250,6 +252,7 @@ mod tests {
             }
         }
         assert!(!v3.contains("platform:") && !v3.contains("caps:"), "{v3}");
+        assert!(!v3.contains("edge_rate"), "{v3}");
         let dir = TempDir::new().unwrap();
         let p = dir.path().join("s.yaml");
         fs::write(&p, v3).unwrap();

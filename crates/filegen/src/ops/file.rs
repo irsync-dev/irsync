@@ -326,7 +326,7 @@ mod tests {
     use crate::kind::OpKind;
     use crate::log::OpRecord;
     use crate::model::{Model, NodeKind};
-    use crate::ops::testutil::{config, detail, done};
+    use crate::ops::testutil::{config, detail, done, tempdir};
     use crate::ops::{dispatch, OpFn, OpOutcome};
 
     fn small() -> Config {
@@ -337,22 +337,27 @@ mod tests {
         (Model::new(), ChaCha8Rng::seed_from_u64(seed))
     }
 
-    /// Every entry on disk below `root`: files map to their length, every
-    /// other kind to 0.
+    /// Every entry on disk below `root`, by its stored relative path (names
+    /// joined with `/`): files map to their length, every other kind to 0.
     fn tree_sizes(root: &Path) -> BTreeMap<Vec<u8>, u64> {
-        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<Vec<u8>, u64>) {
+        fn walk(dir: &Path, rel: &[u8], out: &mut BTreeMap<Vec<u8>, u64>) {
             for e in fs::read_dir(dir).unwrap() {
-                let p = e.unwrap().path();
+                let e = e.unwrap();
+                let p = e.path();
                 let md = fs::symlink_metadata(&p).unwrap();
-                let rel = platform::path_to_bytes(p.strip_prefix(root).unwrap());
-                out.insert(rel, if md.is_file() { md.len() } else { 0 });
+                let mut path = rel.to_vec();
+                if !path.is_empty() {
+                    path.push(b'/');
+                }
+                path.extend(platform::os_to_bytes(&e.file_name()));
+                out.insert(path.clone(), if md.is_file() { md.len() } else { 0 });
                 if md.is_dir() {
-                    walk(root, &p, out);
+                    walk(&p, &path, out);
                 }
             }
         }
         let mut out = BTreeMap::new();
-        walk(root, root, &mut out);
+        walk(root, b"", &mut out);
         out
     }
 
@@ -390,7 +395,7 @@ mod tests {
 
     #[test]
     fn create_file_writes_content_and_updates_model() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = small();
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 1);
         for _ in 0..10 {
@@ -412,7 +417,7 @@ mod tests {
 
     #[test]
     fn create_file_respects_budget() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = config(&[("max_file_size", "60"), ("max_total_size", "100")]);
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 2);
         for _ in 0..20 {
@@ -426,7 +431,7 @@ mod tests {
 
     #[test]
     fn append_truncate_overwrite_rewrite_track_size() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = small();
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 3);
         put_file(&tmp, &mut m, "f", 1000);
@@ -476,9 +481,11 @@ mod tests {
         assert_eq!(m.entries(), 1);
     }
 
+    // FIFOs are POSIX-only.
+    #[cfg(unix)]
     #[test]
     fn delete_file_removes_fifo_too() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = small();
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 4);
         platform::mkfifo(&tmp.path().join("p"), 0o644).unwrap();
@@ -504,7 +511,7 @@ mod tests {
 
     #[test]
     fn punch_hole_keeps_size_or_extends_within_cap() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = small();
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 5);
         put_file(&tmp, &mut m, "f", 40 << 10);
@@ -549,7 +556,7 @@ mod tests {
 
     #[test]
     fn punch_hole_skips_tiny_files() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = small();
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 6);
         put_file(&tmp, &mut m, "f", 1);
@@ -562,7 +569,7 @@ mod tests {
 
     #[test]
     fn no_target_when_empty() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = small();
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 7);
         let ops: [OpFn; 6] = [
@@ -585,7 +592,7 @@ mod tests {
 
     #[test]
     fn content_ops_report_generation_time() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = small();
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 21);
         let a = done(create_file(&mut ctx!(tmp, cfg, m, rng)).unwrap());
@@ -600,7 +607,7 @@ mod tests {
 
     #[test]
     fn dry_run_touches_nothing_but_updates_model() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = small();
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 8);
         let mut ctx = ctx!(tmp, cfg, m, rng);
@@ -713,11 +720,7 @@ mod tests {
     #[test]
     fn ops_are_deterministic() {
         let cfg = config(&[("max_file_size", "16K"), ("max_total_size", "64K")]);
-        let (t1, t2, t3) = (
-            TempDir::new().unwrap(),
-            TempDir::new().unwrap(),
-            TempDir::new().unwrap(),
-        );
+        let (t1, t2, t3) = (tempdir(), tempdir(), tempdir());
         let r1 = run(&t1, &cfg, 42, false);
         let r2 = run(&t2, &cfg, 42, false);
         assert_eq!(r1.full, r2.full);

@@ -154,13 +154,19 @@ mod tests {
     #[test]
     fn walk_builds_sorted_model() {
         let t = tempfile::tempdir().unwrap();
+        if !testutil::symlinks_available(t.path()) {
+            return;
+        }
         fs::create_dir(t.path().join("b")).unwrap();
         fs::write(t.path().join("a.txt"), b"1234567").unwrap();
-        testutil::symlink(Path::new("a.txt"), &t.path().join("b/sym")).unwrap();
+        testutil::symlink(Path::new("a.txt"), &t.path().join("b").join("sym")).unwrap();
+        // FIFOs are POSIX-only: the tree has one where the platform has them.
+        #[cfg(unix)]
         platform::mkfifo(&t.path().join("b/fifo"), 0o700).unwrap();
+        let fifo = cfg!(unix);
         let m = from_disk(t.path()).unwrap();
         let r = m.root();
-        assert_eq!(m.entries(), 4);
+        assert_eq!(m.entries(), 3 + usize::from(fifo));
         assert_eq!(child_names(&m, r), [&b"a.txt"[..], b"b"]);
         let a = m.resolve(b"a.txt").unwrap();
         assert_eq!(m.node(a).kind, NodeKind::File);
@@ -168,11 +174,17 @@ mod tests {
         assert_ne!(m.node(a).ino, 0);
         let b = m.resolve(b"b").unwrap();
         assert_eq!(m.node(b).kind, NodeKind::Dir);
-        assert_eq!(child_names(&m, b), [&b"fifo"[..], b"sym"]);
+        if fifo {
+            assert_eq!(child_names(&m, b), [&b"fifo"[..], b"sym"]);
+        } else {
+            assert_eq!(child_names(&m, b), [&b"sym"[..]]);
+        }
         let sym = m.resolve(b"b/sym").unwrap();
         assert_eq!(m.node(sym).kind, NodeKind::Symlink);
-        let fifo = m.resolve(b"b/fifo").unwrap();
-        assert_eq!(m.node(fifo).kind, NodeKind::Fifo);
+        if fifo {
+            let fifo = m.resolve(b"b/fifo").unwrap();
+            assert_eq!(m.node(fifo).kind, NodeKind::Fifo);
+        }
         assert_eq!(m.total_bytes(), 7);
     }
 
@@ -298,6 +310,49 @@ mod tests {
         // Off-limits files carry no bytes in the model.
         assert_eq!(m.total_bytes(), 3);
         assert_eq!(m.entries(), 8);
+    }
+
+    /// Sets or clears the read-only attribute of `path`.
+    #[cfg(windows)]
+    fn set_readonly(path: &Path, on: bool) {
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(on);
+        fs::set_permissions(path, perms).unwrap();
+    }
+
+    /// The Windows counterpart of the test above: what filegen could not
+    /// safely change is what carries the read-only attribute.
+    #[cfg(windows)]
+    #[test]
+    fn walk_marks_read_only_entries_off_limits() {
+        let t = tempfile::tempdir().unwrap();
+        let p = |rel: &str| t.path().join(rel);
+        // A read-only file, as in some checkouts and copies from media.
+        fs::write(p("ro"), b"read only").unwrap();
+        set_readonly(&p("ro"), true);
+        fs::write(p("rw"), b"rw").unwrap();
+        // A read-only directory is not entered.
+        fs::create_dir(p("ro_dir")).unwrap();
+        fs::write(p("ro_dir").join("f"), b"f").unwrap();
+        set_readonly(&p("ro_dir"), true);
+        fs::create_dir(p("ok")).unwrap();
+        fs::write(p("ok").join("f"), b"f").unwrap();
+        let m = from_disk(t.path());
+        set_readonly(&p("ro"), false);
+        set_readonly(&p("ro_dir"), false);
+        let m = m.unwrap();
+        for rel in [&b"ro"[..], b"ro_dir"] {
+            let id = m.resolve(rel).unwrap();
+            assert_eq!(m.node(id).kind, NodeKind::OffLimits, "{rel:?}");
+            assert!(m.node(id).children.is_empty(), "{rel:?}");
+        }
+        assert_eq!(m.node(m.resolve(b"rw").unwrap()).kind, NodeKind::File);
+        let ok = m.resolve(b"ok").unwrap();
+        assert_eq!(m.node(ok).kind, NodeKind::Dir);
+        assert_eq!(m.node(m.resolve(b"ok/f").unwrap()).kind, NodeKind::File);
+        // Off-limits files carry no bytes in the model.
+        assert_eq!(m.total_bytes(), 3);
+        assert_eq!(m.entries(), 5);
     }
 
     #[cfg(target_os = "linux")]
