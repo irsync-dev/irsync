@@ -80,10 +80,6 @@ while read -r path version commit _; do
   python3 "$root/site/tools/strip_font_link.py" "$out/$path"
 done <"$out/VERSIONS"
 
-# The version switcher in every book's top bar. It needs every book built:
-# each link goes to the same page in the other book if that book has it.
-python3 "$root/site/tools/switcher.py" "$out"
-
 # The landing page files and install.sh. Everything else in site/ (the
 # tools, the sources, the scripts, the deploy settings) stays behind.
 for f in 404.html robots.txt _headers install.sh favicon.svg; do
@@ -91,6 +87,12 @@ for f in 404.html robots.txt _headers install.sh favicon.svg; do
 done
 # The landing page itself, with the release versions from git written in.
 python3 "$root/site/tools/versions.py" render "$root" "$root/site/index.html" "$out/index.html"
+
+# The version switcher in every book's top bar and on the landing page. It
+# needs every book built: each link goes to the same page in the other book
+# if that book has it. The landing page opens it with the books' script.
+python3 "$root/site/tools/switcher.py" "$out"
+cp "$root/book/theme/switcher.js" "$out/"
 
 # Its stylesheet: Tailwind CSS and daisyUI, at the versions pinned in
 # site/package-lock.json, compile site/tailwind.css into style.css. npm ci

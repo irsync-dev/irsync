@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add the version switcher to the books of a built site.
+"""Add the version switcher to the books and the landing page of a built site.
 
 The site holds the book several times (see site/tools/versions.py and the
 VERSIONS file the build writes). This tool runs after mdbook has built all
@@ -13,10 +13,15 @@ other book if that book has the file, else that book's title page. So the
 build's link check (check.py) checks every one of them, and the browser
 only opens and closes the list (book/theme/switcher.js).
 
+The landing page (SITE_DIR/index.html) gets the same switcher, between its
+`<!-- switcher -->` markers, with links to each book's title page and the
+main version's channel ticked, as in /book/.
+
 Usage: switcher.py SITE_DIR    (SITE_DIR holds VERSIONS and the books)
 """
 
 import html
+import re
 import sys
 from collections import namedtuple
 from pathlib import Path
@@ -62,16 +67,18 @@ def ticked(versions_text, path):
     return versions.channel(version) if version else "dev"
 
 
-def menu(entries, here, page, pages_of):
+def menu(entries, here, page, pages_of, up=None):
     """The switcher's markup for `page` (its path inside its book, such as
     tutorial/first-sync.html). `here` is the ticked entry; `pages_of` holds
-    the HTML files of each entry's book."""
-    up = "../" * (page.count("/") + 1)
+    the HTML files of each entry's book. `up` leads from the page to the
+    site's root; by default, from a page inside a book."""
+    if up is None:
+        up = "../" * (page.count("/") + 1)
     items = []
     for e in entries:
         same = page != "404.html" and page in pages_of.get(e.path, ())
         href = f"{up}{e.path}/{page if same else 'index.html'}"
-        attrs = [f'href="{html.escape(href)}"']
+        attrs = [f'href="{html.escape(href)}"', f'data-book="{e.path}"']
         if e.path == here:
             attrs.append('aria-current="true"')
         if same:
@@ -104,8 +111,19 @@ def insert(page_html, menu_html):
     return page_html.replace(_BAR, _BAR + menu_html)
 
 
+_LANDING = re.compile(r"<!-- switcher -->.*?<!-- /switcher -->", re.DOTALL)
+
+
+def landing(page_html, menu_html):
+    """The landing page with the menu in place of its switcher markers."""
+    if len(_LANDING.findall(page_html)) != 1:
+        raise SwitcherError("index.html: expected one <!-- switcher --> ... <!-- /switcher --> pair")
+    return _LANDING.sub(lambda _: menu_html, page_html)
+
+
 def apply(site_dir):
-    """Add the switcher to every page of every book in SITE_DIR/VERSIONS."""
+    """Add the switcher to every page of every book in SITE_DIR/VERSIONS,
+    and to the landing page SITE_DIR/index.html when there is one."""
     site_dir = Path(site_dir)
     try:
         text = (site_dir / "VERSIONS").read_text(encoding="utf-8")
@@ -131,6 +149,12 @@ def apply(site_dir):
                 raise SwitcherError(f"{path}/{page}: {e}") from e
             if after != before:
                 f.write_text(after, encoding="utf-8")
+    page = site_dir / "index.html"
+    if page.is_file():
+        # Each link goes to a book's title page: the landing page is in none.
+        html_ = landing(page.read_text(encoding="utf-8"),
+                        menu(found, ticked(text, "book"), "index.html", {}, up=""))
+        page.write_text(html_, encoding="utf-8")
 
 
 def main(argv):
