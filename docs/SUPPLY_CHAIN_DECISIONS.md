@@ -75,10 +75,11 @@ differ, the code is what shipped.
 
 9. **cargo-deny fails on any advisory; exceptions need a reason.**
    Unmaintained and yanked crates fail too. Only crates built for the
-   platforms irsync is built for count (`targets` in `deny.toml`); the
-   licenses of all the others are still checked before a release
-   (`deny-license-check.toml`). Cost if wrong: a platform we build for
-   but forgot to list goes unchecked. Nothing is accepted today.
+   platforms irsync and its tools are built for count (`targets` in
+   `deny.toml`, Windows since 31); the licenses of all the others are still
+   checked before a release (`deny-license-check.toml`). Cost if wrong: a
+   platform we build for but forgot to list goes unchecked. One advisory is
+   accepted today (31).
 
    Two advisories were accepted here until their crates left the build:
    `unsafe-libyaml` (RUSTSEC-2024-0449), when `filegen` moved to a YAML
@@ -284,8 +285,10 @@ differ, the code is what shipped.
     and `Win32_System_Ioctl`). `fileset` reads the NTFS change time and a
     reparse point's tag with `GetFileInformationByHandleEx`, in one `unsafe`
     block in `crates/fileset/src/platform/windows.rs`. The standard library
-    does not expose the change time, and without it `update` would miss a
-    file rewritten with its old mtime put back. `filegen` reads a reparse
+    does not expose the change time, which `fileset` records as `ctime`, as
+    it does on Unix. No comparison tier uses it and `update` does not decide
+    by it: a file is hashed again when its size, mtime or file identity
+    differ. `filegen` reads a reparse
     point's tag the same way, and punches holes with `DeviceIoControl`
     (`FSCTL_SET_SPARSE`, `FSCTL_SET_ZERO_DATA`), one `unsafe` block each in
     `crates/filegen/src/platform/windows.rs`. Why this crate: it is
@@ -331,6 +334,39 @@ differ, the code is what shipped.
     2026-11-25: it takes `nix` 0.32, which removes that entry. Cost if
     wrong: the replacement is one `SetConsoleCtrlHandler` call through
     `windows-sys`, with a `// SAFETY:` comment.
+
+31. **One advisory accepted: `chrono` is unmaintained (RUSTSEC-2026-0543)**
+    (2026-11-23). Adding the Windows targets (32) made `cargo deny` look at
+    every Windows-only crate of the workspace, iroh's included, and it found
+    this one. `chrono` is in the build only on Windows, through `netwatch`
+    (iroh); no Linux, macOS or FreeBSD build has it. The advisory says
+    `chrono` is unmaintained, not that it holds a vulnerability. It is
+    accepted under `[advisories]` in `deny.toml` with that reason, the other
+    option being to keep Windows out of `deny.toml` until irsync itself builds
+    there, which would leave `filegen` and `fileset`'s Windows build
+    unchecked. We asked upstream to drop it; the tracking issue is #174. Cost
+    if wrong: if a real vulnerability appears in `chrono`, the daily check
+    still reports it, because the entry names this advisory and no other.
+    Remove the entry when iroh no longer builds `chrono` on Windows; the check
+    fails until then (`-D advisory-not-detected`).
+
+32. **Windows joins the targets in `deny.toml`, with a temporary skip of
+    `nix` 0.31** (2026-11-23). `filegen` and `fileset` are built for
+    `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`, so an advisory,
+    a license or a duplicate in a crate only they use would otherwise go
+    unseen. The check now covers the Windows-only crates of the whole
+    workspace, not only those two tools'. It also showed a second `nix`:
+    `ctrlc` is pinned to 3.5.2 (30), which asks for `nix` 0.31, while the rest
+    is on 0.32. No single target builds both, but `Cargo.lock` holds both and
+    cargo-deny counts them. The duplicate is skipped as `nix@0.31`, with
+    `ctrlc` as the reason, in the same single-entry form as the others (26).
+    Both this skip and the pin go when `ctrlc` moves to 3.5.3, which is not
+    before 2026-11-25, because 3.5.3 was under a week old on 2026-11-23. The
+    check fails on the skip once it no longer matches (`-D unmatched-skip`),
+    so it cannot be forgotten. Cost if wrong: a Windows-only crate we do not
+    answer for can fail the check after a routine `cargo update`, and then
+    needs the usual fix or entry (see "Accepting an advisory" and "Accepting
+    a second version of a crate" in the book's supply chain page).
 
 ## Left open
 

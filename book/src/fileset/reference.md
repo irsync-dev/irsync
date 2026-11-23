@@ -48,7 +48,8 @@ interrupted `init` (run `init` again). A manifest in a subdirectory is a
 warning, not an error.
 
 A regular file is hashed again only when its size, `mtime` or inode differ
-from the manifest, or when the manifest holds no hash for it. Otherwise the
+from the manifest (on Windows, the file index stands for the inode), or when
+the manifest holds no hash for it. Otherwise the
 stored hash is kept. A file that cannot be read produces the warning
 `cannot hash <path>` and is recorded without a hash. Rows that have not changed are not rewritten. Whatever
 the scan did not see is removed from the manifest: deleted entries, and also
@@ -92,7 +93,7 @@ pattern, or the shell expands it first.
 | --- | --- |
 | `--manifest MPATH` | Use the manifest at `MPATH` instead of `PATH/.fileset.sqlite`, `PATH/.fileset.fjall` or `PATH/.fileset.redb`. It may lie outside the tree. A directory is read as fjall, a file that starts as a redb file does as redb, any other file as SQLite. |
 | `--fail-on-warnings` | Exit 1 instead of 0 when the run produced warnings. |
-| `--cross-mount-points` | Descend into directories on other filesystems. |
+| `--cross-mount-points` | Descend into directories on other filesystems. It has no effect on Windows, where no reparse point is entered (see [Windows](#windows)). |
 | `--no-dir-sort` | Do not sort directory entries before iterating. |
 | `-j, --jobs N` | Threads that hash file contents. Default: the number of CPUs. `N` is at least 1. |
 | `--walk-threads N` | Threads that list directories and read metadata. Default: 4. `N` is at least 1. |
@@ -417,7 +418,9 @@ a root that is not a directory; a manifest schema newer than this `fileset`;
 it); more than one manifest at the root without `--manifest`; a manifest at the root
 that is a symbolic link; `init` on a tree that
 already has a manifest, lies inside a fileset or contains a nested one;
-`update` on a tree that has none.
+`update` on a tree that has none; `check`, `update` or `list` on a manifest
+made on the other platform family, and `check` on a stored path that is not a
+valid name on this platform (see [Windows](#windows)).
 
 ## Read-only media
 
@@ -429,6 +432,113 @@ shows how.
 
 A manifest made with `--store redb` does not need this: it
 [opens on read-only media](#the-redb-backend) as it is.
+
+## Windows
+
+`fileset` runs on Windows, on x86_64 and ARM64, with the tree on NTFS. A
+manifest records which family of systems made it, Unix (Linux, macOS,
+FreeBSD) or Windows, and `fileset` uses a manifest only on the family that
+made it. `irsync` itself does not run on Windows yet.
+
+### What a Windows manifest records
+
+| Field | Value on Windows |
+| --- | --- |
+| `kind` | `dir`, `file` or `symlink`; any other reparse point, a junction included, is `other` |
+| `size` | the size in bytes; 0 for a directory |
+| `mtime` | the last write time, in steps of 100 ns |
+| `blake3`, `target` | as on Unix |
+| `ino`, `dev`, `nlink` | the file index, the volume serial number and the link count |
+| `ctime` | the NTFS change time |
+| `mode`, `uid`, `gid`, `rdev`, extended attributes | zero or empty |
+
+Nothing is compared on the last row: a tree on Windows always reads as zero
+there, so a check never reports a difference in `mode`, `uid`, `gid` or
+`rdev`, whatever the tier. `--paranoid` still compares `nlink`.
+
+No comparison tier uses `ctime`. `update` decides by size, `mtime` and file
+identity whether to hash a file again, on Windows as on Unix. The change time
+is not part of that, so a file rewritten with its old `mtime` put back is not
+hashed again.
+
+### Names and paths
+
+- A name is stored as WTF-8. A well-formed name is plain UTF-8, the same
+  bytes as in a Unix manifest. A name NTFS allows but UTF-16 does not, one
+  with an unpaired surrogate, is stored in the three-byte form UTF-8 would
+  use for that surrogate, so nothing is lost. Output shows those bytes as
+  `\xNN`, like any bytes that are not valid UTF-8.
+- Bytes that are not valid WTF-8 are an error, never repaired.
+- Stored paths use `/`, on Windows too. The `PATTERN` of `list` uses `/`,
+  and `\` in it escapes the next character, as in the table of wildcards.
+- A symlink's target is stored as the system gives it, in WTF-8, with its own
+  separators. It is content, not a path of the manifest.
+- Paths longer than 260 characters work, and so do names the shell refuses,
+  such as a trailing dot or space or `CON`.
+- `check` stops with exit code 2, naming the path, when the manifest holds a
+  path that is not a valid name on Windows: bytes that are not WTF-8, or a
+  component that is not exactly one name, such as `.`, `..`, `C:x`, an empty
+  one or one with a `\`. It does not report the path as deleted.
+
+### Reparse points
+
+`fileset` never follows a reparse point of any kind. It does not walk
+through a symlink, a junction or a mounted volume, so `--cross-mount-points`
+changes nothing on Windows. A symlink is recorded as `symlink` with its
+target. A junction or a mount point is recorded as `other` and not entered.
+
+The rules for a manifest that came with a tree hold as well, with one change:
+where Unix refuses a symbolic link, Windows refuses any reparse point.
+
+- A manifest found at the root that is a symlink or a junction is refused,
+  with the message `<path> is a symbolic link; a manifest inside the tree must
+  be a real file` (`directory` for fjall). Name a manifest elsewhere with
+  `--manifest`.
+- A fjall manifest with a reparse point inside is refused.
+- Hashing opens a file without following a reparse point, and checks that it
+  is not one. A link swapped in after the walk makes the hash fail; it is not
+  the hash of another file.
+
+### A redb manifest in use
+
+Windows makes the locks on a file mandatory. While a `fileset` holds a redb
+manifest for writing, no other program can read it either, and a `check`,
+`list` or `update` on it stops with `<path> is open in another fileset` (for
+`check` and `list`, `<path> is open in another fileset that is writing it`).
+
+### Manifests from the other platform family
+
+A manifest has a `platform` key, `unix` or `windows`. `init` writes it and
+`update` keeps it, in all three backends. The manifest's schema version is
+unchanged. A manifest without the key is a Unix manifest, which is what every
+manifest made before the key was.
+
+`check`, `update` and `list` refuse a manifest made on the other family, with
+exit code 2 and this message:
+
+`this manifest was made on unix, and this is windows; fileset cannot use a
+manifest across the two yet`
+
+The other way round, it says `made on windows, and this is unix`. A `platform`
+value other than `unix` or `windows` is refused too: `manifest platform
+'<value>' is not known to this fileset`.
+
+Use a current `fileset` on both sides. A `fileset` from before the key does
+not refuse a Windows manifest. On Unix it takes it for a Unix manifest and
+reports false differences in `mode`, `uid` and `gid`.
+
+### What is not recorded
+
+The read-only attribute and the security descriptor (the owner and the access
+control list) are not recorded, so a change to either is not reported. Nor are
+the other attributes (hidden, system, compressed and the rest), the creation
+time and alternate data streams. See
+[What fileset cannot catch](how-it-works.md#what-fileset-cannot-catch).
+
+### Not supported
+
+ReFS, FAT and exFAT volumes, network shares, and the folders a virtual machine
+shares with its host are not supported.
 
 ## Known limitations
 

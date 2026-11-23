@@ -47,6 +47,9 @@ giving its column a weight, as in [Tuning without code](#tuning-without-code).
 A row may not be all zeros, and no weight may be negative. filegen refuses
 to start with such a table.
 
+A run can also switch kinds off by itself: the ones the system or the machine
+cannot do. See [Platforms](#platforms).
+
 ### Locality
 
 Real use also stays in one place. filegen remembers the directory the last
@@ -102,6 +105,54 @@ picture of the tree. It walks the tree again to rebuild its model
 tree is as the last run left it, the result is the same as a run that
 never stopped. If someone changed the tree in between, the run goes on
 from the changed tree. It is still repeatable, but no longer identical.
+
+### Platforms
+
+Every call into the operating system sits in one module per system:
+`crates/filegen/src/platform/unix.rs` and `platform/windows.rs`, behind
+the plain functions of `platform/mod.rs`. A build has one of them, so nothing
+dispatches at run time. No file outside `platform/` names `nix`, `libc`,
+`xattr`, `std::os::unix` or `std::os::windows`, or a Windows crate: a test
+(`tests/platform_rule.rs`) fails when one does. Other code asks the
+platform's constants and functions instead, for instance `MAX_LINKS`,
+`name_ok` or `EDGE_NAMES`. On Unix each of them leaves filegen as it was
+before Windows.
+
+What a machine can do is `Caps` (`caps.rs`): `symlinks` and `sparse`. A run
+finds them once, at the start, with `platform::probe_caps`. On Unix that
+tries nothing and returns every capability. On Windows it tries to make a
+symlink and to mark a file sparse, in the tree for a real run and in the
+output directory for a dry run. `caps::disabled` then names the kinds that
+cannot run on this system with these capabilities, and `caps::without`
+sets their weights to 0 before the chain is built. One notice names them.
+That is why a single config serves both systems, and why the choice of kinds
+differs between systems: the seed's run is the same only for the same
+platform family and capability set.
+
+The state file records the platform and the capabilities (`format_version`
+4), and a resume refuses a state whose values differ from this machine's, in
+`run.rs`. A version 3 state is read as a Unix state with every capability
+(`state.rs`).
+
+Names are bytes outside the platform module. On Windows they are WTF-8, made
+and read by `wtf8.rs`, which is plain safe code that every build compiles and
+tests. `names.rs` draws the edge names (an unpaired surrogate, a reserved
+device name) only where `platform::EDGE_NAMES` is set, and takes no draw from
+the generator elsewhere, so the names a seed gives on Unix are unchanged.
+
+Ctrl-C is the one thing here that differs in kind. On Unix a signal handler
+sets a flag that the loop reads between steps. On Windows the `ctrlc` crate
+does the same for console events, but it does not say which event arrived, so
+the log names all of them `Ctrl-C`. Closing the console window, logoff and
+shutdown are such events too, and Windows ends the process shortly after
+the handler returns, so a state save is not guaranteed for those.
+
+The Windows module has two `unsafe` blocks, one reading a reparse point's tag
+(`GetFileInformationByHandleEx`) and one for `DeviceIoControl`, which marks a
+file sparse and zeroes a range. Miri cannot run either: it cannot make system
+calls, and the nightly job runs on Linux. Their tests cover them. `punch_hole`
+is crate-private, because the soundness argument of the second block holds
+only for files this crate opens itself.
 
 ## Tuning without code
 
@@ -159,6 +210,11 @@ passing.
 5. The model. If the operation creates something the model has no node
    kind for, add one to `NodeKind` in `model.rs`, and teach `walk.rs` to
    see it.
+
+**A call into the operating system.** Put it in `platform/`, as a function
+that both `unix.rs` and `windows.rs` provide. Where a system cannot do the
+thing, add a capability or list the kind in `caps::disabled`, so the weight
+becomes 0 there.
 
 **A filesystem-specific feature.** Make it a new `OpKind`, off by default.
 Such an operation should return `NoTarget` when it has nothing to do, as

@@ -452,6 +452,74 @@ What was checked before building, and what came of it:
 - **`locate`.** A file named by `--manifest` is redb if it starts with
   redb's magic bytes, and SQLite otherwise.
 
+## Follow-up: fileset on Windows (2026-11-23)
+
+Step 1 of the Windows work: `fileset` builds and runs on Windows, on NTFS.
+The design is `docs/superpowers/specs/2026-11-22-windows-tooling-design.md`.
+What the book says is in `book/src/fileset/reference.md` ("Windows").
+
+44. **Names are WTF-8 on Windows, and `/` separates stored paths.** NTFS
+    allows an unpaired surrogate in a name, which UTF-8 cannot hold and Rust's
+    `OsStr::as_encoded_bytes` does not promise to keep (its encoding is
+    unspecified, and the way back is `unsafe`). WTF-8 writes a well-formed name
+    as plain UTF-8, so a name has the same bytes in a Windows manifest as in a
+    Unix one, and writes an unpaired surrogate in the three-byte form UTF-8
+    would use. Bytes that are not WTF-8 are an error, and so is a surrogate
+    pair written as two three-byte forms, so every name has one stored form.
+    The conversion works on 16-bit units, is safe code in `wtf8.rs`, and is
+    compiled, tested and run under Miri on every platform; only the step
+    between units and an `OsString` is in `platform/windows.rs`. Cost if
+    wrong: the form is in every Windows manifest, so a change means a migration.
+
+45. **The `platform` key, with no schema bump.** A manifest has a `platform`
+    meta key, `unix` or `windows`, in all three stores; `init` writes it and
+    `update` keeps it. `SCHEMA_VERSION` stays 1, and a manifest without the
+    key is a Unix manifest, which is true of every manifest that exists. A
+    bump would make `check` refuse every existing manifest until `update` had
+    run, and that `update` would absorb the drift the check was meant to find.
+    The key is read from a manifest that may come from someone else: it can
+    only cause a refusal, never relax a check, and a value other than `unix`
+    or `windows` is refused (`parse_platform`). Cost if wrong: a `fileset`
+    from before the key, on Unix, does not refuse a Windows manifest and
+    reports false differences in `mode`, `uid` and `gid`. The book says to
+    use a current `fileset` on both sides.
+
+46. **The refusal across platforms is one function.** `usable_here`
+    (`engine/mod.rs`) takes the manifest's platform and the running one, and
+    `check`, `update` and `list` all call it. It refuses a manifest of the
+    other family with exit code 2 and one message naming both: `this manifest
+    was made on unix, and this is windows; fileset cannot use a manifest across
+    the two yet`. Why one function: step 3 (the mapping between the families)
+    replaces the refusal with comparison rules, and the manifest format does
+    not change then, because the origin is already recorded. Cost if wrong:
+    none for the format; step 3 changes one function and its callers' tests.
+
+47. **A reparse point of any kind is refused for an in-tree manifest.** Where
+    Unix refuses a manifest at the root that is a symlink, and a fjall manifest
+    with a symlink inside, Windows refuses any reparse point. A junction
+    redirects a directory as a symlink does, and needs no privilege to create,
+    so refusing only symlinks would leave the hole open on the platform where
+    it is easiest to use. The message is the existing one (`is a symbolic
+    link`), because the way out is the same: name a manifest elsewhere with
+    `--manifest`. Hashing likewise opens a file without following a reparse
+    point and checks that it is not one. Cost if wrong: a manifest that
+    is a legitimate junction or mount point must be named with `--manifest`.
+
+48. **`update` decides by size, `mtime` and file identity, on every
+    platform; the change time is not part of it.** A file rewritten with its
+    old mtime put back is not hashed again on Unix either, which is why the
+    book says to check before updating, and Windows keeps that rule. `ctime`
+    is recorded (the NTFS change time) but no tier compares it. Cost if wrong:
+    none that differs from Unix.
+
+49. **`check` fails on a stored path that is not a valid name here, and does
+    not call it deleted.** `rel_to_path` refuses bytes that are not WTF-8, a
+    component Windows would read as a drive, `.`, `..` or more than one
+    component. Reporting such a path as deleted would hide a manifest
+    that this system cannot name from the check meant to find it. The error
+    exits 2 and names the path. Cost if wrong: a manifest with one bad path
+    fails the whole `check`.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"
