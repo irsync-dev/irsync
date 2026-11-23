@@ -1,13 +1,14 @@
 //! A paced run's sleep ends on a signal. A test binary of its own: raising
 //! a signal in the library's test process would interrupt its concurrent
 //! runs.
+#![cfg(unix)]
 
 use std::time::{Duration, Instant};
 
 use filegen::cli::RunArgs;
 use filegen::pace::Pace;
+use filegen::platform::testutil::{self, SIGTERM};
 use filegen::run::{run, Outcome, RunOpts, Start};
-use nix::sys::signal::{raise, Signal};
 
 #[test]
 fn pace_sleep_ends_on_signal() {
@@ -62,13 +63,13 @@ fn pace_sleep_ends_on_signal() {
             std::thread::sleep(Duration::from_millis(5));
         }
         let sent = Instant::now();
-        raise(Signal::SIGTERM).unwrap();
+        testutil::raise_interrupt(SIGTERM);
         sent
     });
     let outcome = run(opts).unwrap();
     let ended = Instant::now();
     let sent = sender.join().unwrap();
-    assert_eq!(outcome, Outcome::Interrupted(libc::SIGTERM));
+    assert_eq!(outcome, Outcome::Interrupted(SIGTERM));
     // The remaining steps would take ~100 s at one a second.
     let took = ended.duration_since(sent);
     assert!(took < Duration::from_secs(2), "{took:?}");

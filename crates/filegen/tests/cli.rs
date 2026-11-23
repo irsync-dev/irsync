@@ -6,6 +6,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime};
 
 use common::snapshot;
+use filegen::platform::{self, testutil};
 
 #[test]
 fn cli_help_and_seed_resume_exclusive() {
@@ -294,23 +295,24 @@ fn cli_never_touches_planted_manifests() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_sigterm_resumable() {
-    interrupt_then_resume(nix::sys::signal::Signal::SIGTERM, 8);
+    interrupt_then_resume(testutil::SIGTERM, "SIGTERM", 8);
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_sigint_resumable() {
-    interrupt_then_resume(nix::sys::signal::Signal::SIGINT, 21);
+    interrupt_then_resume(testutil::SIGINT, "SIGINT", 21);
 }
 
-/// Sends `sig` to a long run of `seed` once it has logged 50 steps: the run
-/// exits with 128 + the signal number after writing its footer and state;
-/// resumed for 100 more steps, the tree is the uninterrupted run's.
-fn interrupt_then_resume(sig: nix::sys::signal::Signal, seed: u64) {
-    use nix::sys::signal::kill;
-    use nix::unistd::Pid;
-
+/// Sends `sig` (named `name`) to a long run of `seed` once it has logged 50
+/// steps: the run exits with 128 + the signal number after writing its
+/// footer and state; resumed for 100 more steps, the tree is the
+/// uninterrupted run's.
+#[cfg(unix)]
+fn interrupt_then_resume(sig: i32, name: &str, seed: u64) {
     let (t, root, out) = dirs();
     let sets = ["--set", "max_file_size=4K"];
     let seed_arg = seed.to_string();
@@ -341,9 +343,9 @@ fn interrupt_then_resume(sig: nix::sys::signal::Signal, seed: u64) {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    kill(Pid::from_raw(child.id() as i32), sig).unwrap();
+    testutil::send_interrupt(child.id(), sig);
     let st = child.wait().unwrap();
-    assert_eq!(st.code(), Some(128 + sig as i32), "{sig:?}");
+    assert_eq!(st.code(), Some(128 + sig), "{name}");
 
     let done = steps_done(&state);
     assert!((50..200000).contains(&done), "{done}");
@@ -352,8 +354,7 @@ fn interrupt_then_resume(sig: nix::sys::signal::Signal, seed: u64) {
     assert_eq!(ends.len(), 1);
     assert!(
         ends[0].starts_with(&format!(
-            "# end steps_done={done} outcome=\"interrupted: {}\" ",
-            sig.as_str()
+            "# end steps_done={done} outcome=\"interrupted: {name}\" "
         )),
         "{}",
         ends[0]
@@ -458,7 +459,6 @@ fn cli_verbose_echoes_steps_quiet_silences() {
 
 #[test]
 fn cli_read_only_files_do_not_stop_the_run() {
-    use std::os::unix::fs::PermissionsExt;
     let (_t, root, out) = dirs();
     // As in a git checkout: files without owner write. Unless running as
     // root (which may write them anyway), the walk puts them off limits.
@@ -468,7 +468,7 @@ fn cli_read_only_files_do_not_stop_the_run() {
             let dir = if i % 2 == 0 { "" } else { "sub/" };
             let p = root.join(format!("{dir}ro{i}.txt"));
             fs::write(&p, format!("read only {i}")).unwrap();
-            fs::set_permissions(&p, fs::Permissions::from_mode(0o444)).unwrap();
+            testutil::set_mode(&p, 0o444);
             p
         })
         .collect();
@@ -481,7 +481,7 @@ fn cli_read_only_files_do_not_stop_the_run() {
         .unwrap();
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     assert_eq!(steps_done(&out.join("filegen-13.state.yaml")), 500);
-    if !nix::unistd::geteuid().is_root() {
+    if !platform::is_root() {
         for (i, p) in planted.iter().enumerate() {
             assert_eq!(fs::read_to_string(p).unwrap(), format!("read only {i}"));
         }
@@ -650,25 +650,28 @@ fn cli_warns_when_steps_found_nothing_to_do() {
 type Exact = Vec<(PathBuf, u32, u64, (i64, i64), Vec<u8>)>;
 
 fn exact_snapshot(dir: &Path) -> Exact {
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
+    use platform::FileKind;
     let mut out = Exact::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(p) = stack.pop() {
-        let md = fs::symlink_metadata(&p).unwrap();
-        let data = if md.is_dir() {
+        let md = platform::lstat(&p).unwrap();
+        let data = if md.kind == FileKind::Dir {
             for e in fs::read_dir(&p).unwrap() {
                 stack.push(e.unwrap().path());
             }
             Vec::new()
-        } else if md.file_type().is_symlink() {
-            fs::read_link(&p).unwrap().as_os_str().as_bytes().to_vec()
+        } else if md.kind == FileKind::Symlink {
+            platform::read_link(&p).unwrap()
         } else {
             fs::read(&p).unwrap()
         };
         let rel = p.strip_prefix(dir).unwrap().to_path_buf();
-        let mtime = (md.mtime(), md.mtime_nsec());
-        out.push((rel, md.mode(), md.size(), mtime, data));
+        let ns = 1_000_000_000;
+        let mtime = (
+            md.mtime_ns.div_euclid(ns) as i64,
+            md.mtime_ns.rem_euclid(ns) as i64,
+        );
+        out.push((rel, md.mode, md.size, mtime, data));
     }
     out.sort();
     out
@@ -702,8 +705,8 @@ fn cli_never_writes_beside_the_root() {
             .unwrap();
     }
     // Links into the canary, one absolute and one relative, in the root.
-    std::os::unix::fs::symlink(&canary, root.join("abs")).unwrap();
-    std::os::unix::fs::symlink("../canary", root.join("rel")).unwrap();
+    testutil::symlink(&canary, &root.join("abs")).unwrap();
+    testutil::symlink(Path::new("../canary"), &root.join("rel")).unwrap();
     let before = exact_snapshot(&canary);
 
     let o = bin()

@@ -17,13 +17,15 @@ serde_json = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rand_xoshiro = { workspace = true }
-nix = { workspace = true, features = ["fs", "signal", "user"] }
-libc = { workspace = true }
-xattr = { workspace = true }
 unicode-normalization = { workspace = true }
 jiff = { workspace = true, features = ["serde"] }
 indicatif = { workspace = true }
 thiserror = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["fs", "signal", "user"] }
+libc = { workspace = true }
+xattr = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

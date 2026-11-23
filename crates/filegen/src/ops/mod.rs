@@ -30,8 +30,6 @@ pub mod tree;
 
 use std::fs::File;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -44,6 +42,7 @@ use crate::log::OpRecord;
 use crate::model::{Model, NodeId, NodeKind};
 use crate::names::draw_name;
 use crate::pick::{anchor_of, pick};
+use crate::platform;
 
 /// Everything one operation needs.
 pub struct OpCtx<'a> {
@@ -163,13 +162,7 @@ impl OpError {
     /// and message holding an `OpError`. `path` and `to` are absolute
     /// paths under `root`.
     pub fn wrap(root: &Path, path: &Path, to: Option<&Path>, source: io::Error) -> io::Error {
-        let rel = |p: &Path| {
-            p.strip_prefix(root)
-                .unwrap_or(p)
-                .as_os_str()
-                .as_bytes()
-                .to_vec()
-        };
+        let rel = |p: &Path| platform::path_to_bytes(p.strip_prefix(root).unwrap_or(p));
         let kind = source.kind();
         io::Error::new(
             kind,
@@ -296,8 +289,8 @@ pub(crate) fn new_ino(ctx: &mut OpCtx, path: &Path) -> io::Result<u64> {
     if ctx.dry {
         Ok(ctx.model.synthetic_ino())
     } else {
-        std::fs::symlink_metadata(path)
-            .map(|m| m.ino())
+        platform::lstat(path)
+            .map(|m| m.ino)
             .map_err(|e| OpError::wrap(ctx.root, path, None, e))
     }
 }
@@ -306,10 +299,7 @@ pub(crate) fn new_ino(ctx: &mut OpCtx, path: &Path) -> io::Result<u64> {
 #[cfg(test)]
 pub(crate) mod testutil {
     use std::collections::BTreeSet;
-    use std::ffi::OsStr;
     use std::fs;
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
     use std::path::{Path, PathBuf};
 
     use rand_chacha::ChaCha8Rng;
@@ -406,7 +396,7 @@ pub(crate) mod testutil {
     }
 
     pub fn abs(root: &Path, rel: &[u8]) -> PathBuf {
-        root.join(OsStr::from_bytes(rel))
+        crate::platform::rel_to_path(root, rel).unwrap()
     }
 
     /// Writes `data` to `rel` on disk and adds it to the model with its
@@ -414,7 +404,7 @@ pub(crate) mod testutil {
     pub fn put_file(root: &Path, m: &mut Model, rel: &str, data: &[u8]) -> NodeId {
         let path = root.join(rel);
         fs::write(&path, data).unwrap();
-        let ino = fs::metadata(&path).unwrap().ino();
+        let ino = crate::platform::lstat(&path).unwrap().ino;
         let (dir, name) = parent_and_name(m, rel);
         m.insert(dir, name, NodeKind::File, data.len() as u64, ino)
     }
@@ -423,7 +413,7 @@ pub(crate) mod testutil {
     pub fn put_dir(root: &Path, m: &mut Model, rel: &str) -> NodeId {
         let path = root.join(rel);
         fs::create_dir(&path).unwrap();
-        let ino = fs::metadata(&path).unwrap().ino();
+        let ino = crate::platform::lstat(&path).unwrap().ino;
         let (dir, name) = parent_and_name(m, rel);
         m.insert(dir, name, NodeKind::Dir, 0, ino)
     }

@@ -1,9 +1,7 @@
 //! The run loop: start or resume, step the chain, checkpoint, finish.
 
-use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -23,7 +21,7 @@ use crate::ops::file::create_file;
 use crate::ops::{dispatch, Applied, OpCtx, OpError, OpOutcome};
 use crate::pace::Pace;
 use crate::pick::anchor_of;
-use crate::signals;
+use crate::platform;
 use crate::state::{self, ChainState, LastRun, State, StateError, TreeInfo, FORMAT_VERSION};
 use crate::walk;
 
@@ -225,7 +223,7 @@ impl Runner {
                 root.display()
             )));
         }
-        let path_max = libc::PATH_MAX as usize;
+        let path_max = platform::PATH_MAX;
         if root.as_os_str().len() + 1 + cfg.max_path_len as usize >= path_max {
             return Err(RunError::Usage(format!(
                 "root {} ({} bytes) plus max_path_len {} reaches PATH_MAX ({path_max}); \
@@ -390,7 +388,11 @@ impl Runner {
         let step = self.steps_done;
         // Stat right after the step, before anything else can change it.
         let post = (!self.dry).then(|| {
-            let at = |b: &[u8]| PostStat::lstat(&self.root.join(OsStr::from_bytes(b)));
+            let at = |b: &[u8]| {
+                platform::rel_to_path(&self.root, b)
+                    .ok()
+                    .and_then(|p| PostStat::lstat(&p))
+            };
             Post {
                 path: at(&a.rec.path),
                 to: a.rec.to.as_deref().map(at),
@@ -455,7 +457,7 @@ impl Runner {
         let outcome = match outcome {
             Outcome::Ok => "ok".to_string(),
             Outcome::Failed(msg) => format!("failed: {msg}"),
-            Outcome::Interrupted(sig) => format!("interrupted: {}", signals::name(sig)),
+            Outcome::Interrupted(sig) => format!("interrupted: {}", platform::interrupt_name(sig)),
         };
         let footer = Footer {
             steps_done: self.steps_done,
@@ -570,7 +572,7 @@ pub fn run(opts: RunOpts) -> Result<Outcome, RunError> {
         bar
     };
     let mut runner = Runner::new(opts)?;
-    let signal = signals::install();
+    let signal = platform::install_interrupt();
     let mut done = 0;
     let started = Instant::now();
     let outcome = loop {
@@ -621,11 +623,11 @@ mod tests {
     use super::test_common::snapshot;
     use super::*;
     use std::fs;
-    use std::os::unix::fs::symlink;
 
     use tempfile::TempDir;
 
     use crate::ops::testutil::triples;
+    use crate::platform::testutil::{self, symlink};
     use crate::state;
     use crate::walk::from_disk;
 
@@ -1110,8 +1112,7 @@ mod tests {
 
     #[test]
     fn run_force_keeps_history_when_the_walk_fails() {
-        use std::os::unix::fs::PermissionsExt;
-        if nix::unistd::geteuid().is_root() {
+        if platform::is_root() {
             eprintln!("skipping: root can list an unreadable dir");
             return;
         }
@@ -1119,11 +1120,11 @@ mod tests {
         let out = t.path().join("out");
         run_ok(opts(&root, &out, 10, Start::Seed(26)));
         let log_before = text(&out.join("filegen-26.log"));
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        testutil::set_mode(&root, 0o000);
         let mut o = opts(&root, &out, 10, Start::Seed(26));
         o.force = true;
         let r = run(o);
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        testutil::set_mode(&root, 0o755);
         assert!(matches!(r, Err(RunError::Io(_))), "{r:?}");
         assert_eq!(text(&out.join("filegen-26.log")), log_before);
         assert_eq!(
@@ -1325,8 +1326,6 @@ mod tests {
     #[test]
     fn step_lines_carry_post_stats() {
         use crate::log::{parse_step_line, PostStat};
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
         let (t, root) = base();
         let out = t.path().join("out");
         let mut r = Runner::new(opts(&root, &out, 20, Start::Seed(40))).unwrap();
@@ -1338,7 +1337,7 @@ mod tests {
                 r.log.flush().unwrap();
                 let log = text(&log_path);
                 let l = parse_step_line(log.lines().last().unwrap()).unwrap();
-                let at = |b: &[u8]| PostStat::lstat(&root.join(OsStr::from_bytes(b)));
+                let at = |b: &[u8]| PostStat::lstat(&platform::rel_to_path(&root, b).unwrap());
                 (l.clone(), (at(&l.path), l.to.as_deref().map(at)))
             };
             assert_eq!(p.post, Some(q.0), "step {}", p.step);

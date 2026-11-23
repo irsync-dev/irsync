@@ -1,10 +1,6 @@
 //! Symlink operations: create, re-point and delete symbolic links.
 
-use std::ffi::OsStr;
-use std::fs;
 use std::io;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs as unix_fs;
 
 use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::RngExt;
@@ -13,6 +9,7 @@ use crate::kind::OpKind;
 use crate::model::{Model, NodeId, NodeKind};
 use crate::ops::{applied, new_ino, new_name, pick_kind, removed, syscalls, OpCtx, OpOutcome};
 use crate::pick::{pick, pick_dir_or_root};
+use crate::platform::{self, LinkTarget};
 
 /// Characters of a dangling target's components.
 const DANGLING_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -36,6 +33,16 @@ impl Target {
             ("absolute", u8::from(self.absolute).to_string()),
         ]
     }
+
+    /// What the link points to, for a platform that must say: a dangling
+    /// target counts as a file.
+    fn link_kind(&self) -> LinkTarget {
+        if self.kind == "dir" {
+            LinkTarget::Dir
+        } else {
+            LinkTarget::File
+        }
+    }
 }
 
 /// New symlink in a drawn directory, with a drawn target (see
@@ -48,7 +55,7 @@ pub fn symlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let target = draw_target(ctx, dir);
     let path = ctx.model.abs_path(ctx.root, dir).join(&name);
     let ((), dur) = syscalls(ctx, &path, None, |_| {
-        unix_fs::symlink(OsStr::from_bytes(&target.bytes), &path)
+        platform::symlink(&target.bytes, &path, target.link_kind())
     })?;
     let ino = new_ino(ctx, &path)?;
     let id = ctx
@@ -67,8 +74,8 @@ pub fn repoint_symlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let target = draw_target(ctx, dir);
     let path = ctx.model.abs_path(ctx.root, id);
     let ((), dur) = syscalls(ctx, &path, None, |_| {
-        fs::remove_file(&path)?;
-        unix_fs::symlink(OsStr::from_bytes(&target.bytes), &path)
+        platform::remove_symlink(&path)?;
+        platform::symlink(&target.bytes, &path, target.link_kind())
     })?;
     Ok(applied(
         ctx,
@@ -86,7 +93,7 @@ pub fn delete_symlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, &path, None, |_| fs::remove_file(&path))?;
+    let ((), dur) = syscalls(ctx, &path, None, |_| platform::remove_symlink(&path))?;
     Ok(removed(ctx, OpKind::DeleteSymlink, id, Vec::new(), dur))
 }
 
@@ -119,10 +126,15 @@ fn draw_target(ctx: &mut OpCtx, dir: NodeId) -> Target {
         }
     };
     let bytes = if absolute {
-        ctx.root
-            .join(OsStr::from_bytes(&rel))
-            .into_os_string()
-            .into_vec()
+        // As in `Model::abs_path`: a stored path always has a name here.
+        let path = platform::rel_to_path(ctx.root, &rel).unwrap_or_else(|e| {
+            panic!(
+                "cannot name {} below {}: {e}",
+                crate::escape::escape(&rel),
+                ctx.root.display()
+            )
+        });
+        platform::path_to_bytes(&path)
     } else {
         rel
     };
@@ -149,7 +161,7 @@ fn dangling(ctx: &mut OpCtx, base: NodeId) -> Vec<u8> {
     }
     let mut out = first;
     for _ in 1..n {
-        out.push(b'/');
+        out.push(platform::TARGET_SEP);
         out.extend(component(ctx));
     }
     out
@@ -180,7 +192,7 @@ fn relative(from: &[u8], to: &[u8]) -> Vec<u8> {
     if parts.is_empty() {
         b".".to_vec()
     } else {
-        parts.join(&b'/')
+        parts.join(&platform::TARGET_SEP)
     }
 }
 
@@ -189,8 +201,6 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::fs;
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
     use std::path::Path;
 
     use rand::SeedableRng;
@@ -216,10 +226,8 @@ mod tests {
         let rec: &OpRecord = &a.rec;
         let link = abs(root, &rec.path);
         let target = fs::read_link(&link).unwrap();
-        assert_eq!(
-            target.as_os_str().as_bytes(),
-            detail(rec, "target").unwrap().as_bytes()
-        );
+        let target_bytes = platform::path_to_bytes(&target);
+        assert_eq!(target_bytes, detail(rec, "target").unwrap().as_bytes());
         let absolute = match detail(rec, "absolute").unwrap() {
             "0" => false,
             "1" => true,
@@ -228,7 +236,7 @@ mod tests {
         if absolute {
             assert!(target.starts_with(root), "{target:?}");
         } else {
-            assert!(!target.as_os_str().as_bytes().starts_with(b"/"));
+            assert!(!target_bytes.starts_with(b"/"));
         }
         let kind = detail(rec, "target_kind").unwrap().to_string();
         match kind.as_str() {
@@ -274,8 +282,8 @@ mod tests {
             )
             .expect("a dir is always available");
             seen.insert(check_link(tmp.path(), &m, &a));
-            let md = fs::symlink_metadata(abs(tmp.path(), &a.rec.path)).unwrap();
-            assert_eq!(m.node(m.resolve(&a.rec.path).unwrap()).ino, md.ino());
+            let md = platform::lstat(&abs(tmp.path(), &a.rec.path)).unwrap();
+            assert_eq!(m.node(m.resolve(&a.rec.path).unwrap()).ino, md.ino);
         }
         for kind in ["file", "dir", "dangling"] {
             for absolute in [false, true] {
