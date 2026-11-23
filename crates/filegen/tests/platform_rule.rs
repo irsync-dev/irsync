@@ -43,8 +43,8 @@ fn names(line: &str, word: &str) -> bool {
 
 #[test]
 fn only_the_platform_module_names_a_platform_api() {
-    // Every .rs file under src/, tests/ and benches/ of this crate, except
-    // src/platform/, tests/common/ and this file.
+    // Every .rs file under src/, tests/ and benches/ (if there is one) of
+    // this crate, except src/platform/, tests/common/ and this file.
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let exempt = [
         crate_dir.join("src").join("platform"),
@@ -53,7 +53,11 @@ fn only_the_platform_module_names_a_platform_api() {
     ];
     let mut files = Vec::new();
     for dir in ["src", "tests", "benches"] {
-        rust_files(&crate_dir.join(dir), &mut files);
+        let dir = crate_dir.join(dir);
+        // This crate has no benches/; src/ and tests/ always exist.
+        if dir.is_dir() || dir.file_name().unwrap() != "benches" {
+            rust_files(&dir, &mut files);
+        }
     }
     files.sort();
     assert!(
