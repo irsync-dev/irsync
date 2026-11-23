@@ -97,6 +97,35 @@ fn pq_key_exchange_is_prefer_unless_set_to_require() {
 }
 
 #[test]
+fn pq_key_exchange_of_a_host_entry() {
+    use irsync::config::settings::PqKeyExchange;
+    let t = format!(
+        "[client]\npq_key_exchange = \"require\"\n[hosts.nas]\nendpoint_id = \"{}\"\npq_key_exchange = \"prefer\"\n[hosts.home]\nendpoint_id = \"{}\"\n",
+        id(1),
+        id(2)
+    );
+    let c = Config::parse(&t, p()).unwrap();
+    assert_eq!(
+        c.settings.client.pq_key_exchange,
+        Some(PqKeyExchange::Require)
+    );
+    assert_eq!(
+        c.hosts.get("nas").unwrap().pq_key_exchange,
+        Some(PqKeyExchange::Prefer)
+    );
+    assert_eq!(c.hosts.get("home").unwrap().pq_key_exchange, None);
+    let e = parse_hosts(
+        &format!(
+            "[hosts.nas]\nendpoint_id = \"{}\"\npq_key_exchange = \"only\"\n",
+            id(1)
+        ),
+        p(),
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("only"), "{e}");
+}
+
+#[test]
 fn settings_unknown_key_names_file_and_key() {
     let e = Settings::parse("[client]\nbogus = 1\n", p()).unwrap_err();
     let msg = e.to_string();
