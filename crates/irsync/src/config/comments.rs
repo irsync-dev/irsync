@@ -24,18 +24,24 @@
 //! key, go to its first entry, without blank lines. A comment with
 //! no place in the message goes to the footer: none is dropped.
 
+use super::{line_of, ConfigError};
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
+use std::path::Path;
 use toml_edit::{DocumentMut, Item, RawString, TableLike, Value};
 
 /// Fills the comment fields of `msg`, which [`super::reader::read_values`]
-/// read from `text`.
-pub(crate) fn attach(text: &str, msg: &mut pb::Config) {
-    // `read_values` accepted the text, so it parses.
-    let Ok(doc) = text.parse::<DocumentMut>() else {
-        debug_assert!(false, "toml_edit refuses a file that toml read");
-        return;
-    };
+/// read from `text`. `path` is the file named in errors.
+///
+/// `toml_edit` should take every text `toml` took; if it does not, this
+/// is an error rather than a message without comments, which the next
+/// save would write without them.
+pub(crate) fn attach(text: &str, path: &Path, msg: &mut pb::Config) -> Result<(), ConfigError> {
+    let doc = text.parse::<DocumentMut>().map_err(|e| ConfigError::File {
+        path: path.to_path_buf(),
+        line: e.span().map(|s| line_of(text, s.start)),
+        message: e.message().to_string(),
+    })?;
     let mut walk = Walk {
         lines: Vec::new(),
         at_start: true,
@@ -44,6 +50,7 @@ pub(crate) fn attach(text: &str, msg: &mut pb::Config) {
     for (place, line) in walk.lines {
         put(msg, place, line);
     }
+    Ok(())
 }
 
 /// What a comment belongs to: a table by its path, a key in a table, or
@@ -477,3 +484,25 @@ fn put(c: &mut pb::Config, place: Place, line: String) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_text_toml_edit_refuses_is_an_error() {
+        let mut msg = pb::Config::default();
+        let e = attach("[daemon]\nportmap = \n", Path::new("irsync.toml"), &mut msg).unwrap_err();
+        let ConfigError::File {
+            path,
+            line,
+            message,
+        } = &e
+        else {
+            panic!("{e:?}");
+        };
+        assert_eq!(path, Path::new("irsync.toml"));
+        assert_eq!(*line, Some(2));
+        assert!(!message.is_empty());
+        assert!(e.to_string().starts_with("irsync.toml:2: "), "{e}");
+    }
+}

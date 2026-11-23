@@ -241,7 +241,7 @@ pub fn dotted_key(key: &str) -> Option<Vec<String>> {
 /// comments. `path` is the file named in errors.
 pub fn read(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
     let mut config = read_values(text, path)?;
-    super::comments::attach(text, &mut config);
+    super::comments::attach(text, path, &mut config)?;
     Ok(config)
 }
 
