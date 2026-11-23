@@ -28,16 +28,10 @@ pub fn symlink(dir: &Path, name: &str, target: &str) {
     fileset::platform::testutil::symlink(Path::new(target), &dir.join(name)).unwrap();
 }
 
-/// Sets the permission bits of `path`. Unix only: elsewhere it panics, so a
-/// test that needs it fails rather than passes without checking.
+/// Sets the permission bits of `path`. There are none on Windows.
+#[cfg(unix)]
 pub fn chmod(path: &Path, mode: u32) {
-    #[cfg(unix)]
     fileset::platform::testutil::set_mode(path, mode);
-    #[cfg(not(unix))]
-    panic!(
-        "chmod {} to {mode:o}: there are no permission bits here",
-        path.display()
-    );
 }
 
 pub fn set_mtime(path: &Path, sec: u64, nsec: u32) {
@@ -50,13 +44,14 @@ pub fn set_mtime(path: &Path, sec: u64, nsec: u32) {
         .unwrap();
 }
 
-/// Creates a FIFO at `path`; panics where there are none.
-pub fn mkfifo(path: &Path) {
-    assert!(
-        fileset::platform::testutil::mkfifo(path),
-        "mkfifo {}: there are no FIFOs here",
-        path.display()
-    );
+/// Creates a FIFO at `path`; false where there are none (Windows).
+pub fn mkfifo(path: &Path) -> bool {
+    fileset::platform::testutil::mkfifo(path)
+}
+
+/// False when this user may not create symlinks here: a test that needs one returns.
+pub fn symlinks_available(dir: &Path) -> bool {
+    fileset::platform::testutil::symlinks_available(dir)
 }
 
 /// Options for `init` when `root` holds no manifest for `backend` yet, else for `update`;
@@ -177,10 +172,7 @@ pub fn run_check(
 
 /// Sets the mtime of a file or directory the caller owns, without needing write access.
 pub fn set_mtime_ro(path: &Path, t: SystemTime) {
-    File::open(path)
-        .unwrap()
-        .set_times(FileTimes::new().set_modified(t))
-        .unwrap();
+    fileset::platform::testutil::set_mtime(path, t);
 }
 
 pub fn store_name(backend: Backend) -> &'static str {

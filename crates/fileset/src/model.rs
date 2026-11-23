@@ -309,6 +309,9 @@ mod tests {
     #[test]
     fn from_path_symlink_records_target_not_dest() {
         let d = tempfile::tempdir().unwrap();
+        if !testutil::symlinks_available(d.path()) {
+            return;
+        }
         let p = d.path().join("l");
         testutil::symlink(Path::new("missing"), &p).unwrap();
         let e = Entry::from_path(&p).unwrap().0;

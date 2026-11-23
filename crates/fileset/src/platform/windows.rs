@@ -14,7 +14,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{ERROR_LOCK_VIOLATION, HANDLE};
 use windows_sys::Win32::Storage::FileSystem::{
     FileAttributeTagInfo, FileBasicInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO,
@@ -219,6 +219,12 @@ pub fn path_to_rel(rel: &Path) -> Vec<u8> {
     out
 }
 
+/// Whether `e` is a read refused because another handle holds a byte-range
+/// lock on what it reads. Such locks are mandatory on Windows.
+pub fn is_lock_violation(e: &io::Error) -> bool {
+    e.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32)
+}
+
 /// CPU time the calling thread has used so far (user and system), or `None`
 /// if the clock cannot be read.
 pub fn thread_cpu_time() -> Option<Duration> {
@@ -236,10 +242,15 @@ pub fn core_split() -> Option<(usize, usize)> {
 /// beyond the interface above.
 #[doc(hidden)]
 pub mod testutil {
-    use std::fs::{File, OpenOptions};
+    use std::fs::{File, FileTimes, OpenOptions};
     use std::io;
     use std::os::windows::fs::OpenOptionsExt;
     use std::path::Path;
+    use std::time::SystemTime;
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+    };
 
     /// A directory symlink when `target`, resolved against the link's
     /// directory, is a directory; a file symlink otherwise, a dangling
@@ -278,24 +289,43 @@ pub mod testutil {
         }
     }
 
-    /// A file held open with no sharing, so nobody else can open it to read,
-    /// until this is dropped.
+    /// A file or directory held open with no sharing until this is dropped.
     pub struct Unreadable {
         _file: File,
     }
 
-    /// Holds `path` open with no sharing until the result is dropped. `None`
-    /// when it can still be opened anyway.
+    /// Holds `path` open with no sharing until the result is dropped: a file
+    /// cannot be opened to read, a directory cannot be listed, and either can
+    /// still be stat'ed. `None` when it can still be read anyway.
     pub fn make_unreadable(path: &Path) -> Option<Unreadable> {
         let file = OpenOptions::new()
             .read(true)
             .share_mode(0)
+            // Needed to open a directory; no effect on a file.
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(path)
             .unwrap();
-        if File::open(path).is_ok() {
+        let readable = if path.is_dir() {
+            std::fs::read_dir(path).is_ok()
+        } else {
+            File::open(path).is_ok()
+        };
+        if readable {
             return None;
         }
         Some(Unreadable { _file: file })
+    }
+
+    /// Sets the mtime of a file or directory the caller owns, without
+    /// needing write access to its content.
+    pub fn set_mtime(path: &Path, t: SystemTime) {
+        OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(t))
+            .unwrap();
     }
 
     /// There are no FIFOs on Windows.

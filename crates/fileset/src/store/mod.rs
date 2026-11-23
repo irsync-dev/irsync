@@ -444,6 +444,9 @@ mod tests {
         use crate::platform::testutil::symlink;
         let d = tempfile::tempdir().unwrap();
         let root = canon(&d);
+        if !crate::platform::testutil::symlinks_available(&root) {
+            return;
+        }
         std::fs::write(root.join("file"), b"").unwrap();
         std::fs::create_dir(root.join("dir")).unwrap();
         symlink(&root.join("file"), &root.join("to_file")).unwrap();
@@ -457,6 +460,8 @@ mod tests {
         assert!(err.starts_with("cannot stat manifest "), "{err}");
     }
 
+    /// Unix only: a FIFO is the object that is neither, and Windows has none.
+    #[cfg(unix)]
     #[test]
     fn locate_manifest_that_is_neither_file_nor_dir_errors() {
         let d = tempfile::tempdir().unwrap();

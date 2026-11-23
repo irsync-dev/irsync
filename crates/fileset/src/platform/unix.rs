@@ -134,6 +134,12 @@ pub fn path_to_rel(rel: &Path) -> Vec<u8> {
     rel.as_os_str().as_bytes().to_vec()
 }
 
+/// Whether `e` is a read refused because another handle holds a byte-range
+/// lock on what it reads. Never: such locks are advisory on Unix.
+pub fn is_lock_violation(_e: &io::Error) -> bool {
+    false
+}
+
 /// CPU time the calling thread has used so far (user and system), or `None`
 /// if the clock cannot be read.
 pub fn thread_cpu_time() -> Option<Duration> {
@@ -260,6 +266,15 @@ pub mod testutil {
             io::Error::last_os_error()
         );
         true
+    }
+
+    /// Sets the mtime of a file or directory the caller owns, without
+    /// needing write access to it.
+    pub fn set_mtime(path: &Path, t: std::time::SystemTime) {
+        std::fs::File::open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(t))
+            .unwrap();
     }
 
     #[cfg(unix)]
