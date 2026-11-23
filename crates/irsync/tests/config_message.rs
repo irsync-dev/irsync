@@ -1,7 +1,7 @@
 //! The config message as `config::reader` reads it from irsync.toml.
 
 use irsync::config::file::Config;
-use irsync::config::reader::read_values;
+use irsync::config::reader::{read, read_values};
 use irsync::config::settings::DaemonSettings;
 use irsync_proto::config as pb;
 use std::path::Path;
@@ -466,4 +466,142 @@ fn errors_are_those_of_config_parse() {
         let e = read_values(text, Path::new("f")).unwrap_err();
         assert_eq!(e.to_string(), message, "{text}");
     }
+}
+
+const COMMENTED: &str = "\
+# irsync on the nas
+# second header line
+
+identity = \"~/k\" # my key
+# after the top keys
+
+# about the daemon
+[daemon] # trailing on header
+# above portmap
+portmap = false # why off
+# daemon tail
+
+# the photos
+[exports.photos]
+path = \"/photos\"
+rw = [
+    # the laptop
+    \"laptop\", # mine
+    \"phone\",
+    # after the last
+]
+# the end
+";
+
+#[test]
+fn every_comment_has_a_home() {
+    let c = read(COMMENTED, Path::new("f")).unwrap();
+    assert_eq!(c.header, ["# irsync on the nas", "# second header line"]);
+    assert_eq!(c.key_comments["identity"].trailing, "# my key");
+    assert_eq!(c.tail, ["# after the top keys"]);
+    let d = c.daemon.unwrap();
+    assert_eq!(d.comment.as_ref().unwrap().above, ["# about the daemon"]);
+    assert_eq!(d.comment.unwrap().trailing, "# trailing on header");
+    assert_eq!(d.key_comments["portmap"].above, ["# above portmap"]);
+    assert_eq!(d.key_comments["portmap"].trailing, "# why off");
+    assert_eq!(d.tail, ["# daemon tail"]);
+    let e = &c.exports[0];
+    assert_eq!(e.comment.as_ref().unwrap().above, ["# the photos"]);
+    assert_eq!(e.rw[0].comment.as_ref().unwrap().above, ["# the laptop"]);
+    assert_eq!(e.rw[0].comment.as_ref().unwrap().trailing, "# mine");
+    assert_eq!(
+        e.rw[1].comment.as_ref().unwrap().above,
+        ["# after the last"]
+    );
+    assert_eq!(c.footer, ["# the end"]);
+}
+
+#[test]
+fn hash_in_a_string_is_not_a_comment() {
+    let c = read(
+        &format!(
+            "[hosts.nas]\nendpoint_id = \"{}\"\nssh = \"me@host#1\"\n",
+            id(1)
+        ),
+        Path::new("f"),
+    )
+    .unwrap();
+    assert_eq!(c.hosts[0].ssh.as_deref(), Some("me@host#1"));
+    assert!(c.hosts[0].key_comments.is_empty());
+}
+
+#[test]
+fn a_file_without_comments_has_none() {
+    let text = "[daemon]\nportmap = false\n";
+    assert_eq!(
+        read(text, Path::new("f")).unwrap(),
+        read_values(text, Path::new("f")).unwrap()
+    );
+}
+
+fn commented(text: &str) -> pb::Config {
+    read(text, Path::new("irsync.toml")).unwrap()
+}
+
+#[test]
+fn a_file_that_starts_with_a_table_has_a_header() {
+    let c = commented("# top\n\n# one\n\n# two\n\n\n# the daemon\n[daemon]\n");
+    assert_eq!(c.header, ["# top", "", "# one", "", "# two"]);
+    assert_eq!(c.daemon.unwrap().comment.unwrap().above, ["# the daemon"]);
+    assert!(c.tail.is_empty() && c.footer.is_empty());
+}
+
+#[test]
+fn a_tail_keeps_its_inner_blank_lines() {
+    let c =
+        commented("[daemon]\nportmap = true\n\n# a\n\n# b\n\n[client]\n# first\n\nparallel = 2\n");
+    let d = c.daemon.unwrap();
+    assert_eq!(d.tail, ["# a", "", "# b"]);
+    let cl = c.client.unwrap();
+    assert_eq!(cl.comment, None);
+    assert_eq!(cl.key_comments["parallel"].above, ["# first"]);
+}
+
+#[test]
+fn a_bare_group_header_gives_its_comments_to_the_first_entry() {
+    let c = commented("# all exports\n[exports] # mine\n# the photos\n[exports.p]\npath = \"/p\"\n[exports.q]\npath = \"/q\"\n");
+    assert_eq!(
+        c.exports[0].comment.as_ref().unwrap().above,
+        ["# all exports", "# mine", "# the photos"]
+    );
+    assert_eq!(c.exports[1].comment, None);
+}
+
+#[test]
+fn a_comment_without_a_place_goes_to_the_footer() {
+    let c = commented("[hosts] # none yet\n[daemon]\n# end");
+    assert_eq!(c.footer, ["# none yet", "# end"]);
+}
+
+#[test]
+fn comments_in_arrays() {
+    let c = commented(
+        "[all]\nrw = [ # first\n  \"a\" # no comma\n  # after\n]\nro = [\n  # nothing yet\n] # ro\n",
+    );
+    let all = c.all.unwrap();
+    let a = all.rw[0].comment.as_ref().unwrap();
+    assert_eq!(a.above, ["# first", "# after"]);
+    assert_eq!(a.trailing, "# no comma");
+    assert!(all.ro.is_empty());
+    assert_eq!(all.key_comments["ro"].above, ["# nothing yet"]);
+    assert_eq!(all.key_comments["ro"].trailing, "# ro");
+}
+
+#[test]
+fn comments_on_dotted_keys_and_inline_tables() {
+    let c = commented(&format!(
+        "[daemon]\n# on dht\ndiscovery.dht = false # off\n[hosts]\n# the nas\nnas = {{ endpoint_id = \"{}\" }} # inline\n",
+        id(1)
+    ));
+    let disc = c.daemon.unwrap().discovery.unwrap();
+    assert_eq!(disc.key_comments["dht"].above, ["# on dht"]);
+    assert_eq!(disc.key_comments["dht"].trailing, "# off");
+    let h = c.hosts[0].comment.as_ref().unwrap();
+    assert_eq!(h.above, ["# the nas"]);
+    assert_eq!(h.trailing, "# inline");
 }

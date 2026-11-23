@@ -199,6 +199,14 @@ fn de_opt_debug_addr<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, 
     Ok(Some(s))
 }
 
+/// Reads the text of the config file into the message, with its
+/// comments. `path` is the file named in errors.
+pub fn read(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
+    let mut config = read_values(text, path)?;
+    super::comments::attach(text, &mut config);
+    Ok(config)
+}
+
 /// Reads the text of the config file into the message, without its
 /// comments. `path` is the file named in errors.
 pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
@@ -367,8 +375,8 @@ fn telemetry(r: RawTelemetry) -> pb::Telemetry {
 }
 
 /// Validates the `[hosts]` table: alias rules and endpoint ids. The checks
-/// run in alias order, as in `hosts_from_raw`, so that the first error is
-/// the same; the entries keep the order of the file.
+/// run in alias order, as the old parse checked them, so that the first
+/// error is the same; the entries keep the order of the file.
 fn hosts(
     raw: BTreeMap<String, Spanned<RawHost>>,
     at: &impl Fn(usize, String) -> ConfigError,
@@ -422,7 +430,7 @@ fn hosts(
 }
 
 /// Validates every `[exports.NAME]`: reserved names, the export schema,
-/// absolute paths. In name order, as in `exports_from_raw`; the entries
+/// absolute paths. In name order, as the old parse checked them; the entries
 /// keep the order of the file.
 fn exports(
     raw: BTreeMap<String, Spanned<toml::Value>>,
