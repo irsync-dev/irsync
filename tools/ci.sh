@@ -172,6 +172,7 @@ smoke_dir=
 remove_smoke_dir() {
     [ -n "$smoke_dir" ] || return 0
     if ! rm -rf "$smoke_dir" 2>/dev/null && [ "$os" = Windows ]; then
+        # shellcheck disable=SC2016 # $env: is PowerShell's, not the shell's
         SMOKE_DIR=$(cygpath -w "$smoke_dir") powershell -NoProfile -NonInteractive -Command \
             'Remove-Item -LiteralPath ("\?\" + $env:SMOKE_DIR) -Recurse -Force' >/dev/null 2>&1 || true
     fi
