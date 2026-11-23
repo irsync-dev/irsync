@@ -237,6 +237,60 @@
   }
 }
 
+/* The version switcher in the header, written by site/tools/switcher.py
+   and opened by switcher.js, as in the book: a button that reads like the
+   header's links, and a list of the books under it. */
+@layer components {
+  /* In parentheses after "Documentation": the version of the book it
+     opens. */
+  .irsync-book {
+    @apply relative inline-block text-muted;
+  }
+
+  .irsync-book::before {
+    content: "(";
+  }
+
+  .irsync-book::after {
+    content: ")";
+  }
+
+  #irsync-book-toggle {
+    @apply -my-3 cursor-pointer py-3 font-display text-label whitespace-nowrap text-muted hover:text-base-content hover:underline;
+  }
+
+  #irsync-book-toggle::after {
+    content: "▾";
+    margin-left: 0.3em;
+  }
+
+  #irsync-book-list {
+    @apply absolute top-full right-0 z-10 mt-1 rounded-box border border-base-300 bg-base-100 py-1 font-display text-small shadow-md;
+  }
+
+  #irsync-book-list[hidden] {
+    @apply hidden;
+  }
+
+  #irsync-book-list a {
+    @apply flex justify-between gap-3 py-1 pr-4 pl-6 whitespace-nowrap pointer-coarse:py-3 text-base-content no-underline hover:bg-base-200 focus:bg-base-200;
+  }
+
+  #irsync-book-list a[aria-current="true"] {
+    @apply font-semibold;
+  }
+
+  #irsync-book-list a[aria-current="true"]::before {
+    content: "✓";
+    margin-left: -0.9rem;
+    width: 0.9rem;
+  }
+
+  .irsync-book-version {
+    @apply font-normal text-muted;
+  }
+}
+
 /* Station on the route: the numbered circle at the left of each step, and
    the aqua line that joins it to the next one. */
 @utility station {

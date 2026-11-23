@@ -117,6 +117,32 @@ class ApplyTests(unittest.TestCase):
                              "<ol></ol>\n")
         self.assertEqual(check.check_links(self.site), [])
 
+    def test_landing_page(self):
+        (self.site / "VERSIONS").write_text(TODAY, encoding="utf-8")
+        bar = '<html><body><div class="right-buttons"></div></body></html>\n'
+        for book in ("book", "beta", "alpha", "dev"):
+            (self.site / book).mkdir()
+            (self.site / book / "index.html").write_text(bar, encoding="utf-8")
+        (self.site / "index.html").write_text(
+            "<ul><li><!-- switcher -->x<!-- /switcher --></li></ul>\n", encoding="utf-8")
+        switcher.apply(self.site)
+        page = (self.site / "index.html").read_text(encoding="utf-8")
+        got = links(page)
+        self.assertEqual(set(got), {f"{p}/index.html" for p in ("beta", "alpha", "dev")})
+        # The main version's channel is ticked, as in /book/.
+        self.assertIn('aria-current="true"', got["beta/index.html"])
+        self.assertNotIn("data-same-page", page)
+        # The landing page remembers the book picked by its data-book.
+        self.assertIn('data-book="alpha"', got["alpha/index.html"])
+        self.assertNotIn("switcher -->", page)
+        self.assertEqual(check.check_links(self.site), [])
+
+    def test_landing_page_without_markers_stops(self):
+        with self.assertRaisesRegex(switcher.SwitcherError, "index.html"):
+            switcher.landing("<p>no markers</p>", "<M>")
+        with self.assertRaises(switcher.SwitcherError):
+            switcher.landing("<!-- switcher --><!-- /switcher -->" * 2, "<M>")
+
     def test_a_book_without_a_top_bar_stops(self):
         # A future mdbook that names the bar differently must not drop the
         # switcher in silence.

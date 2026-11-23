@@ -78,12 +78,16 @@
           ><!-- /versions:prerelease -->
         </p>
         <ul class="flex flex-wrap gap-x-6 gap-y-1 text-label">
-          <li>
+          <li class="flex items-baseline gap-x-1.5">
             <a
+              id="docs-link"
               class="-my-3 inline-block py-3 text-base-content no-underline hover:underline"
               href="book/"
               >Documentation</a
             >
+            <!-- The build puts the version switcher here, as in the book's
+                 top bar (site/tools/switcher.py). -->
+            <!-- switcher --><!-- /switcher -->
           </li>
           <li>
             <a
@@ -249,6 +253,59 @@
         </li>
       </ul>
     </footer>
+
+    <!-- Opens and closes the version switcher, as in the book. -->
+    <script src="switcher.js"></script>
+
+    <!-- The book picked in the switcher is remembered for this tab: back on
+         this page, the button names it, it is ticked, and "Documentation"
+         opens it. The page's other links into the book stay on the main
+         version, whose pages the build checks. -->
+    <script>
+      (function () {
+        const list = document.getElementById("irsync-book-list");
+        if (!list) {
+          return;
+        }
+        const button = document.getElementById("irsync-book-toggle");
+        const docs = document.getElementById("docs-link");
+        const KEY = "irsync-book";
+        const store = {
+          get: () => {
+            try {
+              return sessionStorage.getItem(KEY);
+            } catch (e) {
+              return null;
+            }
+          },
+          set: (value) => {
+            try {
+              sessionStorage.setItem(KEY, value);
+            } catch (e) {}
+          },
+        };
+        for (const link of list.querySelectorAll("a[data-book]")) {
+          link.addEventListener("click", () => store.set(link.dataset.book));
+        }
+        // On every show, also a return with the back button, which may
+        // bring the page back as it was left.
+        window.addEventListener("pageshow", () => {
+          const picked = list.querySelector('a[data-book="' + store.get() + '"]');
+          if (!picked) {
+            return;
+          }
+          for (const link of list.querySelectorAll("a[data-book]")) {
+            if (link === picked) {
+              link.setAttribute("aria-current", "true");
+            } else {
+              link.removeAttribute("aria-current");
+            }
+          }
+          button.textContent = picked.firstChild.textContent.trim();
+          docs.setAttribute("href", picked.getAttribute("href"));
+        });
+      })();
+    </script>
 
     <!-- Where the script below says "Copied" for a screen reader; the
          change of a button's label is not read out. -->

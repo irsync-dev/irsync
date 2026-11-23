@@ -167,6 +167,19 @@ other link. `book/theme/switcher.js` only opens and closes the list, and
 keeps the `#anchor` when the link stays on the same page. A plain
 `mdbook build book` or `mdbook serve book` has no switcher.
 
+The landing page has the same switcher in its header, in parentheses
+after "Documentation". `switcher.py` writes it between the
+`<!-- switcher -->` markers in `site/index.html`, with links to each
+book's title page and the main version's channel ticked, as in `/book/`.
+The build copies `switcher.js` next to the page to open it. Opened
+straight from the repository, the page has no switcher.
+
+The landing page remembers the book picked there for the browser tab
+(`sessionStorage`). Back on the page, the button names that book, it is
+ticked, and "Documentation" opens it. The page's other links into the book
+stay on `/book/`: the build checks them against that book only, and
+another book may not have those pages.
+
 The build also writes `VERSIONS` next to `BUILD`: one line per book, with
 its path, version, commit and `published` or `unpublished` (a release that
 is being built). The `dev` line has no version (`-`). Its commit is the one
@@ -278,7 +291,8 @@ controls are 44px targets.
 
 The version switcher (see [The books](#the-books)) reads like the bar's
 other controls, and its list looks like the theme list (`irsync.css`,
-`#irsync-book-toggle` and `#irsync-book-list`).
+`#irsync-book-toggle` and `#irsync-book-list`). On the landing page,
+the button reads like the header's links (`site/tailwind.css`).
 
 ## The checker
 
