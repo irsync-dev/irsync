@@ -8,6 +8,7 @@ pub mod hosts;
 pub mod paths;
 pub mod reader;
 pub mod settings;
+pub mod writer;
 
 use std::path::PathBuf;
 

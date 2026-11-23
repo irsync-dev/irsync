@@ -17,7 +17,8 @@
 //! - lines after everything: the file's `footer`.
 //!
 //! A comment is the whole line from `#` on. The comments of a bare
-//! `[hosts]` or `[exports]` header go to its first entry. A comment with
+//! `[hosts]` or `[exports]` header, or of a top-level `hosts = { … }`
+//! key, go to its first entry, without blank lines. A comment with
 //! no place in the message goes to the footer: none is dropped.
 
 use irsync_proto::config as pb;
@@ -29,6 +30,7 @@ use toml_edit::{DocumentMut, Item, RawString, TableLike, Value};
 pub(crate) fn attach(text: &str, msg: &mut pb::Config) {
     // `read_values` accepted the text, so it parses.
     let Ok(doc) = text.parse::<DocumentMut>() else {
+        debug_assert!(false, "toml_edit refuses a file that toml read");
         return;
     };
     let mut walk = Walk {
@@ -356,6 +358,13 @@ fn table<'a>(c: &'a mut pb::Config, path: &[String]) -> Option<Parts<'a>> {
 /// first entry.
 fn redirect(c: &mut pb::Config, place: Place) -> Place {
     let place = match place {
+        // `hosts = { … }` at the top level is the group's header.
+        Place::Above(Spot::Key(p, k)) if p.is_empty() && is_group(&k) => {
+            Place::Above(Spot::Table(vec![k]))
+        }
+        Place::Trailing(Spot::Key(p, k)) if p.is_empty() && is_group(&k) => {
+            Place::Trailing(Spot::Table(vec![k]))
+        }
         Place::Above(Spot::Key(p, k)) if table(c, &child(&p, &k)).is_some() => {
             Place::Above(Spot::Table(child(&p, &k)))
         }
@@ -377,6 +386,10 @@ fn redirect(c: &mut pb::Config, place: Place) -> Place {
         Some(name) => Place::Above(Spot::Table(child(group, &name))),
         None => place,
     }
+}
+
+fn is_group(name: &str) -> bool {
+    name == "hosts" || name == "exports"
 }
 
 enum Slot<'a> {
@@ -418,6 +431,9 @@ fn put(c: &mut pb::Config, place: Place, line: String) {
     let place = redirect(c, place);
     match slot(c, &place) {
         Some(Slot::Lines(lines)) => lines.push(line),
+        // A tail redirected to an entry's `above` has blank lines; an
+        // `above` holds none.
+        Some(Slot::Above(_)) if line.is_empty() => {}
         Some(Slot::Above(comment)) => comment.above.push(line),
         Some(Slot::Trailing(comment)) if comment.trailing.is_empty() => comment.trailing = line,
         // A second comment for the same line, as after an element and

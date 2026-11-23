@@ -3,6 +3,7 @@
 use irsync::config::file::Config;
 use irsync::config::reader::{read, read_values};
 use irsync::config::settings::DaemonSettings;
+use irsync::config::writer::write;
 use irsync_proto::config as pb;
 use std::path::Path;
 
@@ -604,4 +605,236 @@ fn comments_on_dotted_keys_and_inline_tables() {
     let h = c.hosts[0].comment.as_ref().unwrap();
     assert_eq!(h.above, ["# the nas"]);
     assert_eq!(h.trailing, "# inline");
+}
+
+fn corpus() -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config_corpus");
+    let mut files: Vec<(String, String)> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+        .map(|p| {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            (name, std::fs::read_to_string(&p).unwrap())
+        })
+        .collect();
+    files.sort();
+    assert!(files.len() >= 7, "the corpus is in {}", dir.display());
+    files
+}
+
+fn fixture(name: &str) -> String {
+    corpus()
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("no fixture {name}"))
+        .1
+}
+
+fn rewritten(text: &str) -> String {
+    write(&read(text, Path::new("f")).unwrap())
+}
+
+/// Every comment of `text` is in `out`.
+fn assert_no_comment_lost(name: &str, text: &str, out: &str) {
+    for line in text
+        .lines()
+        .filter_map(|l| l.find('#').map(|i| l[i..].trim_end()))
+    {
+        assert!(out.contains(line), "{name}: lost {line:?} in\n{out}");
+    }
+}
+
+#[test]
+fn the_corpus_is_commented_as_the_tests_say() {
+    assert_eq!(fixture("commented.toml"), COMMENTED);
+}
+
+#[test]
+fn the_writers_form() {
+    // COMMENTED, as the writer lays it out.
+    let out = write(&read(COMMENTED, Path::new("f")).unwrap());
+    assert_eq!(
+        out,
+        "\
+# irsync on the nas
+# second header line
+
+identity = \"~/k\" # my key
+# after the top keys
+
+# about the daemon
+[daemon] # trailing on header
+# above portmap
+portmap = false # why off
+# daemon tail
+
+# the photos
+[exports.photos]
+path = \"/photos\"
+rw = [
+    # the laptop
+    \"laptop\", # mine
+    # after the last
+    \"phone\",
+]
+
+# the end
+"
+    );
+}
+
+#[test]
+fn read_write_read_is_the_same_message() {
+    for (name, text) in corpus() {
+        let m = read(&text, Path::new("f")).unwrap();
+        assert_eq!(read(&write(&m), Path::new("f")).unwrap(), m, "{name}");
+    }
+}
+
+#[test]
+fn the_form_is_stable() {
+    for (name, text) in corpus() {
+        let once = rewritten(&text);
+        assert_eq!(rewritten(&once), once, "{name}");
+    }
+}
+
+#[test]
+fn no_comment_is_lost() {
+    for (name, text) in corpus() {
+        assert_no_comment_lost(&name, &text, &rewritten(&text));
+    }
+}
+
+#[test]
+fn the_typed_config_is_the_same_after_a_rewrite() {
+    for (name, text) in corpus() {
+        let out = rewritten(&text);
+        assert_eq!(
+            Config::parse(&out, Path::new("f")).unwrap(),
+            Config::parse(&text, Path::new("f")).unwrap(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn every_key_is_written() {
+    // full.toml sets every key; the rewrite holds each of them again.
+    let text = fixture("full.toml");
+    assert_eq!(rewritten(&text), text);
+}
+
+#[test]
+fn odd_comment_places_survive() {
+    let text = fixture("odd_comments.toml");
+    assert_no_comment_lost("odd_comments.toml", &text, &rewritten(&text));
+}
+
+#[test]
+fn quoted_names_round_trip() {
+    let text = fixture("quoted_names.toml");
+    let m = read(&text, Path::new("f")).unwrap();
+    let out = write(&m);
+    for header in [
+        "[hosts.\"my nas\"]",
+        "[hosts.\"käse\"]",
+        "[exports.\"www.example.com\"]",
+    ] {
+        assert!(out.contains(header), "{header} in\n{out}");
+    }
+    assert_eq!(read(&out, Path::new("f")).unwrap(), m);
+}
+
+#[test]
+fn file_edges_round_trip() {
+    assert_eq!(write(&pb::Config::default()), "");
+    for text in [
+        "",
+        "# only\n",
+        "[daemon]\nportmap = false",
+        "[daemon]\r\nportmap = false\r\n",
+    ] {
+        let m = read(text, Path::new("f")).unwrap();
+        let out = write(&m);
+        assert!(
+            out.is_empty() || out.ends_with('\n') && !out.ends_with("\n\n"),
+            "{text:?}"
+        );
+        assert_eq!(read(&out, Path::new("f")).unwrap(), m, "{text:?}");
+    }
+    // A file of only comments is all footer.
+    let only = read("# only\n", Path::new("f")).unwrap();
+    assert_eq!(only.footer, ["# only"]);
+    assert!(only.header.is_empty());
+    assert_eq!(
+        read("[daemon]\r\nportmap = false\r\n", Path::new("f")).unwrap(),
+        read("[daemon]\nportmap = false\n", Path::new("f")).unwrap()
+    );
+}
+
+#[test]
+fn inline_and_dotted_forms_become_tables() {
+    let inline_twin = format!(
+        "\
+# the nas
+[hosts.nas] # inline host
+endpoint_id = \"{a}\"
+address = [\"10.0.0.2:4433\"]
+
+[hosts.lap]
+client_id = \"{b}\"
+
+# the photos
+[exports.photos] # inline export
+path = \"/photos\"
+rw = [\"nas\", \"lap\"]
+",
+        a = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191",
+        b = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+    );
+    let dotted_twin = format!(
+        "\
+# top
+identity = \"~/k\"
+
+[daemon]
+# on portmap
+portmap = false # off
+
+[daemon.discovery]
+dht = false # dht off
+
+[hosts.nas]
+endpoint_id = \"{a}\" # the id
+",
+        a = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191",
+    );
+    for (name, twin, header) in [
+        ("inline.toml", inline_twin, "[hosts.nas]"),
+        ("dotted.toml", dotted_twin, "[daemon]"),
+    ] {
+        let m = read(&fixture(name), Path::new("f")).unwrap();
+        assert_eq!(m, read(&twin, Path::new("f")).unwrap(), "{name}");
+        let out = write(&m);
+        assert!(out.contains(header), "{name}: {out}");
+        assert_eq!(out, twin, "{name}");
+    }
+}
+
+#[test]
+fn a_top_level_group_key_gives_its_comments_to_the_first_entry() {
+    let c = commented("# the exports\nexports = { p = { path = \"/p\" } } # inline\n");
+    assert!(c.key_comments.is_empty());
+    assert_eq!(
+        c.exports[0].comment.as_ref().unwrap().above,
+        ["# the exports", "# inline"]
+    );
+}
+
+#[test]
+fn a_bare_group_tail_gives_no_blank_lines_to_the_first_entry() {
+    let c = commented("[exports]\n# a\n\n# b\n\n[exports.p]\npath = \"/p\"\n");
+    assert_eq!(c.exports[0].comment.as_ref().unwrap().above, ["# a", "# b"]);
 }
