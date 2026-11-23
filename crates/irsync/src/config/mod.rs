@@ -5,6 +5,7 @@ pub mod exports;
 pub mod file;
 pub mod hosts;
 pub mod paths;
+pub mod reader;
 pub mod settings;
 
 use std::path::PathBuf;
