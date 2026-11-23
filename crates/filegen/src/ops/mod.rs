@@ -170,9 +170,9 @@ pub struct OpError {
 impl OpError {
     /// `source` with the paths attached: an [`io::Error`] of the same kind
     /// and message holding an `OpError`. `path` and `to` are absolute
-    /// paths under `root`.
+    /// paths under `root`; they are kept as stored paths, with `/`.
     pub fn wrap(root: &Path, path: &Path, to: Option<&Path>, source: io::Error) -> io::Error {
-        let rel = |p: &Path| platform::path_to_bytes(p.strip_prefix(root).unwrap_or(p));
+        let rel = |p: &Path| platform::rel_bytes(root, p);
         let kind = source.kind();
         io::Error::new(
             kind,
@@ -452,5 +452,34 @@ pub(crate) mod testutil {
             Some((dir, name)) => (m.resolve(dir.as_bytes()).unwrap(), name.into()),
             None => (m.root(), rel.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::path::Path;
+
+    use super::OpError;
+    use crate::platform;
+
+    #[test]
+    fn op_error_paths_are_stored_paths() {
+        let root = Path::new(if cfg!(windows) { r"\?\C:\root" } else { "/root" });
+        let path = root.join("a").join("b").join("c");
+        let e = OpError::wrap(root, &path, Some(&root.join("d")), io::Error::other("x"));
+        let o = OpError::of(&e).unwrap();
+        assert_eq!(o.path, b"a/b/c");
+        assert_eq!(o.to.as_deref(), Some(&b"d"[..]));
+        assert_eq!(e.kind(), io::ErrorKind::Other);
+        // The root itself, and a path not below it, as they are.
+        let e = OpError::wrap(root, root, None, io::Error::other("x"));
+        assert_eq!(OpError::of(&e).unwrap().path, b"");
+        let elsewhere = Path::new(if cfg!(windows) { r"D:\x\y" } else { "/x/y" });
+        let e = OpError::wrap(root, elsewhere, None, io::Error::other("x"));
+        assert_eq!(
+            OpError::of(&e).unwrap().path,
+            platform::path_to_bytes(elsewhere)
+        );
     }
 }

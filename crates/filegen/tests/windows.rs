@@ -544,6 +544,41 @@ fn rename_over_takes_files_only() {
 }
 
 #[test]
+fn a_file_another_program_holds_fails_the_step_and_resume_goes_on() {
+    // One file, deep down, and a chain that only appends: every step picks it.
+    let (t, root, out) = dirs();
+    fs::create_dir_all(root.join("a").join("b")).unwrap();
+    let c = root.join("a").join("b").join("c");
+    fs::write(&c, b"x").unwrap();
+    let cfg = weights_config(t.path(), &[(OpKind::Append, 1.0)]);
+    let held = testutil::make_unreadable(&c).expect("held without sharing");
+    let o = run(&root, &out, 13, 5, &["--config", cfg.to_str().unwrap()]);
+    drop(held);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    let log = fs::read_to_string(out.join("filegen-13.log")).unwrap();
+    let failed: Vec<&str> = log.lines().filter(|l| l.contains(" error=")).collect();
+    assert_eq!(failed.len(), 1, "{log}");
+    // The stored path, with `/` as in every other line.
+    assert!(
+        failed[0].contains(" op=append path=\"a/b/c\" "),
+        "{}",
+        failed[0]
+    );
+    assert!(log.lines().any(|l| l.starts_with("# end ")), "{log}");
+    let state = out.join("filegen-13.state.yaml");
+    assert_eq!(filegen::state::read(&state).unwrap().steps_done, 0);
+    // Once the file is free, a resume does the steps.
+    let o = bin()
+        .args(["run", "-q", "--steps", "5", "--resume"])
+        .arg(&state)
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert_ok(&o);
+    assert_eq!(filegen::state::read(&state).unwrap().steps_done, 5);
+}
+
+#[test]
 fn a_row_left_empty_names_the_kinds_not_available_here() {
     // Valid as given, but from every kind only POSIX-only kinds follow.
     let (t, root, out) = dirs();

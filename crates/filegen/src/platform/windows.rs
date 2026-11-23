@@ -395,6 +395,23 @@ pub fn path_to_bytes(path: &Path) -> Vec<u8> {
     os_to_bytes(path.as_os_str())
 }
 
+/// The stored path of `path` below `root`, as the log writes it: the names
+/// after the root, joined with `/` as in every stored path. A path not
+/// below `root` is written as it is.
+pub fn rel_bytes(root: &Path, path: &Path) -> Vec<u8> {
+    let Ok(rel) = path.strip_prefix(root) else {
+        return path_to_bytes(path);
+    };
+    let mut out = Vec::new();
+    for (i, c) in rel.components().enumerate() {
+        if i > 0 {
+            out.push(b'/');
+        }
+        out.extend(os_to_bytes(c.as_os_str()));
+    }
+    out
+}
+
 /// Whether NTFS takes `name` as a file name: none of `< > : " | ? * \` and
 /// no character below U+0020.
 pub fn name_ok(name: &str) -> bool {

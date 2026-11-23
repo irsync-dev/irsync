@@ -125,6 +125,13 @@ pub fn path_to_bytes(path: &Path) -> Vec<u8> {
     path.as_os_str().as_bytes().to_vec()
 }
 
+/// The stored path of `path` below `root`, as the log writes it: its bytes
+/// after the root, which use `/` already. A path not below `root` is
+/// written as it is.
+pub fn rel_bytes(root: &Path, path: &Path) -> Vec<u8> {
+    path_to_bytes(path.strip_prefix(root).unwrap_or(path))
+}
+
 /// The bytes of an absolute symlink target naming `path`: the path's own
 /// bytes, which is what [`read_link`] gives back.
 pub fn target_bytes(path: &Path) -> Vec<u8> {
