@@ -52,7 +52,7 @@ struct RawClient {
     dht: Option<bool>,
     ssh_install: Option<bool>,
     mdns: Option<bool>,
-    relay: Option<Url>,
+    relay: Option<UrlText>,
     relay_mode: Option<RelayMode>,
     congestion: Option<Congestion>,
 }
@@ -69,7 +69,7 @@ struct RawDaemon {
     #[serde(default, deserialize_with = "de_opt_listen")]
     listen: Option<Vec<HostPort>>,
     portmap: Option<bool>,
-    relay: Option<Url>,
+    relay: Option<UrlText>,
     relay_mode: Option<RelayMode>,
     congestion: Option<Congestion>,
     discovery: Option<RawDiscovery>,
@@ -91,7 +91,7 @@ struct RawDiscovery {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTelemetry {
-    otlp_endpoint: Option<Url>,
+    otlp_endpoint: Option<UrlText>,
     otlp_protocol: Option<OtlpProtocol>,
 }
 
@@ -100,7 +100,7 @@ struct RawTelemetry {
 struct RawHost {
     endpoint_id: Option<Spanned<String>>,
     client_id: Option<Spanned<String>>,
-    relay: Option<Url>,
+    relay: Option<UrlText>,
     relay_mode: Option<RelayMode>,
     congestion: Option<Congestion>,
     address: Option<Vec<HostPort>>,
@@ -163,6 +163,27 @@ mod spelled {
     pub(super) enum OtlpProtocol {
         Grpc,
         Http,
+    }
+}
+
+/// A URL as written, once it parses. Its serde messages are those of
+/// `Url`'s own `Deserialize`, which the file was once read with.
+struct UrlText(String);
+
+impl<'de> Deserialize<'de> for UrlText {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<UrlText, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = UrlText;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a string representing an URL")
+            }
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<UrlText, E> {
+                Url::parse(s).map_err(|err| E::custom(format!("{err}: {s:?}")))?;
+                Ok(UrlText(s.to_string()))
+            }
+        }
+        d.deserialize_str(Visitor)
     }
 }
 
@@ -328,7 +349,7 @@ fn client(r: RawClient) -> pb::Client {
         dht: r.dht,
         ssh_install: r.ssh_install,
         mdns: r.mdns,
-        relay: r.relay.map(String::from),
+        relay: r.relay.map(|u| u.0),
         relay_mode: r.relay_mode.map(relay_mode),
         congestion: r.congestion.map(congestion),
         ..Default::default()
@@ -345,7 +366,7 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
         listen,
         listen_set,
         portmap: r.portmap,
-        relay: r.relay.map(String::from),
+        relay: r.relay.map(|u| u.0),
         relay_mode: r.relay_mode.map(relay_mode),
         congestion: r.congestion.map(congestion),
         discovery: r.discovery.map(|d| pb::Discovery {
@@ -363,7 +384,7 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
 
 fn telemetry(r: RawTelemetry) -> pb::Telemetry {
     pb::Telemetry {
-        otlp_endpoint: r.otlp_endpoint.map(String::from),
+        otlp_endpoint: r.otlp_endpoint.map(|u| u.0),
         otlp_protocol: r.otlp_protocol.map(|p| {
             (match p {
                 OtlpProtocol::Grpc => pb::OtlpProtocol::Grpc,
@@ -408,7 +429,7 @@ fn hosts(
             name: alias,
             endpoint_id,
             client_id,
-            relay: r.relay.map(String::from),
+            relay: r.relay.map(|u| u.0),
             relay_mode: r.relay_mode.map(relay_mode),
             congestion: r.congestion.map(congestion),
             address,

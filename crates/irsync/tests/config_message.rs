@@ -48,6 +48,30 @@ fn values_not_spellings() {
 }
 
 #[test]
+fn urls_are_kept_as_written() {
+    let text = format!(
+        "[client]\nrelay = \"https://r.example\"\n\n[daemon]\nrelay = \"https://d.example\"\n\n\
+         [telemetry]\notlp_endpoint = \"http://c:4318\"\n\n[hosts.nas]\nendpoint_id = \"{}\"\nrelay = \"https://h.example\"\n",
+        id(1)
+    );
+    let c = values(&text);
+    assert_eq!(
+        c.client.as_ref().unwrap().relay.as_deref(),
+        Some("https://r.example")
+    );
+    assert_eq!(
+        c.daemon.as_ref().unwrap().relay.as_deref(),
+        Some("https://d.example")
+    );
+    assert_eq!(
+        c.telemetry.as_ref().unwrap().otlp_endpoint.as_deref(),
+        Some("http://c:4318")
+    );
+    assert_eq!(c.hosts[0].relay.as_deref(), Some("https://h.example"));
+    assert_eq!(write(&c), text);
+}
+
+#[test]
 fn entries_keep_file_order() {
     let c = values(&format!(
         "[hosts.zed]\nendpoint_id = \"{0}\"\n[exports.b]\npath = \"/b\"\n[hosts.abe]\nendpoint_id = \"{0}\"\n[exports.a]\npath = \"/a\"\n",

@@ -649,8 +649,8 @@ fn assign(field: Field, value: Value) -> Result<(), String> {
         }
         (Field::Text(f), Value::Text(s)) => *f = Some(s),
         (Field::Url(f), Value::Text(s)) => {
-            let url = url::Url::parse(&s).map_err(|e| format!("expected a URL: {e}"))?;
-            *f = Some(url.into());
+            url::Url::parse(&s).map_err(|e| format!("expected a URL: {e}"))?;
+            *f = Some(s);
         }
         (Field::Id(f), Value::Text(s)) => {
             let id = crate::identity::parse_endpoint_id(&s).map_err(|e| e.to_string())?;

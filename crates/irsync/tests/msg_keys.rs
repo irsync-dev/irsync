@@ -361,8 +361,12 @@ fn set_telemetry_endpoint() {
     assert_eq!(kind_of(&p("daemon.debug_addr")), Some(Kind::Str));
     let v = parse_value(Kind::Url, &["http://c:4318".to_string()]).unwrap();
     set(&mut m, &key, v).unwrap();
-    // Stored as the reader stores a URL.
-    assert_eq!(get(&m, &key).unwrap(), lines(&["http://c:4318/"]));
+    // Kept as typed, as the reader keeps a URL as written.
+    assert_eq!(get(&m, &key).unwrap(), lines(&["http://c:4318"]));
+    assert_eq!(
+        write(&m),
+        "[telemetry]\notlp_endpoint = \"http://c:4318\"\n"
+    );
 }
 
 /// One key per arm of `kind_of` that is not a table, with a value
