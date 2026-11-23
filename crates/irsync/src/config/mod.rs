@@ -65,6 +65,16 @@ pub(crate) fn line_of(text: &str, offset: usize) -> usize {
     text[..offset.min(text.len())].matches('\n').count() + 1
 }
 
+/// An error in a config that has no line to point at, such as one a
+/// command built.
+pub(crate) fn file_error(path: &std::path::Path, message: String) -> ConfigError {
+    ConfigError::File {
+        path: path.to_path_buf(),
+        line: None,
+        message,
+    }
+}
+
 pub(crate) fn toml_err(text: &str, path: &std::path::Path, e: toml::de::Error) -> ConfigError {
     ConfigError::File {
         path: path.to_path_buf(),

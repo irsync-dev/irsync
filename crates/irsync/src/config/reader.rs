@@ -1,20 +1,20 @@
-//! \`irsync.toml\` read into the config message ([\`pb::Config\`]).
+//! `irsync.toml` read into the config message ([`pb::Config`]).
 //!
-//! The same checks and error messages as [\`super::file::Config::parse\`],
-//! with the same line numbers. The message holds what the file says and
+//! It makes every check that needs the file's text or its line numbers;
+//! [`super::file::Config::from_message`] makes those an edit can break
+//! again, with the same messages. The message holds what the file says and
 //! nothing more: a key that is not in the file stays unset, defaults are
-//! applied later, and paths stay as written (\`~\` is not expanded).
+//! applied later, and paths stay as written (`~` is not expanded).
 
-use super::exports::{immediate_problem, reserved, RESERVED};
-use super::hosts::valid_alias;
-use super::settings::{
-    de_listen, de_opt_duration, parse_debug_addr, Congestion, OtlpProtocol, RelayMode,
-};
-use super::{expand_tilde, line_of, toml_err, ConfigError};
+use super::exports::{name_problem, not_absolute};
+use super::hosts::{invalid_alias, needs_an_id, valid_alias};
+use super::settings::{listen_problem, parse_debug_addr};
+use super::{duration, expand_tilde, line_of, toml_err, ConfigError};
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
 use serde::{Deserialize, Deserializer};
+use spelled::{Congestion, OtlpProtocol, RelayMode};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,7 +22,7 @@ use toml::Spanned;
 use url::Url;
 
 // The serde shapes of the file. Field names and their order are those of
-// the structs \`Config::parse\` reads into, so that serde's messages (an
+// the structs `Config::parse` once read into, so that serde's messages (an
 // unknown field names the expected ones) stay the same.
 
 #[derive(Deserialize)]
@@ -79,8 +79,9 @@ struct RawDaemon {
     allow_root: Option<bool>,
 }
 
+// Named as the typed struct was: serde's messages name it.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(expecting = "struct Discovery", deny_unknown_fields)]
 struct RawDiscovery {
     dht: Option<bool>,
     dns: Option<bool>,
@@ -138,11 +139,60 @@ struct RawImmediate {
     rw: Option<Vec<String>>,
 }
 
-fn de_opt_listen<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<HostPort>>, D::Error> {
-    de_listen(d).map(Some)
+/// The enums as the file spells them. Named as the typed enums are, should
+/// serde name them in a message.
+mod spelled {
+    use serde::Deserialize;
+
+    #[derive(Clone, Copy, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub(super) enum RelayMode {
+        Default,
+        Disabled,
+    }
+
+    #[derive(Clone, Copy, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub(super) enum Congestion {
+        Bbr,
+        Cubic,
+    }
+
+    #[derive(Clone, Copy, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub(super) enum OtlpProtocol {
+        Grpc,
+        Http,
+    }
 }
 
-/// The debug address as written, once [\`parse_debug_addr\`] accepts it.
+/// A duration: whole seconds, or text such as `"90m"`.
+fn de_opt_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    // `Raw` is named in serde's message for a value of neither kind.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Secs(u64),
+        Text(String),
+    }
+    match Option::<Raw>::deserialize(d)? {
+        None => Ok(None),
+        Some(Raw::Secs(n)) => Ok(Some(Duration::from_secs(n))),
+        Some(Raw::Text(s)) => duration::parse(&s)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
+fn de_opt_listen<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<HostPort>>, D::Error> {
+    let listen = Vec::<HostPort>::deserialize(d)?;
+    if let Some(problem) = listen_problem(&listen) {
+        return Err(serde::de::Error::custom(problem));
+    }
+    Ok(Some(listen))
+}
+
+/// The debug address as written, once [`parse_debug_addr`] accepts it.
 fn de_opt_debug_addr<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     let s = String::deserialize(d)?;
     parse_debug_addr(&s).map_err(serde::de::Error::custom)?;
@@ -150,7 +200,7 @@ fn de_opt_debug_addr<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, 
 }
 
 /// Reads the text of the config file into the message, without its
-/// comments. \`path\` is the file named in errors.
+/// comments. `path` is the file named in errors.
 pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
     let at = |offset: usize, message: String| ConfigError::File {
         path: path.to_path_buf(),
@@ -249,6 +299,19 @@ fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// The message for a bad `[immediate]` table, or `None` when it is fine.
+fn immediate_problem(value: &toml::Value) -> Option<String> {
+    let Some(t) = value.as_table() else {
+        return Some(format!(
+            "immediate: expected a table, found {}",
+            value.type_str()
+        ));
+    };
+    t.keys().find(|k| *k != "rw").map(|k| {
+        format!("[immediate]: unknown key {k:?}; only `rw` is allowed (immediate grants are read-write)")
+    })
+}
+
 fn client(r: RawClient) -> pb::Client {
     pb::Client {
         parallel: r.parallel,
@@ -303,8 +366,8 @@ fn telemetry(r: RawTelemetry) -> pb::Telemetry {
     }
 }
 
-/// Validates the \`[hosts]\` table: alias rules and endpoint ids. The checks
-/// run in alias order, as in \`hosts_from_raw\`, so that the first error is
+/// Validates the `[hosts]` table: alias rules and endpoint ids. The checks
+/// run in alias order, as in `hosts_from_raw`, so that the first error is
 /// the same; the entries keep the order of the file.
 fn hosts(
     raw: BTreeMap<String, Spanned<RawHost>>,
@@ -313,12 +376,7 @@ fn hosts(
     let mut hosts = Vec::new();
     for (alias, r) in raw {
         if !valid_alias(&alias) {
-            return Err(at(
-                r.span().start,
-                format!(
-                    "invalid host alias {alias:?}: must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
-                ),
-            ));
+            return Err(at(r.span().start, invalid_alias(&alias)));
         }
         let start = r.span().start;
         let r = r.into_inner();
@@ -334,10 +392,7 @@ fn hosts(
         let endpoint_id = id_of(&r.endpoint_id)?;
         let client_id = id_of(&r.client_id)?;
         if endpoint_id.is_none() && client_id.is_none() {
-            return Err(at(
-                start,
-                format!("host {alias:?}: needs an endpoint_id (its daemon), a client_id, or both"),
-            ));
+            return Err(at(start, needs_an_id(&alias)));
         }
         let (address, address_set) = addresses(r.address);
         let (ssh_aliases, ssh_aliases_set) = entries(r.ssh_aliases);
@@ -366,8 +421,8 @@ fn hosts(
     Ok(hosts.into_iter().map(|(_, h)| h).collect())
 }
 
-/// Validates every \`[exports.NAME]\`: reserved names, the export schema,
-/// absolute paths. In name order, as in \`exports_from_raw\`; the entries
+/// Validates every `[exports.NAME]`: reserved names, the export schema,
+/// absolute paths. In name order, as in `exports_from_raw`; the entries
 /// keep the order of the file.
 fn exports(
     raw: BTreeMap<String, Spanned<toml::Value>>,
@@ -376,15 +431,8 @@ fn exports(
     let mut exports = Vec::new();
     for (name, value) in raw {
         let start = value.span().start;
-        if RESERVED.contains(&name.as_str()) {
-            return Err(at(start, reserved(&name)));
-        }
-        // The name is the first segment of a HOST:PATH.
-        if name.is_empty() || name.contains('/') {
-            return Err(at(
-                start,
-                format!("{name:?} is not a valid export name: it must not be empty or contain '/'"),
-            ));
+        if let Some(problem) = name_problem(&name) {
+            return Err(at(start, problem));
         }
         let value = value.into_inner();
         if !value.is_table() {
@@ -402,13 +450,7 @@ fn exports(
         let written = path_text(e.path);
         let expanded = expand_tilde(&written);
         if !expanded.is_absolute() {
-            return Err(at(
-                start,
-                format!(
-                    "[exports.{name}]: path {:?} must be absolute",
-                    expanded.to_string_lossy()
-                ),
-            ));
+            return Err(at(start, not_absolute(&name, &expanded)));
         }
         let (rw, rw_set) = entries(e.rw);
         let (ro, ro_set) = entries(e.ro);
@@ -445,7 +487,7 @@ fn entries(values: Option<Vec<String>>) -> (Vec<pb::Entry>, bool) {
     (entries, set)
 }
 
-/// An address array as entries, each as \`HostPort\` prints it.
+/// An address array as entries, each as `HostPort` prints it.
 fn addresses(values: Option<Vec<HostPort>>) -> (Vec<pb::Entry>, bool) {
     entries(values.map(|v| v.iter().map(HostPort::to_string).collect()))
 }

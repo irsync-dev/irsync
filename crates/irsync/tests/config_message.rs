@@ -1,6 +1,8 @@
 //! The config message as `config::reader` reads it from irsync.toml.
 
+use irsync::config::file::Config;
 use irsync::config::reader::read_values;
+use irsync::config::settings::DaemonSettings;
 use irsync_proto::config as pb;
 use std::path::Path;
 
@@ -71,35 +73,397 @@ fn an_empty_array_is_set() {
 }
 
 #[test]
+fn an_export_path_is_kept_as_written() {
+    let c = values("[exports.p]\npath = \"~/p\"\n");
+    assert_eq!(c.exports[0].path, "~/p");
+}
+
+#[test]
+fn addresses_are_kept_as_written_or_as_printed() {
+    let c = values("[daemon]\ndebug_addr = \"9000\"\nlisten = [\"[0:0::1]:1\", \"nas.lan:2\"]\n");
+    let d = c.daemon.unwrap();
+    assert_eq!(d.debug_addr.as_deref(), Some("9000"));
+    assert_eq!(
+        d.listen
+            .iter()
+            .map(|e| e.value.as_str())
+            .collect::<Vec<_>>(),
+        ["[::1]:1", "nas.lan:2"]
+    );
+    assert!(d.listen_set);
+}
+
+#[test]
+fn ssh_aliases_set_says_whether_the_key_is_there() {
+    let text = |aliases: &str| format!("[hosts.nas]\nendpoint_id = \"{}\"\n{aliases}", id(1));
+    let h = values(&text("")).hosts.remove(0);
+    assert!(h.ssh_aliases.is_empty() && !h.ssh_aliases_set);
+    let h = values(&text("ssh_aliases = []\n")).hosts.remove(0);
+    assert!(h.ssh_aliases.is_empty() && h.ssh_aliases_set);
+    let h = values(&text("ssh_aliases = [\"10.0.0.2\"]\n"))
+        .hosts
+        .remove(0);
+    assert_eq!(h.ssh_aliases[0].value, "10.0.0.2");
+    assert!(h.ssh_aliases_set);
+}
+
+#[test]
+fn a_client_id_is_32_bytes() {
+    let h = values(&format!("[hosts.lap]\nclient_id = \"{}\"\n", id(2)))
+        .hosts
+        .remove(0);
+    assert_eq!(h.client_id.as_deref(), Some(id(2).as_bytes().as_slice()));
+    assert_eq!(h.endpoint_id, None);
+}
+
+#[test]
+fn the_immediate_table() {
+    assert_eq!(values("").immediate, None);
+    let i = values("[immediate]\nrw = [\"lap\"]\n").immediate.unwrap();
+    assert_eq!(
+        i.rw.iter().map(|e| e.value.as_str()).collect::<Vec<_>>(),
+        ["lap"]
+    );
+    assert!(i.rw_set && !i.ro_set);
+}
+
+#[test]
+fn from_message_applies_defaults_and_expands_tilde() {
+    let c =
+        Config::from_message(&values("identity = \"~/k\"\n[daemon]\n"), Path::new("f")).unwrap();
+    assert_eq!(c.settings.identity, dirs::home_dir().unwrap().join("k"));
+    assert_eq!(c.settings.ssh_identity, None); // the file names an identity
+    assert_eq!(c.settings.daemon, DaemonSettings::default());
+    assert_eq!(c.hosts.path, Path::new("f"));
+}
+
+#[test]
+fn from_message_refuses_what_a_command_can_break() {
+    let mut m = values("[exports.p]\npath = \"/p\"\n");
+    m.exports[0].path = "rel".into();
+    let e = Config::from_message(&m, Path::new("f")).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "f: [exports.p]: path \"rel\" must be absolute"
+    );
+    let mut m = values("");
+    m.hosts.push(pb::Host {
+        name: "nas".into(),
+        endpoint_id: Some(vec![1, 2, 3]),
+        ..Default::default()
+    });
+    assert!(Config::from_message(&m, Path::new("f")).is_err());
+}
+
+#[test]
+fn from_message_checks_each_edit_again() {
+    let host = |name: &str, n: u8| pb::Host {
+        name: name.into(),
+        endpoint_id: Some(id(n).as_bytes().to_vec()),
+        ..Default::default()
+    };
+    let export = |name: &str| pb::Export {
+        name: name.into(),
+        path: "/p".into(),
+        ..Default::default()
+    };
+    let addr = |s: &str| pb::Entry {
+        value: s.into(),
+        comment: None,
+    };
+    let refusal = |edit: &dyn Fn(&mut pb::Config)| {
+        let mut m = values("");
+        edit(&mut m);
+        Config::from_message(&m, Path::new("f"))
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(
+        refusal(&|m| m.hosts.push(host("a:b", 1))),
+        "f: invalid host alias \"a:b\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
+    );
+    assert_eq!(
+        refusal(&|m| m.hosts.push(pb::Host {
+            name: "nas".into(),
+            ..Default::default()
+        })),
+        "f: host \"nas\": needs an endpoint_id (its daemon), a client_id, or both"
+    );
+    assert_eq!(
+        refusal(&|m| m.hosts.extend([host("nas", 1), host("nas", 2)])),
+        "f: duplicate host alias \"nas\""
+    );
+    assert_eq!(
+        refusal(&|m| m.exports.push(export("all"))),
+        "f: \"all\" is reserved: it is the word `grant add all WHO` uses for every export"
+    );
+    assert_eq!(
+        refusal(&|m| m.exports.push(export("a/b"))),
+        "f: \"a/b\" is not a valid export name: it must not be empty or contain '/'"
+    );
+    assert_eq!(
+        refusal(&|m| m.exports.extend([export("p"), export("p")])),
+        "f: duplicate export \"p\""
+    );
+    assert_eq!(
+        refusal(&|m| {
+            m.daemon = Some(pb::Daemon {
+                listen: vec![addr("1.2.3.4:1"), addr("1.2.3.5:1")],
+                ..Default::default()
+            })
+        }),
+        "f: [daemon]: at most one IPv4 and one IPv6 listen address"
+    );
+    assert_eq!(
+        refusal(&|m| {
+            m.daemon = Some(pb::Daemon {
+                debug_addr: Some("x".into()),
+                ..Default::default()
+            })
+        }),
+        "f: [daemon]: bad debug address \"x\": expected PORT or IP:PORT"
+    );
+    assert_eq!(
+        refusal(&|m| {
+            m.client = Some(pb::Client {
+                relay: Some("not a url".into()),
+                ..Default::default()
+            })
+        }),
+        "f: [client]: relative URL without a base: \"not a url\""
+    );
+}
+
+#[test]
 fn errors_are_those_of_config_parse() {
-    for text in [
-        "[hosts.nas]\nendpoint_id = \"nope\"\n",
-        "[exports.p]\npath = \"rel\"\n",
-        "[nas]\nendpoint_id = \"x\"\n",
-        "rw = [\"x\"]\n",
-        "[daemon]\nlisten = [\"1.2.3.4:1\", \"1.2.3.5:1\"]\n",
-        "[immediate]\nro = [\"x\"]\n",
-        "[hosts.all]\nendpoint_id = \"x\"\n",
-        "[client]\nbogus = 1\n",
-        "[daemon]\nidentity = 1\n",
-        "[daemon]\nidle_timeout = \"soon\"\n",
-        "[daemon]\ndebug_addr = \"x\"\n",
-        "[daemon.discovery]\nbogus = true\n",
-        "[client]\nrelay = \"not a url\"\n",
-        "[telemetry]\notlp_protocol = \"udp\"\n",
-        "[hosts.nas]\naddress = [\"nope\"]\n",
-        "[hosts.nas]\nssh = \"nas\"\n",
-        "[hosts.b]\nendpoint_id = \"x\"\n[hosts.a]\nendpoint_id = \"y\"\n",
-        "[exports.p]\nread_only = true\n",
-        "[exports.p]\npath = \"/p\"\nbogus = 1\n",
-        "[exports.b]\npath = \"b\"\n[exports.a]\npath = \"a\"\n",
-        "[exports]\np = 1\n",
-        "[all]\nrw = \"x\"\n",
-        "identity = 1\n",
-        "not toml",
+    // The messages `Config::parse` gave before it read through the message.
+    for (text, message) in [
+        (
+            "[hosts.nas]\nendpoint_id = \"nope\"\n",
+            "f:2: host \"nas\": invalid endpoint id: nope",
+        ),
+        (
+            "[exports.p]\npath = \"rel\"\n",
+            "f:1: [exports.p]: path \"rel\" must be absolute",
+        ),
+        (
+            "[nas]\nendpoint_id = \"x\"\n",
+            "f:1: unknown table \"nas\"; hosts live under [hosts.nas]",
+        ),
+        (
+            "rw = [\"x\"]\n",
+            "f:1: unknown key \"rw\"; grants for every export live under [all]",
+        ),
+        (
+            "[daemon]\nlisten = [\"1.2.3.4:1\", \"1.2.3.5:1\"]\n",
+            "f:2: at most one IPv4 and one IPv6 listen address",
+        ),
+        (
+            "[immediate]\nro = [\"x\"]\n",
+            "f:1: [immediate]: unknown key \"ro\"; only `rw` is allowed (immediate grants are read-write)",
+        ),
+        (
+            "[hosts.all]\nendpoint_id = \"x\"\n",
+            "f:1: invalid host alias \"all\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId",
+        ),
+        (
+            "[client]\nbogus = 1\n",
+            "f:2: unknown field `bogus`, expected one of `parallel`, `reconnect`, `dial_retries`, `dht`, `ssh_install`, `mdns`, `relay`, `relay_mode`, `congestion`",
+        ),
+        (
+            "[daemon]\nidentity = 1\n",
+            "f:2: invalid type: integer `1`, expected path string",
+        ),
+        (
+            "[daemon]\nidle_timeout = \"soon\"\n",
+            "f:2: bad duration \"soon\": expected <number>[s|m|h|d]",
+        ),
+        (
+            "[daemon]\ndebug_addr = \"x\"\n",
+            "f:2: bad debug address \"x\": expected PORT or IP:PORT",
+        ),
+        (
+            "[daemon.discovery]\nbogus = true\n",
+            "f:2: unknown field `bogus`, expected one of `dht`, `dns`, `mdns`",
+        ),
+        (
+            "[client]\nrelay = \"not a url\"\n",
+            "f:2: relative URL without a base: \"not a url\"",
+        ),
+        (
+            "[telemetry]\notlp_protocol = \"udp\"\n",
+            "f:2: unknown variant `udp`, expected `grpc` or `http`",
+        ),
+        (
+            "[hosts.nas]\naddress = [\"nope\"]\n",
+            "f:2: invalid address \"nope\": expected ip:port, [ipv6]:port or host:port",
+        ),
+        (
+            "[hosts.nas]\nssh = \"nas\"\n",
+            "f:1: host \"nas\": needs an endpoint_id (its daemon), a client_id, or both",
+        ),
+        (
+            "[hosts.b]\nendpoint_id = \"x\"\n[hosts.a]\nendpoint_id = \"y\"\n",
+            "f:4: host \"a\": invalid endpoint id: y",
+        ),
+        (
+            "[exports.p]\nread_only = true\n",
+            "f:1: [exports.p]: missing field `path`",
+        ),
+        (
+            "[exports.p]\npath = \"/p\"\nbogus = 1\n",
+            "f:1: [exports.p]: unknown field `bogus`, expected one of `path`, `read_only`, `warm_index`, `fsync`, `auto`, `rw`, `ro`",
+        ),
+        (
+            "[exports.b]\npath = \"b\"\n[exports.a]\npath = \"a\"\n",
+            "f:3: [exports.a]: path \"a\" must be absolute",
+        ),
+        (
+            "[exports]\np = 1\n",
+            "f:2: exports.p: expected a table (an export), found integer",
+        ),
+        (
+            "[all]\nrw = \"x\"\n",
+            "f:2: invalid type: string \"x\", expected a sequence",
+        ),
+        (
+            "identity = 1\n",
+            "f:1: identity: expected a string, found integer",
+        ),
+        (
+            "[daemon]\nidle_timeout = true\n",
+            "f:2: data did not match any variant of untagged enum Raw",
+        ),
+        (
+            "[daemon]\ndebug_addr = 1\n",
+            "f:2: invalid type: integer `1`, expected a string",
+        ),
+        (
+            "[client]\nrelay_mode = 1\n",
+            "f:2: wanted string or table",
+        ),
+        (
+            "[client]\nrelay_mode = \"x\"\n",
+            "f:2: unknown variant `x`, expected `default` or `disabled`",
+        ),
+        (
+            "[daemon]\ncongestion = \"reno\"\n",
+            "f:2: unknown variant `reno`, expected `bbr` or `cubic`",
+        ),
+        (
+            "[telemetry]\notlp_protocol = 1\n",
+            "f:2: wanted string or table",
+        ),
+        (
+            "[client]\nreconnect = true\n",
+            "f:2: data did not match any variant of untagged enum Raw",
+        ),
+        (
+            "[client]\nreconnect = \"soon\"\n",
+            "f:2: bad duration \"soon\": expected <number>[s|m|h|d]",
+        ),
+        (
+            "[daemon]\ndormant_session_timeout = -1\n",
+            "f:2: data did not match any variant of untagged enum Raw",
+        ),
+        (
+            "[daemon]\nlisten = \"1.2.3.4:1\"\n",
+            "f:2: invalid type: string \"1.2.3.4:1\", expected a sequence",
+        ),
+        (
+            "[daemon]\nlisten = [\"[::1]:1\", \"[::2]:1\"]\n",
+            "f:2: at most one IPv4 and one IPv6 listen address",
+        ),
+        (
+            "[daemon]\ndiscovery = 1\n",
+            "f:2: invalid type: integer `1`, expected struct Discovery",
+        ),
+        (
+            "[hosts.nas]\nreconnect = \"x\"\n",
+            "f:2: bad duration \"x\": expected <number>[s|m|h|d]",
+        ),
+        (
+            "[daemon]\nbogus = 1\n",
+            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `congestion`, `discovery`, `debug_addr`, `immediate`, `allow_root`",
+        ),
+        (
+            "[telemetry]\nbogus = 1\n",
+            "f:2: unknown field `bogus`, expected `otlp_endpoint` or `otlp_protocol`",
+        ),
+        (
+            "[hosts.nas]\nbogus = 1\n",
+            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `client_id`, `relay`, `relay_mode`, `congestion`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`",
+        ),
+        (
+            "[all]\nbogus = 1\n",
+            "f:2: unknown field `bogus`, expected `rw` or `ro`",
+        ),
+        (
+            "[daemon.discovery]\ndht = 1\n",
+            "f:2: invalid type: integer `1`, expected a boolean",
+        ),
+        (
+            "[hosts]\nnas = 1\n",
+            "f:2: invalid type: integer `1`, expected struct RawHost",
+        ),
+        (
+            "[daemon]\nrelay = 1\n",
+            "f:2: invalid type: integer `1`, expected a string representing an URL",
+        ),
+        (
+            "[hosts.nas]\naddress = 1\n",
+            "f:2: invalid type: integer `1`, expected a sequence",
+        ),
+        (
+            "[exports.p]\npath = 1\n",
+            "f:1: [exports.p]: invalid type: integer `1`, expected path string",
+        ),
+        (
+            "[hosts.nas]\nssh_aliases = [1]\n",
+            "f:2: invalid type: integer `1`, expected a string",
+        ),
+        (
+            "[daemon]\nmax_dormant_sessions_per_key = -1\n",
+            "f:2: invalid value: integer `-1`, expected u32",
+        ),
+        (
+            "unsafe_config_allowed = 1\n",
+            "f:1: unsafe_config_allowed: expected a boolean, found integer",
+        ),
+        (
+            "[client]\nrelay_mode = {}\n",
+            "f:2: wanted exactly 1 element, found 0 elements",
+        ),
+        (
+            "[client]\nrelay_mode = { default = 1 }\n",
+            "f:2: expected table, found integer",
+        ),
+        (
+            "[daemon]\ncongestion = { x = 1 }\n",
+            "f:2: unknown variant `x`, expected `bbr` or `cubic`",
+        ),
+        (
+            "[daemon]\nidle_timeout = {}\n",
+            "f:2: data did not match any variant of untagged enum Raw",
+        ),
+        (
+            "[daemon]\nlisten = [1]\n",
+            "f:2: invalid type: integer `1`, expected a string",
+        ),
+        (
+            "[daemon]\ndebug_addr = {}\n",
+            "f:2: invalid type: map, expected a string",
+        ),
+        (
+            "[hosts.nas]\nendpoint_id = 1\n",
+            "f:2: invalid type: integer `1`, expected a string",
+        ),
+        (
+            "not toml",
+            "f:1: key with no value, expected `=`",
+        ),
     ] {
-        let old = irsync::config::file::Config::parse(text, Path::new("f")).unwrap_err();
-        let new = read_values(text, Path::new("f")).unwrap_err();
-        assert_eq!(new.to_string(), old.to_string(), "{text}");
+        let e = read_values(text, Path::new("f")).unwrap_err();
+        assert_eq!(e.to_string(), message, "{text}");
     }
 }
