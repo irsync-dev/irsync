@@ -79,7 +79,8 @@ filegen run [OPTIONS] --steps <N> (--seed <S> | --resume <STATEFILE>) <PATH>
 - `--config <FILE>`: YAML configuration file; every key is optional
 - `--out-dir <DIR>`: where the log and state file go (see below)
 - `--prefix <PREFIX>`: base name of the output files instead of
-  `filegen-<seed>`; must not be empty, `.`, `..`, or contain `/`
+  `filegen-<seed>`; must not be empty, `.`, `..`, or contain `/` (on
+  Windows, nor `\`)
 - `--set <KEY=VALUE>`: set any configuration key by its dotted path, value
   parsed as YAML (repeatable), e.g. `--set content.pattern_fraction=0.2`
 - `--pace <PACE>`: when each step starts. `fast` (the default) never waits;

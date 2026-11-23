@@ -202,8 +202,10 @@ fn hard_links_share_an_identity() {
     fs::write(&f, b"x").unwrap();
     fs::hard_link(&f, &g).unwrap();
     let (a, b) = (platform::lstat(&f).unwrap(), platform::lstat(&g).unwrap());
-    assert_eq!((a.ino, a.dev, a.nlink), (b.ino, b.dev, 2));
-    assert_eq!(b.nlink, 2);
+    assert_eq!((a.ino, a.dev), (b.ino, b.dev));
+    assert_ne!(a.ino, 0);
+    // Each name counts both.
+    assert_eq!((a.nlink, b.nlink), (2, 2));
 }
 
 #[test]

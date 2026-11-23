@@ -89,9 +89,12 @@ pub fn set_mtime(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     };
     let offset = ctx.rng.random_range(0..=span);
     let nanos: i32 = ctx.rng.random_range(0..1_000_000_000);
-    // Within what the platform can store: no earlier than its first
-    // second, nanoseconds a multiple of its step. Both do nothing where
-    // any time is stored (Unix), which clippy sees through the constant.
+    // Within what the platform can store. A drawn time is never before
+    // the epoch (`max(0)`), so the clamp to the platform's first second
+    // after it never changes anything, on any platform; it states the
+    // limit, which clippy sees through the constant. The nanoseconds are
+    // a multiple of the platform's step, which does nothing on Unix, where
+    // the step is 1 ns.
     #[allow(clippy::unnecessary_min_or_max)]
     let secs = (MTIME_REFERENCE.as_second() + sign * offset)
         .max(0)

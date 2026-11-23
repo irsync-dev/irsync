@@ -28,6 +28,9 @@ pub const MIN_MTIME_SEC: i64 = i64::MIN;
 pub const MAX_LINKS: u64 = u64::MAX;
 /// The separator of the components of a symlink target.
 pub const TARGET_SEP: u8 = b'/';
+/// The characters that separate the components of a path: `/` alone; `\`
+/// is an ordinary character in a name.
+pub const PATH_SEPARATORS: &[char] = &['/'];
 /// rename(2) replaces an empty directory too.
 pub const RENAME_OVER_DIRS: bool = true;
 /// rename(2) of one name of a file over another succeeds (doing nothing).

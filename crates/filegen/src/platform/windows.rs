@@ -45,6 +45,8 @@ pub const MIN_MTIME_SEC: i64 = -11_644_473_600;
 pub const MAX_LINKS: u64 = 1023;
 /// The separator of the components of a symlink target.
 pub const TARGET_SEP: u8 = b'\\';
+/// The characters that separate the components of a path: `/` and `\`.
+pub const PATH_SEPARATORS: &[char] = &['/', '\\'];
 /// A rename cannot replace a directory. Documentation only: `rename_over`
 /// renames regular files on every platform.
 pub const RENAME_OVER_DIRS: bool = false;
@@ -526,18 +528,33 @@ pub fn remove_xattr(_path: &Path, _name: &str) -> io::Result<()> {
 /// The capabilities of this machine in `dir`: `symlinks` if this user may
 /// create a symlink there, `sparse` if the filesystem takes sparse files.
 /// Each is found by trying, with a file `.filegen-probe-{pid}` that is
-/// removed again.
+/// removed again. If that file is there already, left by a run that was
+/// killed (by a process that had this pid), the error names it; it is not
+/// removed.
 pub fn probe_caps(dir: &Path) -> io::Result<Caps> {
     let probe = dir.join(format!(".filegen-probe-{}", std::process::id()));
+    let left_behind = |e: io::Error| {
+        if e.kind() != io::ErrorKind::AlreadyExists {
+            return e;
+        }
+        io::Error::new(
+            e.kind(),
+            format!(
+                "the probe file {} is there already, left by a run that was \
+                 stopped; it can be deleted",
+                probe.display()
+            ),
+        )
+    };
     let symlinks = match std::os::windows::fs::symlink_file("target", &probe) {
         Ok(()) => {
             fs::remove_file(&probe)?;
             true
         }
         Err(e) if e.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD as i32) => false,
-        Err(e) => return Err(e),
+        Err(e) => return Err(left_behind(e)),
     };
-    let file = File::create_new(&probe)?;
+    let file = File::create_new(&probe).map_err(left_behind)?;
     let marked = set_sparse(&file);
     drop(file);
     fs::remove_file(&probe)?;
@@ -1009,6 +1026,21 @@ mod tests {
         assert!(caps.sparse);
         assert_eq!(caps.symlinks, testutil::symlinks_available(d.path()));
         assert_eq!(fs::read_dir(d.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_probe_file_left_behind_is_named_and_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let probe = d
+            .path()
+            .join(format!(".filegen-probe-{}", std::process::id()));
+        fs::write(&probe, b"").unwrap();
+        let err = probe_caps(d.path()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        let msg = err.to_string();
+        assert!(msg.contains(&probe.display().to_string()), "{msg}");
+        assert!(msg.contains("can be deleted"), "{msg}");
+        assert!(probe.exists());
     }
 
     #[test]
