@@ -1,31 +1,21 @@
 //! Symlink-safe file access: opening regular files without following a
 //! final symlink, and resolving directories below a root component by
-//! component without following any symlink on the way.
+//! component without following any symlink on the way. Written once, on
+//! [`Dir`], for every platform.
 
 use std::fs::File;
 use std::io;
-use std::os::fd::OwnedFd;
 use std::path::Path;
 
-use nix::fcntl::{openat, OFlag, AT_FDCWD};
-use nix::sys::stat::{fstat, FileStat, Mode, SFlag};
-
 use crate::fs::paths::RelPath;
-use crate::platform::{self, bytes_to_os, Cause};
+use crate::platform::{self, Cause, Dir, Kind, Open, Stat};
 
-pub(crate) fn errno(e: nix::Error) -> io::Error {
-    io::Error::from_raw_os_error(e as i32)
-}
+/// TEMPORARY: the callers not yet moved to [`Dir`] still take these from
+/// here (Task 3 removes them).
+pub(crate) use crate::platform::{errno, is_symlink_errno};
 
-/// True for the error an `O_NOFOLLOW` open gives when the final component
-/// is a symlink: [`Cause::LinkRefused`] (`ELOOP`, except on FreeBSD, which
-/// says `EMLINK`).
-pub(crate) fn is_symlink_errno(e: nix::Error) -> bool {
-    platform::cause(&errno(e)) == Cause::LinkRefused
-}
-
-/// Turns the error of an `O_NOFOLLOW` open of a symlink (see
-/// [`is_symlink_errno`]) into one that says so.
+/// Turns the error of an `O_NOFOLLOW` open of a symlink
+/// ([`Cause::LinkRefused`]) into one that says so.
 pub fn nofollow_error(e: io::Error, what: &Path) -> io::Error {
     if platform::cause(&e) == Cause::LinkRefused {
         io::Error::new(
@@ -39,12 +29,12 @@ pub fn nofollow_error(e: io::Error, what: &Path) -> io::Error {
 
 /// Whether an `fstat` mode is a regular file.
 pub fn is_regular_mode(mode: u32) -> bool {
-    SFlag::from_bits_truncate(mode as _) & SFlag::S_IFMT == SFlag::S_IFREG
+    platform::kind_of_mode(mode) == Kind::File
 }
 
 /// Whether an `fstat` mode is a directory.
 pub fn is_dir_mode(mode: u32) -> bool {
-    SFlag::from_bits_truncate(mode as _) & SFlag::S_IFMT == SFlag::S_IFDIR
+    platform::kind_of_mode(mode) == Kind::Dir
 }
 
 /// Fails unless the open file is a regular file.
@@ -53,9 +43,9 @@ pub fn require_regular(f: &File, what: &Path) -> io::Result<()> {
 }
 
 /// [`require_regular`], returning the file's `fstat`.
-fn require_regular_stat(f: &File, what: &Path) -> io::Result<FileStat> {
-    let st = fstat(f).map_err(errno)?;
-    if !is_regular_mode(st.st_mode as u32) {
+fn require_regular_stat(f: &File, what: &Path) -> io::Result<Stat> {
+    let st = platform::fstat(f)?;
+    if st.kind != Kind::File {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("{} is not a regular file", what.display()),
@@ -73,15 +63,9 @@ pub fn open_regular_nofollow(path: &Path) -> io::Result<File> {
 }
 
 /// [`open_regular_nofollow`], also returning the open file's `fstat`.
-pub fn open_regular_nofollow_stat(path: &Path) -> io::Result<(File, FileStat)> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let f = super::transient::retry(|| {
-        std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
-            .open(path)
-    })
-    .map_err(|e| nofollow_error(e, path))?;
+pub fn open_regular_nofollow_stat(path: &Path) -> io::Result<(File, Stat)> {
+    let f = super::transient::retry(|| platform::open_read_nofollow(path))
+        .map_err(|e| nofollow_error(e, path))?;
     let st = require_regular_stat(&f, path)?;
     Ok((f, st))
 }
@@ -104,30 +88,38 @@ pub fn split_last(rel: &RelPath) -> io::Result<(RelPath, Vec<u8>)> {
     Ok((parent, name.to_vec()))
 }
 
+/// `e`, from opening a component on the way down, as the error that says
+/// the way is refused (`message`) when the component is a symlink or not a
+/// directory; any other error as it is.
+fn refused(e: io::Error, message: impl FnOnce() -> String) -> io::Error {
+    match platform::cause(&e) {
+        Cause::LinkRefused | Cause::NotADirectory => {
+            io::Error::new(io::ErrorKind::InvalidInput, message())
+        }
+        _ => e,
+    }
+}
+
+/// The message of [`refused`] for the way to `dir`.
+fn refused_in(dir: &RelPath) -> impl FnOnce() -> String + '_ {
+    move || {
+        format!(
+            "{}: a path component is a symlink or not a directory",
+            String::from_utf8_lossy(dir.as_bytes())
+        )
+    }
+}
+
 /// Opens the directory `root/dir`: `root` itself is opened normally (it
 /// may be reached through symlinks the user chose), every component of
-/// `dir` with `O_NOFOLLOW`, so a symlink anywhere below `root` is refused.
-pub fn open_dir_beneath(root: &Path, dir: &RelPath) -> io::Result<OwnedFd> {
-    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
-    let mut fd = openat(AT_FDCWD, root, flags, Mode::empty()).map_err(errno)?;
+/// `dir` without following a link, so a symlink anywhere below `root` is
+/// refused.
+pub fn open_dir_beneath(root: &Path, dir: &RelPath) -> io::Result<Dir> {
+    let mut d = Dir::open_root(root)?;
     for c in dir.components() {
-        let owned = bytes_to_os(c)?;
-        let name = owned.as_os_str();
-        fd = openat(&fd, name, flags | OFlag::O_NOFOLLOW, Mode::empty()).map_err(|e| {
-            if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "{}: a path component is a symlink or not a directory",
-                        String::from_utf8_lossy(dir.as_bytes())
-                    ),
-                )
-            } else {
-                errno(e)
-            }
-        })?;
+        d = d.open_dir(c).map_err(|e| refused(e, refused_in(dir)))?;
     }
-    Ok(fd)
+    Ok(d)
 }
 
 /// The directories on the way to the entry a walk is at, held open.
@@ -138,25 +130,22 @@ pub fn open_dir_beneath(root: &Path, dir: &RelPath) -> io::Result<OwnedFd> {
 /// each opened from its parent without following a symlink, and reopens
 /// only what differs for the next entry.
 pub struct DirStack {
-    base: OwnedFd,
-    below: Vec<(Vec<u8>, OwnedFd)>,
+    base: Dir,
+    below: Vec<(Vec<u8>, Dir)>,
 }
 
 impl DirStack {
     /// `base` itself is opened by name (it may be reached through symlinks
     /// the user chose).
     pub fn new(base: &Path) -> io::Result<DirStack> {
-        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
         Ok(DirStack {
-            base: openat(AT_FDCWD, base, flags, Mode::empty()).map_err(errno)?,
+            base: Dir::open_root(base)?,
             below: Vec::new(),
         })
     }
 
     /// The directory `dir` below the base, with no symlink followed.
-    pub fn dir(&mut self, dir: &RelPath) -> io::Result<std::os::fd::BorrowedFd<'_>> {
-        use std::os::fd::AsFd;
-        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW;
+    pub fn dir(&mut self, dir: &RelPath) -> io::Result<&Dir> {
         let comps: Vec<&[u8]> = dir.components().collect();
         let keep = self
             .below
@@ -166,27 +155,15 @@ impl DirStack {
             .count();
         self.below.truncate(keep);
         for c in &comps[keep..] {
-            let parent = self
-                .below
-                .last()
-                .map_or(self.base.as_fd(), |(_, fd)| fd.as_fd());
-            let name = bytes_to_os(c)?;
-            let fd = openat(parent, name.as_os_str(), flags, Mode::empty()).map_err(|e| {
-                if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "a path component is a symlink or not a directory",
-                    )
-                } else {
-                    errno(e)
-                }
+            let parent = self.below.last().map_or(&self.base, |(_, d)| d);
+            let d = parent.open_dir(c).map_err(|e| {
+                refused(e, || {
+                    "a path component is a symlink or not a directory".to_string()
+                })
             })?;
-            self.below.push((c.to_vec(), fd));
+            self.below.push((c.to_vec(), d));
         }
-        Ok(self
-            .below
-            .last()
-            .map_or(self.base.as_fd(), |(_, fd)| fd.as_fd()))
+        Ok(self.below.last().map_or(&self.base, |(_, d)| d))
     }
 }
 
@@ -197,52 +174,32 @@ impl DirStack {
 /// then: whoever can change the tree, the other side of a second session
 /// included, may have swapped a directory on the way for a symlink.
 /// Everything a session does to a path from the other side therefore
-/// starts here and goes on from the descriptor.
-pub fn open_parent_beneath(
-    base: &Path,
-    rel: &RelPath,
-) -> io::Result<(OwnedFd, std::ffi::OsString)> {
+/// starts here and goes on from the open directory.
+pub fn open_parent_beneath(base: &Path, rel: &RelPath) -> io::Result<(Dir, Vec<u8>)> {
     let (parent, name) = split_last(rel)?;
     let dir = open_dir_beneath(base, &parent)?;
-    Ok((dir, bytes_to_os(&name)?))
+    Ok((dir, name))
 }
 
 /// Creates the directory `root/dir` and what is missing above it, without
 /// following a symlink below `root`: a symlink where a directory should be
 /// is an error, never a place to go on from. New directories get `mode`
 /// (less the umask).
-pub fn create_dir_all_beneath(root: &Path, dir: &RelPath, mode: u32) -> io::Result<OwnedFd> {
-    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
-    let mut fd = openat(AT_FDCWD, root, flags, Mode::empty()).map_err(errno)?;
+pub fn create_dir_all_beneath(root: &Path, dir: &RelPath, mode: u32) -> io::Result<Dir> {
+    let mut d = Dir::open_root(root)?;
     for c in dir.components() {
-        let owned = bytes_to_os(c)?;
-        let name = owned.as_os_str();
-        let open = |fd: &OwnedFd| openat(fd, name, flags | OFlag::O_NOFOLLOW, Mode::empty());
-        let next = match open(&fd) {
-            Err(nix::Error::ENOENT) => {
-                match nix::sys::stat::mkdirat(&fd, name, Mode::from_bits_truncate(mode as _)) {
-                    // Made by someone else meanwhile: fine, if it is a directory.
-                    Ok(()) | Err(nix::Error::EEXIST) => open(&fd),
-                    Err(e) => Err(e),
-                }
-            }
+        let next = match d.open_dir(c) {
+            Err(e) if platform::cause(&e) == Cause::NotThere => match d.create_dir(c, mode) {
+                Ok(()) => d.open_dir(c),
+                // Made by someone else meanwhile: fine, if it is a directory.
+                Err(e) if platform::cause(&e) == Cause::AlreadyThere => d.open_dir(c),
+                Err(e) => Err(e),
+            },
             r => r,
         };
-        fd = next.map_err(|e| {
-            if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "{}: a path component is a symlink or not a directory",
-                        String::from_utf8_lossy(dir.as_bytes())
-                    ),
-                )
-            } else {
-                errno(e)
-            }
-        })?;
+        d = next.map_err(|e| refused(e, refused_in(dir)))?;
     }
-    Ok(fd)
+    Ok(d)
 }
 
 /// A place a session writes to: `rel` below `root`. `root` is a name this
@@ -250,7 +207,7 @@ pub fn create_dir_all_beneath(root: &Path, dir: &RelPath, mode: u32) -> io::Resu
 /// comes from the other side. Every operation here opens `rel`'s directory
 /// anew from `root` without following a symlink (see
 /// [`open_parent_beneath`]) and works on the final name from that
-/// descriptor, so a directory swapped for a symlink makes the operation
+/// directory, so a directory swapped for a symlink makes the operation
 /// fail instead of leading it elsewhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Beneath {
@@ -276,7 +233,7 @@ impl Beneath {
     }
 
     /// The directory that holds the place, and the place's name in it.
-    pub fn parent(&self) -> io::Result<(OwnedFd, std::ffi::OsString)> {
+    pub fn parent(&self) -> io::Result<(Dir, Vec<u8>)> {
         open_parent_beneath(&self.root, &self.rel)
     }
 
@@ -291,51 +248,29 @@ impl Beneath {
     }
 
     /// `lstat` of the place.
-    pub fn lstat(&self) -> io::Result<FileStat> {
+    pub fn lstat(&self) -> io::Result<Stat> {
         let (dir, name) = self.parent()?;
-        nix::sys::stat::fstatat(
-            &dir,
-            name.as_os_str(),
-            nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
-        )
-        .map_err(errno)
+        dir.stat(&name)
     }
 
-    /// Opens the place with `flags` (never following a symlink there).
-    pub fn open(&self, flags: OFlag, mode: u32) -> io::Result<File> {
+    /// Opens the place as `how` says (never following a symlink there).
+    pub fn open(&self, how: Open) -> io::Result<File> {
         let (dir, name) = self.parent()?;
-        openat(
-            &dir,
-            name.as_os_str(),
-            flags | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            Mode::from_bits_truncate(mode as _),
-        )
-        .map(File::from)
-        .map_err(|e| nofollow_error(errno(e), &self.path()))
+        dir.open_file(&name, how)
+            .map_err(|e| nofollow_error(e, &self.path()))
     }
 
     /// Removes the file at the place.
     pub fn unlink(&self) -> io::Result<()> {
         let (dir, name) = self.parent()?;
-        nix::unistd::unlinkat(
-            &dir,
-            name.as_os_str(),
-            nix::unistd::UnlinkatFlags::NoRemoveDir,
-        )
-        .map_err(errno)
+        dir.remove_file(&name)
     }
 
     /// Renames what is at the place to `to`.
     pub fn rename_to(&self, to: &Beneath) -> io::Result<()> {
         let (from_dir, from_name) = self.parent()?;
         let (to_dir, to_name) = to.parent()?;
-        nix::fcntl::renameat(
-            &from_dir,
-            from_name.as_os_str(),
-            &to_dir,
-            to_name.as_os_str(),
-        )
-        .map_err(errno)
+        from_dir.rename(&from_name, &to_dir, &to_name)
     }
 }
 
@@ -346,15 +281,21 @@ pub fn open_regular_beneath(base: &Path, rel: &RelPath) -> io::Result<File> {
 }
 
 /// [`open_regular_beneath`], also returning the open file's `fstat`.
-pub fn open_regular_beneath_stat(base: &Path, rel: &RelPath) -> io::Result<(File, FileStat)> {
+pub fn open_regular_beneath_stat(base: &Path, rel: &RelPath) -> io::Result<(File, Stat)> {
     let what = base.join(rel.to_os());
-    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
-    let fd = super::transient::retry(|| {
+    let how = Open {
+        read: true,
+        write: false,
+        create: platform::Create::No,
+        truncate: false,
+        nonblock: true,
+        mode: 0,
+    };
+    let f = super::transient::retry(|| {
         let (dir, name) = open_parent_beneath(base, rel)?;
-        openat(&dir, name.as_os_str(), flags, Mode::empty()).map_err(errno)
+        dir.open_file(&name, how)
     })
     .map_err(|e| nofollow_error(e, &what))?;
-    let f = File::from(fd);
     let st = require_regular_stat(&f, &what)?;
     Ok((f, st))
 }
@@ -362,6 +303,19 @@ pub fn open_regular_beneath_stat(base: &Path, rel: &RelPath) -> io::Result<(File
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::testutil::symlink;
+    use crate::platform::Create;
+
+    fn rw(create: Create, mode: u32) -> Open {
+        Open {
+            read: true,
+            write: true,
+            create,
+            truncate: false,
+            nonblock: false,
+            mode,
+        }
+    }
 
     #[test]
     fn open_regular_beneath_follows_no_symlink_on_the_way() {
@@ -381,7 +335,7 @@ mod tests {
         assert_eq!(read("a/b/f").unwrap(), "inside");
         // The directory is swapped for a link to one outside.
         std::fs::rename(d.path().join("a/b"), d.path().join("a/moved")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), d.path().join("a/b")).unwrap();
+        symlink(outside.path(), &d.path().join("a/b")).unwrap();
         assert_eq!(
             std::fs::read(d.path().join("a/b/f")).unwrap(),
             b"outside",
@@ -390,7 +344,7 @@ mod tests {
         let e = read("a/b/f").unwrap_err();
         assert!(e.to_string().contains("symlink"), "{e}");
         // A link as the final name, a directory, and the root are refused.
-        std::os::unix::fs::symlink(outside.path().join("f"), d.path().join("l")).unwrap();
+        symlink(&outside.path().join("f"), &d.path().join("l")).unwrap();
         assert!(read("l").unwrap_err().to_string().contains("symlink"));
         assert!(read("a").is_err());
         assert!(open_regular_beneath(d.path(), &RelPath::root()).is_err());
@@ -401,11 +355,11 @@ mod tests {
         let (d, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let rel = |p: &str| RelPath::new(p.as_bytes()).unwrap();
         let at = |p: &str| Beneath::new(d.path(), rel(p));
-        let rw = OFlag::O_RDWR | OFlag::O_CREAT;
+        let create = rw(Create::IfMissing, 0o600);
 
         // Missing directories are made; the file is created and renamed.
         at("a/b/part").make_parent().unwrap();
-        at("a/b/part").open(rw, 0o600).unwrap();
+        at("a/b/part").open(create).unwrap();
         assert!(at("a/b/part").lstat().is_ok());
         at("a/b/part").rename_to(&at("a/f")).unwrap();
         assert!(d.path().join("a/f").is_file());
@@ -414,9 +368,9 @@ mod tests {
 
         // `a/b` becomes a link out of the tree: nothing goes through it.
         std::fs::remove_dir(d.path().join("a/b")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), d.path().join("a/b")).unwrap();
+        symlink(outside.path(), &d.path().join("a/b")).unwrap();
         std::fs::write(outside.path().join("victim"), b"keep").unwrap();
-        assert!(at("a/b/part").open(rw, 0o600).is_err());
+        assert!(at("a/b/part").open(create).is_err());
         assert!(at("a/b/new/part").make_parent().is_err());
         assert!(at("a/b/victim").lstat().is_err());
         assert!(at("a/b/victim").unlink().is_err());
@@ -434,15 +388,15 @@ mod tests {
         );
 
         // A link as the final name is not opened either.
-        std::os::unix::fs::symlink(outside.path().join("victim"), d.path().join("l")).unwrap();
-        assert!(at("l").open(OFlag::O_RDWR, 0).is_err());
+        symlink(&outside.path().join("victim"), &d.path().join("l")).unwrap();
+        assert!(at("l").open(rw(Create::No, 0)).is_err());
     }
 
     #[test]
     fn open_regular_nofollow_refuses_symlinks_and_non_files() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("f"), b"x").unwrap();
-        std::os::unix::fs::symlink(d.path().join("f"), d.path().join("l")).unwrap();
+        symlink(&d.path().join("f"), &d.path().join("l")).unwrap();
         assert!(open_regular_nofollow(&d.path().join("f")).is_ok());
         let e = open_regular_nofollow(&d.path().join("l")).unwrap_err();
         assert!(e.to_string().contains("refusing to follow symlink"), "{e}");
@@ -454,7 +408,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let out = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("a/b")).unwrap();
-        std::os::unix::fs::symlink(out.path(), d.path().join("esc")).unwrap();
+        symlink(out.path(), &d.path().join("esc")).unwrap();
         let r = |s: &[u8]| RelPath::new(s).unwrap();
         assert!(open_dir_beneath(d.path(), &r(b"a/b")).is_ok());
         assert!(open_dir_beneath(d.path(), &RelPath::root()).is_ok());

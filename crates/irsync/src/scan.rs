@@ -352,7 +352,12 @@ fn run_walk(
             }
             Err(e) => return Err(e),
         };
-        crate::fs::meta::lstat_at(dir, Path::new(OsStr::from_bytes(&name)), rel).map(Some)
+        crate::fs::meta::lstat_at(
+            std::os::fd::AsFd::as_fd(dir),
+            Path::new(OsStr::from_bytes(&name)),
+            rel,
+        )
+        .map(Some)
     };
     let send = |sum: &mut ScanSummary, rel: RelPath| -> bool {
         match lstat(&rel) {

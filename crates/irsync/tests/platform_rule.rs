@@ -25,7 +25,6 @@ const PENDING: &[&str] = &[
     "src/fs/meta.rs",
     "src/fs/private.rs",
     "src/fs/rlimit.rs",
-    "src/fs/safe.rs",
     "src/hasher.rs",
     "src/identity.rs",
     "src/index.rs",

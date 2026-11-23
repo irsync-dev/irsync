@@ -57,7 +57,11 @@ pub fn lstat_beneath(base: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64,
         return lstat_entry_with_ctime(base, rel);
     }
     let (dir, name) = crate::fs::safe::open_parent_beneath(base, rel)?;
-    lstat_at(std::os::fd::AsFd::as_fd(&dir), Path::new(&name), rel)
+    lstat_at(
+        std::os::fd::AsFd::as_fd(&dir),
+        Path::new(std::ffi::OsStr::from_bytes(&name)),
+        rel,
+    )
 }
 
 /// `lstat` of `name` in the open directory `dir`, as the entry of `rel`.

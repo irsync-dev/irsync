@@ -929,8 +929,8 @@ fn place_file_beneath(
     contents_only: bool,
     src_name: &[u8],
 ) -> Result<FilePlace, PlaceError> {
-    use crate::fs::safe::{is_dir_mode, Beneath};
-    use nix::sys::stat::SFlag;
+    use crate::fs::safe::Beneath;
+    use crate::platform::Kind as FileKind;
     let io_at = |p: &Path, e: io::Error| PlaceError::Io(p.to_path_buf(), e);
     let missing = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
     let in_dir = if rel.as_bytes().is_empty() {
@@ -938,9 +938,9 @@ fn place_file_beneath(
         true
     } else {
         match Beneath::new(export_root, rel.clone()).lstat() {
-            Ok(st) if is_dir_mode(st.st_mode as _) => true,
+            Ok(st) if st.kind == FileKind::Dir => true,
             Ok(st) => {
-                let link = SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT == SFlag::S_IFLNK;
+                let link = st.kind == FileKind::Symlink;
                 // Only decides; nothing is written through the link.
                 if link {
                     match link_leads_to(export_root, rel) {
@@ -971,7 +971,7 @@ fn place_file_beneath(
         .join(src_name)
         .map_err(|e| io_at(&target, io::Error::new(io::ErrorKind::InvalidInput, e)))?;
     match Beneath::new(export_root, target_rel).lstat() {
-        Ok(st) if is_dir_mode(st.st_mode as _) => return Err(PlaceError::IsADirectory(target)),
+        Ok(st) if st.kind == FileKind::Dir => return Err(PlaceError::IsADirectory(target)),
         Ok(_) => {}
         Err(e) if missing(&e) => {}
         Err(e) => return Err(io_at(&target, e)),
@@ -1003,16 +1003,15 @@ enum LinkTo {
 /// destination itself, so looking at what an outside link leads to would
 /// tell it what is at a path it may not see.
 fn link_leads_to(export_root: &Path, rel: &RelPath) -> LinkTo {
-    use crate::fs::safe::{is_dir_mode, open_parent_beneath, Beneath};
-    use nix::sys::stat::SFlag;
-    use std::os::unix::ffi::OsStrExt;
+    use crate::fs::safe::{open_parent_beneath, Beneath};
+    use crate::platform::Kind as FileKind;
     let Ok((dir, name)) = open_parent_beneath(export_root, rel) else {
         return LinkTo::NotFollowed;
     };
-    let Ok(target) = nix::fcntl::readlinkat(&dir, name.as_os_str()) else {
+    let Ok(target) = dir.read_link(&name) else {
         return LinkTo::NotFollowed;
     };
-    let target = target.as_bytes();
+    let target = &target[..];
     if target.is_empty() || target[0] == b'/' || target.contains(&0) {
         return LinkTo::NotFollowed;
     }
@@ -1037,10 +1036,8 @@ fn link_leads_to(export_root: &Path, rel: &RelPath) -> LinkTo {
         return LinkTo::NotFollowed;
     };
     match Beneath::new(export_root, to).lstat() {
-        Ok(st) if is_dir_mode(st.st_mode as _) => LinkTo::Directory,
-        Ok(st) if SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT == SFlag::S_IFLNK => {
-            LinkTo::NotFollowed
-        }
+        Ok(st) if st.kind == FileKind::Dir => LinkTo::Directory,
+        Ok(st) if st.kind == FileKind::Symlink => LinkTo::NotFollowed,
         Ok(_) => LinkTo::Other,
         Err(e) if e.kind() == io::ErrorKind::NotFound => LinkTo::Other,
         Err(_) => LinkTo::NotFollowed,
@@ -1064,7 +1061,7 @@ fn source_single(
     // Looked at from the export's directory with no symlink followed: the
     // directories above may have changed since they were checked.
     match crate::fs::safe::Beneath::new(export_root, rel.clone()).lstat() {
-        Ok(st) if crate::fs::safe::is_dir_mode(st.st_mode as _) => {
+        Ok(st) if st.kind == crate::platform::Kind::Dir => {
             return Err((Code::BadPath, PlaceError::IsADirectory(file).to_string()))
         }
         Ok(_) => {}
@@ -1092,7 +1089,7 @@ fn probe_kind(export_root: &Path, rel: &RelPath) -> path_info::Kind {
     }
     // From the export's directory, with no symlink followed on the way.
     match crate::fs::safe::Beneath::new(export_root, rel.clone()).lstat() {
-        Ok(st) if crate::fs::safe::is_dir_mode(st.st_mode as _) => Kind::Directory,
+        Ok(st) if st.kind == crate::platform::Kind::Dir => Kind::Directory,
         Ok(_) => Kind::File,
         Err(_) => Kind::Missing,
     }

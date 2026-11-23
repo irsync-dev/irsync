@@ -1597,7 +1597,7 @@ fn tail_digest(
     // The open's type check already took the file's stat. No symlink is
     // followed on the way from the base.
     let (file, st) = crate::fs::safe::open_regular_beneath_stat(base, local)?;
-    tail_digest_at(file, st, key, from, check)
+    tail_digest_at(file, st.to_file_stat(), key, from, check)
 }
 
 /// [`tail_digest`] of the open `file` (a clone, `--paranoid`).

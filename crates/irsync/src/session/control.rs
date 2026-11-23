@@ -799,7 +799,7 @@ fn list_single(
             crate::fs::safe::open_parent_beneath(base, &super::join_rel(prefix, rel))?;
         lstat_at(
             std::os::fd::AsFd::as_fd(&dir),
-            std::path::Path::new(&name),
+            std::path::Path::new(&crate::platform::bytes_to_os(&name)?),
             rel,
         )
     };

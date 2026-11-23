@@ -290,3 +290,180 @@ async fn excluded_paths_in_the_peers_listing_are_refused() {
     }
     assert_eq!(out.exit_code(), 23);
 }
+
+/// The containment layer under attack: while each operation runs over and
+/// over, another thread swaps the directory `a/b` on its way for a link to
+/// a directory outside the root and back, as fast as it can. Whatever the
+/// operation meets, nothing outside is read, written or removed.
+mod attack {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::path::{Path, PathBuf};
+
+    use irsync::fs::paths::RelPath;
+    use irsync::fs::safe::{create_dir_all_beneath, open_regular_beneath, Beneath, DirStack};
+    use irsync::platform::testutil::swap_for_link;
+    use irsync::platform::{Create, Open};
+
+    /// Tries of the operation per test, each racing the swapping thread.
+    const TRIES: usize = 2000;
+
+    /// Every file and directory below `dir`, with each file's bytes.
+    fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+        fn walk(top: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+            for e in fs::read_dir(dir).unwrap() {
+                let path = e.unwrap().path();
+                let rel = path.strip_prefix(top).unwrap().to_path_buf();
+                let meta = fs::symlink_metadata(&path).unwrap();
+                if meta.is_dir() {
+                    out.insert(rel, None);
+                    walk(top, &path, out);
+                } else if meta.is_file() {
+                    out.insert(rel, Some(fs::read(&path).unwrap()));
+                } else {
+                    let target = fs::read_link(&path).unwrap();
+                    out.insert(rel, Some(target.as_os_str().as_encoded_bytes().to_vec()));
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    /// A root with `a/b/f` and `a/b/victim` in it, and a directory outside
+    /// with files of the same names (and one more level), so that any
+    /// operation led outside would find something to read or change there.
+    struct Tree {
+        root: tempfile::TempDir,
+        outside: tempfile::TempDir,
+    }
+
+    impl Tree {
+        fn new() -> Tree {
+            let (root, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            fs::create_dir_all(root.path().join("a/b")).unwrap();
+            fs::write(root.path().join("a/b/f"), b"inside").unwrap();
+            fs::write(root.path().join("a/b/victim"), b"inside victim").unwrap();
+            fs::write(root.path().join("a/b/gone"), b"inside gone").unwrap();
+            fs::create_dir(outside.path().join("sub")).unwrap();
+            fs::write(outside.path().join("f"), b"outside").unwrap();
+            fs::write(outside.path().join("victim"), b"keep").unwrap();
+            fs::write(outside.path().join("gone"), b"keep too").unwrap();
+            fs::write(outside.path().join("sub/deep"), b"deep").unwrap();
+            Tree { root, outside }
+        }
+
+        fn at(&self, p: &str) -> Beneath {
+            Beneath::new(self.root.path(), rel(p))
+        }
+
+        /// Runs `op` [`TRIES`] times while `a/b` is swapped, then checks
+        /// that the outside directory is exactly as it was.
+        fn attack(&self, mut op: impl FnMut(usize)) {
+            let before = snapshot(self.outside.path());
+            {
+                let _swap = swap_for_link(&self.root.path().join("a/b"), self.outside.path());
+                for i in 0..TRIES {
+                    op(i);
+                }
+            }
+            assert_eq!(snapshot(self.outside.path()), before);
+            // The swapping thread has put the directory back.
+            assert!(fs::symlink_metadata(self.root.path().join("a/b"))
+                .unwrap()
+                .is_dir());
+        }
+    }
+
+    fn rel(p: &str) -> RelPath {
+        RelPath::new(p.as_bytes()).unwrap()
+    }
+
+    fn open(read: bool, write: bool, create: Create, truncate: bool) -> Open {
+        Open {
+            read,
+            write,
+            create,
+            truncate,
+            nonblock: true,
+            mode: 0o644,
+        }
+    }
+
+    #[test]
+    fn open_regular_beneath_never_reads_outside() {
+        let t = Tree::new();
+        let (mut read, mut refused) = (0, 0);
+        t.attack(
+            |_| match open_regular_beneath(t.root.path(), &rel("a/b/f")) {
+                Ok(mut f) => {
+                    let mut got = Vec::new();
+                    f.read_to_end(&mut got).unwrap();
+                    assert_eq!(got, b"inside", "read through the link");
+                    read += 1;
+                }
+                Err(_) => refused += 1,
+            },
+        );
+        eprintln!("read {read}, refused {refused}");
+    }
+
+    #[test]
+    fn beneath_open_create_never_writes_outside() {
+        let t = Tree::new();
+        t.attack(|i| {
+            let existing = open(false, true, Create::IfMissing, true);
+            if let Ok(mut f) = t.at("a/b/victim").open(existing) {
+                f.write_all(b"written").unwrap();
+            }
+            let new = open(true, true, Create::New, false);
+            if let Ok(mut f) = t.at(&format!("a/b/new{}", i % 16)).open(new) {
+                f.write_all(b"new").unwrap();
+            }
+        });
+    }
+
+    #[test]
+    fn beneath_unlink_and_rename_never_touch_outside() {
+        let t = Tree::new();
+        t.attack(|_| {
+            let _ = t.at("a/b/gone").unlink();
+            let _ = t.at("a/b/victim").rename_to(&t.at("a/stolen"));
+            let _ = t.at("a/stolen").rename_to(&t.at("a/b/victim"));
+            // Something to remove again next time, made where it belongs.
+            let _ = t
+                .at("a/b/gone")
+                .open(open(false, true, Create::IfMissing, false));
+        });
+    }
+
+    #[test]
+    fn create_dir_all_beneath_never_creates_outside() {
+        let t = Tree::new();
+        t.attack(|i| {
+            let _ = create_dir_all_beneath(t.root.path(), &rel(&format!("a/b/n{i}/deep")), 0o755);
+        });
+    }
+
+    #[test]
+    fn dir_stack_never_descends_outside() {
+        let t = Tree::new();
+        let mut want = vec![b"f".to_vec(), b"gone".to_vec(), b"victim".to_vec()];
+        want.sort();
+        let mut stack = DirStack::new(t.root.path()).unwrap();
+        let mut seen = 0;
+        t.attack(|_| {
+            // Back to the base, so each try opens `a` and `a/b` afresh.
+            stack.dir(&RelPath::root()).unwrap();
+            if let Ok(d) = stack.dir(&rel("a/b")) {
+                let mut names = d.list().unwrap();
+                names.sort();
+                assert_eq!(names, want, "listed through the link");
+                seen += 1;
+            }
+        });
+        eprintln!("descended {seen} times");
+    }
+}

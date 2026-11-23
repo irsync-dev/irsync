@@ -10,11 +10,11 @@ use crate::fs::meta::{apply_metadata_fd_owned, fstat_entry_with_ctime, ApplyOpts
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{require_regular, Beneath};
 use crate::index::{IndexHandle, Partial};
+use crate::platform::{Create, Open};
 use crate::telemetry::meter::{Activity, Counter, Meter};
 use crate::tree_hash::TreeHash;
 use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
 use irsync_proto::v1::{FileEntry, Range, RangeSet};
-use nix::fcntl::OFlag;
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
@@ -245,7 +245,7 @@ pub fn discard_part(
 ) -> io::Result<()> {
     let (_, part) = paths(root, rel, partial_dir)?;
     match part
-        .open(OFlag::O_RDONLY | OFlag::O_NONBLOCK, 0)
+        .open(part_open(true, false, Create::No, 0))
         .and_then(|f| require_regular(&f, &part.path()).map(|()| f))
     {
         Ok(file) => match file.try_lock() {
@@ -318,7 +318,20 @@ pub const PART_BUSY: &str = "part file busy";
 /// `finalize` sets the final mode. No symlink is followed at the `.part`
 /// name or on the way to it, and a FIFO there cannot block the open.
 fn open_rw(part: &Beneath) -> io::Result<File> {
-    part.open(OFlag::O_RDWR | OFlag::O_CREAT | OFlag::O_NONBLOCK, 0o600)
+    part.open(part_open(true, true, Create::IfMissing, 0o600))
+}
+
+/// How a `.part` is opened: never blocking (a FIFO there cannot stop the
+/// open), never following a symlink at its name.
+fn part_open(read: bool, write: bool, create: Create, mode: u32) -> Open {
+    Open {
+        read,
+        write,
+        create,
+        truncate: false,
+        nonblock: true,
+        mode,
+    }
 }
 
 /// Add owner read/write to our own open `.part` file (`fchmod`).
@@ -331,8 +344,8 @@ fn make_owner_writable(file: &File) -> io::Result<()> {
 /// before failing: open it with whatever access the mode still allows
 /// (never following a symlink) and restore owner read/write on that fd.
 fn restore_owner_rw(part: &Beneath) -> io::Result<()> {
-    let open = |flags: OFlag| part.open(flags | OFlag::O_NONBLOCK, 0);
-    let f = open(OFlag::O_RDONLY).or_else(|_| open(OFlag::O_WRONLY))?;
+    let open = |read: bool| part.open(part_open(read, !read, Create::No, 0));
+    let f = open(true).or_else(|_| open(false))?;
     require_regular(&f, &part.path())?;
     make_owner_writable(&f)
 }
@@ -380,12 +393,10 @@ impl FileId {
     }
 
     /// The regular file `st` describes; `None` for anything else.
-    // The `stat` field types differ by platform; some casts are no-ops here.
-    #[allow(clippy::unnecessary_cast)]
-    fn of_regular(st: &nix::sys::stat::FileStat) -> Option<FileId> {
-        crate::fs::safe::is_regular_mode(st.st_mode as u32).then_some(FileId {
-            dev: st.st_dev as u64,
-            ino: st.st_ino as u64,
+    fn of_regular(st: &crate::platform::Stat) -> Option<FileId> {
+        (st.kind == crate::platform::Kind::File).then_some(FileId {
+            dev: st.dev,
+            ino: st.ino,
         })
     }
 }

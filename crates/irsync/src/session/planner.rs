@@ -214,7 +214,7 @@ fn place_via_temp(
     use crate::fs::safe::errno;
     use nix::unistd::{unlinkat, UnlinkatFlags};
     let (dir, name) = at.parent()?;
-    let tmp = crate::recv::temp_name(name.as_bytes(), b".tmp");
+    let tmp = crate::recv::temp_name(&name, b".tmp");
     let tmp = Path::new(std::ffi::OsStr::from_bytes(&tmp));
     match unlinkat(&dir, tmp, UnlinkatFlags::NoRemoveDir) {
         Err(e) if e != nix::Error::ENOENT => return Err(errno(e)),
@@ -222,7 +222,7 @@ fn place_via_temp(
     }
     let res = make(dir.as_fd(), tmp)
         .and_then(|()| apply_metadata_at(dir.as_fd(), tmp, entry, apply))
-        .and_then(|()| nix::fcntl::renameat(&dir, tmp, &dir, name.as_os_str()).map_err(errno));
+        .and_then(|()| nix::fcntl::renameat(&dir, tmp, &dir, &name[..]).map_err(errno));
     if res.is_err() {
         let _ = unlinkat(&dir, tmp, UnlinkatFlags::NoRemoveDir);
     }
@@ -240,7 +240,12 @@ pub(super) fn apply_metadata_beneath(
         return crate::fs::meta::apply_metadata(&at.root, entry, apply);
     }
     let (dir, name) = at.parent()?;
-    apply_metadata_at(dir.as_fd(), Path::new(&name), entry, apply)
+    apply_metadata_at(
+        dir.as_fd(),
+        Path::new(std::ffi::OsStr::from_bytes(&name)),
+        entry,
+        apply,
+    )
 }
 
 /// Places `root/path` as a hard link to the regular file `root/target`
@@ -334,7 +339,7 @@ pub(super) fn mkdir_replacing(at: &Beneath) -> io::Result<()> {
         };
     }
     let (dir, name) = at.parent()?;
-    let name = name.as_os_str();
+    let name = &name[..];
     let mkdir = || mkdirat(&dir, name, Mode::from_bits_truncate(0o777)).map_err(errno);
     match fstatat(&dir, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
         Ok(st) if crate::fs::safe::is_dir_mode(st.st_mode as u32) => Ok(()),

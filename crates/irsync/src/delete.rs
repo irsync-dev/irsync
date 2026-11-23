@@ -19,7 +19,6 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io;
-use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -332,7 +331,7 @@ impl DeletePass {
 
 /// The parent directory last opened by [`remove_one`]: candidates come
 /// deepest first in reverse path order, so siblings share it.
-type ParentCache = Option<(RelPath, OwnedFd)>;
+type ParentCache = Option<(RelPath, crate::platform::Dir)>;
 
 /// Clears irsync's own temporaries (`.irsync.<name>.part` / `.tmp`, see
 /// [`is_temp_name`]) from the directory `name` in `parent`, so that what an
@@ -341,7 +340,7 @@ type ParentCache = Option<(RelPath, OwnedFd)>;
 /// `.part`s (each is locked while its writer runs): otherwise they stay,
 /// and removing the directory fails as for any that is not empty. Their
 /// progress records go at the next GC, which finds the parts missing.
-fn clear_temporaries(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
+fn clear_temporaries(parent: &crate::platform::Dir, name: &OsStr) -> io::Result<()> {
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
     // Not a directory we can open: removing it reports why.
     let Ok(fd) = openat(parent, name, flags, Mode::empty()) else {

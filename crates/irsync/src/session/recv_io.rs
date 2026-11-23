@@ -1053,15 +1053,11 @@ fn local_sources(
 /// Whether the file at `h.path` under `base` is still the regular file the
 /// index describes, by inode and size. No symlink below `base` is followed
 /// on the way: a file behind one is not a source.
-// `st_mode` and `st_ino` differ in width between systems.
-#[allow(clippy::unnecessary_cast)]
 fn still_indexed(base: &Path, h: &ChunkHolder) -> bool {
     crate::fs::safe::Beneath::new(base, h.path.clone())
         .lstat()
         .is_ok_and(|st| {
-            crate::fs::safe::is_regular_mode(st.st_mode as u32)
-                && st.st_ino as u64 == h.inode
-                && st.st_size as u64 == h.size
+            st.kind == crate::platform::Kind::File && st.ino == h.inode && st.size == h.size
         })
 }
 

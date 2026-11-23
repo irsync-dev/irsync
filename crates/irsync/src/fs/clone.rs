@@ -185,7 +185,7 @@ impl Clones {
             return Ok(None);
         };
         self.clone_opened(dir, &RelPath::root(), full, || {
-            crate::fs::safe::open_regular_nofollow_stat(full)
+            crate::fs::safe::open_regular_nofollow_stat(full).map(|(f, st)| (f, st.to_file_stat()))
         })
     }
 
@@ -195,6 +195,7 @@ impl Clones {
         let full = base.join(rel.to_os());
         self.clone_opened(base, &rel.parent(), &full, || {
             crate::fs::safe::open_regular_beneath_stat(base, rel)
+                .map(|(f, st)| (f, st.to_file_stat()))
         })
     }
 
