@@ -1,8 +1,9 @@
 # Post-quantum key exchange for irsync
 
-Date: 2026-11-22. Status: approved by the maintainer. Step 1 is done
-(issue 240), and the design of step 2 was approved on 2026-11-23 with the
-setting named `pq_key_exchange` (issue 241).
+Date: 2026-11-22. Status: done. Step 1, the hybrid key exchange offered
+first, is in with issue 240. Step 2, the setting that requires it, is in
+with issue 241; its design was approved on 2026-11-23 with the setting named
+`pq_key_exchange`.
 
 ## Why
 
@@ -65,9 +66,16 @@ first in the key exchange list.
 Loopback is the worst case for the bulk speed, because there the CPU is the
 limit.
 
-Not checked: macOS, aarch64 Linux and FreeBSD builds; `tools/ci.sh
+Not checked then: macOS, aarch64 Linux and FreeBSD builds; `tools/ci.sh
 release-build`; the five slow netstress tests; real relays; connect time on
 a real link; bulk speed on aarch64.
+
+Checked since, with issue 240: the builds for macOS, aarch64 Linux and
+FreeBSD 14, `tools/ci.sh release-build` and the netstress tests all pass.
+Through n0's relay the hybrid is negotiated, an older irsync still connects
+with X25519, and the hybrid handshake took about 93 ms against 67 ms for
+X25519. Connect time on a real direct link and bulk speed on aarch64 are
+still open (issue 254).
 
 One thing seen along the way: a client that offers *only* the hybrid hangs
 against a classical-only server until it times out, while the reverse fails
@@ -145,5 +153,12 @@ under "What is left".
 ## Follow-up work
 
 1. Switch to aws-lc-rs and prefer the hybrid (step 1), with the checks left
-   open above.
-2. The "require" setting (step 2).
+   open above. Done: issue 240.
+2. The "require" setting (step 2). Done: issue 241.
+
+Still open:
+
+- Connect time on a real direct link, bulk speed on aarch64, and why the
+  handshake is slower through a relay: issue 254.
+- A `--pq-key-exchange` flag for `irsync host add`, and a test for a
+  resumed connection: issue 255.
