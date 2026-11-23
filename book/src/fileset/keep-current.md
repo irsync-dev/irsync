@@ -7,9 +7,9 @@ edit or remove files on purpose, bring the manifest up to date:
 fileset update ~/Photos
 ```
 
-`update` hashes only files whose size, modification time or inode changed, or
-that the manifest has no hash for. For every other file it keeps the stored
-hash. It forgets files that are gone. The summary shows how much work it did:
+`update` hashes only files whose size, modification time, change time or inode
+changed, or that the manifest has no hash for. For every other file it keeps
+the stored hash. It forgets files that are gone. The summary shows how much work it did:
 
 ```text
 entries=8 hashed=1 reused=3 warnings=0
@@ -23,8 +23,8 @@ Run `check` first on a tree you suspect, or have not looked at for a while:
 fileset check ~/Photos
 ```
 
-`update` keeps the stored hash of a file whose size, modification time and
-inode are unchanged. So if a byte rotted in such a file, the stored hash
+`update` keeps the stored hash of a file whose size, modification time, change
+time and inode are unchanged. So if a byte rotted in such a file, the stored hash
 still holds the old content and the next `check` still shows the damage. But
 an edited file is rehashed, and its new content becomes the truth. If rot and
 an edit hit the same file, `update` hides the rot.
