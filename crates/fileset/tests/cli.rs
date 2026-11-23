@@ -739,18 +739,25 @@ fn cli_relative_path_with_trailing_slash() {
     assert_eq!(run("check"), Some(0));
 }
 
+/// A built-in exclude of this platform.
+#[cfg(unix)]
+const EXCLUDE: &str = ".Trashes";
+#[cfg(windows)]
+const EXCLUDE: &str = "$RECYCLE.BIN";
+
 #[test]
 fn cli_builtin_excludes_flags() {
     let d = tree();
     let t = d.path().join("tree");
-    std::fs::create_dir(t.join(".Trashes")).unwrap();
+    std::fs::create_dir(t.join(EXCLUDE)).unwrap();
     let out = bin()
         .args(["init".as_ref(), "-v".as_ref(), t.as_os_str()])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
     let o = String::from_utf8_lossy(&out.stdout);
-    assert!(o.contains("SKP .Trashes reason=builtin-exclude\n"), "{o}");
+    let skp = format!("SKP {EXCLUDE} reason=builtin-exclude\n");
+    assert!(o.contains(&skp), "{o}");
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(!e.contains("INFO"), "{e}");
     let out = bin()
@@ -762,7 +769,7 @@ fn cli_builtin_excludes_flags() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stdout).contains(".Trashes"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains(EXCLUDE));
     assert_eq!(
         code(&[
             "check".as_ref(),

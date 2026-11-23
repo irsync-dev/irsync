@@ -11,6 +11,17 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
+/// A built-in exclude of this platform.
+#[cfg(unix)]
+pub const EXCLUDE: &str = ".Trashes";
+#[cfg(windows)]
+pub const EXCLUDE: &str = "$RECYCLE.BIN";
+/// Another built-in exclude of this platform, one the system keeps unreadable.
+#[cfg(unix)]
+pub const UNREADABLE_EXCLUDE: &str = ".Spotlight-V100";
+#[cfg(windows)]
+pub const UNREADABLE_EXCLUDE: &str = "System Volume Information";
+
 /// Creates a temp dir holding `spec` files (`"a/b.txt" => content`); parents are created.
 pub fn tree(spec: &[(&str, &str)]) -> TempDir {
     let dir = tempfile::tempdir().unwrap();

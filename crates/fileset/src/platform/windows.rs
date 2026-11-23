@@ -234,6 +234,20 @@ pub fn path_to_rel(rel: &Path) -> Vec<u8> {
     out
 }
 
+/// Names Windows keeps at the top of an NTFS volume: `System Volume
+/// Information` cannot be read, and `$RECYCLE.BIN` holds every user's
+/// deleted files. The walk neither records nor descends them.
+pub const BUILTIN_EXCLUDES: &[&str] = &["$RECYCLE.BIN", "System Volume Information"];
+
+/// Whether the name `name` is one of the [`BUILTIN_EXCLUDES`], ignoring
+/// ASCII case: NTFS names are case-insensitive, and Windows writes these
+/// in more than one case.
+pub fn is_builtin_exclude(name: &[u8]) -> bool {
+    BUILTIN_EXCLUDES
+        .iter()
+        .any(|n| n.as_bytes().eq_ignore_ascii_case(name))
+}
+
 /// Whether `e` is a read refused because another handle holds a byte-range
 /// lock on what it reads. Such locks are mandatory on Windows.
 pub fn is_lock_violation(e: &io::Error) -> bool {
@@ -518,6 +532,34 @@ mod tests {
             assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{bad:?}");
         }
         assert!(rel_to_path(root, b"a b/c.d").is_ok());
+    }
+
+    #[test]
+    fn builtin_excludes_match_in_any_case() {
+        assert_eq!(
+            BUILTIN_EXCLUDES,
+            &["$RECYCLE.BIN", "System Volume Information"]
+        );
+        for name in [
+            &b"$RECYCLE.BIN"[..],
+            b"$Recycle.Bin",
+            b"$recycle.bin",
+            b"System Volume Information",
+            b"SYSTEM VOLUME INFORMATION",
+            b"system volume information",
+        ] {
+            assert!(is_builtin_exclude(name), "{name:?}");
+        }
+        for name in [
+            &b".Trashes"[..],
+            b".Spotlight-V100",
+            b"$RECYCLE.BIN.old",
+            b"$RECYCLE",
+            b"System Volume",
+            b"",
+        ] {
+            assert!(!is_builtin_exclude(name), "{name:?}");
+        }
     }
 
     #[test]

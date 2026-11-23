@@ -134,6 +134,23 @@ pub fn path_to_rel(rel: &Path) -> Vec<u8> {
     rel.as_os_str().as_bytes().to_vec()
 }
 
+/// Names macOS keeps at the top of a volume for its own use. They are
+/// unreadable there and junk anywhere else, so the walk neither records nor
+/// descends them.
+pub const BUILTIN_EXCLUDES: &[&str] = &[
+    ".DocumentRevisions-V100",
+    ".Spotlight-V100",
+    ".TemporaryItems",
+    ".Trashes",
+    ".fseventsd",
+];
+
+/// Whether the name `name` is one of the [`BUILTIN_EXCLUDES`], byte for
+/// byte.
+pub fn is_builtin_exclude(name: &[u8]) -> bool {
+    BUILTIN_EXCLUDES.iter().any(|n| n.as_bytes() == name)
+}
+
 /// Whether `e` is a read refused because another handle holds a byte-range
 /// lock on what it reads. Never: such locks are advisory on Unix.
 pub fn is_lock_violation(_e: &io::Error) -> bool {
@@ -338,6 +355,34 @@ mod tests {
         let mut from_entry = Entry::from_path(&p).unwrap().0.xattrs;
         from_entry.retain(|(k, _)| k.starts_with(b"user."));
         assert_eq!(from_entry, got);
+    }
+
+    #[test]
+    fn builtin_excludes_match_exactly() {
+        assert_eq!(
+            BUILTIN_EXCLUDES,
+            &[
+                ".DocumentRevisions-V100",
+                ".Spotlight-V100",
+                ".TemporaryItems",
+                ".Trashes",
+                ".fseventsd",
+            ]
+        );
+        for name in BUILTIN_EXCLUDES {
+            assert!(is_builtin_exclude(name.as_bytes()), "{name}");
+        }
+        for name in [
+            &b".trashes"[..],
+            b".SPOTLIGHT-V100",
+            b".Trashes2",
+            b"Trashes",
+            b"$RECYCLE.BIN",
+            b"System Volume Information",
+            b"",
+        ] {
+            assert!(!is_builtin_exclude(name), "{name:?}");
+        }
     }
 
     fn names(v: &[&str]) -> io::Result<Vec<OsString>> {

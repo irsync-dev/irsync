@@ -342,14 +342,23 @@ entries=43 hashed=3 reused=40 warnings=0            (init, update)
 
 ## Built-in excludes
 
-macOS keeps `.DocumentRevisions-V100`, `.Spotlight-V100`, `.TemporaryItems`,
-`.Trashes` and `.fseventsd` at the top of every volume it touches, and
-ordinary users cannot read them. At the root of the tree, and at every mount
-point crossed with `--cross-mount-points`, entries with these names are
-neither recorded nor descended, on every OS: on a disk read elsewhere they
-are readable but still junk. Skipping one is not a warning, so it does not
-trip `--fail-on-warnings`. The same names deeper in the tree are ordinary
-entries.
+The system keeps some names at the top of a volume for itself, and ordinary
+users cannot read them. At the root of the tree, and at every mount point
+crossed with `--cross-mount-points`, entries with these names are neither
+recorded nor descended. Skipping one is not a warning, so it does not trip
+`--fail-on-warnings`. The same names deeper in the tree are ordinary entries.
+
+On Unix the names are the ones macOS keeps at the top of every volume it
+touches: `.DocumentRevisions-V100`, `.Spotlight-V100`, `.TemporaryItems`,
+`.Trashes` and `.fseventsd`. They are skipped on every Unix system, macOS or
+not: on a disk read elsewhere they are readable but still junk. A name must
+match exactly, case included.
+
+On Windows the names are `System Volume Information`, which cannot be read,
+and `$RECYCLE.BIN`, which holds the deleted files of every user. They match
+in upper, lower or mixed case, as NTFS names do. `fileset` enters no mounted
+volume on Windows, so they are skipped at the root of the tree only. The
+macOS names are ordinary entries there.
 
 A manifest written with `--no-builtin-excludes` may hold them. `check`
 without that option does not report them, and the next `update` without it

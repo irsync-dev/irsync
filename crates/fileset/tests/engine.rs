@@ -1135,12 +1135,13 @@ for_every_backend! {
     builtin_excludes_drop_quietly_from_an_old_manifest => builtin_excludes_drop_quietly_from_an_old_manifest_sqlite, builtin_excludes_drop_quietly_from_an_old_manifest_fjall, builtin_excludes_drop_quietly_from_an_old_manifest_redb;
 }
 
-/// A tree with an unreadable `.Spotlight-V100` at its root, as on a macOS volume, and
-/// what keeps it unreadable until dropped. `None` when running with privileges that
-/// bypass directory permissions.
+/// A tree with an unreadable `UNREADABLE_EXCLUDE` (`.Spotlight-V100` on Unix) at its
+/// root, as at the top of a volume, and what keeps it unreadable until dropped. `None`
+/// when running with privileges that bypass directory permissions.
 fn unreadable_spotlight_tree() -> Option<(tempfile::TempDir, platform::testutil::Unreadable)> {
-    let dir = tree(&[("f", "x"), (".Spotlight-V100/store.db", "y")]);
-    let held = unreadable(&dir.path().join(".Spotlight-V100"))?;
+    let store = format!("{UNREADABLE_EXCLUDE}/store.db");
+    let dir = tree(&[("f", "x"), (&store, "y")]);
+    let held = unreadable(&dir.path().join(UNREADABLE_EXCLUDE))?;
     Some((dir, held))
 }
 
@@ -1156,7 +1157,7 @@ fn update_skips_unreadable_builtin_exclude(b: Backend) {
     assert!(err.ends_with(" warnings=0\n"), "{err}");
     let keys = keys(&*open_ro(dir.path(), b));
     assert!(
-        !keys.iter().any(|k| k.starts_with(".Spotlight-V100")),
+        !keys.iter().any(|k| k.starts_with(UNREADABLE_EXCLUDE)),
         "{keys:?}"
     );
 
@@ -1165,7 +1166,9 @@ fn update_skips_unreadable_builtin_exclude(b: Backend) {
     let (outcome, out, err) = run_update_out(&opts).unwrap();
     assert_eq!(outcome, Outcome::Clean, "{err}");
     assert!(
-        out.contains("SKP .Spotlight-V100 reason=builtin-exclude\n"),
+        out.contains(&format!(
+            "SKP {UNREADABLE_EXCLUDE} reason=builtin-exclude\n"
+        )),
         "{out}"
     );
     assert!(!err.contains("INFO"), "{err}");
@@ -1183,21 +1186,24 @@ fn update_without_builtin_excludes_warns(b: Backend) {
     let err = without_macos_xattr_warnings(&err);
     assert_eq!(outcome, Outcome::Differences, "{err}");
     assert!(
-        err.starts_with("WARN cannot read directory .Spotlight-V100: "),
+        err.starts_with(&format!(
+            "WARN cannot read directory {UNREADABLE_EXCLUDE}: "
+        )),
         "{err}"
     );
 }
 
 fn builtin_excludes_drop_quietly_from_an_old_manifest(b: Backend) {
     // A manifest written before built-in excludes existed holds them, contents and all.
-    let dir = tree(&[("f", "x"), (".Trashes/501/old", "y")]);
+    let old = format!("{EXCLUDE}/501/old");
+    let dir = tree(&[("f", "x"), (&old, "y")]);
     let mut opts = update_opts(dir.path(), b, false, false);
     opts.common.builtin_excludes = false;
     run_update_opts(&opts).unwrap();
-    assert!(keys(&*open_ro(dir.path(), b)).contains(&".Trashes/501/old".to_string()));
+    assert!(keys(&*open_ro(dir.path(), b)).contains(&old));
 
     // Now unreadable, as on macOS: what is stored below it can no longer be verified.
-    let Some(held) = unreadable(&dir.path().join(".Trashes")) else {
+    let Some(held) = unreadable(&dir.path().join(EXCLUDE)) else {
         return;
     };
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], true);
@@ -1207,7 +1213,7 @@ fn builtin_excludes_drop_quietly_from_an_old_manifest(b: Backend) {
     run_update(dir.path(), b, false, true);
     drop(held);
     let keys = keys(&*open_ro(dir.path(), b));
-    assert!(!keys.iter().any(|k| k.starts_with(".Trashes")), "{keys:?}");
+    assert!(!keys.iter().any(|k| k.starts_with(EXCLUDE)), "{keys:?}");
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], true);
     assert_eq!(outcome, Outcome::Clean, "{out}{err}");
 }
@@ -1360,7 +1366,8 @@ fn check_verbose_keeps_the_difference_lines(b: Backend) {
 }
 
 fn check_without_verbose_prints_no_eql_or_skp(b: Backend) {
-    let dir = tree(&[("f", "x"), (".Trashes/t", "y")]);
+    let t = format!("{EXCLUDE}/t");
+    let dir = tree(&[("f", "x"), (&t, "y")]);
     run_update(dir.path(), b, false, false);
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], false);
     assert_eq!(outcome, Outcome::Clean, "{out}{err}");
@@ -1380,15 +1387,16 @@ fn check_verbose_without_hashing_has_no_checksum(b: Backend) {
 }
 
 fn check_verbose_prints_skp_on_stdout(b: Backend) {
-    let dir = tree(&[("f", "x"), (".Trashes/t", "y")]);
+    let t = format!("{EXCLUDE}/t");
+    let dir = tree(&[("f", "x"), (&t, "y")]);
     run_update(dir.path(), b, false, false);
     let (outcome, out, err) = verbose_check(dir.path(), Tier::Default);
     assert_eq!(outcome, Outcome::Clean, "{out}{err}");
     assert!(
-        out.contains("SKP .Trashes reason=builtin-exclude\n"),
+        out.contains(&format!("SKP {EXCLUDE} reason=builtin-exclude\n")),
         "{out}"
     );
-    assert!(!out.contains(".Trashes/t"), "{out}");
+    assert!(!out.contains(&t), "{out}");
     assert!(!err.contains("INFO"), "{err}");
 }
 
@@ -1519,7 +1527,8 @@ fn update_verbose_unreadable_file_has_no_checksum(b: Backend) {
 }
 
 fn update_verbose_drops_old_builtin_exclude_rows(b: Backend) {
-    let dir = tree(&[("f", "x"), (".Trashes/501/old", "y")]);
+    let old = format!("{EXCLUDE}/501/old");
+    let dir = tree(&[("f", "x"), (&old, "y")]);
     let mut opts = update_opts(dir.path(), b, false, false);
     opts.common.builtin_excludes = false;
     run_update_opts(&opts).unwrap();
@@ -1527,12 +1536,12 @@ fn update_verbose_drops_old_builtin_exclude_rows(b: Backend) {
     assert_eq!(outcome, Outcome::Clean, "{out}{err}");
     let l = lines(&out);
     for want in [
-        "SKP .Trashes reason=builtin-exclude",
-        "DEL .Trashes",
-        "DEL .Trashes/501",
-        "DEL .Trashes/501/old",
+        format!("SKP {EXCLUDE} reason=builtin-exclude"),
+        format!("DEL {EXCLUDE}"),
+        format!("DEL {EXCLUDE}/501"),
+        format!("DEL {EXCLUDE}/501/old"),
     ] {
-        assert!(l.contains(&want), "no {want:?} line in {out}");
+        assert!(l.contains(&want.as_str()), "no {want:?} line in {out}");
     }
 }
 
