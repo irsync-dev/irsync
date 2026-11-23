@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use common::{archive_opts, sync_trees, Flow};
-use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
+use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side, StreamKind};
 use pbwalk::render::hex_blocks;
 use pbwalk::Parser as _;
 use prost::encoding::encoded_len_varint;
@@ -99,6 +99,16 @@ fn check_with_tshark(path: &Path, records: usize) {
 
 fn is_event(r: &Record) -> bool {
     matches!(r.msg, Some(Msg::StreamEvent(_)) | Some(Msg::PathChange(_)))
+}
+
+/// A record of the daemon's half of the listing stream: sent by the daemon
+/// or received by the client.
+fn is_daemon_listing(r: &Record) -> bool {
+    r.stream() == StreamKind::Listing
+        && matches!(
+            (r.side(), r.direction()),
+            (Side::Daemon, Direction::Sent) | (Side::Client, Direction::Received)
+        )
 }
 
 /// The bytes on the last line, `total` or `sum`, of pbwalk's table `title`.
@@ -247,18 +257,33 @@ async fn push_capture_has_both_sides_of_every_message() {
 
     // Stream events are counted apart: a finish is reported as sent by the
     // writer and as received by the reader, but they are not one message.
-    let sent = recs
-        .iter()
-        .filter(|r| r.direction() == Direction::Sent && r.msg.is_some() && !is_event(r))
-        .count();
-    let recv = recs
-        .iter()
-        .filter(|r| r.direction() == Direction::Received && !is_event(r))
-        .count();
-    assert!(sent > 0);
+    let wire = |dir: Direction, daemon_listing: bool| -> Vec<&Record> {
+        recs.iter()
+            .filter(|r| {
+                r.direction() == dir
+                    && r.msg.is_some()
+                    && !is_event(r)
+                    && is_daemon_listing(r) == daemon_listing
+            })
+            .collect()
+    };
+    let (sent, recv) = (
+        wire(Direction::Sent, false),
+        wire(Direction::Received, false),
+    );
+    assert!(!sent.is_empty());
     // In one process each message is recorded twice: by its sender and by
     // its receiver.
-    assert_eq!(sent, recv);
+    assert_eq!(sent.len(), recv.len());
+    // But the client, the sender of a push, stops reading the daemon's
+    // listing once the session is done (`run_role` in session/engine.rs),
+    // so the end of it, `ListingEnd` at least, may never be read: what the
+    // client received is the start of what the daemon sent.
+    let (sent, recv) = (wire(Direction::Sent, true), wire(Direction::Received, true));
+    assert!(recv.len() <= sent.len(), "{} of {}", recv.len(), sent.len());
+    for (s, r) in sent.iter().zip(&recv) {
+        assert_eq!(s.msg, r.msg);
+    }
     assert!(recs
         .iter()
         .any(|r| matches!(r.msg, Some(Msg::Hello(_))) && r.side() == Side::Client));
