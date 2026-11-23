@@ -6,6 +6,7 @@ pub mod duration;
 pub mod exports;
 pub mod file;
 pub mod hosts;
+pub mod legacy_v1;
 pub mod names;
 pub mod paths;
 pub mod reader;

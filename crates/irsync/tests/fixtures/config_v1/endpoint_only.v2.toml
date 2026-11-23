@@ -1,0 +1,20 @@
+config_version = 2
+
+[servers.nas]
+endpoint_id = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"
+relay = "https://relay.example/"
+relay_mode = "disabled"
+congestion = "cubic"
+pq_key_exchange = "require"
+address = ["nas.lan:4433", "10.0.0.2:4433"]
+parallel = 4
+reconnect = "90m"
+dial_retries = 3
+dht = false
+mdns = true
+ssh = "me@nas"
+ssh_aliases = ["nas.lan"]
+
+[exports.photos]
+path = "/photos"
+rw = ["92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"]
