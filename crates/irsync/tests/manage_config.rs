@@ -128,6 +128,15 @@ fn defaults_for_settings_keys() {
         Some(vec!["bbr".into()])
     );
     assert!(kind_of(&p("hosts.home.congestion")).is_some());
+    assert_eq!(
+        default_of(&p("client.pq_key_exchange")),
+        Some(vec!["prefer".into()])
+    );
+    assert_eq!(
+        default_of(&p("daemon.pq_key_exchange")),
+        Some(vec!["prefer".into()])
+    );
+    assert!(kind_of(&p("hosts.home.pq_key_exchange")).is_some());
     assert_eq!(default_of(&p("daemon.relay")), None);
     assert_eq!(default_of(&p("hosts.home.relay")), None);
     let _ = id();

@@ -370,9 +370,20 @@ pub async fn spawn_daemon_full(
     state: tempfile::TempDir,
     home: Option<std::path::PathBuf>,
 ) -> DaemonHandle {
+    spawn_daemon_settings(authz, state, home, Default::default()).await
+}
+
+/// As [`spawn_daemon_full`], with the `[daemon]` settings `daemon`.
+pub async fn spawn_daemon_settings(
+    authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
+    state: tempfile::TempDir,
+    home: Option<std::path::PathBuf>,
+    daemon: irsync::config::settings::DaemonSettings,
+) -> DaemonHandle {
     use irsync::config::settings::Settings;
     let settings = Settings {
         state_dir: state.path().to_path_buf(),
+        daemon,
         ..Settings::default()
     };
     let ep = endpoint_for(EndpointSide::Daemon).await;
@@ -408,6 +419,24 @@ pub async fn spawn_daemon_full(
         max_dormant,
         _state: state,
     }
+}
+
+/// An offline loopback endpoint that offers the classical key exchange
+/// groups only, as an irsync built on ring does.
+pub async fn classical_endpoint() -> Endpoint {
+    use rustls::crypto::aws_lc_rs::{self, kx_group};
+    let mut provider = aws_lc_rs::default_provider();
+    provider.kx_groups = vec![kx_group::X25519, kx_group::SECP256R1, kx_group::SECP384R1];
+    Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .crypto_provider(std::sync::Arc::new(provider))
+        .alpns(vec![irsync_proto::ALPN.to_vec()])
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .bind()
+        .await
+        .unwrap()
 }
 
 /// A client endpoint with its own fresh identity, offline on loopback.

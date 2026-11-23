@@ -19,7 +19,7 @@ use irsync::cli::{
 use irsync::config::file::Config;
 use irsync::config::hosts::Hosts;
 use irsync::config::paths::{state_dir, Paths};
-use irsync::config::settings::Settings;
+use irsync::config::settings::{PqKeyExchange, Settings};
 use irsync::filter::FilterSet;
 use irsync::fs::paths::{escape_path, escape_text};
 use irsync::identity::{
@@ -518,6 +518,30 @@ fn direction_of(args: &Args) -> anyhow::Result<Direction> {
     Ok(locations(args)?.2)
 }
 
+/// Whether a connection to this host must have the post-quantum hybrid key
+/// exchange: the flag, else the host entry, else the client settings.
+fn pq_required(
+    opts: &SyncOptions,
+    host_entry: Option<&irsync::config::hosts::HostEntry>,
+    settings: &Settings,
+) -> bool {
+    pq_required_of(
+        opts.pq_key_exchange,
+        host_entry.and_then(|h| h.pq_key_exchange),
+        settings.client.pq_key_exchange,
+    )
+}
+
+/// [`pq_required`] from the three places that can say: the first that is
+/// set decides.
+fn pq_required_of(
+    flag: Option<PqKeyExchange>,
+    host: Option<PqKeyExchange>,
+    client: Option<PqKeyExchange>,
+) -> bool {
+    flag.or(host).or(client) == Some(PqKeyExchange::Require)
+}
+
 /// A client endpoint ready to dial `host`, plus what the session setup
 /// still needs from the configuration.
 struct Connected {
@@ -944,6 +968,14 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
         }
     })?;
     irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
+    if let Err(e) = irsync::session::reconnect::check_pq_key_exchange(
+        &conn,
+        pq_required(&c.opts, c.host_entry.as_ref(), &c.settings),
+        &c.target.id,
+    ) {
+        c.endpoint.close().await;
+        return Err(e);
+    }
     let entries = list_exports(&conn, hello)
         .await
         .map_err(|e| explain(e, Some(&conn), operand, &client))?;
@@ -1065,6 +1097,7 @@ async fn sync(
                 .unwrap_or(ReconnectOpts::default().dial_retries),
             source_index: index,
             first_dial_timeout: first_dial_limit(None),
+            require_pq: pq_required(opts, host_entry, settings),
             ..ReconnectOpts::default()
         };
         sessions += 1;
@@ -2456,6 +2489,17 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_pq_key_exchange_that_is_set_decides() {
+        use PqKeyExchange::{Prefer, Require};
+        assert!(!pq_required_of(None, None, None));
+        assert!(pq_required_of(None, None, Some(Require)));
+        assert!(pq_required_of(None, Some(Require), Some(Prefer)));
+        assert!(!pq_required_of(None, Some(Prefer), Some(Require)));
+        assert!(pq_required_of(Some(Require), Some(Prefer), Some(Prefer)));
+        assert!(!pq_required_of(Some(Prefer), Some(Require), Some(Require)));
+    }
 
     /// Whether the filter `spec` lets `target` log at TRACE.
     fn filter_enables(spec: &str, target: &str) -> bool {

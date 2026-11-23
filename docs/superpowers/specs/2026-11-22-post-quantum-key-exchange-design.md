@@ -1,7 +1,8 @@
 # Post-quantum key exchange for irsync
 
-Date: 2026-11-22. Status: option chosen by the maintainer (issue 219);
-the details under "Design" await approval.
+Date: 2026-11-22. Status: approved by the maintainer. Step 1 is done
+(issue 240), and the design of step 2 was approved on 2026-11-23 with the
+setting named `pq_key_exchange` (issue 241).
 
 ## Why
 
@@ -104,22 +105,34 @@ at the negotiated group before it sends or reads any irsync message. This
   TLS 1.3 signs the whole handshake, so nobody on the path can remove the
   hybrid from the offer without breaking the handshake.
 
-**Where it lives** (proposal):
+**Where it lives:**
 
-- Daemon: `[daemon] key_exchange = "prefer" | "require"`, default
-  `prefer`. For the whole daemon, not per export or grant: the key exchange
-  happens once per connection, before any path is named, and one rule is
-  easier to reason about than a mix.
-- Client: `key_exchange` in `[client]` and per host entry, and a
-  `--key-exchange` flag, as for `relay_mode` and `congestion`.
+- The setting is `pq_key_exchange`, not `key_exchange` as first proposed:
+  the name says what it is about.
+- Daemon: `[daemon] pq_key_exchange = "prefer" | "require"`. For the whole
+  daemon, for now: the key exchange happens once per connection, before any
+  path is named, and one rule is easier to reason about than a mix.
+- Client: `pq_key_exchange` in `[client]` and per host entry, and a
+  `--pq-key-exchange` flag.
+- The default is `prefer` on both sides, for now. `require` as the default
+  would lock out every irsync up to 0.1.0-beta.6.
+
+**Left for later: a finer setting on the daemon.** A setting per export or
+per grant can be added without changing this one. The daemon knows the
+negotiated group for the whole connection and learns the export from
+`Hello`, so it would refuse there, with an error message instead of a
+closed connection. `[daemon] pq_key_exchange = "require"` would stay the
+stricter rule that needs no `Hello`.
 
 **The error:**
 
 - The daemon checks the grant first, as today, so a stranger still learns
   nothing. A granted client without the hybrid gets the connection closed
   with a reason that the client prints: this daemon requires post-quantum
-  key exchange, upgrade irsync. An older client prints the close reason it
-  receives; check what that looks like.
+  key exchange, upgrade irsync. The close uses the code for a rejected
+  connection (2), which every client, older ones too, takes as final and
+  prints with its reason; another code would make an older client redial
+  for its whole reconnect window.
 - A client that requires it and did not get it closes and says the same
   about the daemon. Exit code as for other connection errors.
 

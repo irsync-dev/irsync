@@ -2,7 +2,7 @@
 
 use super::settings::de_opt_duration;
 use super::{line_of, ConfigError};
-use crate::config::settings::{Congestion, RelayMode};
+use crate::config::settings::{Congestion, PqKeyExchange, RelayMode};
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
@@ -26,6 +26,8 @@ pub struct HostEntry {
     pub relay_mode: Option<RelayMode>,
     /// For pushes to this host; unset: the client settings'.
     pub congestion: Option<Congestion>,
+    /// For connections to this host; unset: the client settings'.
+    pub pq_key_exchange: Option<PqKeyExchange>,
     pub address: Vec<HostPort>,
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
@@ -52,6 +54,8 @@ pub(crate) struct RawHost {
     relay_mode: Option<RelayMode>,
     #[serde(default)]
     congestion: Option<Congestion>,
+    #[serde(default)]
+    pq_key_exchange: Option<PqKeyExchange>,
     #[serde(default)]
     address: Vec<HostPort>,
     #[serde(default)]
@@ -127,6 +131,7 @@ pub(crate) fn hosts_from_raw(
                 relay: r.relay,
                 relay_mode: r.relay_mode,
                 congestion: r.congestion,
+                pq_key_exchange: r.pq_key_exchange,
                 address: r.address,
                 parallel: r.parallel,
                 reconnect: r.reconnect,

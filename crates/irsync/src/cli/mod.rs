@@ -2,7 +2,7 @@ pub mod location;
 pub mod progress;
 
 use crate::config::duration;
-use crate::config::settings::parse_debug_addr;
+use crate::config::settings::{parse_debug_addr, PqKeyExchange};
 use crate::net::addr::HostPort;
 use clap::{ArgAction, Args as _, CommandFactory, FromArgMatches, Parser, Subcommand};
 use location::Location;
@@ -917,6 +917,12 @@ pub struct SyncArgs {
     /// on). Default: `relay_mode` from the host entry or the client settings.
     #[arg(long, conflicts_with = "relay")]
     pub no_relay: bool,
+    /// `require`: refuse a daemon that does not offer the post-quantum
+    /// hybrid key exchange (X25519MLKEM768), such as an older irsync.
+    /// `prefer`: use it when offered. Default: `pq_key_exchange` from the
+    /// host entry or the client settings, else prefer.
+    #[arg(long, value_name = "prefer|require")]
+    pub pq_key_exchange: Option<PqKeyExchange>,
     /// Do not look the daemon up in the mainline DHT.
     #[arg(long)]
     pub no_dht: bool,
@@ -1080,6 +1086,7 @@ pub struct SyncOptions {
     pub dial_retries: Option<u32>,
     pub relay: Option<String>,
     pub no_relay: bool,
+    pub pq_key_exchange: Option<PqKeyExchange>,
     pub no_dht: bool,
     pub addresses: Vec<HostPort>,
     pub config: Option<PathBuf>,
@@ -1155,6 +1162,7 @@ impl SyncOptions {
             dial_retries: a.dial_retries,
             relay: a.relay.clone(),
             no_relay: a.no_relay,
+            pq_key_exchange: a.pq_key_exchange,
             no_dht: a.no_dht,
             addresses: a.address.clone(),
             config: args.files.config.clone(),
