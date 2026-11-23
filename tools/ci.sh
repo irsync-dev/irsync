@@ -167,14 +167,14 @@ smoke_dir=
 
 # Removes the smoke run's directory. On Windows filegen makes names that Git
 # Bash's rm cannot open (unpaired surrogates, NUL), so PowerShell removes what
-# rm leaves, through the \?\ form of the path. A failure here must not fail a
+# rm leaves, using the extended-length form of the path. A failure here must not fail a
 # check that has passed.
 remove_smoke_dir() {
     [ -n "$smoke_dir" ] || return 0
     if ! rm -rf "$smoke_dir" 2>/dev/null && [ "$os" = Windows ]; then
         # shellcheck disable=SC2016 # $env: is PowerShell's, not the shell's
         SMOKE_DIR=$(cygpath -w "$smoke_dir") powershell -NoProfile -NonInteractive -Command \
-            'Remove-Item -LiteralPath ("\?\" + $env:SMOKE_DIR) -Recurse -Force' >/dev/null 2>&1 || true
+            '$b = [string][char]92; Remove-Item -LiteralPath ($b + $b + "?" + $b + $env:SMOKE_DIR) -Recurse -Force' >/dev/null 2>&1 || true
     fi
     return 0
 }
