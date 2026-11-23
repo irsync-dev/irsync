@@ -3,7 +3,9 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{Duration, Instant, SystemTime};
+#[cfg(unix)]
+use std::time::Instant;
+use std::time::{Duration, SystemTime};
 
 use common::snapshot;
 use filegen::platform::{self, testutil};
@@ -457,6 +459,7 @@ fn cli_verbose_echoes_steps_quiet_silences() {
     assert!(o.stdout.is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_read_only_files_do_not_stop_the_run() {
     let (_t, root, out) = dirs();
@@ -485,6 +488,50 @@ fn cli_read_only_files_do_not_stop_the_run() {
         for (i, p) in planted.iter().enumerate() {
             assert_eq!(fs::read_to_string(p).unwrap(), format!("read only {i}"));
         }
+    }
+}
+
+/// The Windows counterpart of the test above: files with the read-only
+/// attribute are off limits, and the run goes on around them.
+#[cfg(windows)]
+#[test]
+fn cli_read_only_files_do_not_stop_the_run() {
+    let (_t, root, out) = dirs();
+    let set_readonly = |p: &Path, on: bool| {
+        let mut perms = fs::metadata(p).unwrap().permissions();
+        perms.set_readonly(on);
+        fs::set_permissions(p, perms).unwrap();
+    };
+    fs::create_dir(root.join("sub")).unwrap();
+    let planted: Vec<PathBuf> = (0..20)
+        .map(|i| {
+            let dir = if i % 2 == 0 { "" } else { "sub/" };
+            let p = root.join(format!("{dir}ro{i}.txt"));
+            fs::write(&p, format!("read only {i}")).unwrap();
+            set_readonly(&p, true);
+            p
+        })
+        .collect();
+    let o = bin()
+        .args(["run", "-q", "--seed", "13", "--steps", "500", "--out-dir"])
+        .arg(&out)
+        .args(["--set", "max_file_size=16K", "--set", "max_total_size=4M"])
+        .arg(&root)
+        .output()
+        .unwrap();
+    // Whatever happened, the attribute comes off so the temp dir can go.
+    let still_there: Vec<bool> = planted.iter().map(|p| p.exists()).collect();
+    for p in planted.iter().filter(|p| p.exists()) {
+        set_readonly(p, false);
+    }
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(steps_done(&out.join("filegen-13.state.yaml")), 500);
+    assert!(
+        still_there.iter().all(|&e| e),
+        "a read-only file was removed"
+    );
+    for (i, p) in planted.iter().enumerate() {
+        assert_eq!(fs::read_to_string(p).unwrap(), format!("read only {i}"));
     }
 }
 
@@ -680,6 +727,9 @@ fn exact_snapshot(dir: &Path) -> Exact {
 #[test]
 fn cli_never_writes_beside_the_root() {
     let t = tempfile::TempDir::new().unwrap();
+    if !testutil::symlinks_available(t.path()) {
+        return;
+    }
     let (root, out, canary) = (
         t.path().join("root"),
         t.path().join("out"),
@@ -696,13 +746,11 @@ fn cli_never_writes_beside_the_root() {
     ] {
         fs::write(canary.join(rel), bytes).unwrap();
     }
-    // An old mtime on every canary entry, so any change to one shows.
-    let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+    // An old mtime on every canary entry, so any change to one shows. Set
+    // through the platform: a directory cannot be opened as a file
+    // everywhere.
     for rel in ["a.txt", "b.bin", "sub/c", "sub", ""] {
-        fs::File::open(canary.join(rel))
-            .unwrap()
-            .set_modified(old)
-            .unwrap();
+        platform::set_mtime(&canary.join(rel), 1_000_000_000, 0).unwrap();
     }
     // Links into the canary, one absolute and one relative, in the root.
     testutil::symlink(&canary, &root.join("abs")).unwrap();

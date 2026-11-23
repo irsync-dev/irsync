@@ -11,9 +11,14 @@
 mod unix;
 #[cfg(unix)]
 pub use unix::*;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::*;
 
 /// The kind of system a build runs on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Platform {
     Unix,
     Windows,
@@ -72,6 +77,9 @@ pub struct Stat {
     pub dev: u64,
     pub nlink: u64,
     pub uid: u32,
+    /// The file attributes (`FILE_ATTRIBUTE_*`), for [`may_change`].
+    #[cfg(windows)]
+    attributes: u32,
 }
 
 /// What a symlink points to, for a platform that must know when it makes

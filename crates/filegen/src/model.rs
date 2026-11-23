@@ -154,7 +154,7 @@ impl Model {
     }
 
     /// Fold key of a byte name; non-UTF-8 names fold to their escaped form.
-    fn fold_bytes(name: &[u8]) -> String {
+    pub(crate) fn fold_bytes(name: &[u8]) -> String {
         match std::str::from_utf8(name) {
             Ok(s) => Model::fold(s),
             Err(_) => escape(name),

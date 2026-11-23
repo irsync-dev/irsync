@@ -266,23 +266,29 @@ differ, the code is what shipped.
     fix needs an entry removed.
 
 27. **`winapi-util` reads a file's identity on Windows** (2026-11-23,
-    `fileset`, version 0.1.11). `fileset` records each file's file index,
-    volume serial number and link count, as it records inode, device and
-    link count on Unix. `winapi-util::file::information` reads all three
-    from an open handle with no `unsafe` of ours. Why this crate: it was
-    already in `Cargo.lock` (through `walkdir` and `same-file`), is a thin safe
-    layer over `windows-sys`, and is maintained by Andrew Gallant
-    (BurntSushi), who also maintains `walkdir` and `ripgrep`. Built only
-    for Windows. Cost if wrong: one call to replace with a `windows-sys`
+    `fileset` and `filegen`, version 0.1.11). `fileset` records each
+    file's file index, volume serial number and link count, as it records
+    inode, device and link count on Unix; `filegen` reads the same for its
+    hard-link bookkeeping and its post-step stats.
+    `winapi-util::file::information` reads all three from an open handle
+    with no `unsafe` of ours. Why this crate: it was already in
+    `Cargo.lock` (through `walkdir` and `same-file`), is a thin safe layer
+    over `windows-sys`, and is maintained by Andrew Gallant (BurntSushi),
+    who also maintains `walkdir` and `ripgrep`. Built only for Windows. Cost if wrong: one call to replace with a `windows-sys`
     call and a `// SAFETY:` comment.
 
-28. **`windows-sys` for the one Windows call no safe crate makes**
-    (2026-11-23, `fileset`, version 0.61.2, features `Win32_Foundation` and
-    `Win32_Storage_FileSystem`). `fileset` reads the NTFS change time and a
+28. **`windows-sys` for the Windows calls no safe crate makes**
+    (2026-11-23, `fileset` and `filegen`, version 0.61.2; `fileset` with
+    features `Win32_Foundation`, `Win32_Storage_FileSystem` and
+    `Win32_System_SystemServices`, `filegen` with those and `Win32_System_IO`
+    and `Win32_System_Ioctl`). `fileset` reads the NTFS change time and a
     reparse point's tag with `GetFileInformationByHandleEx`, in one `unsafe`
     block in `crates/fileset/src/platform/windows.rs`. The standard library
     does not expose the change time, and without it `update` would miss a
-    file rewritten with its old mtime put back. Why this crate: it is
+    file rewritten with its old mtime put back. `filegen` reads a reparse
+    point's tag the same way, and punches holes with `DeviceIoControl`
+    (`FSCTL_SET_SPARSE`, `FSCTL_SET_ZERO_DATA`), one `unsafe` block each in
+    `crates/filegen/src/platform/windows.rs`. Why this crate: it is
     Microsoft's own generated binding to the Win32 API (the `windows-rs`
     project), with no code beyond the declarations, and 0.61.2 is the newest
     version already in `Cargo.lock`, so no new copy comes in. Built only for
@@ -302,6 +308,29 @@ differ, the code is what shipped.
     for Windows. Cost if wrong: if it is abandoned with a bug, the
     replacement is one `windows-sys` call (`GetThreadTimes`) in
     `platform/windows.rs`.
+
+30. **`ctrlc` for Ctrl-C on Windows** (2026-11-23, `filegen`, version
+    3.5.2, pinned exactly). `filegen` stops a run cleanly on an interrupt:
+    the step in flight finishes, the state is saved, and it exits with 130;
+    a second interrupt exits at once. On Unix it installs SIGINT and SIGTERM
+    handlers through `nix`; on Windows `ctrlc` registers a console control
+    handler, so we write no `unsafe` for it. Its handler receives every
+    console event (Ctrl-C, Ctrl-Break, closing the console window, logoff,
+    shutdown) and does not say which arrived, so the log names each one
+    `Ctrl-C`. For Ctrl-C and Ctrl-Break the process carries on and saves
+    its state; for close, logoff and shutdown Windows ends the process
+    shortly after the handler returns, so a state save is not guaranteed
+    there. Why this crate: it is the common choice for this one job, small,
+    and on Windows depends only on `windows-sys` 0.61, already in
+    `Cargo.lock`. It is maintained by Antti Keränen (Detegr). Built only
+    for Windows. Why 3.5.2: 3.5.3 was under a week old on 2026-11-23.
+    3.5.2 asks for `nix` 0.31, which no single target builds (`ctrlc`
+    needs `nix` on Unix only, `filegen` needs `ctrlc` on Windows only), but
+    which appears in `Cargo.lock` and which cargo-deny counts as a second
+    `nix` version once Windows is among its targets. Move to 3.5.3 after
+    2026-11-25: it takes `nix` 0.32, which removes that entry. Cost if
+    wrong: the replacement is one `SetConsoleCtrlHandler` call through
+    `windows-sys`, with a `// SAFETY:` comment.
 
 ## Left open
 

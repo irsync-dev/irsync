@@ -30,7 +30,7 @@ pub mod tree;
 
 use std::fs::File;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use rand::RngExt;
@@ -126,7 +126,7 @@ pub fn maybe_fsync(ctx: &OpCtx, file: &File) -> io::Result<()> {
 /// A fresh name for a new entry in `dir` that keeps the entry's relative
 /// path within `max_path_len`. Callers creating directories also check
 /// `depth(dir) < max_depth`.
-pub fn new_name(ctx: &mut OpCtx, dir: NodeId) -> Option<String> {
+pub fn new_name(ctx: &mut OpCtx, dir: NodeId) -> Option<Vec<u8>> {
     let sep = usize::from(dir != ctx.model.root());
     let max_bytes = (ctx.cfg.max_path_len as usize)
         .saturating_sub(ctx.model.rel_path_len(dir))
@@ -135,6 +135,16 @@ pub fn new_name(ctx: &mut OpCtx, dir: NodeId) -> Option<String> {
         return None;
     }
     draw_name(ctx.rng, &ctx.cfg.names, ctx.model, dir, max_bytes).map(|(name, _)| name)
+}
+
+/// The path of the new entry `name` (drawn by [`new_name`]) in `dir`.
+pub fn new_path(ctx: &OpCtx, dir: NodeId, name: &[u8]) -> PathBuf {
+    // As in `Model::abs_path`: a drawn name is always a stored name, so
+    // one the platform cannot name is a bug in filegen.
+    let os = platform::bytes_to_os(name).unwrap_or_else(|e| {
+        panic!("cannot name {}: {e}", crate::escape::escape(name));
+    });
+    ctx.model.abs_path(ctx.root, dir).join(os)
 }
 
 /// Bytes that may still be added to the tree.
@@ -303,6 +313,7 @@ pub(crate) mod testutil {
     use std::path::{Path, PathBuf};
 
     use rand_chacha::ChaCha8Rng;
+    use tempfile::TempDir;
 
     use super::{dispatch, Applied, OpCtx, OpOutcome};
     use crate::config::{load, Config};
@@ -310,6 +321,24 @@ pub(crate) mod testutil {
     use crate::log::OpRecord;
     use crate::model::{Model, NodeId, NodeKind};
     use crate::walk::from_disk;
+
+    /// A temp dir at its canonical path, as `run` makes the root: on
+    /// Windows that is the extended form (`\\?\`), below which every name
+    /// filegen draws (a trailing dot, `CON`) names exactly that entry. Its
+    /// entries are named with [`abs`], never with a `/` in `join`.
+    pub fn tempdir() -> TempDir {
+        let base = fs::canonicalize(std::env::temp_dir()).unwrap();
+        tempfile::Builder::new().tempdir_in(base).unwrap()
+    }
+
+    /// `kinds` without the ones that cannot run here (none on Unix), so a
+    /// test cycling through many kinds runs those this platform, with the
+    /// capabilities it has in `root`, can do.
+    pub fn kinds_here(root: &Path, kinds: &[OpKind]) -> Vec<OpKind> {
+        let caps = crate::platform::probe_caps(root).unwrap();
+        let off = crate::caps::disabled(crate::platform::Platform::CURRENT, caps);
+        kinds.iter().copied().filter(|k| !off.contains(k)).collect()
+    }
 
     pub fn config(sets: &[(&str, &str)]) -> Config {
         let sets: Vec<(String, String)> = sets
@@ -402,7 +431,7 @@ pub(crate) mod testutil {
     /// Writes `data` to `rel` on disk and adds it to the model with its
     /// real inode; the parent must already be in the model.
     pub fn put_file(root: &Path, m: &mut Model, rel: &str, data: &[u8]) -> NodeId {
-        let path = root.join(rel);
+        let path = abs(root, rel.as_bytes());
         fs::write(&path, data).unwrap();
         let ino = crate::platform::lstat(&path).unwrap().ino;
         let (dir, name) = parent_and_name(m, rel);
@@ -411,7 +440,7 @@ pub(crate) mod testutil {
 
     /// Creates the directory `rel` on disk and in the model.
     pub fn put_dir(root: &Path, m: &mut Model, rel: &str) -> NodeId {
-        let path = root.join(rel);
+        let path = abs(root, rel.as_bytes());
         fs::create_dir(&path).unwrap();
         let ino = crate::platform::lstat(&path).unwrap().ino;
         let (dir, name) = parent_and_name(m, rel);

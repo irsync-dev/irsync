@@ -16,6 +16,7 @@ use nix::sys::time::TimeSpec;
 use nix::unistd::{fchownat, Gid, Uid};
 
 use super::{FileKind, Stat};
+use crate::caps::Caps;
 
 /// The longest path the system takes, in bytes.
 pub const PATH_MAX: usize = libc::PATH_MAX as usize;
@@ -124,6 +125,12 @@ pub fn path_to_bytes(path: &Path) -> Vec<u8> {
     path.as_os_str().as_bytes().to_vec()
 }
 
+/// The bytes of an absolute symlink target naming `path`: the path's own
+/// bytes, which is what [`read_link`] gives back.
+pub fn target_bytes(path: &Path) -> Vec<u8> {
+    path_to_bytes(path)
+}
+
 /// Whether the system takes `name` as a file name, beyond the rules every
 /// platform shares. Any name does here.
 pub fn name_ok(_name: &str) -> bool {
@@ -168,7 +175,7 @@ pub fn read_link(path: &Path) -> io::Result<Vec<u8>> {
 /// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
 /// if the filesystem cannot.
 #[cfg(target_os = "linux")]
-pub fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
+pub(crate) fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
     use nix::errno::Errno;
     use nix::fcntl::{fallocate, FallocateFlags};
     let flags = FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE;
@@ -182,7 +189,7 @@ pub fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
 /// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
 /// if the filesystem cannot.
 #[cfg(target_os = "macos")]
-pub fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
+pub(crate) fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
     use std::os::fd::AsRawFd;
     let arg = libc::fpunchhole_t {
         fp_flags: 0,
@@ -201,7 +208,7 @@ pub fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
 /// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
 /// if the filesystem cannot, as always here.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub fn punch_hole(_: &File, _: u64, _: u64) -> io::Result<bool> {
+pub(crate) fn punch_hole(_: &File, _: u64, _: u64) -> io::Result<bool> {
     Ok(false)
 }
 
@@ -260,6 +267,12 @@ pub fn set_xattr(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
 /// Removes the extended attribute `name` of `path`.
 pub fn remove_xattr(path: &Path, name: &str) -> io::Result<()> {
     xattr::remove(path, name)
+}
+
+/// The capabilities of this machine in `dir`: all of them on Unix, found
+/// without touching anything.
+pub fn probe_caps(_dir: &Path) -> io::Result<Caps> {
+    Ok(Caps::ALL)
 }
 
 /// The effective user id.

@@ -10,8 +10,8 @@ use crate::kind::OpKind;
 use crate::log::OpRecord;
 use crate::model::{NodeId, NodeKind};
 use crate::ops::{
-    applied, budget, draw_kind, new_ino, new_name, pick_kind, removed, syscalls, Applied, OpCtx,
-    OpOutcome,
+    applied, budget, draw_kind, new_ino, new_name, new_path, pick_kind, removed, syscalls, Applied,
+    OpCtx, OpOutcome,
 };
 use crate::pick::{anchor_of, descend, pick_dest_dir, pick_dir_or_root};
 use crate::platform;
@@ -65,12 +65,10 @@ pub fn mkdir(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(name) = new_name(ctx, dir) else {
         return Ok(OpOutcome::NoTarget);
     };
-    let path = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let path = new_path(ctx, dir, &name);
     let ((), dur) = syscalls(ctx, &path, None, |_| fs::create_dir(&path))?;
     let ino = new_ino(ctx, &path)?;
-    let id = ctx
-        .model
-        .insert(dir, name.into_bytes(), NodeKind::Dir, 0, ino);
+    let id = ctx.model.insert(dir, name, NodeKind::Dir, 0, ino);
     Ok(applied(ctx, OpKind::Mkdir, id, 0, Vec::new(), dur))
 }
 
@@ -145,10 +143,10 @@ pub fn rename(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     }
     let from = ctx.model.abs_path(ctx.root, id);
-    let to = ctx.model.abs_path(ctx.root, new_dir).join(&name);
+    let to = new_path(ctx, new_dir, &name);
     let ((), dur) = syscalls(ctx, &from, Some(&to), |_| fs::rename(&from, &to))?;
     let path = ctx.model.rel_path(id);
-    ctx.model.rename(id, new_dir, name.into_bytes());
+    ctx.model.rename(id, new_dir, name);
     Ok(moved(ctx, OpKind::Rename, path, id, dur))
 }
 
@@ -221,12 +219,10 @@ pub fn hardlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     }
     let from = ctx.model.abs_path(ctx.root, src);
-    let to = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let to = new_path(ctx, dir, &name);
     let ((), dur) = syscalls(ctx, &from, Some(&to), |_| fs::hard_link(&from, &to))?;
     let ino = ctx.model.node(src).ino;
-    let id = ctx
-        .model
-        .insert(dir, name.into_bytes(), NodeKind::File, size, ino);
+    let id = ctx.model.insert(dir, name, NodeKind::File, size, ino);
     Ok(OpOutcome::Done(Applied {
         rec: OpRecord {
             kind: OpKind::Hardlink,
@@ -247,12 +243,10 @@ pub fn mkfifo(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(name) = new_name(ctx, dir) else {
         return Ok(OpOutcome::NoTarget);
     };
-    let path = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let path = new_path(ctx, dir, &name);
     let ((), dur) = syscalls(ctx, &path, None, |_| platform::mkfifo(&path, 0o644))?;
     let ino = new_ino(ctx, &path)?;
-    let id = ctx
-        .model
-        .insert(dir, name.into_bytes(), NodeKind::Fifo, 0, ino);
+    let id = ctx.model.insert(dir, name, NodeKind::Fifo, 0, ino);
     Ok(applied(ctx, OpKind::Mkfifo, id, 0, Vec::new(), dur))
 }
 
@@ -270,8 +264,8 @@ mod tests {
     use crate::log::OpRecord;
     use crate::model::{Model, NodeId, NodeKind};
     use crate::ops::testutil::{
-        abs, assert_matches_disk, config, detail, done, is_no_target, parent_of, put_dir, put_file,
-        step, triples,
+        abs, assert_matches_disk, config, detail, done, is_no_target, kinds_here, parent_of,
+        put_dir, put_file, step, tempdir, triples,
     };
     use crate::walk::from_disk;
 
@@ -299,7 +293,7 @@ mod tests {
 
     #[test]
     fn mkdir_respects_max_depth() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[("max_depth", "2")]);
         let (mut m, mut rng, mut anchor) = seeded(1);
         let mut made = 0;
@@ -348,7 +342,7 @@ mod tests {
 
     #[test]
     fn rename_moves_on_disk_and_model_consistently() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[]);
         let (mut m, mut rng, mut anchor) = seeded(2);
         let kinds = [
@@ -394,7 +388,7 @@ mod tests {
 
     #[test]
     fn rename_never_moves_dir_into_itself_or_past_path_len() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[("max_path_len", "60"), ("max_depth", "4")]);
         let (mut m, mut rng, mut anchor) = seeded(3);
         let kinds = [
@@ -425,7 +419,7 @@ mod tests {
 
     #[test]
     fn rename_over_replaces_and_frees_bytes() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[]);
         let (mut m, mut rng, mut anchor) = seeded(4);
         put_dir(tmp.path(), &mut m, "d");
@@ -485,7 +479,7 @@ mod tests {
 
     #[test]
     fn rmdir_removes_only_empty_dirs() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[]);
         let (mut m, mut rng, mut anchor) = seeded(5);
         put_dir(tmp.path(), &mut m, "a");
@@ -493,7 +487,7 @@ mod tests {
         put_file(tmp.path(), &mut m, "a/f", b"x");
         put_dir(tmp.path(), &mut m, "c");
         put_dir(tmp.path(), &mut m, "o");
-        fs::write(tmp.path().join("o/.fileset.sqlite"), b"m").unwrap();
+        fs::write(abs(tmp.path(), b"o/.fileset.sqlite"), b"m").unwrap();
         let o = m.resolve(b"o").unwrap();
         m.insert(o, b".fileset.sqlite".to_vec(), NodeKind::OffLimits, 0, 0);
         let mut removed = Vec::new();
@@ -524,10 +518,10 @@ mod tests {
         let cfg = caps(&[("remove_tree_max_entries", "3")]);
 
         // Five entries below the only dir: over the limit.
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         fs::create_dir(tmp.path().join("d")).unwrap();
         for i in 0..5 {
-            fs::write(tmp.path().join(format!("d/f{i}")), b"x").unwrap();
+            fs::write(abs(tmp.path(), format!("d/f{i}").as_bytes()), b"x").unwrap();
         }
         let mut m = from_disk(tmp.path()).unwrap();
         let mut rng = ChaCha8Rng::seed_from_u64(6);
@@ -539,22 +533,22 @@ mod tests {
         assert_matches_disk(tmp.path(), &m);
 
         // Off-limits below: never removed, however small.
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         fs::create_dir(tmp.path().join("e")).unwrap();
-        fs::write(tmp.path().join("e/.fileset.sqlite"), b"m").unwrap();
+        fs::write(abs(tmp.path(), b"e/.fileset.sqlite"), b"m").unwrap();
         let mut m = from_disk(tmp.path()).unwrap();
         for _ in 0..20 {
             assert!(is_no_target(
                 &remove_tree(&mut ctx!(tmp, cfg, m, rng)).unwrap()
             ));
         }
-        assert!(tmp.path().join("e/.fileset.sqlite").exists());
+        assert!(abs(tmp.path(), b"e/.fileset.sqlite").exists());
 
         // Within the limit: gone from disk and model.
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir_all(tmp.path().join("g/h")).unwrap();
-        fs::write(tmp.path().join("g/h/f"), b"abc").unwrap();
-        fs::write(tmp.path().join("g/f2"), b"de").unwrap();
+        let tmp = tempdir();
+        fs::create_dir_all(abs(tmp.path(), b"g/h")).unwrap();
+        fs::write(abs(tmp.path(), b"g/h/f"), b"abc").unwrap();
+        fs::write(abs(tmp.path(), b"g/f2"), b"de").unwrap();
         let mut m = from_disk(tmp.path()).unwrap();
         let before = m.entries();
         let a = done(remove_tree(&mut ctx!(tmp, cfg, m, rng)).unwrap());
@@ -569,7 +563,7 @@ mod tests {
 
     #[test]
     fn hardlink_shares_inode_and_counts_bytes() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = config(&[("max_file_size", "1000"), ("max_total_size", "1000")]);
         let (mut m, mut rng, mut anchor) = seeded(7);
         put_dir(tmp.path(), &mut m, "d");
@@ -606,12 +600,12 @@ mod tests {
 
     #[test]
     fn content_ops_resize_every_hard_link() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = config(&[("max_file_size", "4K"), ("max_total_size", "8K")]);
         let (mut m, mut rng, mut anchor) = seeded(8);
         put_dir(tmp.path(), &mut m, "d");
         let f = put_file(tmp.path(), &mut m, "f", &[1; 3000]);
-        fs::hard_link(tmp.path().join("f"), tmp.path().join("d/g")).unwrap();
+        fs::hard_link(tmp.path().join("f"), abs(tmp.path(), b"d/g")).unwrap();
         let d = m.resolve(b"d").unwrap();
         let ino = m.node(f).ino;
         m.insert(d, b"g".to_vec(), NodeKind::File, 3000, ino);
@@ -641,9 +635,11 @@ mod tests {
         assert!(grew > 0);
     }
 
+    // FIFOs are POSIX-only.
+    #[cfg(unix)]
     #[test]
     fn mkfifo_creates_fifo() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[]);
         let (mut m, mut rng, mut anchor) = seeded(9);
         put_dir(tmp.path(), &mut m, "d");
@@ -686,32 +682,35 @@ mod tests {
 
     #[test]
     fn dry_run_follows_real_run_through_structure_ops() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = tempdir();
         let cfg = caps(&[
             ("max_depth", "4"),
             ("max_path_len", "80"),
             ("remove_tree_max_entries", "6"),
         ]);
-        let kinds = [
-            OpKind::CreateFile,
-            OpKind::Mkdir,
-            OpKind::CreateFile,
-            OpKind::Hardlink,
-            OpKind::Symlink,
-            OpKind::Append,
-            OpKind::Rename,
-            OpKind::Mkdir,
-            OpKind::Mkfifo,
-            OpKind::RepointSymlink,
-            OpKind::RenameOver,
-            OpKind::CreateFile,
-            OpKind::Rewrite,
-            OpKind::Rmdir,
-            OpKind::DeleteSymlink,
-            OpKind::Mkdir,
-            OpKind::RemoveTree,
-            OpKind::DeleteFile,
-        ];
+        let kinds = kinds_here(
+            tmp.path(),
+            &[
+                OpKind::CreateFile,
+                OpKind::Mkdir,
+                OpKind::CreateFile,
+                OpKind::Hardlink,
+                OpKind::Symlink,
+                OpKind::Append,
+                OpKind::Rename,
+                OpKind::Mkdir,
+                OpKind::Mkfifo,
+                OpKind::RepointSymlink,
+                OpKind::RenameOver,
+                OpKind::CreateFile,
+                OpKind::Rewrite,
+                OpKind::Rmdir,
+                OpKind::DeleteSymlink,
+                OpKind::Mkdir,
+                OpKind::RemoveTree,
+                OpKind::DeleteFile,
+            ],
+        );
         let run = |dry: bool| {
             let (mut m, mut rng, mut anchor) = seeded(10);
             let mut lines = Vec::new();
@@ -723,7 +722,7 @@ mod tests {
         };
         let (real, real_model, real_tail) = run(false);
         assert_matches_disk(tmp.path(), &real_model);
-        for kind in kinds {
+        for &kind in &kinds {
             let tag = format!("{kind:?} ");
             assert!(
                 real.iter().any(|l| l.starts_with(&tag)),
