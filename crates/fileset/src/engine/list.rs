@@ -6,8 +6,9 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 
-use super::{cannot_open, canonical_root, Outcome};
+use super::{cannot_open, canonical_root, usable_here, Outcome};
 use crate::glob::Pattern;
+use crate::platform::Platform;
 use crate::report::line_listed;
 use crate::store::{self, OpenMode};
 
@@ -33,6 +34,7 @@ pub fn list(opts: &ListOpts, out: &mut dyn Write) -> anyhow::Result<Outcome> {
     let loc = store::locate(&root, opts.manifest.as_deref(), None, false)?;
     let store = store::open(&loc.path, loc.backend, OpenMode::ReadOnly)
         .with_context(|| cannot_open(&loc))?;
+    usable_here(store.meta()?.platform, Platform::CURRENT)?;
     let pattern = opts.pattern.as_deref().map(Pattern::new);
     let mut closed = false;
     let walked = store.for_each(&mut |path, entry| {

@@ -1533,3 +1533,59 @@ for_every_backend! {
     update_verbose_unreadable_file_has_no_checksum => update_verbose_unreadable_file_has_no_checksum_sqlite, update_verbose_unreadable_file_has_no_checksum_fjall, update_verbose_unreadable_file_has_no_checksum_redb;
     update_verbose_drops_old_builtin_exclude_rows => update_verbose_drops_old_builtin_exclude_rows_sqlite, update_verbose_drops_old_builtin_exclude_rows_fjall, update_verbose_drops_old_builtin_exclude_rows_redb;
 }
+
+fn set_platform(root: &Path, b: Backend, platform: platform::Platform) {
+    let mut s = store::open(&root.join(store_name(b)), b, OpenMode::ReadWrite).unwrap();
+    let mut m = s.meta().unwrap();
+    m.platform = platform;
+    s.set_meta(&m).unwrap();
+    s.close().unwrap();
+}
+
+fn a_manifest_of_the_other_family_is_refused(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let (made, here) = match platform::Platform::CURRENT {
+        platform::Platform::Unix => ("windows", "unix"),
+        platform::Platform::Windows => ("unix", "windows"),
+    };
+    let other = platform::Platform::parse(made).unwrap();
+    set_platform(dir.path(), b, other);
+    let want = format!(
+        "this manifest was made on {made}, and this is {here}; fileset cannot use a manifest \
+         across the two yet"
+    );
+    let e = run_check_opts(&check_opts(dir.path(), Tier::Default, &[], &[], false))
+        .expect_err("check must refuse");
+    assert!(format!("{e:#}").contains(&want), "{e:#}");
+    let e =
+        run_update_opts(&update_opts(dir.path(), b, false, false)).expect_err("update must refuse");
+    assert!(format!("{e:#}").contains(&want), "{e:#}");
+    let opts = fileset::engine::list::ListOpts {
+        root: dir.path().to_path_buf(),
+        manifest: None,
+        pattern: None,
+        verbose: false,
+    };
+    let e = fileset::engine::list::list(&opts, &mut Vec::new()).expect_err("list must refuse");
+    assert!(format!("{e:#}").contains(&want), "{e:#}");
+    // The refusals wrote nothing: not even the generation update claims.
+    let m = open_ro(dir.path(), b).meta().unwrap();
+    assert_eq!((m.platform, m.generation), (other, 1));
+}
+
+fn update_keeps_the_platform(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    std::fs::write(dir.path().join("f"), "changed, longer").unwrap();
+    let (outcome, _) = run_update(dir.path(), b, false, false);
+    assert_eq!(outcome, Outcome::Clean);
+    let m = open_ro(dir.path(), b).meta().unwrap();
+    assert_eq!(m.platform, platform::Platform::CURRENT);
+    assert_eq!(m.generation, 2);
+}
+
+for_every_backend! {
+    a_manifest_of_the_other_family_is_refused => a_manifest_of_the_other_family_is_refused_sqlite, a_manifest_of_the_other_family_is_refused_fjall, a_manifest_of_the_other_family_is_refused_redb;
+    update_keeps_the_platform => update_keeps_the_platform_sqlite, update_keeps_the_platform_fjall, update_keeps_the_platform_redb;
+}

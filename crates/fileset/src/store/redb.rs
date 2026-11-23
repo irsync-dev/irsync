@@ -6,8 +6,9 @@
 //! as protobuf, with a checksum of both at the end (see `sealed`).
 
 use super::fjall::{decode, to_pb};
-use super::{check_schema, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
+use super::{check_schema, parse_platform, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
 use crate::model::Entry;
+use crate::platform::Platform;
 use anyhow::{anyhow, bail, Context, Result};
 use prost::Message;
 use redb::{
@@ -256,6 +257,7 @@ fn read_meta(db: &Db) -> Result<Meta> {
             created_at: need("created_at")?.parse()?,
             updated_at: need("updated_at")?.parse()?,
             unfinished: get("unfinished")?.is_some(),
+            platform: parse_platform(get("platform")?.as_deref())?,
         })
     })
 }
@@ -339,6 +341,7 @@ impl RedbStore {
                     created_at: t,
                     updated_at: t,
                     unfinished: true,
+                    platform: Platform::CURRENT,
                 },
                 true,
             )?;
@@ -384,6 +387,7 @@ impl RedbStore {
             t.insert("tool_version", m.tool_version.as_str())?;
             t.insert("created_at", m.created_at.to_string().as_str())?;
             t.insert("updated_at", m.updated_at.to_string().as_str())?;
+            t.insert("platform", m.platform.as_str())?;
             if m.unfinished {
                 t.insert("unfinished", "1")?;
             } else {
@@ -572,6 +576,89 @@ mod tests {
     use super::*;
     use crate::model::{Flags, Kind, Timespec};
     use crate::store::{open, Backend};
+
+    const BACKEND: Backend = Backend::Redb;
+
+    fn set_raw_platform(p: &Path, v: Option<&str>) {
+        let db = Database::open(p).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut t = txn.open_table(META).unwrap();
+            match v {
+                Some(v) => drop(t.insert("platform", v).unwrap()),
+                None => drop(t.remove("platform").unwrap()),
+            }
+        }
+        txn.commit().unwrap();
+    }
+
+    fn raw_platform(p: &Path) -> Option<String> {
+        let db = Database::open(p).unwrap();
+        let txn = db.begin_read().unwrap();
+        let t = txn.open_table(META).unwrap();
+        let v = t.get("platform").unwrap().map(|v| v.value().to_string());
+        v
+    }
+
+    fn new_manifest(dir: &Path) -> PathBuf {
+        let p = dir.join("m");
+        open(&p, BACKEND, OpenMode::Create)
+            .unwrap()
+            .close()
+            .unwrap();
+        p
+    }
+
+    #[test]
+    fn a_new_manifest_records_this_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = new_manifest(dir.path());
+        let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
+        assert_eq!(s.meta().unwrap().platform, Platform::CURRENT);
+    }
+
+    #[test]
+    fn a_manifest_without_the_key_is_unix() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = new_manifest(dir.path());
+        set_raw_platform(&p, None);
+        let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
+        assert_eq!(s.meta().unwrap().platform, Platform::Unix);
+        drop(s);
+        // A read-only open writes nothing: the key is still absent.
+        assert_eq!(raw_platform(&p), None);
+    }
+
+    #[test]
+    fn an_unknown_platform_is_refused() {
+        for v in ["Windows", "unix ", "", "macos"] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = new_manifest(dir.path());
+            set_raw_platform(&p, Some(v));
+            let e = open(&p, BACKEND, OpenMode::ReadOnly)
+                .err()
+                .unwrap_or_else(|| panic!("{v:?} was accepted"));
+            let e = format!("{e:#}");
+            let want = format!("manifest platform '{v}' is not known to this fileset");
+            assert!(e.contains(&want), "{e}");
+        }
+    }
+
+    #[test]
+    fn set_meta_round_trips_the_platform() {
+        for want in [Platform::Windows, Platform::Unix] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = new_manifest(dir.path());
+            let mut s = open(&p, BACKEND, OpenMode::ReadWrite).unwrap();
+            let mut m = s.meta().unwrap();
+            m.platform = want;
+            s.set_meta(&m).unwrap();
+            assert_eq!(s.meta().unwrap().platform, want);
+            s.close().unwrap();
+            let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
+            assert_eq!(s.meta().unwrap().platform, want);
+        }
+    }
     use std::collections::HashMap;
 
     fn entry(i: u64) -> Entry {

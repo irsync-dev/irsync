@@ -7,13 +7,14 @@ use std::ops::Bound;
 use anyhow::Context;
 
 use super::{
-    cannot_open, canonical_root, store_parent, walk_config, CommonOpts, Outcome, Report, Warnings,
+    cannot_open, canonical_root, store_parent, usable_here, walk_config, CommonOpts, Outcome,
+    Report, Warnings,
 };
 use crate::compare::{diff, Field, Selection, Tier};
 use crate::escape::escape;
 use crate::model::{Flags, Kind};
 use crate::pipeline::{self, Decision};
-use crate::platform;
+use crate::platform::{self, Platform};
 use crate::progress::Progress;
 use crate::report::{line_add, line_chg, line_del, line_entry, line_skp, CheckSummary, FieldDiff};
 use crate::store::{self, OpenMode};
@@ -37,6 +38,7 @@ pub fn check(
     let loc = store::locate(&root, common.manifest.as_deref(), None, false)?;
     let store = store::open(&loc.path, loc.backend, OpenMode::ReadOnly)
         .with_context(|| cannot_open(&loc))?;
+    usable_here(store.meta()?.platform, Platform::CURRENT)?;
     let sel = Selection::new(opts.tier, &opts.ignore, &opts.require);
 
     let mut cfg = walk_config(common, &root, &loc);

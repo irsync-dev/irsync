@@ -1,7 +1,8 @@
 //! SQLite backend.
 
-use super::{check_schema, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
+use super::{check_schema, parse_platform, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
 use crate::model::{Entry, Flags, Kind, Timespec};
+use crate::platform::Platform;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row};
 use std::path::{Path, PathBuf};
@@ -110,6 +111,13 @@ fn read_meta(conn: &Connection) -> Result<Meta> {
         created_at: get("created_at")?.parse()?,
         updated_at: get("updated_at")?.parse()?,
         unfinished: get("unfinished").is_ok(),
+        platform: parse_platform(
+            conn.query_row("SELECT value FROM meta WHERE key = 'platform'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .as_deref(),
+        )?,
     })
 }
 
@@ -121,6 +129,7 @@ fn write_meta_rows(conn: &Connection, m: &Meta) -> Result<()> {
     st.execute(params!["tool_version", m.tool_version])?;
     st.execute(params!["created_at", m.created_at.to_string()])?;
     st.execute(params!["updated_at", m.updated_at.to_string()])?;
+    st.execute(params!["platform", m.platform.as_str()])?;
     if m.unfinished {
         st.execute(params!["unfinished", "1"])?;
     } else {
@@ -351,6 +360,7 @@ impl SqliteStore {
                     created_at: t,
                     updated_at: t,
                     unfinished: true,
+                    platform: Platform::CURRENT,
                 };
                 migrate_with(&conn, MIGRATIONS, 0, |tx| write_meta_rows(tx, &initial))?;
                 Ok(SqliteStore {
@@ -573,6 +583,93 @@ impl Store for SqliteStore {
 mod tests {
     use super::*;
     use crate::store::{open, Backend};
+
+    const BACKEND: Backend = Backend::Sqlite;
+
+    fn set_raw_platform(p: &Path, v: Option<&str>) {
+        let conn = Connection::open(p).unwrap();
+        match v {
+            Some(v) => conn
+                .execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES ('platform', ?)",
+                    [v],
+                )
+                .unwrap(),
+            None => conn
+                .execute("DELETE FROM meta WHERE key = 'platform'", [])
+                .unwrap(),
+        };
+    }
+
+    fn raw_platform(p: &Path) -> Option<String> {
+        Connection::open(p)
+            .unwrap()
+            .query_row("SELECT value FROM meta WHERE key = 'platform'", [], |r| {
+                r.get(0)
+            })
+            .optional()
+            .unwrap()
+    }
+
+    fn new_manifest(dir: &Path) -> PathBuf {
+        let p = dir.join("m");
+        open(&p, BACKEND, OpenMode::Create)
+            .unwrap()
+            .close()
+            .unwrap();
+        p
+    }
+
+    #[test]
+    fn a_new_manifest_records_this_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = new_manifest(dir.path());
+        let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
+        assert_eq!(s.meta().unwrap().platform, Platform::CURRENT);
+    }
+
+    #[test]
+    fn a_manifest_without_the_key_is_unix() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = new_manifest(dir.path());
+        set_raw_platform(&p, None);
+        let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
+        assert_eq!(s.meta().unwrap().platform, Platform::Unix);
+        drop(s);
+        // A read-only open writes nothing: the key is still absent.
+        assert_eq!(raw_platform(&p), None);
+    }
+
+    #[test]
+    fn an_unknown_platform_is_refused() {
+        for v in ["Windows", "unix ", "", "macos"] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = new_manifest(dir.path());
+            set_raw_platform(&p, Some(v));
+            let e = open(&p, BACKEND, OpenMode::ReadOnly)
+                .err()
+                .unwrap_or_else(|| panic!("{v:?} was accepted"));
+            let e = format!("{e:#}");
+            let want = format!("manifest platform '{v}' is not known to this fileset");
+            assert!(e.contains(&want), "{e}");
+        }
+    }
+
+    #[test]
+    fn set_meta_round_trips_the_platform() {
+        for want in [Platform::Windows, Platform::Unix] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = new_manifest(dir.path());
+            let mut s = open(&p, BACKEND, OpenMode::ReadWrite).unwrap();
+            let mut m = s.meta().unwrap();
+            m.platform = want;
+            s.set_meta(&m).unwrap();
+            assert_eq!(s.meta().unwrap().platform, want);
+            s.close().unwrap();
+            let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
+            assert_eq!(s.meta().unwrap().platform, want);
+        }
+    }
 
     #[test]
     fn migrations_apply_only_newer_scripts() {
