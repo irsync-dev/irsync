@@ -197,12 +197,15 @@ fn a_manifest_that_is_a_junction_is_refused() {
     ));
     let err = format!("{:#}", run_update_opts(&opts).unwrap_err());
     assert!(err.contains("--manifest"), "{err}");
+    assert!(err.contains("is a symbolic link"), "{err}");
     opts.mode = fileset::engine::update::Mode::Init { backend: None };
     let err = format!("{:#}", run_update_opts(&opts).unwrap_err());
     assert!(err.contains("--manifest"), "{err}");
+    assert!(err.contains("is a symbolic link"), "{err}");
     let copts = check_opts(&r, Tier::Default, &[], &[], false);
     let err = format!("{:#}", run_check_opts(&copts).unwrap_err());
     assert!(err.contains("--manifest"), "{err}");
+    assert!(err.contains("is a symbolic link"), "{err}");
 }
 
 #[test]

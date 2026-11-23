@@ -284,6 +284,7 @@ pub mod testutil {
                     std::env::var_os("CI").is_none(),
                     "CI is set, but this user may not create symlinks: {e}"
                 );
+                eprintln!("skipping: this user may not create symlinks here: {e}");
                 false
             }
         }
