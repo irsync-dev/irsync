@@ -5,6 +5,7 @@
 pub mod exports;
 pub mod grants;
 pub mod hosts;
+pub mod keys;
 
 use iroh::EndpointId;
 

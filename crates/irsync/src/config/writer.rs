@@ -142,16 +142,7 @@ fn discovery(d: &pb::Discovery) -> Keys<'_> {
 fn telemetry(t: &pb::Telemetry) -> Keys<'_> {
     let mut k = Keys::new(&t.key_comments);
     k.string("otlp_endpoint", t.otlp_endpoint.as_deref());
-    k.string(
-        "otlp_protocol",
-        t.otlp_protocol
-            .and_then(|p| pb::OtlpProtocol::try_from(p).ok())
-            .and_then(|p| match p {
-                pb::OtlpProtocol::Grpc => Some("grpc"),
-                pb::OtlpProtocol::Http => Some("http"),
-                pb::OtlpProtocol::Unspecified => None,
-            }),
-    );
+    k.string("otlp_protocol", t.otlp_protocol.and_then(otlp_protocol));
     k
 }
 
@@ -219,9 +210,7 @@ impl<'a> Keys<'a> {
 
     fn duration(&mut self, name: &str, v: Option<&prost_types::Duration>) {
         if let Some(d) = v {
-            let secs = u64::try_from(d.seconds).unwrap_or(0);
-            let nanos = u32::try_from(d.nanos).unwrap_or(0);
-            self.put(name, quoted(&duration::format(Duration::new(secs, nanos))));
+            self.put(name, quoted(&duration_text(d)));
         }
     }
 
@@ -281,18 +270,18 @@ fn with_trailing(line: String, trailing: &str) -> String {
 }
 
 /// A key or table name, quoted when TOML needs it.
-fn key(name: &str) -> String {
+pub(crate) fn key(name: &str) -> String {
     Key::new(name).display_repr().into_owned()
 }
 
 /// A string value, quoted as TOML writes it.
-fn quoted(s: &str) -> String {
+pub(crate) fn quoted(s: &str) -> String {
     Value::from(s).to_string()
 }
 
 /// An id as `EndpointId` prints it; bytes that are no id, in hex, which
 /// the reader then refuses.
-fn id(bytes: &[u8]) -> String {
+pub(crate) fn id(bytes: &[u8]) -> String {
     <[u8; 32]>::try_from(bytes)
         .ok()
         .and_then(|b| iroh::EndpointId::from_bytes(&b).ok())
@@ -302,7 +291,14 @@ fn id(bytes: &[u8]) -> String {
         )
 }
 
-fn relay_mode(m: i32) -> Option<&'static str> {
+/// A duration as the file spells it (`90s`, `30m`).
+pub(crate) fn duration_text(d: &prost_types::Duration) -> String {
+    let secs = u64::try_from(d.seconds).unwrap_or(0);
+    let nanos = u32::try_from(d.nanos).unwrap_or(0);
+    duration::format(Duration::new(secs, nanos))
+}
+
+pub(crate) fn relay_mode(m: i32) -> Option<&'static str> {
     match pb::RelayMode::try_from(m).ok()? {
         pb::RelayMode::Default => Some("default"),
         pb::RelayMode::Disabled => Some("disabled"),
@@ -310,10 +306,18 @@ fn relay_mode(m: i32) -> Option<&'static str> {
     }
 }
 
-fn congestion(c: i32) -> Option<&'static str> {
+pub(crate) fn congestion(c: i32) -> Option<&'static str> {
     match pb::Congestion::try_from(c).ok()? {
         pb::Congestion::Bbr => Some("bbr"),
         pb::Congestion::Cubic => Some("cubic"),
         pb::Congestion::Unspecified => None,
+    }
+}
+
+pub(crate) fn otlp_protocol(p: i32) -> Option<&'static str> {
+    match pb::OtlpProtocol::try_from(p).ok()? {
+        pb::OtlpProtocol::Grpc => Some("grpc"),
+        pb::OtlpProtocol::Http => Some("http"),
+        pb::OtlpProtocol::Unspecified => None,
     }
 }
