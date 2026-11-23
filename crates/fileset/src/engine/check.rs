@@ -148,7 +148,9 @@ pub fn check(
                 escape(path)
             );
         };
-        match abs.symlink_metadata() {
+        // The walk's own stat, so that the two agree on what can be seen: on Windows,
+        // std's falls back to the directory listing where the walk's is refused.
+        match platform::lstat(&abs) {
             Ok(_) => {}
             Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
                 report.line(&line_del(path))?;

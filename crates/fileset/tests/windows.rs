@@ -292,6 +292,30 @@ fn a_file_held_without_sharing_is_unreadable_not_fatal() {
     );
 }
 
+/// A stored file the walk cannot stat is unverified, a difference, even when its name
+/// still shows in the directory listing.
+#[test]
+fn a_file_this_user_may_not_stat_is_unverified() {
+    // Not the `\\?\` form: icacls does not take it.
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    std::fs::write(r.join("a"), "x").unwrap();
+    std::fs::write(r.join("b"), "y").unwrap();
+    let (outcome, err) = init(r);
+    assert_eq!(outcome, Outcome::Clean, "{err}");
+    let Some(_denied) = testutil::deny_read(&r.join("b")) else {
+        return;
+    };
+    let (outcome, out, err) = run_check(r, Tier::Default, &[], &[], false);
+    assert_eq!(out, "CHG b kind=file→unverified\n", "{err}");
+    assert!(err.starts_with("WARN cannot stat b: "), "{err}");
+    assert!(
+        err.ends_with("\nadded=0 deleted=0 changed=1 unchanged=3 warnings=1\n"),
+        "{err}"
+    );
+    assert_eq!(outcome, Outcome::Differences);
+}
+
 #[test]
 fn a_relative_root_with_slashes_and_dots_works() {
     let (_t, r) = root();

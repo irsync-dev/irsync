@@ -334,6 +334,57 @@ pub mod testutil {
         false
     }
 
+    /// An entry that denies this user reading `path`, removed again when
+    /// this is dropped.
+    pub struct ReadDenied {
+        path: std::path::PathBuf,
+        user: String,
+    }
+
+    impl Drop for ReadDenied {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("icacls")
+                .arg(&self.path)
+                .arg("/remove:d")
+                .arg(&self.user)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    /// Denies the current user (`USERNAME`) read access to `path`, its
+    /// attributes included, with `icacls`, until the result is dropped.
+    /// `None`, saying so on stderr, when `icacls` cannot do it here.
+    pub fn deny_read(path: &Path) -> Option<ReadDenied> {
+        let Some(user) = std::env::var_os("USERNAME").and_then(|u| u.into_string().ok()) else {
+            eprintln!("skipping: USERNAME is not set");
+            return None;
+        };
+        let out = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/deny")
+            .arg(format!("{user}:(R)"))
+            .output();
+        match out {
+            Ok(o) if o.status.success() => Some(ReadDenied {
+                path: path.to_path_buf(),
+                user,
+            }),
+            Ok(o) => {
+                eprintln!(
+                    "skipping: icacls /deny failed: {}",
+                    String::from_utf8_lossy(&o.stdout).trim()
+                );
+                None
+            }
+            Err(e) => {
+                eprintln!("skipping: cannot run icacls: {e}");
+                None
+            }
+        }
+    }
+
     /// Creates a junction at `link` that points to the directory `target`.
     #[cfg(windows)]
     pub fn junction(target: &Path, link: &Path) {
