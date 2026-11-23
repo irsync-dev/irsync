@@ -251,6 +251,7 @@ mod tests {
         assert_eq!(f.0, 3);
     }
 
+    #[cfg(unix)]
     #[test]
     fn from_path_regular_file() {
         let d = tempfile::tempdir().unwrap();
@@ -268,6 +269,7 @@ mod tests {
         assert!(e.flags.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn from_path_keeps_setuid_setgid_and_sticky_bits() {
         let d = tempfile::tempdir().unwrap();
@@ -307,6 +309,9 @@ mod tests {
     #[test]
     fn from_path_symlink_records_target_not_dest() {
         let d = tempfile::tempdir().unwrap();
+        if !testutil::symlinks_available(d.path()) {
+            return;
+        }
         let p = d.path().join("l");
         testutil::symlink(Path::new("missing"), &p).unwrap();
         let e = Entry::from_path(&p).unwrap().0;

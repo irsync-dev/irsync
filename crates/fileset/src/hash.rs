@@ -39,15 +39,20 @@ mod tests {
     #[test]
     fn hash_file_refuses_a_symlink_and_a_fifo() {
         let dir = tempfile::tempdir().unwrap();
+        if !testutil::symlinks_available(dir.path()) {
+            return;
+        }
         let real = dir.path().join("real");
         std::fs::write(&real, b"hello").unwrap();
         let link = dir.path().join("link");
         testutil::symlink(&real, &link).unwrap();
         assert!(hash_file(&link).is_err());
+        // Where there are FIFOs (not on Windows).
         let fifo = dir.path().join("fifo");
-        assert!(testutil::mkfifo(&fifo));
-        let err = hash_file(&fifo).unwrap_err();
-        assert!(err.to_string().contains("not a regular file"), "{err}");
+        if testutil::mkfifo(&fifo) {
+            let err = hash_file(&fifo).unwrap_err();
+            assert!(err.to_string().contains("not a regular file"), "{err}");
+        }
     }
 
     #[test]

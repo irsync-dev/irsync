@@ -1,7 +1,7 @@
 //! A manifest can come with a tree someone else made. Opening it must not
 //! reach outside the manifest, and must not run what its maker put in.
 
-use fileset::platform::testutil::symlink;
+use fileset::platform::testutil::{symlink, symlinks_available};
 use fileset::store::{self, Backend, OpenMode, SQLITE_NAME};
 use std::path::Path;
 
@@ -26,6 +26,9 @@ fn open_err(path: &Path, backend: Backend, mode: OpenMode) -> String {
 /// manifest somewhere else. `--manifest` may still name a link.
 #[test]
 fn a_symlinked_manifest_in_the_tree_is_refused() {
+    if !symlinks_available(tempfile::tempdir().unwrap().path()) {
+        return;
+    }
     for backend in [Backend::Sqlite, Backend::Fjall, Backend::Redb] {
         let (elsewhere, tree) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let real = manifest(elsewhere.path(), backend);
@@ -46,6 +49,9 @@ fn a_symlinked_manifest_in_the_tree_is_refused() {
 /// the manifest directory must not take that repair elsewhere.
 #[test]
 fn a_fjall_manifest_with_a_link_inside_is_refused() {
+    if !symlinks_available(tempfile::tempdir().unwrap().path()) {
+        return;
+    }
     let listing = |dir: &Path| {
         let mut names: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
@@ -123,6 +129,9 @@ fn a_sqlite_manifest_with_views_or_triggers_is_refused() {
 /// SQLite would follow a link at the name of its write-ahead log.
 #[test]
 fn a_sqlite_manifest_with_a_linked_log_beside_it_is_refused() {
+    if !symlinks_available(tempfile::tempdir().unwrap().path()) {
+        return;
+    }
     for suffix in ["-wal", "-shm", "-journal"] {
         let (tree, mine) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let path = manifest(tree.path(), Backend::Sqlite);

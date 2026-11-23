@@ -7,9 +7,7 @@ use fileset::engine::{CommonOpts, Outcome};
 use fileset::progress::NoProgress;
 use fileset::store::{self, Backend, OpenMode, Store};
 use std::fs::{File, FileTimes};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
@@ -30,8 +28,10 @@ pub fn symlink(dir: &Path, name: &str, target: &str) {
     fileset::platform::testutil::symlink(Path::new(target), &dir.join(name)).unwrap();
 }
 
+/// Sets the permission bits of `path`. There are none on Windows.
+#[cfg(unix)]
 pub fn chmod(path: &Path, mode: u32) {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    fileset::platform::testutil::set_mode(path, mode);
 }
 
 pub fn set_mtime(path: &Path, sec: u64, nsec: u32) {
@@ -44,9 +44,14 @@ pub fn set_mtime(path: &Path, sec: u64, nsec: u32) {
         .unwrap();
 }
 
-pub fn mkfifo(path: &Path) {
-    let status = Command::new("mkfifo").arg(path).status().unwrap();
-    assert!(status.success(), "mkfifo {} failed", path.display());
+/// Creates a FIFO at `path`; false where there are none (Windows).
+pub fn mkfifo(path: &Path) -> bool {
+    fileset::platform::testutil::mkfifo(path)
+}
+
+/// False when this user may not create symlinks here: a test that needs one returns.
+pub fn symlinks_available(dir: &Path) -> bool {
+    fileset::platform::testutil::symlinks_available(dir)
 }
 
 /// Options for `init` when `root` holds no manifest for `backend` yet, else for `update`;
@@ -167,10 +172,7 @@ pub fn run_check(
 
 /// Sets the mtime of a file or directory the caller owns, without needing write access.
 pub fn set_mtime_ro(path: &Path, t: SystemTime) {
-    File::open(path)
-        .unwrap()
-        .set_times(FileTimes::new().set_modified(t))
-        .unwrap();
+    fileset::platform::testutil::set_mtime(path, t);
 }
 
 pub fn store_name(backend: Backend) -> &'static str {

@@ -7,11 +7,14 @@ use std::collections::{HashSet, VecDeque};
 use std::io::{self, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{canonical_root, store_parent, walk_config, CommonOpts, Outcome, Report, Warnings};
+use super::{
+    canonical_root, store_parent, usable_here, walk_config, CommonOpts, Outcome, Report, Warnings,
+};
 use crate::compare::{diff, Selection, Tier};
 use crate::escape::escape;
 use crate::model::{Entry, Flags, Kind};
 use crate::pipeline::{self, Decision};
+use crate::platform::Platform;
 use crate::progress::Progress;
 use crate::report::{line_del, line_entry, line_skp, UpdateSummary};
 use crate::store::{self, Backend, Meta, OpenMode};
@@ -108,6 +111,9 @@ pub fn update(
     }
     let store = RefCell::new(store::open(&loc.path, loc.backend, mode)?);
     let old_meta = store.borrow().meta()?;
+    if matches!(opts.mode, Mode::Update { .. }) {
+        usable_here(old_meta.platform, Platform::CURRENT)?;
+    }
     let generation = old_meta.generation + 1;
     // Claim the generation before writing any entry with it, so no two runs, finished or
     // not, write entries under the same number.

@@ -7,6 +7,7 @@ pub mod update;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::platform::Platform;
 use crate::store::{self, Backend, Location};
 use crate::walk::WalkConfig;
 
@@ -116,6 +117,20 @@ pub fn cannot_open(loc: &Location) -> String {
     format!("cannot open manifest at {}{hint}", loc.path.display())
 }
 
+/// Whether a manifest made on `manifest` can be used on `running`.
+/// The one place that decides; step 3 of the Windows work replaces the refusal.
+pub fn usable_here(manifest: Platform, running: Platform) -> anyhow::Result<()> {
+    if manifest == running {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "this manifest was made on {}, and this is {}; fileset cannot use a manifest across the \
+         two yet",
+        manifest.as_str(),
+        running.as_str()
+    )
+}
+
 /// Canonicalizes `path` and requires it to be a directory.
 pub fn canonical_root(path: &Path) -> anyhow::Result<PathBuf> {
     let root = std::fs::canonicalize(path)
@@ -138,5 +153,28 @@ pub fn walk_config(common: &CommonOpts, root: &Path, loc: &Location) -> WalkConf
         builtin_excludes: common.builtin_excludes,
         threads: common.walk_threads,
         force_xattr_reads: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usable_here_allows_the_same_family_only() {
+        usable_here(Platform::Unix, Platform::Unix).unwrap();
+        usable_here(Platform::Windows, Platform::Windows).unwrap();
+        let e = usable_here(Platform::Unix, Platform::Windows).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "this manifest was made on unix, and this is windows; fileset cannot use a manifest \
+             across the two yet"
+        );
+        let e = usable_here(Platform::Windows, Platform::Unix).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "this manifest was made on windows, and this is unix; fileset cannot use a manifest \
+             across the two yet"
+        );
     }
 }

@@ -5,6 +5,7 @@ pub mod redb;
 pub mod sqlite;
 
 use crate::model::Entry;
+use crate::platform::Platform;
 use std::path::{Path, PathBuf};
 
 pub const SQLITE_NAME: &str = ".fileset.sqlite";
@@ -55,6 +56,9 @@ pub struct Meta {
     /// Being created by an `init` that has not finished; such a manifest holds nothing
     /// worth keeping. Absent in manifests written before this flag existed.
     pub unfinished: bool,
+    /// The platform family that made the manifest. A manifest without the key was made on
+    /// Unix, before the key existed.
+    pub platform: Platform,
 }
 
 /// Lookups that several threads can share while the store stays open for writing.
@@ -91,6 +95,16 @@ pub trait Store: Send {
     /// Flush, checkpoint, release. Must be called at the end of a successful update.
     /// Returns a note for the user when the release was incomplete but harmless.
     fn close(self: Box<Self>) -> anyhow::Result<Option<String>>;
+}
+
+/// The platform a manifest names in its meta table: `None`, a manifest from before the key
+/// existed, is Unix. Any value other than exactly `unix` or `windows` is refused.
+pub(crate) fn parse_platform(value: Option<&str>) -> anyhow::Result<Platform> {
+    match value {
+        None => Ok(Platform::Unix),
+        Some(v) => Platform::parse(v)
+            .ok_or_else(|| anyhow::anyhow!("manifest platform '{v}' is not known to this fileset")),
+    }
 }
 
 /// Applies the schema-version policy shared by all backends.
@@ -430,6 +444,9 @@ mod tests {
         use crate::platform::testutil::symlink;
         let d = tempfile::tempdir().unwrap();
         let root = canon(&d);
+        if !crate::platform::testutil::symlinks_available(&root) {
+            return;
+        }
         std::fs::write(root.join("file"), b"").unwrap();
         std::fs::create_dir(root.join("dir")).unwrap();
         symlink(&root.join("file"), &root.join("to_file")).unwrap();
@@ -443,6 +460,8 @@ mod tests {
         assert!(err.starts_with("cannot stat manifest "), "{err}");
     }
 
+    /// Unix only: a FIFO is the object that is neither, and Windows has none.
+    #[cfg(unix)]
     #[test]
     fn locate_manifest_that_is_neither_file_nor_dir_errors() {
         let d = tempfile::tempdir().unwrap();

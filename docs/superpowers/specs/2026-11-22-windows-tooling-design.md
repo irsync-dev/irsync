@@ -231,9 +231,10 @@ crates/<tool>/src/platform/
 | `ctime` | the NTFS change time |
 | `mode`, `uid`, `gid`, `rdev`, xattrs | zero or empty, never compared |
 
-- **The change time** is what `update` uses to decide whether a file must
-  be hashed again. Without it, a file rewritten with its old mtime
-  restored would be missed.
+- **The change time** is recorded as `ctime`, as on Unix. `update` decides
+  by size, `mtime` and file identity whether to hash a file again, on
+  every platform; a file rewritten with its old mtime restored is not
+  hashed again, here as on Unix.
 - **Reparse points are never followed.** The walk does not descend
   through a symlink, a junction or any other kind.
 - **The untrusted-manifest rules, on Windows:**
@@ -319,8 +320,6 @@ tree whose manifest was made on the other platform family.
 - **Sparse:** after `punch_hole` the file has the sparse attribute, the
   range reads as zeros, and `fsutil sparse queryrange` shows the hole. The
   test runs `fsutil` so that checking adds no `unsafe`.
-- **Change time:** content rewritten with the old mtime restored is hashed
-  again by `update`.
 - **Symlinks:** file and directory kinds and a dangling target, none
   followed by the walk.
 - **Reparse points:** a junction in the tree is recorded as `other` and

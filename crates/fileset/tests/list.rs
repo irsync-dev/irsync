@@ -8,13 +8,15 @@ use common::*;
 use fileset::compare::Tier;
 use fileset::engine::list::{list, ListOpts};
 use fileset::engine::Outcome;
-use fileset::platform::{self, testutil};
+#[cfg(unix)]
+use fileset::platform;
 use fileset::store::Backend;
 use tempfile::TempDir;
 
 /// A tree with every interesting neighbour: a directory, siblings that sort between it
-/// and its contents, a symlink and a fifo.
-fn files() -> TempDir {
+/// and its contents, a symlink and, where there are FIFOs (not on Windows), a fifo.
+/// `None` when this user may not create symlinks: the test returns.
+fn files() -> Option<TempDir> {
     let d = tree(&[
         ("2024/a.jpg", "aaa"),
         ("2024/b.jpg", "bb"),
@@ -22,16 +24,24 @@ fn files() -> TempDir {
         ("2024.txt", "t"),
         ("top.jpg", "j"),
     ]);
+    if !symlinks_available(d.path()) {
+        return None;
+    }
     symlink(d.path(), "latest", "2024/a.jpg");
     mkfifo(&d.path().join("pipe"));
-    d
+    Some(d)
+}
+
+/// Whether [`files`] made a fifo in `root`.
+fn has_pipe(root: &Path) -> bool {
+    root.join("pipe").symlink_metadata().is_ok()
 }
 
 /// [`files`] with a manifest for `backend` inside it.
-fn fixture(backend: Backend) -> TempDir {
-    let d = files();
+fn fixture(backend: Backend) -> Option<TempDir> {
+    let d = files()?;
     run_update(d.path(), backend, false, false);
-    d
+    Some(d)
 }
 
 fn opts(root: &Path, pattern: Option<&[u8]>, verbose: bool) -> ListOpts {
@@ -66,31 +76,36 @@ fn selected(root: &Path, pattern: &str) -> Vec<String> {
 
 #[test]
 fn lists_every_entry_in_stored_order() {
-    let d = fixture(Backend::Sqlite);
+    let Some(d) = fixture(Backend::Sqlite) else {
+        return;
+    };
     let out = run(&opts(d.path(), None, false));
-    assert_eq!(
-        paths(&out),
-        [
-            ".",
-            ".fileset.sqlite",
-            "2024",
-            "2024-old",
-            "2024-old/x",
-            "2024.txt",
-            "2024/a.jpg",
-            "2024/b.jpg",
-            "latest",
-            "pipe",
-            "top.jpg"
-        ]
-    );
+    let mut want = vec![
+        ".",
+        ".fileset.sqlite",
+        "2024",
+        "2024-old",
+        "2024-old/x",
+        "2024.txt",
+        "2024/a.jpg",
+        "2024/b.jpg",
+        "latest",
+        "pipe",
+        "top.jpg",
+    ];
+    if !has_pipe(d.path()) {
+        want.retain(|p| *p != "pipe");
+    }
+    assert_eq!(paths(&out), want);
     assert!(out.ends_with('\n'));
 }
 
 /// One tree, a manifest of each backend beside it: the two listings are the same text.
 #[test]
 fn both_backends_print_the_same_listing() {
-    let d = files();
+    let Some(d) = files() else {
+        return;
+    };
     let side = tempfile::tempdir().unwrap();
     let mut listings = Vec::new();
     for (backend, name) in [(Backend::Sqlite, "m.sqlite"), (Backend::Fjall, "m.fjall")] {
@@ -103,12 +118,15 @@ fn both_backends_print_the_same_listing() {
         listings.push(run(&o));
     }
     assert_eq!(listings[0], listings[1]);
-    assert_eq!(paths(&listings[0]).len(), 10);
+    let entries = if has_pipe(d.path()) { 10 } else { 9 };
+    assert_eq!(paths(&listings[0]).len(), entries);
 }
 
 #[test]
 fn a_file_line_equals_the_check_verbose_line_without_its_prefix() {
-    let d = fixture(Backend::Sqlite);
+    let Some(d) = fixture(Backend::Sqlite) else {
+        return;
+    };
     let mut c = check_opts(d.path(), Tier::Default, &[], &[], false);
     c.common.verbose = true;
     let (_, checked, _) = run_check_opts(&c).unwrap();
@@ -125,7 +143,9 @@ fn a_file_line_equals_the_check_verbose_line_without_its_prefix() {
 
 #[test]
 fn a_symlink_shows_its_target_and_a_directory_no_checksum() {
-    let d = fixture(Backend::Sqlite);
+    let Some(d) = fixture(Backend::Sqlite) else {
+        return;
+    };
     let out = run(&opts(d.path(), None, false));
     let line = |path: &str| {
         out.lines()
@@ -136,14 +156,18 @@ fn a_symlink_shows_its_target_and_a_directory_no_checksum() {
     assert!(line("latest").ends_with(" target=2024/a.jpg"));
     assert!(line("2024").starts_with("2024 kind=dir "));
     assert!(!line("2024").contains("blake3="));
-    assert!(line("pipe").starts_with("pipe kind=fifo "));
+    if has_pipe(d.path()) {
+        assert!(line("pipe").starts_with("pipe kind=fifo "));
+    }
     assert!(line("top.jpg").contains(" blake3="));
     assert!(!line("top.jpg").contains("uid="));
 }
 
 #[test]
 fn a_pattern_selects_by_whole_path() {
-    let d = fixture(Backend::Sqlite);
+    let Some(d) = fixture(Backend::Sqlite) else {
+        return;
+    };
     let r = d.path();
     assert_eq!(selected(r, "*.jpg"), ["top.jpg"]);
     assert_eq!(selected(r, "**/*.jpg"), ["2024/a.jpg", "2024/b.jpg"]);
@@ -158,9 +182,14 @@ fn a_pattern_selects_by_whole_path() {
 
 #[test]
 fn verbose_adds_owner_links_and_attributes() {
-    let d = files();
+    let Some(d) = files() else {
+        return;
+    };
+    #[cfg(unix)]
     let with_attr =
-        testutil::set_xattr(&d.path().join("top.jpg"), "user.fileset.test", b"v").is_ok();
+        platform::testutil::set_xattr(&d.path().join("top.jpg"), "user.fileset.test", b"v").is_ok();
+    #[cfg(not(unix))]
+    let with_attr = false;
     run_update(d.path(), Backend::Sqlite, false, false);
     let out = run(&opts(d.path(), None, true));
     for line in out.lines() {
@@ -185,7 +214,9 @@ fn verbose_adds_owner_links_and_attributes() {
 
 #[test]
 fn a_copied_manifest_lists_without_its_tree() {
-    let d = fixture(Backend::Sqlite);
+    let Some(d) = fixture(Backend::Sqlite) else {
+        return;
+    };
     let here = run(&opts(d.path(), None, false));
     let side = tempfile::tempdir().unwrap();
     let copy = side.path().join("copy.sqlite");
@@ -195,9 +226,13 @@ fn a_copied_manifest_lists_without_its_tree() {
     assert_eq!(run(&o), here);
 }
 
+/// Unix only: a Windows name is UTF-16, and stored bytes that are not WTF-8 name nothing.
+#[cfg(unix)]
 #[test]
 fn a_path_that_is_not_utf8_lists_escaped_and_matches_by_bytes() {
-    let d = files();
+    let Some(d) = files() else {
+        return;
+    };
     let name = platform::bytes_to_os(b"x\xffy").unwrap();
     if std::fs::write(d.path().join(name), "z").is_err() {
         eprintln!("skipped: this filesystem refuses names that are not UTF-8");
@@ -217,7 +252,9 @@ fn a_path_that_is_not_utf8_lists_escaped_and_matches_by_bytes() {
 
 #[test]
 fn list_leaves_the_manifest_file_untouched() {
-    let d = fixture(Backend::Sqlite);
+    let Some(d) = fixture(Backend::Sqlite) else {
+        return;
+    };
     let m = d.path().join(".fileset.sqlite");
     let before = (
         std::fs::read(&m).unwrap(),
@@ -244,7 +281,9 @@ fn list_leaves_the_manifest_file_untouched() {
 
 #[test]
 fn no_manifest_is_the_error_check_gives() {
-    let d = files();
+    let Some(d) = files() else {
+        return;
+    };
     let listed = list(&opts(d.path(), None, false), &mut Vec::new())
         .unwrap_err()
         .to_string();
@@ -279,7 +318,9 @@ fn a_closed_pipe_ends_the_listing_quietly() {
             Ok(())
         }
     }
-    let d = fixture(Backend::Sqlite);
+    let Some(d) = fixture(Backend::Sqlite) else {
+        return;
+    };
     let o = opts(d.path(), None, false);
     assert_eq!(list(&o, &mut Closed(2)).unwrap(), Outcome::Clean);
     // Any other write error is one.

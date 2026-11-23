@@ -1,7 +1,8 @@
 //! fjall (LSM) backend with protobuf-encoded entry values.
 
-use super::{check_schema, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
+use super::{check_schema, parse_platform, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
 use crate::model::{Entry, Flags, Kind, Timespec};
+use crate::platform::Platform;
 use anyhow::{anyhow, bail, Context, Result};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
 use prost::Message;
@@ -121,6 +122,12 @@ fn read_meta(ks: &Keyspace) -> Result<Meta> {
         created_at: get("created_at")?.parse()?,
         updated_at: get("updated_at")?.parse()?,
         unfinished: ks.get("unfinished")?.is_some(),
+        platform: parse_platform(
+            ks.get("platform")?
+                .map(|v| String::from_utf8(v.to_vec()))
+                .transpose()?
+                .as_deref(),
+        )?,
     })
 }
 
@@ -131,6 +138,7 @@ fn write_meta(db: &Database, ks: &Keyspace, m: &Meta) -> Result<()> {
     b.insert(ks, "tool_version", m.tool_version.as_str());
     b.insert(ks, "created_at", m.created_at.to_string());
     b.insert(ks, "updated_at", m.updated_at.to_string());
+    b.insert(ks, "platform", m.platform.as_str());
     if m.unfinished {
         b.insert(ks, "unfinished", "1");
     } else {
@@ -223,6 +231,7 @@ impl FjallStore {
                     created_at: t,
                     updated_at: t,
                     unfinished: true,
+                    platform: Platform::CURRENT,
                 },
             )?;
         } else {
@@ -310,6 +319,87 @@ impl Store for FjallStore {
 mod tests {
     use super::*;
     use crate::store::{open, Backend};
+    use std::path::PathBuf;
+
+    const BACKEND: Backend = Backend::Fjall;
+
+    fn set_raw_platform(p: &Path, v: Option<&str>) {
+        let db = Database::builder(p).open().unwrap();
+        let ks = db.keyspace("meta", KeyspaceCreateOptions::default).unwrap();
+        match v {
+            Some(v) => ks.insert("platform", v).unwrap(),
+            None => ks.remove("platform").unwrap(),
+        }
+        db.persist(fjall::PersistMode::SyncAll).unwrap();
+    }
+
+    fn raw_platform(p: &Path) -> Option<String> {
+        let db = Database::builder(p).open().unwrap();
+        let ks = db.keyspace("meta", KeyspaceCreateOptions::default).unwrap();
+        ks.get("platform")
+            .unwrap()
+            .map(|v| String::from_utf8(v.to_vec()).unwrap())
+    }
+
+    fn new_manifest(dir: &Path) -> PathBuf {
+        let p = dir.join("m");
+        open(&p, BACKEND, OpenMode::Create)
+            .unwrap()
+            .close()
+            .unwrap();
+        p
+    }
+
+    #[test]
+    fn a_new_manifest_records_this_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = new_manifest(dir.path());
+        let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
+        assert_eq!(s.meta().unwrap().platform, Platform::CURRENT);
+    }
+
+    #[test]
+    fn a_manifest_without_the_key_is_unix() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = new_manifest(dir.path());
+        set_raw_platform(&p, None);
+        let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
+        assert_eq!(s.meta().unwrap().platform, Platform::Unix);
+        drop(s);
+        // A read-only open writes nothing: the key is still absent.
+        assert_eq!(raw_platform(&p), None);
+    }
+
+    #[test]
+    fn an_unknown_platform_is_refused() {
+        for v in ["Windows", "unix ", "", "macos"] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = new_manifest(dir.path());
+            set_raw_platform(&p, Some(v));
+            let e = open(&p, BACKEND, OpenMode::ReadOnly)
+                .err()
+                .unwrap_or_else(|| panic!("{v:?} was accepted"));
+            let e = format!("{e:#}");
+            let want = format!("manifest platform '{v}' is not known to this fileset");
+            assert!(e.contains(&want), "{e}");
+        }
+    }
+
+    #[test]
+    fn set_meta_round_trips_the_platform() {
+        for want in [Platform::Windows, Platform::Unix] {
+            let dir = tempfile::tempdir().unwrap();
+            let p = new_manifest(dir.path());
+            let mut s = open(&p, BACKEND, OpenMode::ReadWrite).unwrap();
+            let mut m = s.meta().unwrap();
+            m.platform = want;
+            s.set_meta(&m).unwrap();
+            assert_eq!(s.meta().unwrap().platform, want);
+            s.close().unwrap();
+            let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
+            assert_eq!(s.meta().unwrap().platform, want);
+        }
+    }
 
     #[test]
     fn decode_refuses_a_kind_that_is_no_byte() {

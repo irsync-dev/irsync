@@ -72,6 +72,7 @@ fn update_compacts_the_manifest_unless_told_not_to() {
 
 /// The manifest as a killed `init` or `update` leaves it: copied while the store that
 /// wrote it was still open.
+#[cfg(unix)]
 fn killed(root: &Path, finished: bool) {
     let scratch = tempfile::tempdir().unwrap();
     let p = scratch.path().join("m");
@@ -83,6 +84,47 @@ fn killed(root: &Path, finished: bool) {
     }
     std::fs::copy(&p, root.join(REDB_NAME)).unwrap();
     s.close().unwrap();
+}
+
+/// The manifest as a killed `init` or `update` leaves it. Here the writer's locks keep
+/// every other handle from reading its file, so it cannot be copied while open: a child
+/// process writes it and exits without closing it.
+#[cfg(windows)]
+fn killed(root: &Path, finished: bool) {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["child_leaves_a_killed_manifest", "--exact"])
+        .env(KILLED_AT, root.join(REDB_NAME))
+        .stdout(std::process::Stdio::null());
+    if finished {
+        child.env(KILLED_FINISHED, "1");
+    }
+    let status = child.status().unwrap();
+    assert!(status.success(), "{status}");
+}
+
+#[cfg(windows)]
+const KILLED_AT: &str = "FILESET_TEST_KILLED_AT";
+#[cfg(windows)]
+const KILLED_FINISHED: &str = "FILESET_TEST_KILLED_FINISHED";
+
+/// Not a test of its own: run in a child process by `killed`, it writes at `KILLED_AT`
+/// the manifest a killed init (or, with `KILLED_FINISHED`, update) leaves, and exits
+/// without closing it. Without `KILLED_AT` it does nothing.
+#[cfg(windows)]
+#[test]
+fn child_leaves_a_killed_manifest() {
+    let Some(p) = std::env::var_os(KILLED_AT) else {
+        return;
+    };
+    let mut s = store::open(Path::new(&p), Backend::Redb, OpenMode::Create).unwrap();
+    if std::env::var_os(KILLED_FINISHED).is_some() {
+        let mut m = s.meta().unwrap();
+        m.unfinished = false;
+        s.set_meta(&m).unwrap();
+    }
+    // Exiting runs no destructor: the store is not closed.
+    std::process::exit(0);
 }
 
 #[test]

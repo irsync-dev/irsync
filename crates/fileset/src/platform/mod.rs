@@ -11,6 +11,10 @@ use crate::model::{Kind, Timespec};
 mod unix;
 #[cfg(unix)]
 pub use unix::*;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::*;
 
 /// The metadata of one object, as [`lstat`] reads it.
 #[derive(Clone, Debug)]

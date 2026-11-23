@@ -615,10 +615,14 @@ mod tests {
     }
 
     /// Directories at several depths, with names that sort around '/' ("a-b" < "a/x" < "a0"),
-    /// plus an exclude, a nested manifest and a symlink.
-    fn bushy_tree() -> (tempfile::TempDir, PathBuf) {
+    /// plus an exclude, a nested manifest and a symlink. `None` when this user may not
+    /// create symlinks: the test returns.
+    fn bushy_tree() -> Option<(tempfile::TempDir, PathBuf)> {
         let t = tempfile::tempdir().unwrap();
         let r = std::fs::canonicalize(t.path()).unwrap();
+        if !testutil::symlinks_available(&r) {
+            return None;
+        }
         for a in ["a", "a-b", "a0", "b"] {
             for b in ["x", "y-z", "y"] {
                 for c in ["1", "2"] {
@@ -632,12 +636,14 @@ mod tests {
         std::fs::create_dir(r.join(".Trashes")).unwrap();
         std::fs::write(r.join("a/x/.fileset.sqlite"), b"").unwrap();
         testutil::symlink(Path::new("a"), &r.join("s")).unwrap();
-        (t, r)
+        Some((t, r))
     }
 
     #[test]
     fn walk_order_does_not_depend_on_the_thread_count() {
-        let (_t, r) = bushy_tree();
+        let Some((_t, r)) = bushy_tree() else {
+            return;
+        };
         let mut one = cfg(&r, None);
         one.threads = 1;
         let expected = event_log(&one);
@@ -684,7 +690,9 @@ mod tests {
 
     #[test]
     fn walk_sink_error_stops_every_thread() {
-        let (_t, r) = bushy_tree();
+        let Some((_t, r)) = bushy_tree() else {
+            return;
+        };
         let mut seen = 0;
         let err = walk(&cfg(&r, None), None, &mut |_ev| {
             seen += 1;
@@ -783,6 +791,9 @@ mod tests {
     fn walk_root_symlink_is_followed_once() {
         let t = tempfile::tempdir().unwrap();
         let base = std::fs::canonicalize(t.path()).unwrap();
+        if !testutil::symlinks_available(&base) {
+            return;
+        }
         std::fs::create_dir(base.join("real")).unwrap();
         std::fs::write(base.join("real/f"), b"").unwrap();
         testutil::symlink(&base.join("real"), &base.join("link")).unwrap();
@@ -810,6 +821,7 @@ mod tests {
         assert!(paths(&e).contains(&b"bad\xff".to_vec()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn walk_unreadable_dir_warns_and_reports_not_descended() {
         let t = tempfile::tempdir().unwrap();
@@ -870,6 +882,7 @@ mod tests {
         assert!(skipped.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn walk_unstatable_entry_warns_and_reports_not_descended() {
         let t = tempfile::tempdir().unwrap();
@@ -970,6 +983,9 @@ mod tests {
     fn walk_symlink_not_followed() {
         let t = tempfile::tempdir().unwrap();
         let r = std::fs::canonicalize(t.path()).unwrap();
+        if !testutil::symlinks_available(&r) {
+            return;
+        }
         std::fs::create_dir(r.join("d")).unwrap();
         std::fs::write(r.join("d/file"), b"").unwrap();
         testutil::symlink(&r.join("d"), &r.join("s")).unwrap();

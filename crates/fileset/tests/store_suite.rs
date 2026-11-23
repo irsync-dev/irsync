@@ -1,6 +1,7 @@
 mod common;
 
 use fileset::model::{Entry, Flags, Kind, Timespec};
+use fileset::platform::Platform;
 use fileset::store::{self, Backend, Meta, OpenMode, Store, SCHEMA_VERSION};
 use std::path::Path;
 
@@ -130,6 +131,7 @@ fn suite(backend: Backend, open: impl Fn(&Path, OpenMode) -> Box<dyn Store>) {
         created_at: 10,
         updated_at: 20,
         unfinished: false,
+        platform: Platform::Windows,
     };
     s.set_meta(&m2).unwrap();
     assert_eq!(s.meta().unwrap(), m2);

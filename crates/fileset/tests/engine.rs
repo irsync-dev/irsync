@@ -6,7 +6,7 @@ use fileset::engine::check::check;
 use fileset::engine::update::{update, Mode};
 use fileset::engine::Outcome;
 use fileset::model::{Flags, Kind};
-use fileset::platform::{self, testutil};
+use fileset::platform;
 use fileset::progress::NoProgress;
 use fileset::report::fmt_blake3;
 use fileset::store::{self, Backend, OpenMode};
@@ -14,16 +14,19 @@ use std::path::Path;
 
 /// Invokes each backend-generic test once per backend.
 macro_rules! for_every_backend {
-    ($($name:ident => $sqlite:ident, $fjall:ident, $redb:ident;)*) => {
+    ($($(#[$attr:meta])* $name:ident => $sqlite:ident, $fjall:ident, $redb:ident;)*) => {
         $(
+            $(#[$attr])*
             #[test]
             fn $sqlite() {
                 $name(Backend::Sqlite)
             }
+            $(#[$attr])*
             #[test]
             fn $fjall() {
                 $name(Backend::Fjall)
             }
+            $(#[$attr])*
             #[test]
             fn $redb() {
                 $name(Backend::Redb)
@@ -67,6 +70,7 @@ for_every_backend! {
     update_sweeps_stale_generation => update_sweeps_stale_generation_sqlite, update_sweeps_stale_generation_fjall, update_sweeps_stale_generation_redb;
     update_leaves_unchanged_rows_alone => update_leaves_unchanged_rows_alone_sqlite, update_leaves_unchanged_rows_alone_fjall, update_leaves_unchanged_rows_alone_redb;
     update_sweeps_deleted_entries_and_keeps_unchanged_ones => update_sweeps_deleted_entries_and_keeps_unchanged_ones_sqlite, update_sweeps_deleted_entries_and_keeps_unchanged_ones_fjall, update_sweeps_deleted_entries_and_keeps_unchanged_ones_redb;
+    #[cfg(unix)]
     update_rewrites_a_row_whose_xattrs_changed => update_rewrites_a_row_whose_xattrs_changed_sqlite, update_rewrites_a_row_whose_xattrs_changed_fjall, update_rewrites_a_row_whose_xattrs_changed_redb;
     update_reuses_stored_xattrs_while_ctime_is_unchanged => update_reuses_stored_xattrs_while_ctime_is_unchanged_sqlite, update_reuses_stored_xattrs_while_ctime_is_unchanged_fjall, update_reuses_stored_xattrs_while_ctime_is_unchanged_redb;
     update_force_xattr_reads_reads_every_entry => update_force_xattr_reads_reads_every_entry_sqlite, update_force_xattr_reads_reads_every_entry_fjall, update_force_xattr_reads_reads_every_entry_redb;
@@ -84,9 +88,12 @@ for_every_backend! {
     check_reports_add_del_chg => check_reports_add_del_chg_sqlite, check_reports_add_del_chg_fjall, check_reports_add_del_chg_redb;
     check_relaxed_ignores_mode_and_mtime => check_relaxed_ignores_mode_and_mtime_sqlite, check_relaxed_ignores_mode_and_mtime_fjall, check_relaxed_ignores_mode_and_mtime_redb;
     check_paranoid_reports_nlink => check_paranoid_reports_nlink_sqlite, check_paranoid_reports_nlink_fjall, check_paranoid_reports_nlink_redb;
+    #[cfg(unix)]
     check_ignore_mode_hides_chmod => check_ignore_mode_hides_chmod_sqlite, check_ignore_mode_hides_chmod_fjall, check_ignore_mode_hides_chmod_redb;
     check_require_uid_stays_clean_same_user => check_require_uid_stays_clean_same_user_sqlite, check_require_uid_stays_clean_same_user_fjall, check_require_uid_stays_clean_same_user_redb;
     check_symlink_retarget => check_symlink_retarget_sqlite, check_symlink_retarget_fjall, check_symlink_retarget_redb;
+    #[cfg(windows)]
+    check_fails_on_a_stored_path_not_valid_here => check_fails_on_a_stored_path_not_valid_here_sqlite, check_fails_on_a_stored_path_not_valid_here_fjall, check_fails_on_a_stored_path_not_valid_here_redb;
     check_kind_change => check_kind_change_sqlite, check_kind_change_fjall, check_kind_change_redb;
     check_dir_replaced_by_file_deletes_children => check_dir_replaced_by_file_deletes_children_sqlite, check_dir_replaced_by_file_deletes_children_fjall, check_dir_replaced_by_file_deletes_children_redb;
     check_warns_no_stored_checksum => check_warns_no_stored_checksum_sqlite, check_warns_no_stored_checksum_fjall, check_warns_no_stored_checksum_redb;
@@ -115,13 +122,15 @@ fn other(b: Backend) -> Backend {
     }
 }
 
-/// True (after saying so) when file permissions do not restrict this process, e.g. root.
-fn permissions_bypassed(path: &Path) -> bool {
-    if std::fs::read(path).is_ok() {
-        eprintln!("skipping: running with privileges that bypass file permissions");
-        return true;
+/// Makes the file or directory `path` unreadable until the result is dropped: on Unix it
+/// has no permission bits, on Windows it is held open with no sharing. `None` (after
+/// saying so) when it can still be read, e.g. by root.
+fn unreadable(path: &Path) -> Option<platform::testutil::Unreadable> {
+    let held = platform::testutil::make_unreadable(path);
+    if held.is_none() {
+        eprintln!("skipping: running with privileges that bypass permissions");
     }
-    false
+    held
 }
 
 fn sorted(mut v: Vec<&str>) -> Vec<String> {
@@ -131,24 +140,35 @@ fn sorted(mut v: Vec<&str>) -> Vec<String> {
 
 fn update_records_every_kind(b: Backend) {
     let dir = tree(&[("d/f", "x")]);
+    if !symlinks_available(dir.path()) {
+        return;
+    }
     symlink(dir.path(), "l", "f");
-    mkfifo(&dir.path().join("p"));
+    // No FIFO where there are none (Windows): one entry fewer.
+    let fifo = mkfifo(&dir.path().join("p"));
     let (outcome, err) = run_update(dir.path(), b, false, false);
     assert_eq!(outcome, Outcome::Clean);
-    assert_eq!(err, "entries=6 hashed=1 reused=0 warnings=0\n");
+    let entries = if fifo { 6 } else { 5 };
+    assert_eq!(
+        err,
+        format!("entries={entries} hashed=1 reused=0 warnings=0\n")
+    );
 
     let store = open_ro(dir.path(), b);
-    assert_eq!(
-        keys(&*store),
-        sorted(vec![".", "d", "d/f", "l", "p", store_name(b)])
-    );
+    let mut want = vec![".", "d", "d/f", "l", store_name(b)];
+    if fifo {
+        want.push("p");
+    }
+    assert_eq!(keys(&*store), sorted(want));
     let f = store.get(b"d/f").unwrap().unwrap();
     assert_eq!(f.blake3, Some(*blake3::hash(b"x").as_bytes()));
     assert_eq!(
         store.get(b"l").unwrap().unwrap().target.as_deref(),
         Some(&b"f"[..])
     );
-    assert_eq!(store.get(b"p").unwrap().unwrap().kind, Kind::Fifo);
+    if fifo {
+        assert_eq!(store.get(b"p").unwrap().unwrap().kind, Kind::Fifo);
+    }
     let s = store.get(store_name(b).as_bytes()).unwrap().unwrap();
     assert!(s.flags.contains(Flags::STORE));
     assert_eq!(s.blake3, None);
@@ -191,11 +211,12 @@ fn update_rehash_forces(b: Backend) {
 fn update_rehashes_when_mtime_changes(b: Backend) {
     let dir = tree(&[("f", "x")]);
     run_update(dir.path(), b, false, false);
-    set_mtime(&dir.path().join("f"), 1_000_000, 5);
+    // Not a whole second, and a multiple of 100 ns: NTFS keeps no finer.
+    set_mtime(&dir.path().join("f"), 1_000_000, 500);
     let (_, second) = run_update(dir.path(), b, false, false);
     assert_eq!(second, "entries=3 hashed=1 reused=0 warnings=0\n");
     let f = open_ro(dir.path(), b).get(b"f").unwrap().unwrap();
-    assert_eq!((f.mtime.sec, f.mtime.nsec), (1_000_000, 5));
+    assert_eq!((f.mtime.sec, f.mtime.nsec), (1_000_000, 500));
 }
 
 fn update_sweeps_stale_generation(b: Backend) {
@@ -230,20 +251,29 @@ fn generations(root: &Path, b: Backend) -> std::collections::BTreeMap<String, u6
 
 fn update_leaves_unchanged_rows_alone(b: Backend) {
     let dir = tree(&[("d/f", "x"), ("g", "y")]);
+    if !symlinks_available(dir.path()) {
+        return;
+    }
     symlink(dir.path(), "l", "g");
-    mkfifo(&dir.path().join("p"));
+    // No FIFO where there are none (Windows): one entry fewer.
+    let fifo = mkfifo(&dir.path().join("p"));
     run_update(dir.path(), b, false, false);
     std::fs::write(dir.path().join("g"), "changed").unwrap();
     let (_, err) = run_update(dir.path(), b, false, false);
-    assert_eq!(err, "entries=7 hashed=1 reused=1 warnings=0\n");
+    let entries = if fifo { 7 } else { 6 };
+    assert_eq!(
+        err,
+        format!("entries={entries} hashed=1 reused=1 warnings=0\n")
+    );
     let mut g = generations(dir.path(), b);
     // The root and the manifest itself change with every run.
     g.remove(".");
     g.remove(store_name(b));
-    let want: Vec<(String, u64)> = [("d", 1), ("d/f", 1), ("g", 2), ("l", 1), ("p", 1)]
-        .iter()
-        .map(|(k, v)| (k.to_string(), *v))
-        .collect();
+    let mut want = vec![("d", 1), ("d/f", 1), ("g", 2), ("l", 1)];
+    if fifo {
+        want.push(("p", 1));
+    }
+    let want: Vec<(String, u64)> = want.iter().map(|(k, v)| (k.to_string(), *v)).collect();
     assert_eq!(g.into_iter().collect::<Vec<_>>(), want);
     assert_eq!(
         open_ro(dir.path(), b).get(b"g").unwrap().unwrap().blake3,
@@ -268,11 +298,12 @@ fn update_sweeps_deleted_entries_and_keeps_unchanged_ones(b: Backend) {
     assert_eq!(outcome, Outcome::Clean);
 }
 
+#[cfg(unix)]
 fn update_rewrites_a_row_whose_xattrs_changed(b: Backend) {
     let dir = tree(&[("f", "x")]);
     let f = dir.path().join("f");
     run_update(dir.path(), b, false, false);
-    if let Err(e) = testutil::set_xattr(&f, "user.fileset-test", b"v") {
+    if let Err(e) = platform::testutil::set_xattr(&f, "user.fileset-test", b"v") {
         eprintln!("skipping: cannot set an xattr here: {e}");
         return;
     }
@@ -351,10 +382,9 @@ fn update_rereads_xattrs_it_could_not_read_in_full(b: Backend) {
 fn update_warns_on_unreadable(b: Backend) {
     let dir = tree(&[("f", "secret")]);
     let f = dir.path().join("f");
-    chmod(&f, 0o000);
-    if permissions_bypassed(&f) {
+    let Some(_unreadable) = unreadable(&f) else {
         return;
-    }
+    };
     let (outcome, err) = run_update(dir.path(), b, false, false);
     let err = without_macos_xattr_warnings(&err);
     assert_eq!(outcome, Outcome::Clean);
@@ -548,7 +578,10 @@ fn check_clean_after_update(b: Backend) {
 
 fn check_reports_add_del_chg(b: Backend) {
     let dir = tree(&[("d/f", "x"), ("m", "m"), ("x", "1")]);
+    // Windows has no mode to change: there m stays unchanged.
+    #[cfg(unix)]
     let m = dir.path().join("m");
+    #[cfg(unix)]
     chmod(&m, 0o644);
     run_update(dir.path(), b, false, false);
     std::fs::write(dir.path().join("n"), "new").unwrap();
@@ -560,32 +593,44 @@ fn check_reports_add_del_chg(b: Backend) {
     std::fs::write(dir.path().join("x"), "12").unwrap();
     // An explicit mtime, so the change shows even where timestamps are coarse.
     set_mtime(&dir.path().join("x"), 1_000_000, 0);
+    #[cfg(unix)]
     chmod(&m, 0o600);
 
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], false);
     let l = lines(&out);
-    assert_eq!(l.len(), 4, "{out}");
+    let mode_lines = if cfg!(unix) { 1 } else { 0 };
+    assert_eq!(l.len(), 3 + mode_lines, "{out}");
     // Walk order is sorted: m, n, x; deletions follow the walk.
-    assert_eq!(l[0], "CHG m mode=0644→0600");
-    assert_eq!(l[1], "ADD n kind=file");
+    if cfg!(unix) {
+        assert_eq!(l[0], "CHG m mode=0644→0600");
+    }
+    let l = &l[mode_lines..];
+    assert_eq!(l[0], "ADD n kind=file");
     let old = fmt_blake3(blake3::hash(b"1").as_bytes());
     let new = fmt_blake3(blake3::hash(b"12").as_bytes());
     assert!(
-        l[2].starts_with(&format!("CHG x blake3={old}→{new} mtime=")),
+        l[1].starts_with(&format!("CHG x blake3={old}→{new} mtime=")),
         "{}",
-        l[2]
+        l[1]
     );
-    assert!(l[2].ends_with(" size=1→2"), "{}", l[2]);
-    assert_eq!(l[3], "DEL d/f");
-    assert_eq!(err, "added=1 deleted=1 changed=2 unchanged=3 warnings=0\n");
+    assert!(l[1].ends_with(" size=1→2"), "{}", l[1]);
+    assert_eq!(l[2], "DEL d/f");
+    if cfg!(unix) {
+        assert_eq!(err, "added=1 deleted=1 changed=2 unchanged=3 warnings=0\n");
+    } else {
+        assert_eq!(err, "added=1 deleted=1 changed=1 unchanged=4 warnings=0\n");
+    }
     assert_eq!(outcome, Outcome::Differences);
 }
 
 fn check_relaxed_ignores_mode_and_mtime(b: Backend) {
     let dir = tree(&[("f", "x")]);
     let f = dir.path().join("f");
+    // Windows has no mode: there the mtime is the one change.
+    #[cfg(unix)]
     chmod(&f, 0o644);
     run_update(dir.path(), b, false, false);
+    #[cfg(unix)]
     chmod(&f, 0o600);
     set_mtime(&f, 1_000_000, 0);
     let (outcome, out, _) = run_check(dir.path(), Tier::Relaxed, &[], &[], false);
@@ -604,6 +649,7 @@ fn check_paranoid_reports_nlink(b: Backend) {
     assert_eq!(outcome, Outcome::Differences);
 }
 
+#[cfg(unix)]
 fn check_ignore_mode_hides_chmod(b: Backend) {
     let dir = tree(&[("f", "x")]);
     let f = dir.path().join("f");
@@ -658,8 +704,33 @@ fn update_stores_a_tree_of_exactly_one_batch(b: Backend) {
     assert_eq!(outcome, Outcome::Clean);
 }
 
+/// A stored path that is not a name here (not WTF-8, on Windows) fails `check`; it is
+/// not reported as a deleted file.
+#[cfg(windows)]
+fn check_fails_on_a_stored_path_not_valid_here(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let path = dir.path().join(store_name(b));
+    let mut st = store::open(&path, b, OpenMode::ReadWrite).unwrap();
+    let f = st.get(b"f").unwrap().unwrap();
+    st.put_batch(&[(b"a\xffb".to_vec(), f)]).unwrap();
+    st.close().unwrap();
+    let opts = check_opts(dir.path(), Tier::Default, &[], &[], false);
+    let err = run_check_opts(&opts).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "manifest path {} is not a valid name on this platform",
+            fileset::escape::escape(b"a\xffb")
+        )
+    );
+}
+
 fn check_symlink_retarget(b: Backend) {
     let dir = tree(&[("f", "x"), ("g", "y")]);
+    if !symlinks_available(dir.path()) {
+        return;
+    }
     symlink(dir.path(), "l", "f");
     run_update(dir.path(), b, false, false);
     std::fs::remove_file(dir.path().join("l")).unwrap();
@@ -705,12 +776,11 @@ fn check_dir_replaced_by_file_deletes_children(b: Backend) {
 fn check_warns_no_stored_checksum(b: Backend) {
     let dir = tree(&[("f", "secret")]);
     let f = dir.path().join("f");
-    chmod(&f, 0o000);
-    if permissions_bypassed(&f) {
+    let Some(held) = unreadable(&f) else {
         return;
-    }
+    };
     run_update(dir.path(), b, false, false);
-    chmod(&f, 0o644);
+    drop(held);
     // The mode necessarily changed; this test is about the missing checksum.
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[Field::Mode], &[], false);
     assert_eq!(out, "");
@@ -727,10 +797,9 @@ fn check_unreadable_at_check_time(b: Backend) {
     let dir = tree(&[("f", "secret")]);
     let f = dir.path().join("f");
     run_update(dir.path(), b, false, false);
-    chmod(&f, 0o000);
-    if permissions_bypassed(&f) {
+    let Some(_unreadable) = unreadable(&f) else {
         return;
-    }
+    };
     // chmod changes the mode too; ignore it so the blake3 field is the whole line.
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[Field::Mode], &[], false);
     let hex = fmt_blake3(blake3::hash(b"secret").as_bytes());
@@ -787,14 +856,25 @@ fn check_unreadable_directory_is_a_difference(b: Backend) {
     let d = dir.path().join("d");
     // Corrupt the content, then make the directory searchable but not listable.
     std::fs::write(d.join("f"), "y").unwrap();
-    chmod(&d, 0o311);
-    if std::fs::read_dir(&d).is_ok() {
-        chmod(&d, 0o755);
-        eprintln!("skipping: running with privileges that bypass directory permissions");
-        return;
+    #[cfg(unix)]
+    {
+        chmod(&d, 0o311);
+        if std::fs::read_dir(&d).is_ok() {
+            chmod(&d, 0o755);
+            eprintln!("skipping: running with privileges that bypass directory permissions");
+            return;
+        }
     }
+    // Held with no sharing, a directory cannot be listed and its entries can be reached.
+    #[cfg(windows)]
+    let Some(held) = unreadable(&d) else {
+        return;
+    };
     let result = run_check_opts(&check_opts(dir.path(), Tier::Relaxed, &[], &[], false));
+    #[cfg(unix)]
     chmod(&d, 0o755);
+    #[cfg(windows)]
+    drop(held);
     let (outcome, out, err) = result.unwrap();
     let err = without_macos_xattr_warnings(&err);
     assert_eq!(out, "CHG d/f kind=file→unverified\n");
@@ -934,12 +1014,11 @@ fn deep_tree_does_not_overflow_the_stack() {
 fn check_no_stored_checksum_warning_needs_blake3_and_a_file(b: Backend) {
     let dir = tree(&[("f", "secret")]);
     let f = dir.path().join("f");
-    chmod(&f, 0o000);
-    if permissions_bypassed(&f) {
+    let Some(held) = unreadable(&f) else {
         return;
-    }
+    };
     run_update(dir.path(), b, false, false);
-    chmod(&f, 0o644);
+    drop(held);
     // Content is not compared: no checksum is missed.
     let (outcome, out, err) = run_check(
         dir.path(),
@@ -963,19 +1042,11 @@ fn check_unopenable_manifest_suggests_manifest_flag(b: Backend) {
     let dir = tree(&[("f", "x")]);
     run_update(dir.path(), b, false, false);
     let m = dir.path().join(store_name(b));
-    let mode = platform::lstat(&m).unwrap().mode;
-    chmod(&m, 0o000);
-    let readable = match b {
-        Backend::Sqlite | Backend::Redb => std::fs::read(&m).is_ok(),
-        Backend::Fjall => std::fs::read_dir(&m).is_ok(),
-    };
-    if readable {
-        chmod(&m, mode);
-        eprintln!("skipping: running with privileges that bypass file permissions");
+    let Some(held) = unreadable(&m) else {
         return;
-    }
+    };
     let result = run_check_opts(&check_opts(dir.path(), Tier::Default, &[], &[], false));
-    chmod(&m, mode);
+    drop(held);
     let e = result.expect_err("an unopenable manifest must fail check");
     let text = format!("{e:#}");
     assert!(text.contains("cannot open manifest at "), "{text}");
@@ -985,6 +1056,9 @@ fn check_unopenable_manifest_suggests_manifest_flag(b: Backend) {
 
 fn check_reports_entries_under_a_directory_turned_symlink_as_deleted(b: Backend) {
     let dir = tree(&[("d/f", "x"), ("e/f", "x")]);
+    if !symlinks_available(dir.path()) {
+        return;
+    }
     run_update(dir.path(), b, false, false);
     // `d` becomes a symlink to a directory that has an `f` too: the walk does not
     // descend symlinks, so d/f is gone from the tree even though d/f resolves.
@@ -1046,26 +1120,21 @@ for_every_backend! {
     builtin_excludes_drop_quietly_from_an_old_manifest => builtin_excludes_drop_quietly_from_an_old_manifest_sqlite, builtin_excludes_drop_quietly_from_an_old_manifest_fjall, builtin_excludes_drop_quietly_from_an_old_manifest_redb;
 }
 
-/// A tree with an unreadable `.Spotlight-V100` at its root, as on a macOS volume. `None`
-/// when running with privileges that bypass directory permissions.
-fn unreadable_spotlight_tree() -> Option<tempfile::TempDir> {
+/// A tree with an unreadable `.Spotlight-V100` at its root, as on a macOS volume, and
+/// what keeps it unreadable until dropped. `None` when running with privileges that
+/// bypass directory permissions.
+fn unreadable_spotlight_tree() -> Option<(tempfile::TempDir, platform::testutil::Unreadable)> {
     let dir = tree(&[("f", "x"), (".Spotlight-V100/store.db", "y")]);
-    let spotlight = dir.path().join(".Spotlight-V100");
-    chmod(&spotlight, 0o000);
-    if std::fs::read_dir(&spotlight).is_ok() {
-        chmod(&spotlight, 0o755);
-        eprintln!("skipping: running with privileges that bypass directory permissions");
-        return None;
-    }
-    Some(dir)
+    let held = unreadable(&dir.path().join(".Spotlight-V100"))?;
+    Some((dir, held))
 }
 
 fn update_skips_unreadable_builtin_exclude(b: Backend) {
-    let Some(dir) = unreadable_spotlight_tree() else {
+    let Some((dir, held)) = unreadable_spotlight_tree() else {
         return;
     };
     let (outcome, err) = run_update(dir.path(), b, false, true);
-    chmod(&dir.path().join(".Spotlight-V100"), 0o755);
+    drop(held);
     assert_eq!(outcome, Outcome::Clean, "{err}");
     assert!(!err.contains("WARN"), "{err}");
     assert!(!err.contains("INFO"), "{err}");
@@ -1089,13 +1158,13 @@ fn update_skips_unreadable_builtin_exclude(b: Backend) {
 }
 
 fn update_without_builtin_excludes_warns(b: Backend) {
-    let Some(dir) = unreadable_spotlight_tree() else {
+    let Some((dir, held)) = unreadable_spotlight_tree() else {
         return;
     };
     let mut opts = update_opts(dir.path(), b, false, true);
     opts.common.builtin_excludes = false;
     let (outcome, err) = run_update_opts(&opts).unwrap();
-    chmod(&dir.path().join(".Spotlight-V100"), 0o755);
+    drop(held);
     let err = without_macos_xattr_warnings(&err);
     assert_eq!(outcome, Outcome::Differences, "{err}");
     assert!(
@@ -1113,19 +1182,15 @@ fn builtin_excludes_drop_quietly_from_an_old_manifest(b: Backend) {
     assert!(keys(&*open_ro(dir.path(), b)).contains(&".Trashes/501/old".to_string()));
 
     // Now unreadable, as on macOS: what is stored below it can no longer be verified.
-    let trashes = dir.path().join(".Trashes");
-    chmod(&trashes, 0o000);
-    if std::fs::read_dir(&trashes).is_ok() {
-        chmod(&trashes, 0o755);
-        eprintln!("skipping: running with privileges that bypass directory permissions");
+    let Some(held) = unreadable(&dir.path().join(".Trashes")) else {
         return;
-    }
+    };
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], true);
     assert_eq!(outcome, Outcome::Clean, "{out}{err}");
     assert_eq!(out, "");
 
     run_update(dir.path(), b, false, true);
-    chmod(&trashes, 0o755);
+    drop(held);
     let keys = keys(&*open_ro(dir.path(), b));
     assert!(!keys.iter().any(|k| k.starts_with(".Trashes")), "{keys:?}");
     let (outcome, out, err) = run_check(dir.path(), Tier::Default, &[], &[], true);
@@ -1194,6 +1259,15 @@ fn update_stops_at_the_first_failed_lookup() {
     assert_eq!(counted.hashed.load(Ordering::Relaxed), 0);
 }
 
+/// `mode` as a report prints it on Unix; on Windows, where there is no mode, `0000`.
+fn no_mode_on_windows(mode: &str) -> &str {
+    if cfg!(unix) {
+        mode
+    } else {
+        "0000"
+    }
+}
+
 fn verbose_check(root: &Path, tier: Tier) -> (Outcome, String, String) {
     let mut opts = check_opts(root, tier, &[], &[], false);
     opts.common.verbose = true;
@@ -1213,13 +1287,16 @@ fn summary_count(err: &str, key: &str) -> usize {
 fn check_verbose_prints_eql_per_entry(b: Backend) {
     let dir = tree(&[("f", "x"), ("d/g", "y")]);
     let f = dir.path().join("f");
+    #[cfg(unix)]
     chmod(&f, 0o644);
-    set_mtime(&f, 1_000_000_000, 5);
+    // A multiple of 100 ns: NTFS keeps no finer.
+    set_mtime(&f, 1_000_000_000, 500);
     run_update(dir.path(), b, false, false);
     let (outcome, out, err) = verbose_check(dir.path(), Tier::Default);
     assert_eq!(outcome, Outcome::Clean, "{out}{err}");
     let want = format!(
-        "EQL f kind=file size=1 mtime=2001-09-09T01:46:40.000000005Z mode=0644 blake3={}\n",
+        "EQL f kind=file size=1 mtime=2001-09-09T01:46:40.000000500Z mode={} blake3={}\n",
+        no_mode_on_windows("0644"),
         blake3::hash(b"x").to_hex()
     );
     assert!(out.contains(&want), "{out}");
@@ -1236,7 +1313,10 @@ fn check_verbose_prints_eql_per_entry(b: Backend) {
 
 fn check_verbose_keeps_the_difference_lines(b: Backend) {
     let dir = tree(&[("d/f", "x"), ("m", "m"), ("x", "1")]);
+    // Windows has no mode to change: there m stays unchanged.
+    #[cfg(unix)]
     let m = dir.path().join("m");
+    #[cfg(unix)]
     chmod(&m, 0o644);
     run_update(dir.path(), b, false, false);
     std::fs::write(dir.path().join("n"), "new").unwrap();
@@ -1246,6 +1326,7 @@ fn check_verbose_keeps_the_difference_lines(b: Backend) {
     set_mtime_ro(&d, d_mtime);
     std::fs::write(dir.path().join("x"), "12").unwrap();
     set_mtime(&dir.path().join("x"), 1_000_000, 0);
+    #[cfg(unix)]
     chmod(&m, 0o600);
 
     let (_, plain, _) = run_check(dir.path(), Tier::Default, &[], &[], false);
@@ -1258,7 +1339,8 @@ fn check_verbose_keeps_the_difference_lines(b: Backend) {
         .cloned()
         .collect();
     assert_eq!(differences, lines(&plain));
-    assert_eq!(differences.len(), 4, "{verbose}");
+    let mode_lines = if cfg!(unix) { 1 } else { 0 };
+    assert_eq!(differences.len(), 3 + mode_lines, "{verbose}");
     assert!(all.iter().any(|x| x.starts_with("EQL ")), "{verbose}");
 }
 
@@ -1353,12 +1435,15 @@ fn hex(content: &[u8]) -> String {
 fn init_verbose_prints_add_per_entry(b: Backend) {
     let dir = tree(&[("f", "x"), ("d/g", "y")]);
     let f = dir.path().join("f");
+    #[cfg(unix)]
     chmod(&f, 0o644);
-    set_mtime(&f, 1_000_000_000, 5);
+    // A multiple of 100 ns: NTFS keeps no finer.
+    set_mtime(&f, 1_000_000_000, 500);
     let (outcome, out, err) = verbose_update(dir.path(), b, false);
     assert_eq!(outcome, Outcome::Clean, "{out}{err}");
     let want = format!(
-        "ADD f kind=file size=1 mtime=2001-09-09T01:46:40.000000005Z mode=0644 blake3={}\n",
+        "ADD f kind=file size=1 mtime=2001-09-09T01:46:40.000000500Z mode={} blake3={}\n",
+        no_mode_on_windows("0644"),
         hex(b"x")
     );
     assert!(out.contains(&want), "{out}");
@@ -1406,13 +1491,11 @@ fn update_verbose_rehash_prints_eql(b: Backend) {
 fn update_verbose_unreadable_file_has_no_checksum(b: Backend) {
     let dir = tree(&[("f", "x")]);
     let f = dir.path().join("f");
-    chmod(&f, 0o000);
-    if std::fs::File::open(&f).is_ok() {
-        eprintln!("skipping: running with privileges that bypass file permissions");
+    let Some(held) = unreadable(&f) else {
         return;
-    }
+    };
     let (_, out, err) = verbose_update(dir.path(), b, false);
-    chmod(&f, 0o644);
+    drop(held);
     assert!(err.contains("WARN cannot hash f"), "{err}");
     let l = lines(&out);
     let line = l.iter().find(|x| x.starts_with("ADD f "));
@@ -1450,13 +1533,17 @@ fn update_verbose_root_and_manifest_are_eql(b: Backend) {
     assert!(l.iter().any(|x| x.starts_with(&manifest)), "{out}");
     assert!(l.iter().any(|x| x.starts_with("ADD n ")), "{out}");
 
-    // What check would report for the root still shows as a change.
-    chmod(dir.path(), 0o750);
-    let (_, out, _) = verbose_update(dir.path(), b, false);
-    assert!(
-        lines(&out).iter().any(|x| x.starts_with("CHG . kind=dir ")),
-        "{out}"
-    );
+    // What check would report for the root still shows as a change. Its mode is the one
+    // such change a test can make, and Windows has none.
+    #[cfg(unix)]
+    {
+        chmod(dir.path(), 0o750);
+        let (_, out, _) = verbose_update(dir.path(), b, false);
+        assert!(
+            lines(&out).iter().any(|x| x.starts_with("CHG . kind=dir ")),
+            "{out}"
+        );
+    }
 }
 
 /// Fails every write of a `DEL` line, as a closed stdout would.
@@ -1503,4 +1590,60 @@ for_every_backend! {
     update_verbose_rehash_prints_eql => update_verbose_rehash_prints_eql_sqlite, update_verbose_rehash_prints_eql_fjall, update_verbose_rehash_prints_eql_redb;
     update_verbose_unreadable_file_has_no_checksum => update_verbose_unreadable_file_has_no_checksum_sqlite, update_verbose_unreadable_file_has_no_checksum_fjall, update_verbose_unreadable_file_has_no_checksum_redb;
     update_verbose_drops_old_builtin_exclude_rows => update_verbose_drops_old_builtin_exclude_rows_sqlite, update_verbose_drops_old_builtin_exclude_rows_fjall, update_verbose_drops_old_builtin_exclude_rows_redb;
+}
+
+fn set_platform(root: &Path, b: Backend, platform: platform::Platform) {
+    let mut s = store::open(&root.join(store_name(b)), b, OpenMode::ReadWrite).unwrap();
+    let mut m = s.meta().unwrap();
+    m.platform = platform;
+    s.set_meta(&m).unwrap();
+    s.close().unwrap();
+}
+
+fn a_manifest_of_the_other_family_is_refused(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let (made, here) = match platform::Platform::CURRENT {
+        platform::Platform::Unix => ("windows", "unix"),
+        platform::Platform::Windows => ("unix", "windows"),
+    };
+    let other = platform::Platform::parse(made).unwrap();
+    set_platform(dir.path(), b, other);
+    let want = format!(
+        "this manifest was made on {made}, and this is {here}; fileset cannot use a manifest \
+         across the two yet"
+    );
+    let e = run_check_opts(&check_opts(dir.path(), Tier::Default, &[], &[], false))
+        .expect_err("check must refuse");
+    assert!(format!("{e:#}").contains(&want), "{e:#}");
+    let e =
+        run_update_opts(&update_opts(dir.path(), b, false, false)).expect_err("update must refuse");
+    assert!(format!("{e:#}").contains(&want), "{e:#}");
+    let opts = fileset::engine::list::ListOpts {
+        root: dir.path().to_path_buf(),
+        manifest: None,
+        pattern: None,
+        verbose: false,
+    };
+    let e = fileset::engine::list::list(&opts, &mut Vec::new()).expect_err("list must refuse");
+    assert!(format!("{e:#}").contains(&want), "{e:#}");
+    // The refusals wrote nothing: not even the generation update claims.
+    let m = open_ro(dir.path(), b).meta().unwrap();
+    assert_eq!((m.platform, m.generation), (other, 1));
+}
+
+fn update_keeps_the_platform(b: Backend) {
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    std::fs::write(dir.path().join("f"), "changed, longer").unwrap();
+    let (outcome, _) = run_update(dir.path(), b, false, false);
+    assert_eq!(outcome, Outcome::Clean);
+    let m = open_ro(dir.path(), b).meta().unwrap();
+    assert_eq!(m.platform, platform::Platform::CURRENT);
+    assert_eq!(m.generation, 2);
+}
+
+for_every_backend! {
+    a_manifest_of_the_other_family_is_refused => a_manifest_of_the_other_family_is_refused_sqlite, a_manifest_of_the_other_family_is_refused_fjall, a_manifest_of_the_other_family_is_refused_redb;
+    update_keeps_the_platform => update_keeps_the_platform_sqlite, update_keeps_the_platform_fjall, update_keeps_the_platform_redb;
 }

@@ -265,6 +265,44 @@ differ, the code is what shipped.
     can fail the check and need a `skip` entry or a fix, and an upstream
     fix needs an entry removed.
 
+27. **`winapi-util` reads a file's identity on Windows** (2026-11-23,
+    `fileset`, version 0.1.11). `fileset` records each file's file index,
+    volume serial number and link count, as it records inode, device and
+    link count on Unix. `winapi-util::file::information` reads all three
+    from an open handle with no `unsafe` of ours. Why this crate: it was
+    already in `Cargo.lock` (through `walkdir` and `same-file`), is a thin safe
+    layer over `windows-sys`, and is maintained by Andrew Gallant
+    (BurntSushi), who also maintains `walkdir` and `ripgrep`. Built only
+    for Windows. Cost if wrong: one call to replace with a `windows-sys`
+    call and a `// SAFETY:` comment.
+
+28. **`windows-sys` for the one Windows call no safe crate makes**
+    (2026-11-23, `fileset`, version 0.61.2, features `Win32_Foundation` and
+    `Win32_Storage_FileSystem`). `fileset` reads the NTFS change time and a
+    reparse point's tag with `GetFileInformationByHandleEx`, in one `unsafe`
+    block in `crates/fileset/src/platform/windows.rs`. The standard library
+    does not expose the change time, and without it `update` would miss a
+    file rewritten with its old mtime put back. Why this crate: it is
+    Microsoft's own generated binding to the Win32 API (the `windows-rs`
+    project), with no code beyond the declarations, and 0.61.2 is the newest
+    version already in `Cargo.lock`, so no new copy comes in. Built only for
+    Windows. Cost if wrong: a binding generated wrong would be wrong for
+    much of the Rust ecosystem too; the block's comment lists what its
+    soundness rests on.
+
+29. **`cpu-time` for a thread's CPU time on Windows** (2026-11-23,
+    `fileset`, version 1.0.0). `fileset` measures the CPU time each hashing
+    thread spends on a file, for the progress line; on Unix it reads
+    `CLOCK_THREAD_CPUTIME_ID`. `cpu_time::ThreadTime` wraps
+    `GetThreadTimes`, so we write no `unsafe` for it. Why this crate: it is
+    small, has no dependencies beyond `libc` and `winapi`, both already in
+    `Cargo.lock`, and does this one thing. It is maintained by Paul
+    Colomiets (tailhook); its last release is from 2019, which for a
+    wrapper over a stable system call is not a worry by itself. Built only
+    for Windows. Cost if wrong: if it is abandoned with a bug, the
+    replacement is one `windows-sys` call (`GetThreadTimes`) in
+    `platform/windows.rs`.
+
 ## Left open
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the
