@@ -3,10 +3,12 @@
 //! writer's form, comments kept), and the interpretation of a command-line
 //! "who" argument.
 
+pub mod clients;
 pub mod config;
 pub mod exports;
 pub mod grants;
 pub mod hosts;
+pub mod servers;
 pub mod show;
 
 use crate::config::file::Config;
@@ -37,6 +39,12 @@ pub enum ManageError {
     HostExists(String),
     #[error("host {alias:?} is named by grants in {}: remove those grants first, or pass --force", lists.join(", "))]
     HostInUse { alias: String, lists: Vec<String> },
+    #[error("server {0:?} already exists")]
+    ServerExists(String),
+    #[error("client {0:?} already exists")]
+    ClientExists(String),
+    #[error("client {name:?} is named by grants in {}: remove those grants first, or pass --force", lists.join(", "))]
+    ClientInUse { name: String, lists: Vec<String> },
     #[error("{0:?} is not a valid export name")]
     BadName(String),
     #[error("{}", crate::config::exports::reserved(.0))]
