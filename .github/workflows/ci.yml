@@ -134,11 +134,12 @@ jobs:
 
   # filegen, fileset and irsync-glob on Windows. Reports on every pull
   # request and does not block: `CI result` does not need it. It joins the
-  # required jobs when irsync itself builds on Windows.
+  # required jobs when irsync itself builds on Windows. A release run
+  # (inputs.plan is set) leaves it out, so it can never hold up a release.
   windows:
     name: ${{ matrix.os }}
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: ${{ !inputs.plan && needs.changes.outputs.code == 'true' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -161,10 +162,13 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.os }}
+      # No fallback: cargo-binstall would be handed the GitHub token, and a
+      # runner without a prebuilt cargo-nextest should fail loudly.
       - name: Install cargo-nextest
         uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-nextest@0.9.151
+          fallback: none
       - name: Format, clippy, tests and the smoke run
         run: tools/ci.sh check
 

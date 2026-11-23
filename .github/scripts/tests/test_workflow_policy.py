@@ -167,10 +167,20 @@ class CiWorkflowTests(unittest.TestCase):
         win = j["windows"]
         self.assertEqual(win["strategy"]["matrix"]["os"], ["windows-latest", "windows-11-arm"])
         self.assertIs(win["strategy"]["fail-fast"], False)
+        self.assertEqual(win["runs-on"], "${{ matrix.os }}")
+        self.assertEqual(win["defaults"]["run"]["shell"], "bash")
+        self.assertEqual(win["env"]["CARGO_TARGET_DIR"], "C:\\t")
         self.assertEqual(win["needs"], "changes")
-        self.assertEqual(win["if"], j["check"]["if"])
+        # Left out of a release run, like release-build, so it never holds
+        # up a release.
+        self.assertEqual(win["if"], j["release-build"]["if"])
+        self.assertEqual(win["if"],
+                         "${{ !inputs.plan && needs.changes.outputs.code == 'true' }}")
         runs = [s.get("run", "").strip() for s in win["steps"]]
         self.assertIn("tools/ci.sh check", runs)
+        nextest = [s for s in win["steps"] if step_uses(s, "taiki-e/install-action")]
+        self.assertEqual(len(nextest), 1)
+        self.assertEqual(nextest[0]["with"]["fallback"], "none")
         self.assertNotIn("windows", j["ci-result"]["needs"])
 
     def test_pull_request_has_no_paths_ignore(self):
@@ -315,6 +325,13 @@ class CiWorkflowTests(unittest.TestCase):
         # Every release target is one of the platforms deny.toml checks.
         released = set(dist_config()["dist"]["targets"])
         self.assertLessEqual(released, set(narrow["graph"]["targets"]))
+
+    def test_nextest_pins_agree(self):
+        # ci.yml pins cargo-nextest in more than one job; tools/dev-setup.sh
+        # reads only the first.
+        versions = re.findall(r"cargo-nextest@([0-9.]+)", read("ci.yml"))
+        self.assertGreaterEqual(len(versions), 2)
+        self.assertEqual(len(set(versions)), 1, versions)
 
     def test_deny_covers_windows(self):
         # filegen and fileset are built for Windows, so their dependencies

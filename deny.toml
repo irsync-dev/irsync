@@ -7,7 +7,9 @@ all-features = true
 # The platforms irsync is built for: the release targets
 # (dist-workspace.toml), FreeBSD, and Linux with glibc, which CI and
 # developers build. Windows is here too, because filegen and fileset are
-# built for it (the `windows` job in ci.yml). A crate built only for a
+# built for it (the `windows` job in ci.yml); the check covers every
+# Windows-only crate of the whole workspace (iroh's included), not only
+# those of filegen and fileset. A crate built only for a
 # platform not listed (illumos, say) is not ours to answer for and is left
 # out of every check here. Add a platform here when irsync starts building
 # for it. The licenses of every platform's crates are still checked, by
