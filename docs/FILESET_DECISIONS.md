@@ -452,6 +452,117 @@ What was checked before building, and what came of it:
 - **`locate`.** A file named by `--manifest` is redb if it starts with
   redb's magic bytes, and SQLite otherwise.
 
+## Follow-up: fileset on Windows (2026-11-23)
+
+Step 1 of the Windows work: `fileset` builds and runs on Windows, on NTFS.
+The design is `docs/superpowers/specs/2026-11-22-windows-tooling-design.md`.
+What the book says is in `book/src/fileset/reference.md` ("Windows").
+
+44. **Names are WTF-8 on Windows, and `/` separates stored paths.** NTFS
+    allows an unpaired surrogate in a name, which UTF-8 cannot hold and Rust's
+    `OsStr::as_encoded_bytes` does not promise to keep (its encoding is
+    unspecified, and the way back is `unsafe`). WTF-8 writes a well-formed name
+    as plain UTF-8, so a name has the same bytes in a Windows manifest as in a
+    Unix one, and writes an unpaired surrogate in the three-byte form UTF-8
+    would use. Bytes that are not WTF-8 are an error, and so is a surrogate
+    pair written as two three-byte forms, so every name has one stored form.
+    The conversion works on 16-bit units, is safe code in `wtf8.rs`, and is
+    compiled and tested on every platform, and run under Miri; only the step
+    between units and an `OsString` is in `platform/windows.rs`. Cost if
+    wrong: the form is in every Windows manifest, so a change means a migration.
+
+45. **The `platform` key, with no schema bump.** A manifest has a `platform`
+    meta key, `unix` or `windows`, in all three stores; `init` writes it and
+    `update` keeps it. `SCHEMA_VERSION` stays 1, and a manifest without the
+    key is a Unix manifest, which is true of every manifest that exists. A
+    bump would make `check` refuse every existing manifest until `update` had
+    run, and that `update` would absorb the drift the check was meant to find.
+    The key is read from a manifest that may come from someone else: it can
+    only cause a refusal, never relax a check, and a value other than `unix`
+    or `windows` is refused (`parse_platform`). Cost if wrong: a `fileset`
+    from before the key, on Unix, does not refuse a Windows manifest and
+    reports false differences in `mode`, `uid` and `gid`. The book says to
+    use a current `fileset` on both sides.
+
+46. **The refusal across platforms is one function.** `usable_here`
+    (`engine/mod.rs`) takes the manifest's platform and the running one, and
+    `check`, `update` and `list` all call it. It refuses a manifest of the
+    other family with exit code 2 and one message naming both: `this manifest
+    was made on unix, and this is windows; fileset cannot use a manifest across
+    the two yet`. Why one function: step 3 (the mapping between the families)
+    replaces the refusal with comparison rules, and the manifest format does
+    not change then, because the origin is already recorded. Cost if wrong:
+    none for the format; step 3 changes one function and its callers' tests.
+
+47. **A reparse point of any kind is refused for an in-tree manifest.** Where
+    Unix refuses a manifest at the root that is a symlink, and a fjall manifest
+    with a symlink inside, Windows refuses any reparse point. A junction
+    redirects a directory as a symlink does, and needs no privilege to create,
+    so refusing only symlinks would leave the hole open on the platform where
+    it is easiest to use. The message is the existing one (`is a symbolic
+    link`), because the way out is the same: name a manifest elsewhere with
+    `--manifest`. Hashing likewise opens a file without following a reparse
+    point and checks that it is not one. Cost if wrong: a manifest that
+    is a legitimate junction or mount point must be named with `--manifest`.
+
+48. **`update` decides by size, `mtime` and file identity, on every
+    platform; the change time is not part of it.** A file rewritten with its
+    old mtime put back is not hashed again on Unix either, which is why the
+    book says to check before updating, and Windows keeps that rule. `ctime`
+    is recorded (the NTFS change time) but no tier compares it. Cost if wrong:
+    none that differs from Unix.
+
+49. **`check` fails on a stored path that is not a valid name here, and does
+    not call it deleted.** `rel_to_path` refuses bytes that are not WTF-8, a
+    component Windows would read as a drive, `.`, `..` or more than one
+    component. Reporting such a path as deleted would hide a manifest
+    that this system cannot name from the check meant to find it. The error
+    exits 2 and names the path. Cost if wrong: a manifest with one bad path
+    fails the whole `check`. A component with a character NTFS does not
+    allow in a name (`< > : " | ? *` or one below U+0020) is refused the
+    same way: `ab:c` would name an alternate data stream of `ab`, not an
+    entry.
+
+50. **`check`'s second pass stats a stored path with the walk's own call.**
+    The pass that looks at stored paths the walk did not report used std's
+    `symlink_metadata`. On Windows that call falls back to the directory
+    listing when opening the file is refused, so a file the walk could not
+    stat (a deny entry for reading, say) looked present, and `check` reported
+    nothing for it. It now calls `platform::lstat`, as the walk does, so the
+    two agree and such a file is `unverified`. On Unix both were the same
+    syscall already. Cost if wrong: none; a stored path that cannot be seen
+    is a difference, as the book says.
+
+51. **The built-in excludes are per platform.** On Windows they are `System
+    Volume Information`, which cannot be read, and `$RECYCLE.BIN`, which
+    holds other users' deleted files, matched in any ASCII case, since NTFS
+    names are case-insensitive. On Unix they stay the five macOS names,
+    compared byte for byte. The platform module holds the list and the
+    matcher, so the walk has no platform branch. As on Unix they apply at the
+    top of a volume, which on Windows is the root of the tree only: the walk
+    enters no mounted volume there. The macOS names are ordinary entries on
+    Windows. Cost if wrong: a tree whose root really holds a folder of one of
+    these names leaves it out unless `--no-builtin-excludes` is given.
+
+52. **Names that differ only in case are documented, not handled.** On
+    NTFS, and on a case-insensitive macOS volume, a manifest that holds `a`
+    and `A` (made where they were two names) cannot be checked reliably: a
+    missing one of the two is not reported, because the other answers to its
+    name, and a rename that changes only the case shows as an added entry.
+    Handling it needs a case-aware comparison, which belongs to the
+    cross-platform step (step 3), where a manifest moves between systems
+    that fold case differently. Cost if wrong: such a check passes, or
+    reports only an addition, where a name is missing.
+
+53. **Reparse points that hold data are `other`.** A cloud placeholder
+    (OneDrive Files On-Demand) or a deduplicated file is a reparse point that
+    is not a symlink, so it is recorded as `other` and not hashed, like a
+    junction. `fileset` follows no reparse point, and opening a placeholder
+    to read it can make the system download its data. A check compares
+    little for such an entry. Telling the tags that hold data apart is left
+    for the NTFS step; none of this has been tested with OneDrive. Cost if
+    wrong: the content of such files is not verified.
+
 ## Parked (real, deferred, not fixed)
 
 15. **An unreadable fjall manifest directory reports "not a manifest"

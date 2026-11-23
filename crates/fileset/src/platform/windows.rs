@@ -187,10 +187,16 @@ pub fn bytes_to_os(bytes: &[u8]) -> io::Result<OsString> {
 /// The path below `root` of the stored, `/`-separated relative path `rel`.
 /// Each component must name exactly one entry: a stored name that Windows
 /// would read as a drive, a root, `.`, `..` or more than one component is an
-/// error.
+/// error, and so is one NTFS cannot hold (see [`ntfs_refuses`]).
 pub fn rel_to_path(root: &Path, rel: &[u8]) -> io::Result<PathBuf> {
     let mut path = root.to_path_buf();
     for part in rel.split(|&b| b == b'/') {
+        if ntfs_refuses(part) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "not a stored path component",
+            ));
+        }
         let name = bytes_to_os(part)?;
         let mut components = Path::new(&name).components();
         match (components.next(), components.next()) {
@@ -206,6 +212,15 @@ pub fn rel_to_path(root: &Path, rel: &[u8]) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Whether the stored name `part` holds a character NTFS refuses in a
+/// name: one of `< > : " | ? *` or one below U+0020. (`:` would name an
+/// alternate data stream.) In WTF-8 every byte below 0x80 is such a
+/// character itself, never part of a longer one.
+fn ntfs_refuses(part: &[u8]) -> bool {
+    part.iter()
+        .any(|&b| b < 0x20 || matches!(b, b'<' | b'>' | b':' | b'"' | b'|' | b'?' | b'*'))
+}
+
 /// The stored bytes of the relative path `rel`: its components, joined with
 /// `/`.
 pub fn path_to_rel(rel: &Path) -> Vec<u8> {
@@ -217,6 +232,20 @@ pub fn path_to_rel(rel: &Path) -> Vec<u8> {
         out.extend(os_to_bytes(c.as_os_str()));
     }
     out
+}
+
+/// Names Windows keeps at the top of an NTFS volume: `System Volume
+/// Information` cannot be read, and `$RECYCLE.BIN` holds every user's
+/// deleted files. The walk neither records nor descends them.
+pub const BUILTIN_EXCLUDES: &[&str] = &["$RECYCLE.BIN", "System Volume Information"];
+
+/// Whether the name `name` is one of the [`BUILTIN_EXCLUDES`], ignoring
+/// ASCII case: NTFS names are case-insensitive, and Windows writes these
+/// in more than one case.
+pub fn is_builtin_exclude(name: &[u8]) -> bool {
+    BUILTIN_EXCLUDES
+        .iter()
+        .any(|n| n.as_bytes().eq_ignore_ascii_case(name))
 }
 
 /// Whether `e` is a read refused because another handle holds a byte-range
@@ -334,6 +363,58 @@ pub mod testutil {
         false
     }
 
+    /// An entry that denies this user reading `path`, removed again when
+    /// this is dropped.
+    pub struct ReadDenied {
+        path: std::path::PathBuf,
+        user: String,
+    }
+
+    impl Drop for ReadDenied {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("icacls")
+                .arg(&self.path)
+                .arg("/remove:d")
+                .arg(&self.user)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    /// Denies the current user (`USERNAME`) read access to `path`, its
+    /// attributes included, with `icacls`, until the result is dropped.
+    /// `R` holds read-attributes already: `(R,RA)` makes the same entry. An
+    /// elevated process may still stat `path` (see the test that uses it).
+    /// `None`, saying so on stderr, when `icacls` cannot do it here; panics
+    /// instead when the environment variable `CI` is set.
+    pub fn deny_read(path: &Path) -> Option<ReadDenied> {
+        let skip = |why: String| {
+            assert!(std::env::var_os("CI").is_none(), "CI is set, but {why}");
+            eprintln!("skipping: {why}");
+            None
+        };
+        let Some(user) = std::env::var_os("USERNAME").and_then(|u| u.into_string().ok()) else {
+            return skip("USERNAME is not set".into());
+        };
+        let out = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/deny")
+            .arg(format!("{user}:(R)"))
+            .output();
+        match out {
+            Ok(o) if o.status.success() => Some(ReadDenied {
+                path: path.to_path_buf(),
+                user,
+            }),
+            Ok(o) => skip(format!(
+                "icacls /deny failed: {}",
+                String::from_utf8_lossy(&o.stdout).trim()
+            )),
+            Err(e) => skip(format!("cannot run icacls: {e}")),
+        }
+    }
+
     /// Creates a junction at `link` that points to the directory `target`.
     #[cfg(windows)]
     pub fn junction(target: &Path, link: &Path) {
@@ -434,6 +515,51 @@ mod tests {
         assert_eq!(path_to_rel(p.strip_prefix(root).unwrap()), b"a/b/c");
         for bad in [&b"a/../b"[..], b"C:x", b"a/./b", b"a\\b", b"a//b", b"a\xFF"] {
             assert!(rel_to_path(root, bad).is_err(), "{bad:?}");
+        }
+        // Names NTFS cannot hold: `ab:c` would name a stream of `ab`.
+        for bad in [
+            &b"ab:c"[..],
+            b"d/ab:c",
+            b"a<b",
+            b"a>b",
+            b"a\"b",
+            b"a|b",
+            b"a?b",
+            b"a*b",
+            b"a\x01b",
+            b"a\x1Fb",
+        ] {
+            let err = rel_to_path(root, bad).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{bad:?}");
+        }
+        assert!(rel_to_path(root, b"a b/c.d").is_ok());
+    }
+
+    #[test]
+    fn builtin_excludes_match_in_any_case() {
+        assert_eq!(
+            BUILTIN_EXCLUDES,
+            &["$RECYCLE.BIN", "System Volume Information"]
+        );
+        for name in [
+            &b"$RECYCLE.BIN"[..],
+            b"$Recycle.Bin",
+            b"$recycle.bin",
+            b"System Volume Information",
+            b"SYSTEM VOLUME INFORMATION",
+            b"system volume information",
+        ] {
+            assert!(is_builtin_exclude(name), "{name:?}");
+        }
+        for name in [
+            &b".Trashes"[..],
+            b".Spotlight-V100",
+            b"$RECYCLE.BIN.old",
+            b"$RECYCLE",
+            b"System Volume",
+            b"",
+        ] {
+            assert!(!is_builtin_exclude(name), "{name:?}");
         }
     }
 

@@ -28,6 +28,9 @@ pub const MIN_MTIME_SEC: i64 = i64::MIN;
 pub const MAX_LINKS: u64 = u64::MAX;
 /// The separator of the components of a symlink target.
 pub const TARGET_SEP: u8 = b'/';
+/// The characters that separate the components of a path: `/` alone; `\`
+/// is an ordinary character in a name.
+pub const PATH_SEPARATORS: &[char] = &['/'];
 /// rename(2) replaces an empty directory too.
 pub const RENAME_OVER_DIRS: bool = true;
 /// rename(2) of one name of a file over another succeeds (doing nothing).
@@ -123,6 +126,13 @@ pub fn rel_to_path(root: &Path, rel: &[u8]) -> io::Result<PathBuf> {
 /// The bytes of any path, as the log writes them.
 pub fn path_to_bytes(path: &Path) -> Vec<u8> {
     path.as_os_str().as_bytes().to_vec()
+}
+
+/// The stored path of `path` below `root`, as the log writes it: its bytes
+/// after the root, which use `/` already. A path not below `root` is
+/// written as it is.
+pub fn rel_bytes(root: &Path, path: &Path) -> Vec<u8> {
+    path_to_bytes(path.strip_prefix(root).unwrap_or(path))
 }
 
 /// The bytes of an absolute symlink target naming `path`: the path's own

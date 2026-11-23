@@ -1,4 +1,4 @@
-"""Tests for tools/ci.sh: the freebsd-build, fuzz, workflows and miri jobs."""
+"""Tests for tools/ci.sh: the freebsd-build, fuzz, workflows, miri and check jobs."""
 import os
 import platform
 import re
@@ -10,8 +10,10 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CI = os.path.join(ROOT, "tools", "ci.sh")
 
-# Real programs tools/ci.sh runs before a job starts; cargo and rustup are fakes.
-UTILS = ["bash", "env", "dirname", "uname", "awk", "sed", "mkdir"]
+# Real programs tools/ci.sh runs, before a job and in check; cargo and rustup are fakes.
+UTILS = ["bash", "env", "dirname", "uname", "awk", "sed", "mkdir", "mktemp", "rm", "tr"]
+# What uname prints in Git Bash, which ci.sh takes for Windows.
+WINDOWS = "echo MINGW64_NT-10.0-26100"
 # The pinned nightly, whatever its date, on a Linux machine.
 RUSTUP = """case "$*" in
   *-vV) printf 'rustc 1.0.0-nightly\\nhost: x86_64-unknown-linux-gnu\\n' ;;
@@ -31,14 +33,19 @@ class CiScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("ci.sh: freebsd-build runs on FreeBSD x86_64 only", r.stderr)
 
-    def run_with(self, args, cargo, env=None, rustup=RUSTUP):
+    def run_with(self, args, cargo, env=None, rustup=RUSTUP, uname=None, fakes=None):
         """Runs tools/ci.sh on a PATH of the real UTILS, a fake rustup and
-        the given fake cargo."""
+        the given fake cargo. uname puts a fake uname, a shell command that
+        prints, in place of the real one; fakes maps the names of more fake
+        programs to their shell bodies."""
         tmp = tempfile.mkdtemp(prefix="ci-script-")
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         for u in UTILS:
+            if u == "uname" and uname is not None:
+                continue
             os.symlink(shutil.which(u), os.path.join(tmp, u))
-        for name, body in (("cargo", cargo), ("rustup", rustup)):
+        more = [("uname", uname)] if uname is not None else []
+        for name, body in (("cargo", cargo), ("rustup", rustup), *more, *(fakes or {}).items()):
             with open(os.path.join(tmp, name), "w") as f:
                 f.write(f"#!/bin/sh\n{body}\n")
             os.chmod(os.path.join(tmp, name), 0o755)
@@ -124,12 +131,124 @@ class CiScriptTests(unittest.TestCase):
         args = [c[c.index("-p") + 1:] for c in calls]
         self.assertIn(["irsync", "--test", "sub_chunk"], args)
         self.assertIn(["fileset", "--lib", "--", "compare::", "escape::", "glob::"], args)
+        self.assertIn(["fileset", "--lib", "wtf8::"], args)
 
     def test_miri_only_when_named(self):
         # Slow: never part of a run of every job.
         with open(CI) as f:
             all_jobs = re.search(r'^all_jobs="(.*)"$', f.read(), re.M).group(1)
         self.assertNotIn("miri", all_jobs.split())
+
+    def run_check(self, args, uname, fakes=None, fail=None):
+        """Runs ci.sh with a fake cargo that succeeds and logs each call as
+        one line. Returns the result and the logged calls, cargo's and the
+        other fakes' (`python3 ...`), in order. With fail, a
+        substring of a cargo call's arguments: that call exits 1."""
+        log = os.path.join(tempfile.mkdtemp(prefix="ci-check-log-"), "calls")
+        self.addCleanup(shutil.rmtree, os.path.dirname(log), ignore_errors=True)
+        logging = {n: f'echo "{n} $*" >> {log}; exit 0' for n in (fakes or ())}
+        stop = f'case "$*" in *"{fail}"*) exit 1 ;; esac; ' if fail else ""
+        r = self.run_with(args, f'echo "cargo $*" >> {log}; {stop}exit 0', uname=uname, fakes=logging)
+        calls = []
+        if os.path.exists(log):
+            with open(log) as f:
+                calls = f.read().splitlines()
+        return r, calls
+
+    def test_windows_check_runs_the_three_crates(self):
+        # No python3, pandoc, mandoc or rsync on the path: check needs none.
+        r, calls = self.run_check(["check"], WINDOWS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(calls[0], "cargo nextest --version")
+        pkgs = "-p filegen -p fileset -p irsync-glob"
+        self.assertEqual(calls[1:6], [
+            "cargo fmt --all --check",
+            # tools/sync-fuzz-lock.sh --check: its one cargo call; the fake
+            # exits 0 with no output, which the script takes as a good lock.
+            "cargo metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml",
+            f"cargo clippy --locked {pkgs} --all-targets --all-features -- -D warnings",
+            f"cargo nextest run --locked {pkgs} --all-features --profile ci --run-ignored all",
+            f"cargo test --locked {pkgs} --all-features --doc",
+        ])
+        self.assertFalse([c for c in calls if "--workspace" in c], calls)
+        # One clippy only: these crates have no OpenTelemetry feature.
+        self.assertEqual(len([c for c in calls if c.startswith("cargo clippy")]), 1)
+
+    def test_windows_check_ends_with_the_smoke_run(self):
+        r, calls = self.run_check(["check"], WINDOWS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        smoke = calls[6:]
+        self.assertEqual(len(smoke), 6, smoke)
+        for c in smoke:
+            self.assertRegex(c, r"^cargo run --locked -q -p (filegen|fileset) -- ")
+        # filegen starts fresh from a seed, then resumes from the state file
+        # it left in the output directory.
+        self.assertRegex(smoke[0], r"^cargo run --locked -q -p filegen -- run --seed 1 --steps \d+ ")
+        self.assertRegex(smoke[3], r"^cargo run --locked -q -p filegen -- run --resume \S+ --steps \d+ ")
+        # fileset: init, check, then update and check again.
+        verbs = [c.split(" -- ")[1].split()[0] for c in (smoke[1], smoke[2], smoke[4], smoke[5])]
+        self.assertEqual(verbs, ["init", "check", "update", "check"])
+        # The output directory is beside the tree, not inside it.
+        first = smoke[0].split()
+        out = first[first.index("--out-dir") + 1]
+        tree = first[-1]
+        self.assertEqual(os.path.dirname(out), os.path.dirname(tree))
+        self.assertNotEqual(out, tree)
+        self.assertIn(f"--resume {out}/filegen-1.state.yaml ", smoke[3])
+        for c in (smoke[1], smoke[2], smoke[4], smoke[5], smoke[3]):
+            self.assertTrue(c.endswith(" " + tree), c)
+        # The temporary directory is gone.
+        self.assertFalse(os.path.exists(os.path.dirname(tree)))
+
+    def test_bare_run_on_windows_is_check_only(self):
+        r, calls = self.run_check([], WINDOWS)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ci.sh: on Windows only check runs, for filegen, fileset and irsync-glob",
+                      r.stdout)
+        self.assertIn("==== check", r.stdout)
+        self.assertEqual([l for l in r.stdout.splitlines() if l.startswith("==== ")], ["==== check"])
+        self.assertFalse([c for c in calls if c.startswith("cargo deny")], calls)
+
+    def test_check_elsewhere_still_takes_the_workspace(self):
+        # A Linux uname, so the run is the same on every host. The tools the
+        # check needs there are fakes that succeed and log their calls. The
+        # list is what tools/ci.sh on main ran for Linux, word for word.
+        fakes = {n: "" for n in ("python3", "rsync", "pandoc", "mandoc", "touch", "rustfmt")}
+        r, calls = self.run_check(["check"], "echo Linux", fakes)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        targets = sorted(f for f in os.listdir(os.path.join(ROOT, "fuzz", "fuzz_targets")) if f.endswith(".rs"))
+        targets = " ".join(f"fuzz/fuzz_targets/{t}" for t in targets)
+        self.assertEqual(calls, [
+            # the checks for tools before the job
+            "cargo nextest --version",
+            "rsync --version",
+            "python3 --version",
+            "pandoc --version",
+            "mandoc -T ascii /dev/null",
+            # job_check
+            "touch crates/irsync/build.rs",
+            "cargo fmt --all --check",
+            f"rustfmt --edition 2021 --check {targets}",
+            # tools/sync-fuzz-lock.sh --check
+            "cargo metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml",
+            "python3 -m unittest discover -s tools/tests",
+            "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings",
+            "cargo clippy --locked --workspace --all-targets --no-default-features -- -D warnings",
+            "cargo nextest run --locked --workspace --all-features --profile ci --run-ignored all",
+            "cargo test --locked --workspace --all-features --doc",
+        ])
+
+    def test_a_failing_smoke_step_fails_the_check(self):
+        r, calls = self.run_check(["check"], WINDOWS, fail="-p fileset -- update ")
+        self.assertNotEqual(r.returncode, 0)
+        # The calls stop at the failing update: no check after it.
+        self.assertIn("-p fileset -- update ", calls[-1])
+        self.assertEqual(len([c for c in calls if "-p fileset -- check " in c]), 1, calls)
+        self.assertNotIn("passed", r.stdout)
+        # The temporary directory is gone all the same.
+        tree = calls[-1].split()[-1]
+        self.assertTrue(tree.endswith("/tree"), tree)
+        self.assertFalse(os.path.exists(os.path.dirname(tree)))
 
     def test_job_builds_then_packs(self):
         with open(CI) as f:

@@ -424,6 +424,107 @@ code disagree, the code is what shipped and the entry says so.
   `granit-parser` 2.1.0, because 2.2.0 of each was under a week old.
   Dependabot moves them on.
 
+## Follow-up: filegen on Windows (2026-11-23)
+
+Step 1 of the Windows work: `filegen` builds and runs on Windows, on NTFS.
+The design is `docs/superpowers/specs/2026-11-22-windows-tooling-design.md`.
+What the book says is in `book/src/contributing/filegen.md` ("On Windows") and
+`filegen-internals.md` ("Platforms").
+
+51. **A platform module instead of `cfg` at call sites.** Every call into the
+    operating system is in `crates/filegen/src/platform/`: `unix.rs`,
+    `windows.rs` and the interface in `mod.rs`, plain functions and constants
+    (`MAX_LINKS`, `EDGE_NAMES`, `name_ok` and others). A build has one
+    implementation, so nothing dispatches at run time. A test
+    (`tests/platform_rule.rs`) fails when another file names `nix`, `libc`,
+    `xattr`, `std::os::*` or a Windows crate. Why: with `cfg` at each call
+    site the platform logic would sit in every operation, and each later
+    addition would repeat that. On Unix each constant leaves filegen as it
+    was, so seeds give the runs they always gave. Cost if wrong: a refactor of
+    working Unix code, guarded by the tests that existed.
+
+52. **Capabilities, and weight 0 for what cannot run.** `Caps` has `symlinks`
+    (this user may create one, which needs Developer Mode, an elevated process
+    or the symlink privilege) and `sparse`. They are found once, at the start,
+    by trying: in the tree for a real run, in the output directory for a dry
+    run, which must not write to the tree. On different volumes a dry run may
+    not predict the real run. A kind that cannot run (`caps::disabled`) gets
+    weight 0 in every row and one notice, `filegen: not available here, weight
+    set to 0: ...`, so one YAML config runs on both systems. If zeroing leaves
+    a row with nothing, the error says so. Reproducibility is per platform
+    family and capability set: the same seed gives the same run on any
+    Windows machine with the same capabilities, and a different run from Unix.
+    Cost if wrong: a config written for Windows that relies on a disabled kind
+    runs without it.
+
+53. **State `format_version` 4.** It adds `platform` and `caps`. A resume
+    refuses a state from the other platform or with other capabilities, since
+    the run would no longer be the one the seed gave. A version 3 state is read
+    as a Unix state with every capability, so runs in progress resume
+    unchanged; any other version is refused (`expected 3 or 4`). The `# run`
+    log line gains `platform=` and `caps=` and no existing field changes, so
+    readers that skip fields they do not know keep working. Cost if wrong: an
+    older `filegen` cannot read a version 4 state.
+
+54. **The reparse tag is read through a third `unsafe` place.** The design
+    counted two places for `unsafe` (the change time in `fileset`, hole
+    punching in `filegen`). `filegen` needs a third: to tell a symlink from a
+    junction or a mount point, which the standard library does not
+    distinguish, it reads the reparse tag with `GetFileInformationByHandleEx`.
+    It is one block in `platform/windows.rs` beside the `DeviceIoControl` one
+    that marks a file sparse and zeroes a range. Each has its `// SAFETY:`
+    comment. `punch_hole` is crate-private, because the second block is sound
+    only for handles the crate opens itself (no overlapped I/O). Miri cannot
+    check either block. Cost if wrong: two calls to replace.
+
+55. **`rename_over` takes regular files only, on every platform.** Windows
+    cannot rename over a directory and refuses to rename one name of a file
+    over another, so the operation is never asked to. It already picked two
+    regular files that are not names of one inode; the platform constants
+    `RENAME_OVER_DIRS` and `RENAME_OVER_SAME_FILE` document why that is
+    enough. Why not a Windows special case: one rule keeps the draws
+    the same and the log comparable. Cost if wrong: `rename_over` never
+    exercises replacing a directory, on any system.
+
+56. **Edge names at a configurable rate, on Windows only.** `names.edge_rate`
+    (default 0.02) is the share of names that are an unpaired surrogate or a
+    reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`, `LPT1`, with an
+    extension half the time). They are legal on NTFS and irsync will have to
+    carry them. Where `EDGE_NAMES` is off (Unix) the key is read but nothing
+    is drawn from it, so a seed's names there do not change. A trailing dot or
+    space needs no key: the `awkward` class already makes them on both
+    systems. Cost if wrong: one more key in the config and state.
+
+57. **An absolute symlink target is written in the form `read_link`
+    returns.** `std::fs::read_link` drops the `\\?\` prefix when the path is
+    short and means the same without it, and keeps it otherwise. The target
+    is written, logged and compared in that form, so the bytes agree at each
+    step (`absolute_targets_read_back_as_written` holds std to it). A long
+    target has to keep the prefix anyway: Windows refuses a symlink to a long
+    path without it. For a device name this form depends on the Windows
+    build. Cost if wrong: a Windows build that changes `read_link` shows up as
+    a failing test, not as bad data.
+
+58. **Ctrl-C on Windows is the `ctrlc` crate, with its limits.** The
+    handler receives every console event and does not say which, so the log
+    names them all `Ctrl-C` and the status is 130. For Ctrl-C and Ctrl-Break
+    the step in flight finishes and the state is saved; a second event exits
+    at once. For window close, logoff and shutdown Windows ends the process
+    shortly after the handler returns, so a saved state is not guaranteed;
+    the checkpoints are what a resume then starts from. There is no polite
+    stop from another process yet; the stress harness's spec decides how
+    (Ctrl-Break to a process group, a stop file, or closed standard input).
+    Cost if wrong: a stress run on Windows cannot stop `filegen` cleanly.
+
+59. **A failed step's log line uses `/` in its paths.** The paths of a
+    failed step come from the OS path of the operation, stripped of the
+    root. On Windows that kept `\`, so a failure logged `path="a\\b\\c"`
+    where every other step logs `path="a/b/c"`. `platform::rel_bytes` now
+    joins the names below the root with `/` on Windows; on Unix it is the
+    expression used before, so the bytes do not change there. Stored paths
+    use `/` on both platforms. Cost if wrong: none; a log reader sees one
+    path form.
+
 ## Process notes
 
 - Every commit on the branch ends with the trailer

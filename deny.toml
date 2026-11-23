@@ -6,10 +6,14 @@
 all-features = true
 # The platforms irsync is built for: the release targets
 # (dist-workspace.toml), FreeBSD, and Linux with glibc, which CI and
-# developers build. A crate built only for another platform (Windows, say)
-# is not ours to answer for and is left out of every check here. Add a
-# platform here when irsync starts building for it. The licenses of every
-# platform's crates are still checked, by deny-license-check.toml.
+# developers build. Windows is here too, because filegen and fileset are
+# built for it (the `windows` job in ci.yml); the check covers every
+# Windows-only crate of the whole workspace (iroh's included), not only
+# those of filegen and fileset. A crate built only for a
+# platform not listed (illumos, say) is not ours to answer for and is left
+# out of every check here. Add a platform here when irsync starts building
+# for it. The licenses of every platform's crates are still checked, by
+# deny-license-check.toml.
 targets = [
     "aarch64-apple-darwin",
     "aarch64-unknown-linux-musl",
@@ -17,6 +21,8 @@ targets = [
     "aarch64-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
     "x86_64-unknown-freebsd",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
 ]
 
 [advisories]
@@ -26,7 +32,9 @@ version = 2
 #   { id = "RUSTSEC-2026-0000", reason = "no fixed version yet; irsync never calls foo()" },
 yanked = "deny"
 unmaintained = "all"
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; it is only in the Windows build, through netwatch (iroh); tracked in #174" },
+]
 
 [licenses]
 version = 2
@@ -74,6 +82,10 @@ multiple-versions = "deny"
 # Single entries, not `skip-tree`: skip-tree would also hide any new
 # duplicate further down the same tree, which is what this check is for.
 skip = [
+    # ctrlc is pinned to 3.5.2 (Cargo.toml), which takes nix 0.31; everything
+    # else is on nix 0.32. The Windows targets make cargo-deny see both.
+    # Remove this entry when ctrlc moves to 3.5.3 (not before 2026-11-25).
+    { crate = "nix@0.31", reason = "ctrlc 3.5.2 (pinned in Cargo.toml); ctrlc 3.5.3 uses nix 0.32, remove this entry when ctrlc moves to it" },
     # iroh's QUIC stack (noq-proto) is still on the older RustCrypto AES-GCM
     # stack; ssh-key is on the newer one.
     { crate = "aead@0.5", reason = "noq-proto (iroh) uses aes-gcm 0.10" },

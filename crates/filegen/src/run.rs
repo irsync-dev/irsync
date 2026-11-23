@@ -245,10 +245,13 @@ impl Runner {
             .or_else(|| cfg.prefix.clone())
             .or_else(|| resume_file.and_then(prefix_of))
             .unwrap_or_else(|| format!("filegen-{seed}"));
-        if prefix.is_empty() || prefix == "." || prefix == ".." || prefix.contains('/') {
+        let seps = platform::PATH_SEPARATORS;
+        if prefix.is_empty() || prefix == "." || prefix == ".." || prefix.contains(seps) {
+            let seps: Vec<String> = seps.iter().map(|c| format!("`{c}`")).collect();
             return Err(RunError::Usage(format!(
                 "invalid prefix {prefix:?}: it names files in the output directory, \
-                 so it must not be empty, `.`, `..` or contain `/`"
+                 so it must not be empty, `.`, `..` or contain {}",
+                seps.join(" or ")
             )));
         }
         let dry = if opts.dry_run { ".dry" } else { "" };
@@ -1333,6 +1336,33 @@ mod tests {
             assert!(msg.contains("prefix"), "{bad:?}: {msg}");
         }
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn run_prefix_with_a_backslash() {
+        let (t, root) = base();
+        let out = t.path().join("out");
+        let mut o = opts(&root, &out, 1, Start::Seed(24));
+        o.flags.prefix = Some("a/b".into());
+        let msg = usage(run(o));
+        let mut o = opts(&root, &out, 1, Start::Seed(24));
+        o.flags.prefix = Some("a\\b".into());
+        if cfg!(windows) {
+            // `\` names a directory there too.
+            let want = "invalid prefix \"a/b\": it names files in the output directory, \
+                        so it must not be empty, `.`, `..` or contain `/` or `\\`";
+            assert_eq!(msg, want);
+            let msg = usage(run(o));
+            assert!(msg.starts_with("invalid prefix \"a\\\\b\": "), "{msg}");
+            assert!(msg.ends_with(" or contain `/` or `\\`"), "{msg}");
+        } else {
+            // An ordinary character in a name.
+            let want = "invalid prefix \"a/b\": it names files in the output directory, \
+                        so it must not be empty, `.`, `..` or contain `/`";
+            assert_eq!(msg, want);
+            run_ok(o);
+            assert!(out.join("a\\b.log").is_file());
+        }
     }
 
     #[test]

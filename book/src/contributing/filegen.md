@@ -2,7 +2,8 @@
 
 Part of [Testing](testing.md): the tool that changes the tree in every stress loop.
 
-`filegen` simulates the use of a POSIX filesystem. It walks a Markov chain of
+`filegen` simulates the use of a POSIX filesystem, and, with fewer operations,
+of an NTFS one (see [On Windows](#on-windows)). It walks a Markov chain of
 filesystem operations (create, append, truncate, rename, symlink, hard link,
 chmod, set mtime, punch a hole, remove a subtree, and more) and applies each
 one somewhere in a directory tree. Every decision, the bytes written
@@ -78,7 +79,8 @@ filegen run [OPTIONS] --steps <N> (--seed <S> | --resume <STATEFILE>) <PATH>
 - `--config <FILE>`: YAML configuration file; every key is optional
 - `--out-dir <DIR>`: where the log and state file go (see below)
 - `--prefix <PREFIX>`: base name of the output files instead of
-  `filegen-<seed>`; must not be empty, `.`, `..`, or contain `/`
+  `filegen-<seed>`; must not be empty, `.`, `..`, or contain `/` (on
+  Windows, nor `\`)
 - `--set <KEY=VALUE>`: set any configuration key by its dotted path, value
   parsed as YAML (repeatable), e.g. `--set content.pattern_fraction=0.2`
 - `--pace <PACE>`: when each step starts. `fast` (the default) never waits;
@@ -132,10 +134,13 @@ filegen refuses to start (exit 2) when:
   separate one, `--force` to truncate both. With `--force` the files are
   truncated only after the initial walk of the tree succeeded;
 - a dry-run state file is resumed without `--dry-run`, or a real one with it;
-- the state file's `format_version` is not 3 (a version 1 file comes from
-  an older content generator, whose bytes the same seed no longer
+- the state file's `format_version` is not 3 or 4 (a version 1 file comes
+  from an older content generator, whose bytes the same seed no longer
   reproduces; a version 2 file from rand 0.8, whose sampling made
   different choices from the same seed);
+- a `--resume` state file that was written on the other platform family, or
+  with other capabilities than this machine has (see
+  [On Windows](#on-windows));
 - the canonical root length plus `max_path_len` reaches `PATH_MAX`.
 
 ### Log
@@ -145,6 +150,11 @@ One line per step, `key=value` pairs in a fixed order:
 ```
 step=<n> ts=<RFC 3339, µs, UTC> op=<kind> path="<rel>" [to="<rel>"] [dry=1] [bytes=<n>] [<detail>=<v> ...] [post=<stat>] [post_to=<stat>] [pressure=<0.xx>] dur_us=<n> [gen_us=<n>]
 ```
+
+The `# run` header line ends in `platform=<unix|windows>` and
+`caps=<list>`: the system that made the run and the capabilities found there,
+`symlinks` and `sparse` joined with `,`, or `-` for none. On Unix it ends in
+`platform=unix caps=symlinks,sparse`.
 
 `step` counts across resumes. Paths are relative to the root, quoted and
 escaped (`\"`, `\\`, and `\xhh` for control bytes and invalid UTF-8) so any
@@ -156,8 +166,8 @@ zeros). `pressure` appears while the total-size reweighting is in effect.
 `post` is the stat of `path` right after the step, as
 `kind:size:mode_octal:mtime_ns`: `f` file, `d` directory, `l` symlink,
 `p` fifo, `c` or `b` device (and `s` for a socket); the size in bytes, the
-mode bits in octal, the modification time in nanoseconds since the
-epoch. It is `-` when the path is absent after the step (a delete or a
+mode bits in octal (0 on Windows), the modification time in nanoseconds since
+the epoch. It is `-` when the path is absent after the step (a delete or a
 rename away). `post_to` is the same for `to`, and appears only for steps
 that have a `to`. Neither appears in a dry run, which touches nothing.
 The stress harness reads them to rebuild what the source held.
@@ -175,7 +185,7 @@ From a real run (paths shortened; `post` is `f:44002:664:...`, a 44002-byte
 file with mode 0664 whose mtime is 2026-10-20T14:24:51.571Z):
 
 ```
-# run seed=42 start_step=0 steps=1000 log="/tmp/fg/filegen-42.log" state="/tmp/fg/filegen-42.state.yaml" config="-" dry_run=0 started=2026-10-20T14:24:51.569059Z
+# run seed=42 start_step=0 steps=1000 log="/tmp/fg/filegen-42.log" state="/tmp/fg/filegen-42.state.yaml" config="-" dry_run=0 started=2026-10-20T14:24:51.569059Z platform=unix caps=symlinks,sparse
 step=6 ts=2026-10-20T14:24:51.571654Z op=append path="2yg5uow38.jpg/f4rx i3iipl66u7pmc1e.bin" bytes=30165 size=44002 content=random post=f:44002:664:1792506291571000000 dur_us=1208 gen_us=12
 ...
 # end steps_done=1000 outcome=ok elapsed_ms=7638
@@ -186,7 +196,8 @@ step=6 ts=2026-10-20T14:24:51.571654Z op=append path="2yg5uow38.jpg/f4rx i3iipl6
 The `# end` line is followed by one `# stat` line per kind seen in this
 invocation; the percentiles are over `dur_us`, and kinds that write drawn
 content add `gen_total_us`, the sum of their `gen_us`. `outcome` is `ok`, `"failed: <message>"` or
-`"interrupted: SIGINT"` / `"interrupted: SIGTERM"`. A dry run marks each
+`"interrupted: SIGINT"` / `"interrupted: SIGTERM"` (on Windows always
+`"interrupted: Ctrl-C"`). A dry run marks each
 step line `dry=1` and logs `dur_us=0` (and `gen_us=0` where the kind
 reports it).
 
@@ -201,7 +212,8 @@ says how many steps were skipped.
 
 A YAML document, written to a temporary file and renamed into place:
 
-- `format_version`: 3
+- `format_version`: 4. A version 3 state is still read, as a Unix state with
+  every capability.
 - `seed`: the seed the history started from
 - `steps_done`: steps completed over all runs of this history
 - `rng`: the ChaCha8 chain generator state (`seed`, `stream`, `word_pos`);
@@ -210,6 +222,9 @@ A YAML document, written to a temporary file and renamed into place:
 - `chain_state`: `last_kind` (the previous operation) and `anchor` (the
   escaped relative path of the directory it touched; `''` is the root)
 - `dry_run`: whether a dry run wrote it
+- `platform` and `caps`: the system the history started on, `unix` or
+  `windows`, and the capabilities found there (`symlinks` and `sparse`, each
+  true or false). A resume must find the same.
 - `config`: the effective configuration, fully expanded, with `out_dir` the
   absolute output directory used; usable as `--config`
 - `tree`: `entries` and `total_bytes` as filegen last knew them (advisory)
@@ -247,7 +262,8 @@ hold a few step numbers twice, and the tree is in the "altered" case above.
 - `2`: usage, configuration or state-file error, or a refusal above; a
   `--resume` state file that is missing, unreadable or invalid is reported
   as `state file <path>: <error>`
-- `130` / `143`: interrupted by SIGINT / SIGTERM (128 + signal number)
+- `130` / `143`: interrupted by SIGINT / SIGTERM (128 + signal number). On
+  Windows the interrupt is always 130.
 
 ### Safety
 
@@ -273,6 +289,124 @@ directories), so, with a umask that keeps the owner's bits (any usual one),
 nothing filegen creates ever becomes off limits. Absolute
 symlink targets may point outside the root, but filegen only creates the
 link.
+
+### On Windows
+
+`filegen` builds and runs on Windows, on x86_64 and ARM64, with the tree on
+NTFS. `cargo build -p filegen` makes `target\debug\filegen.exe`. `irsync` does
+not run on Windows yet, so neither `irsync-stress` nor `irsync-netstress` does.
+
+The default output directory is `/tmp` on every system, which on Windows is
+`\tmp` on the current drive. Give `--out-dir`, or set `FILEGENTMP`.
+
+**Operations.**
+
+| Group | Operations | On Windows |
+| --- | --- | --- |
+| Content | `create_file`, `append`, `truncate`, `overwrite_range`, `rewrite` | yes |
+| Sparse | `punch_hole` | yes, if the volume takes sparse files |
+| Tree | `mkdir`, `rmdir`, `remove_tree`, `delete_file`, `rename` | yes |
+| Replace | `rename_over` | regular files only |
+| Links | `hardlink` | yes, up to 1023 links to a file |
+| Symlinks | `symlink`, `repoint_symlink`, `delete_symlink` | if this user may create symlinks |
+| Time | `set_mtime` | yes, in steps of 100 ns |
+| POSIX only | `mkfifo`, `chmod`, `set_xattr`, `chown`, `mknod` | never |
+
+`rename_over` takes regular files only, on every system. On Windows a rename
+cannot replace a directory, and `filegen` never asks it to.
+
+**Capabilities.** Two things depend on the machine and the volume, not only on
+the system. At the start of a run `filegen` finds them by trying, with a
+file named `.filegen-probe-<pid>` that it removes again:
+
+- `symlinks`: this user may create a symlink. That needs Developer Mode, an
+  elevated process or the symlink privilege.
+- `sparse`: the volume takes sparse files.
+
+If the probe file is there already, left by a run that was killed, the run
+stops with an error that names it. It can be deleted.
+
+A real run tries in the tree. A dry run touches nothing in the tree, so it
+tries in the output directory. If the two are on different volumes, a dry
+run may not predict the real run. On Unix every capability is taken to be
+there and nothing is tried.
+
+**What is turned off.** An operation that cannot run here gets weight 0 and
+the run says so once, on stderr unless `-q`:
+
+```
+filegen: not available here, weight set to 0: mkfifo, chmod, set_xattr, chown, mknod
+```
+
+The always-disabled kinds on Windows are `mkfifo`, `chmod`, `set_xattr`,
+`chown` and `mknod`. Without the symlink capability `symlink`,
+`repoint_symlink` and `delete_symlink` join them, and without sparse support
+`punch_hole`. So one YAML config runs on both systems. If zeroing these kinds
+leaves a row of the weight table with nothing to draw, the configuration is
+refused and the message says so.
+
+**Reproducibility** holds per platform family and capability set. The same
+seed gives the same run on any Windows machine that has the same
+capabilities, and a different run from Unix. The log's `# run` line and the
+state file record both, and a `--resume` refuses a state written on the other
+family or with other capabilities, because the run would no longer be the one
+the seed gave. A state file of version 3 is read as a Unix state with every
+capability, so a run in progress resumes as before.
+
+**Names.** `filegen` never makes a name NTFS forbids (`<`, `>`, `:`, `"`, `|`,
+`?`, `*`, `\` and the code points below U+0020). It counts a name's length
+in 16-bit units, 255 at most (`names.max_len`), and a path's at most 32,767.
+No two names in a directory differ only by case or normalisation. The
+`awkward` class makes a trailing dot or space on both systems. On Windows
+`names.edge_rate` (default 0.02) is the share of names that are further edge
+cases NTFS allows: a word with one unpaired surrogate in it, or a reserved
+device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`, `LPT1`), with an extension
+half the time. Unix ignores the key, and a seed's names there do not change.
+The log writes the bytes of an unpaired surrogate as `\xhh`, like a name that
+is not UTF-8 on Unix.
+
+**Symlinks.** Windows has file symlinks and directory symlinks. `filegen`
+makes the kind that matches the target, and a file symlink for a dangling
+target. A relative target is written with `\`. An absolute target is written
+in the form `read_link` returns: the `\\?\` prefix is left off when the path
+is short and means the same without it. That way the bytes written, logged and
+read back agree. For a device name that form depends on the Windows build.
+
+**Off limits.** Entries on another volume, junctions and other reparse
+points that are not symlinks, and entries the start-up walk cannot stat are
+off limits, as on Unix. So is any entry with the read-only attribute: a change
+to it would fail again on every resume. `filegen` never sets that attribute.
+There is no owner check and no mode check, and the mode in a `post=` stat is 0.
+
+**Files another program holds.** Antivirus, the search indexer or any other
+program that holds a file open without sharing it makes a step on that file
+fail with a sharing violation (os error 32). The run stops as on any failed
+step: the log gets the step's `error=` line, the footer and the state are
+written, and `filegen` exits with status 1. Once the file is free, `--resume`
+goes on from the last step that was done.
+
+**Interrupts.** On Windows the first console event lets the step in flight
+finish, writes the log footer and the state, and exits with 130. A second
+event exits at once, without writing. The handler comes from the `ctrlc`
+crate, which is told about every console event and not which one it is. So
+the log always says `Ctrl-C`, and the exit status is 130 for each.
+Windows treats the events differently once the handler returns:
+
+- For Ctrl-C and Ctrl-Break the process carries on, so the step finishes and
+  the state is saved.
+- For closing the console window, logoff and shutdown, Windows ends the process
+  shortly after the handler returns. A saved state is not guaranteed there.
+  The checkpoints (every `checkpoint_steps` steps) are what a resume then
+  starts from.
+
+There is no polite stop from another process yet: nothing like SIGTERM asks a
+`filegen` in the background to finish its step and save.
+
+**`unsafe`.** The Windows code has two `unsafe` blocks, each with its
+`// SAFETY:` comment: `GetFileInformationByHandleEx` reads a reparse point's
+tag, and `DeviceIoControl` marks a file sparse and zeroes a range. `punch_hole`
+is crate-private, because the second block is sound only for the files the crate
+opens itself.
 
 ### Configuration
 
@@ -312,6 +446,8 @@ names:
   classes: {plain: 70.0, spaces: 8.0, dotfile: 5.0, unicode: 8.0, long: 3.0, awkward: 6.0}
   extensions: [txt, bin, jpg, log, dat, md, json, '']
   max_len: 255
+  # The share of names that are edge cases: on Windows only, ignored on Unix.
+  edge_rate: 0.02
 # file/dir/dangling weight the target kind; absolute is a probability.
 symlink: {file: 0.5, dir: 0.2, dangling: 0.3, absolute: 0.2}
 # Modes are quoted octal strings. special_weight is the chance of adding one

@@ -45,6 +45,8 @@ pub const MIN_MTIME_SEC: i64 = -11_644_473_600;
 pub const MAX_LINKS: u64 = 1023;
 /// The separator of the components of a symlink target.
 pub const TARGET_SEP: u8 = b'\\';
+/// The characters that separate the components of a path: `/` and `\`.
+pub const PATH_SEPARATORS: &[char] = &['/', '\\'];
 /// A rename cannot replace a directory. Documentation only: `rename_over`
 /// renames regular files on every platform.
 pub const RENAME_OVER_DIRS: bool = false;
@@ -259,14 +261,21 @@ pub fn bytes_to_os(bytes: &[u8]) -> io::Result<OsString> {
 /// The path below `root` of the stored, `/`-separated relative path `rel`.
 /// Each component must name exactly one entry: a stored name that Windows
 /// would read as a drive, a root, `.`, `..` or more than one component is an
-/// error. So is a name that only the extended form (`\\?\`) keeps as it is
-/// (see [`needs_extended`]) below a root not in that form: the path would
-/// name another entry, or a device. filegen's root is canonical, and so in
-/// the extended form.
+/// error, and so is one NTFS cannot hold (see [`ntfs_refuses`]). So is a
+/// name that only the extended form (`\\?\`) keeps as it is (see
+/// [`needs_extended`]) below a root not in that form: the path would name
+/// another entry, or a device. filegen's root is canonical, and so in the
+/// extended form.
 pub fn rel_to_path(root: &Path, rel: &[u8]) -> io::Result<PathBuf> {
     let extended = is_extended(root);
     let mut path = root.to_path_buf();
     for part in rel.split(|&b| b == b'/') {
+        if ntfs_refuses(part) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "not a stored path component",
+            ));
+        }
         let name = bytes_to_os(part)?;
         let mut components = Path::new(&name).components();
         match (components.next(), components.next()) {
@@ -292,6 +301,15 @@ pub fn rel_to_path(root: &Path, rel: &[u8]) -> io::Result<PathBuf> {
         }
     }
     Ok(path)
+}
+
+/// Whether the stored name `part` holds a character NTFS refuses in a
+/// name: one of `< > : " | ? *` or one below U+0020. (`:` would name an
+/// alternate data stream.) In WTF-8 every byte below 0x80 is such a
+/// character itself, never part of a longer one.
+fn ntfs_refuses(part: &[u8]) -> bool {
+    part.iter()
+        .any(|&b| b < 0x20 || matches!(b, b'<' | b'>' | b':' | b'"' | b'|' | b'?' | b'*'))
 }
 
 /// Whether `path` is in the extended form (`\\?\C:\...`, `\\?\UNC\...`),
@@ -377,6 +395,23 @@ fn user_form(path: &Path) -> PathBuf {
 /// they are.
 pub fn path_to_bytes(path: &Path) -> Vec<u8> {
     os_to_bytes(path.as_os_str())
+}
+
+/// The stored path of `path` below `root`, as the log writes it: the names
+/// after the root, joined with `/` as in every stored path. A path not
+/// below `root` is written as it is.
+pub fn rel_bytes(root: &Path, path: &Path) -> Vec<u8> {
+    let Ok(rel) = path.strip_prefix(root) else {
+        return path_to_bytes(path);
+    };
+    let mut out = Vec::new();
+    for (i, c) in rel.components().enumerate() {
+        if i > 0 {
+            out.push(b'/');
+        }
+        out.extend(os_to_bytes(c.as_os_str()));
+    }
+    out
 }
 
 /// Whether NTFS takes `name` as a file name: none of `< > : " | ? * \` and
@@ -493,18 +528,33 @@ pub fn remove_xattr(_path: &Path, _name: &str) -> io::Result<()> {
 /// The capabilities of this machine in `dir`: `symlinks` if this user may
 /// create a symlink there, `sparse` if the filesystem takes sparse files.
 /// Each is found by trying, with a file `.filegen-probe-{pid}` that is
-/// removed again.
+/// removed again. If that file is there already, left by a run that was
+/// killed (by a process that had this pid), the error names it; it is not
+/// removed.
 pub fn probe_caps(dir: &Path) -> io::Result<Caps> {
     let probe = dir.join(format!(".filegen-probe-{}", std::process::id()));
+    let left_behind = |e: io::Error| {
+        if e.kind() != io::ErrorKind::AlreadyExists {
+            return e;
+        }
+        io::Error::new(
+            e.kind(),
+            format!(
+                "the probe file {} is there already, left by a run that was \
+                 stopped; it can be deleted",
+                probe.display()
+            ),
+        )
+    };
     let symlinks = match std::os::windows::fs::symlink_file("target", &probe) {
         Ok(()) => {
             fs::remove_file(&probe)?;
             true
         }
         Err(e) if e.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD as i32) => false,
-        Err(e) => return Err(e),
+        Err(e) => return Err(left_behind(e)),
     };
-    let file = File::create_new(&probe)?;
+    let file = File::create_new(&probe).map_err(left_behind)?;
     let marked = set_sparse(&file);
     drop(file);
     fs::remove_file(&probe)?;
@@ -698,6 +748,23 @@ mod tests {
         ] {
             assert!(rel_to_path(root, bad).is_err(), "{bad:?}");
         }
+        // Names NTFS cannot hold: `ab:c` would name a stream of `ab`.
+        for bad in [
+            &b"ab:c"[..],
+            b"d/ab:c",
+            b"a<b",
+            b"a>b",
+            b"a\"b",
+            b"a|b",
+            b"a?b",
+            b"a*b",
+            b"a\x01b",
+            b"a\x1Fb",
+        ] {
+            let err = rel_to_path(root, bad).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{bad:?}");
+        }
+        assert!(rel_to_path(root, b"a b/c.d").is_ok());
     }
 
     #[test]
@@ -959,6 +1026,21 @@ mod tests {
         assert!(caps.sparse);
         assert_eq!(caps.symlinks, testutil::symlinks_available(d.path()));
         assert_eq!(fs::read_dir(d.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_probe_file_left_behind_is_named_and_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let probe = d
+            .path()
+            .join(format!(".filegen-probe-{}", std::process::id()));
+        fs::write(&probe, b"").unwrap();
+        let err = probe_caps(d.path()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        let msg = err.to_string();
+        assert!(msg.contains(&probe.display().to_string()), "{msg}");
+        assert!(msg.contains("can be deleted"), "{msg}");
+        assert!(probe.exists());
     }
 
     #[test]

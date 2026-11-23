@@ -76,7 +76,8 @@ A test and the release gate both refuse a version without its section
 nightly in `fuzz/rust-toolchain.toml`, cargo-nextest, cargo-deny,
 cargo-fuzz, zizmor, dist, mdbook), actionlint and shellcheck, at CI's
 versions, and checks the system tools; `tools/dev-setup.sh --check` only
-reports.
+reports. It does not run on Windows; see "Windows" in
+`book/src/contributing/setup.md`.
 
 ## Tests
 
@@ -119,6 +120,22 @@ the fuzz targets in `fuzz/` and runs their seeds; Linux only) and
 `release-build` (after a change to the release build or packaging; Linux
 only).
 
+On Windows only `filegen`, `fileset` and `irsync-glob` build. The everyday run
+is:
+
+```sh
+cargo test -q -p filegen -p fileset -p irsync-glob --no-fail-fast
+```
+
+and the full run is `tools/ci.sh check` in Git Bash, which covers those three
+crates and ends with a smoke run of `filegen` and `fileset` together. It needs
+cargo-nextest, not Python, pandoc, mandoc or rsync. A bare `tools/ci.sh` runs
+`check` only. Tests that need a symlink skip, with a line that starts
+`skipping:`, when the user may not create symlinks, and fail when `CI` is set;
+Developer Mode lets them run. Keep the checkout path and `CARGO_TARGET_DIR`
+short (CI uses `C:\t`), because the MSVC linker fails on a path over 260
+characters.
+
 `FUZZ_SECONDS=300 tools/ci.sh fuzz` fuzzes each target for that long; it
 runs only when named. See "Fuzzing" in `book/src/contributing/testing.md`.
 
@@ -149,10 +166,12 @@ cargo test -p netstress -- --include-ignored
 
 ## Things that trip people up
 
-- **CI runs on GitHub** (`.github/workflows/ci.yml`, Linux and macOS) for
-  every push to `main` and every pull request. Its jobs run `tools/ci.sh`,
-  so change a check there, not in the workflow. Run it locally first
-  anyway: a macOS-only failure is cheaper to find here.
+- **CI runs on GitHub** (`.github/workflows/ci.yml`, Linux, macOS and
+  Windows) for every push to `main` and every pull request. Its jobs run
+  `tools/ci.sh`, so change a check there, not in the workflow. Run it locally
+  first anyway: a macOS-only failure is cheaper to find here. The `windows`
+  job (`windows-latest` and `windows-11-arm`) reports and does not block: it
+  is not among the jobs `CI result` needs, and a release run leaves it out.
 - **GNU rsync 3.1 or newer must be on `PATH`.** Without it,
   `crates/irsync/tests/rsync_compare.rs` passes without checking anything.
   macOS ships an older rsync: `brew install rsync`.

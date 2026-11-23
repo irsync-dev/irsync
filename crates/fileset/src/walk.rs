@@ -23,7 +23,7 @@ pub struct WalkConfig {
     /// The store is a SQLite file: its `-wal`, `-shm` and `-journal` sidecars, whatever
     /// the store is named, are skipped silently.
     pub sqlite_store: bool,
-    /// Skip the `BUILTIN_EXCLUDES` at the top of every volume the walk visits.
+    /// Skip the platform's `BUILTIN_EXCLUDES` at the top of every volume the walk visits.
     pub builtin_excludes: bool,
     /// Threads that list directories and read metadata.
     pub threads: usize,
@@ -34,16 +34,6 @@ pub struct WalkConfig {
 /// Walk threads unless asked otherwise. Metadata calls stop scaling well beyond this:
 /// on APFS, xattr reads contend in the kernel, and 16 threads walk slower than one.
 pub const DEFAULT_THREADS: usize = 4;
-
-/// Names macOS keeps at the top of a volume for its own use. They are unreadable there and
-/// junk anywhere else, so the walk neither records nor descends them.
-pub const BUILTIN_EXCLUDES: &[&str] = &[
-    ".DocumentRevisions-V100",
-    ".Spotlight-V100",
-    ".TemporaryItems",
-    ".Trashes",
-    ".fseventsd",
-];
 
 #[derive(Debug)]
 pub struct Observed {
@@ -452,9 +442,8 @@ fn list_dir(
         if is_sidecar(cfg, &abs) {
             continue;
         }
-        let excluded = cfg.builtin_excludes
-            && job.volume_top
-            && BUILTIN_EXCLUDES.iter().any(|n| n.as_bytes() == name_bytes);
+        let excluded =
+            cfg.builtin_excludes && job.volume_top && platform::is_builtin_exclude(&name_bytes);
         let rel = if dir_rel == b"." {
             name_bytes.clone()
         } else {
@@ -633,7 +622,7 @@ mod tests {
                 std::fs::write(r.join(a).join(b).join("g"), b"").unwrap();
             }
         }
-        std::fs::create_dir(r.join(".Trashes")).unwrap();
+        std::fs::create_dir(r.join(EXCLUDE)).unwrap();
         std::fs::write(r.join("a/x/.fileset.sqlite"), b"").unwrap();
         testutil::symlink(Path::new("a"), &r.join("s")).unwrap();
         Some((t, r))
@@ -663,7 +652,7 @@ mod tests {
                 } else {
                     format!("{rel}/{n}")
                 };
-                if r == ".Trashes" {
+                if r == EXCLUDE {
                     continue;
                 }
                 out.push(r.clone());
@@ -924,13 +913,24 @@ mod tests {
         assert!(w.is_empty());
     }
 
+    /// Two built-in excludes of this platform, `FIRST` sorting before `EXCLUDE` and both
+    /// before `f`.
+    #[cfg(unix)]
+    const FIRST: &str = ".Spotlight-V100";
+    #[cfg(unix)]
+    const EXCLUDE: &str = ".Trashes";
+    #[cfg(windows)]
+    const FIRST: &str = "$RECYCLE.BIN";
+    #[cfg(windows)]
+    const EXCLUDE: &str = "System Volume Information";
+
     fn spotlight_tree() -> (tempfile::TempDir, PathBuf) {
         let t = tempfile::tempdir().unwrap();
         let r = std::fs::canonicalize(t.path()).unwrap();
-        std::fs::create_dir(r.join(".Spotlight-V100")).unwrap();
-        std::fs::write(r.join(".Spotlight-V100/store.db"), b"").unwrap();
-        std::fs::create_dir(r.join(".Trashes")).unwrap();
-        std::fs::create_dir_all(r.join("sub/.Trashes")).unwrap();
+        std::fs::create_dir(r.join(FIRST)).unwrap();
+        std::fs::write(r.join(FIRST).join("store.db"), b"").unwrap();
+        std::fs::create_dir(r.join(EXCLUDE)).unwrap();
+        std::fs::create_dir_all(r.join("sub").join(EXCLUDE)).unwrap();
         std::fs::write(r.join("f"), b"").unwrap();
         (t, r)
     }
@@ -939,8 +939,9 @@ mod tests {
     fn walk_skips_builtin_excludes_at_the_root_only() {
         let (_t, r) = spotlight_tree();
         let s = seen(|sink| walk(&cfg(&r, None), None, sink));
-        assert_eq!(paths(&s.entries), strs(&[".", "f", "sub", "sub/.Trashes"]));
-        assert_eq!(s.excluded, strs(&[".Spotlight-V100", ".Trashes"]));
+        let below = format!("sub/{EXCLUDE}");
+        assert_eq!(paths(&s.entries), strs(&[".", "f", "sub", &below]));
+        assert_eq!(s.excluded, strs(&[FIRST, EXCLUDE]));
         assert!(s.warnings.is_empty(), "{:?}", s.warnings);
         assert!(s.skipped.is_empty());
     }
@@ -951,17 +952,10 @@ mod tests {
         let mut all = cfg(&r, None);
         all.builtin_excludes = false;
         let s = seen(|sink| walk(&all, None, sink));
+        let (store, below) = (format!("{FIRST}/store.db"), format!("sub/{EXCLUDE}"));
         assert_eq!(
             paths(&s.entries),
-            strs(&[
-                ".",
-                ".Spotlight-V100",
-                ".Spotlight-V100/store.db",
-                ".Trashes",
-                "f",
-                "sub",
-                "sub/.Trashes"
-            ])
+            strs(&[".", FIRST, &store, EXCLUDE, "f", "sub", &below])
         );
         assert!(s.excluded.is_empty());
     }
@@ -970,13 +964,36 @@ mod tests {
     fn walk_skips_builtin_excludes_at_a_crossed_mount_point() {
         let t = tempfile::tempdir().unwrap();
         let r = std::fs::canonicalize(t.path()).unwrap();
-        std::fs::create_dir_all(r.join("d/.Trashes")).unwrap();
-        std::fs::create_dir_all(r.join("d/e/.Trashes")).unwrap();
+        std::fs::create_dir_all(r.join("d").join(EXCLUDE)).unwrap();
+        std::fs::create_dir_all(r.join("d/e").join(EXCLUDE)).unwrap();
         let mut crossing = cfg(&r, None);
         crossing.cross_mount_points = true;
         let s = seen_from_foreign_device(&crossing);
-        assert_eq!(paths(&s.entries), strs(&["d", "d/e", "d/e/.Trashes"]));
-        assert_eq!(s.excluded, strs(&["d/.Trashes"]));
+        let (top, deeper) = (format!("d/{EXCLUDE}"), format!("d/e/{EXCLUDE}"));
+        assert_eq!(paths(&s.entries), strs(&["d", "d/e", &deeper]));
+        assert_eq!(s.excluded, strs(&[&top]));
+    }
+
+    /// NTFS names are case-insensitive, and Windows writes these two in more than one
+    /// case: any case is excluded, at the top only.
+    #[cfg(windows)]
+    #[test]
+    fn walk_skips_builtin_excludes_in_any_case() {
+        let t = tempfile::tempdir().unwrap();
+        let r = std::fs::canonicalize(t.path()).unwrap();
+        std::fs::create_dir(r.join("$Recycle.Bin")).unwrap();
+        std::fs::create_dir(r.join("system volume information")).unwrap();
+        std::fs::create_dir_all(r.join("sub/$Recycle.Bin")).unwrap();
+        std::fs::create_dir(r.join("$RECYCLE.BIN.old")).unwrap();
+        let s = seen(|sink| walk(&cfg(&r, None), None, sink));
+        assert_eq!(
+            s.excluded,
+            strs(&["$Recycle.Bin", "system volume information"])
+        );
+        assert_eq!(
+            paths(&s.entries),
+            strs(&[".", "$RECYCLE.BIN.old", "sub", "sub/$Recycle.Bin"])
+        );
     }
 
     #[test]

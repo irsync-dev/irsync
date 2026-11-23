@@ -57,7 +57,14 @@ pub struct CommonArgs {
     /// Number of threads that list directories and read metadata
     #[arg(long, value_name = "N", default_value_t = crate::walk::DEFAULT_THREADS, value_parser = clap::value_parser!(u64).range(1..).map(|n| n as usize))]
     pub walk_threads: usize,
-    /// Index the macOS volume internals (.Spotlight-V100, .Trashes, ...) that are skipped by default
+    #[cfg_attr(
+        unix,
+        doc = "Index the macOS volume internals (.Spotlight-V100, .Trashes, ...) that are skipped by default"
+    )]
+    #[cfg_attr(
+        windows,
+        doc = "Index the Windows volume internals ($RECYCLE.BIN, System Volume Information) that are skipped by default"
+    )]
     #[arg(long)]
     pub no_builtin_excludes: bool,
     /// Suppress progress output

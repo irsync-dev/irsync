@@ -67,6 +67,15 @@ tools/ci.sh check
 With plain `cargo test`, `-- --include-ignored` adds them. No other test is
 ignored, so it adds exactly these five.
 
+On Windows only `filegen`, `fileset` and `irsync-glob` build, so name them:
+
+```sh
+cargo test -q -p filegen -p fileset -p irsync-glob --no-fail-fast
+```
+
+There, `tools/ci.sh check` in Git Bash is the full regression
+([Windows](setup.md#windows)).
+
 The syncs through the fault layer in `crates/irsync/tests/netsim.rs` are
 not ignored, though they need minutes of network time: they run client
 and daemon in one process on tokio's paused clock, over an in-memory
@@ -116,6 +125,14 @@ name (APFS does); on Linux they always run. See R29 in
 [IRSYNC_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_DECISIONS.md).
 The rsync comparison test skips without GNU rsync 3.1 or newer, and fails
 instead when `CI` is set ([Requirements](setup.md#requirements)).
+
+On Windows, a test that needs a symlink skips with a line that starts
+`skipping:` when the user may not create symlinks, and fails instead when
+`CI` is set, so CI cannot pass by skipping. Developer Mode, an elevated
+process or the symlink privilege lets those tests run
+([Windows](setup.md#windows)). Tests of POSIX-only behaviour (`chmod`,
+`chown`, FIFOs, devices, extended attributes) are compiled on Unix only. A
+test that needs a file nobody can read holds it open with sharing denied.
 
 The macOS CI job leaves out `crates/irsync/tests/backpressure.rs`,
 `crates/irsync/tests/blocking_pool.rs` and `crates/netstress/tests/e2e.rs`,
@@ -279,7 +296,12 @@ Clippy's `undocumented_unsafe_blocks` refuses an `unsafe` block without a
 `// SAFETY:` comment above it. The comment says why that call is sound: which rule
 holds, and what in the code keeps it. The crates with no unsafe code,
 `irsync-glob`, `irsync-proto` and `netstress`, forbid it. `tools/ci.sh
-check` runs clippy.
+check` runs clippy. The Windows code has three such blocks, all calls into
+Win32 that no wrapper crate makes: one in `fileset` (`GetFileInformationByHandleEx`,
+for the change time and a reparse point's tag) and two in `filegen` (the same
+call for the tag, and `DeviceIoControl` for sparse files and zeroing a range).
+They are in `platform/windows.rs` of each crate. Miri cannot check them, so
+their tests cover them.
 
 **zizmor** looks for security problems in the GitHub workflows, such as a
 token left on disk after a checkout or a workflow with more permissions
@@ -307,7 +329,7 @@ buffer. A normal test run can pass right over it. Miri is about a hundred
 times slower, and it cannot make most system calls. So it runs only the
 tests that need none: `irsync-glob`, `irsync-proto`, the delta codec
 tests (`crates/irsync/tests/sub_chunk.rs`), and the parts of `fileset`
-that compare, escape and match names. The list, and what is left out
+that compare, escape and match names and that convert Windows names. The list, and what is left out
 and why, is `miri_packages` in `tools/ci.sh`. It uses the nightly from
 `fuzz/rust-toolchain.toml`, which `tools/dev-setup.sh` installs with
 Miri:

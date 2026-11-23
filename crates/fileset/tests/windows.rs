@@ -148,6 +148,7 @@ fn the_three_symlink_kinds_are_recorded_and_not_followed() {
         assert_eq!(e.kind, Kind::Symlink, "{link:?}");
         assert_eq!(e.target.as_deref(), Some(target), "{link:?}");
         assert_eq!(e.blake3, None, "{link:?}");
+        assert_eq!(e.size, 0, "{link:?}");
     }
     nothing_below(&r, b"to_dir/");
     assert!(entries(&r).iter().any(|(k, _)| k == b"d/inside"));
@@ -290,6 +291,45 @@ fn a_file_held_without_sharing_is_unreadable_not_fatal() {
         entry(&r, b"free").blake3,
         Some(*blake3::hash(b"x").as_bytes())
     );
+}
+
+/// A stored file the walk cannot stat is unverified, a difference, even when its name
+/// still shows in the directory listing. Never Clean.
+///
+/// Where the deny entry also stops the walk's stat (an ordinary user), this is the
+/// regression case: `check`'s second pass must not take the listing's word for it. Where
+/// the stat gets through anyway (an elevated administrator, as on CI's runners) only the
+/// read is refused, and the file is `unreadable`.
+#[test]
+fn a_file_this_user_may_not_stat_is_unverified() {
+    // Not the `\\?\` form: icacls does not take it.
+    let t = tempfile::tempdir().unwrap();
+    let r = t.path();
+    std::fs::write(r.join("a"), "x").unwrap();
+    std::fs::write(r.join("b"), "y").unwrap();
+    let (outcome, err) = init(r);
+    assert_eq!(outcome, Outcome::Clean, "{err}");
+    let Some(_denied) = testutil::deny_read(&r.join("b")) else {
+        return;
+    };
+    let (outcome, out, err) = run_check(r, Tier::Default, &[], &[], false);
+    assert_eq!(outcome, Outcome::Differences, "{out}{err}");
+    if out == "CHG b kind=file→unverified\n" {
+        assert!(err.starts_with("WARN cannot stat b: "), "{err}");
+        assert!(
+            err.ends_with("\nadded=0 deleted=0 changed=1 unchanged=3 warnings=1\n"),
+            "{err}"
+        );
+        eprintln!("note: stat of b was denied here; the unverified path was exercised");
+    } else {
+        let hex = fileset::report::fmt_blake3(blake3::hash(b"y").as_bytes());
+        assert_eq!(out, format!("CHG b blake3={hex}→unreadable\n"), "{err}");
+        assert!(
+            err.ends_with("added=0 deleted=0 changed=1 unchanged=3 warnings=0\n"),
+            "{err}"
+        );
+        eprintln!("note: stat of b was allowed here; the unverified path was not exercised");
+    }
 }
 
 #[test]

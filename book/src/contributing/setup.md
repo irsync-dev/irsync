@@ -34,7 +34,8 @@ to install. `tools/dev-setup.sh --check` reports without changing anything.
 Run it again whenever you like.
 
 It works on Linux, macOS and FreeBSD, and names the package for each one's
-package manager (`apt`, `brew`, `pkg`).
+package manager (`apt`, `brew`, `pkg`). It does not run on Windows; see
+[Windows](#windows).
 
 - **Rust.** `rust-toolchain.toml` pins an exact Rust version, which rustup
   picks up; CI and releases use the same file. To move to a newer Rust, change
@@ -63,10 +64,62 @@ package manager (`apt`, `brew`, `pkg`).
   when it is there; with the `CI` environment variable set, they fail
   instead of skipping without it.
 
+## Windows
+
+`filegen`, `fileset` and `irsync-glob` build and test on Windows, on x86_64
+and ARM64. The rest of the workspace, `irsync` itself first of all, does not
+yet, so `cargo build --workspace` does not work there. Name the three crates:
+
+```sh
+cargo test -q -p filegen -p fileset -p irsync-glob --no-fail-fast
+```
+
+What you need:
+
+- **The MSVC Rust toolchain and the MSVC build tools.** Only the
+  `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` targets are used, not
+  the GNU toolchain and not 32-bit Windows. Install rustup, and Visual Studio
+  Build Tools with the C++ tools and a Windows SDK. rustup picks up the
+  version in `rust-toolchain.toml`.
+- **Git Bash,** which comes with Git for Windows, to run `tools/ci.sh`. The
+  repository's `.gitattributes` keeps the shell scripts with LF line
+  endings in the working tree, which bash needs.
+- **cargo-nextest,** which `tools/ci.sh check` runs. Install it by hand
+  (`cargo install --locked cargo-nextest`, or a release download).
+  `tools/dev-setup.sh` does not run on Windows. `tools/ci.sh check` there needs
+  no Python, pandoc, mandoc or rsync.
+- **Developer Mode,** for the symlink tests. Making a symlink needs Developer
+  Mode, an elevated process or the symlink privilege. Without it, a test that
+  needs a symlink prints a line that starts `skipping:` and passes. With the
+  `CI` environment variable set, it fails instead, as the rsync comparison
+  test does ([Requirements](#requirements)). `filegen` finds the same thing at
+  the start of a run and leaves the symlink operations out (see
+  [On Windows](filegen.md#on-windows)).
+- **A short checkout path and a short `CARGO_TARGET_DIR`.** The MSVC linker
+  fails on a path over 260 characters. CI sets `CARGO_TARGET_DIR` to
+  `C:\t`. Clone somewhere like `C:\w\irsync`.
+- **Trees on an NTFS drive.** The tests make their trees in the temporary
+  directory, so that drive has to be NTFS too. ReFS, FAT, exFAT, network
+  shares and the folders a virtual machine shares with its host are not
+  supported.
+
+The full regression, in Git Bash:
+
+```sh
+tools/ci.sh check
+```
+
+On Windows it runs `cargo fmt --all --check`, the fuzz lock check, one clippy
+run, nextest and the doc tests for the three crates, and then a smoke run:
+`filegen` fills and changes a tree, and `fileset` records it and checks it. A
+bare `tools/ci.sh` runs `check` only, and prints that on Windows only `check`
+runs, for those three crates.
+
 ## Continuous integration
 
 The workflow in `.github/workflows/ci.yml` runs on GitHub for every push to
-`main` and every pull request, on Linux and macOS. The workflow installs
+`main` and every pull request, on Linux and macOS, and on Windows for the
+three crates. The workflow installs
 the tools; the checks themselves are in `tools/ci.sh`, one job there per job
 in the workflow, so the same script runs them on your machine:
 
@@ -91,6 +144,12 @@ cargo test --locked --workspace --all-features --doc
 
 `--locked` makes the run fail if `Cargo.lock` is out of date, as the release
 build would.
+
+The `windows` job runs `tools/ci.sh check` on `windows-latest` (x86_64) and
+`windows-11-arm` (ARM64), in Git Bash, with `CARGO_TARGET_DIR` set to `C:\t`.
+It covers `filegen`, `fileset` and `irsync-glob`, as above. It reports on
+pull requests and pushes, but `CI result` does not need it, so a failure there
+does not block a merge. A release run leaves it out.
 
 The `release-build` job runs the release build itself for the two
 Linux targets (x86_64 and arm64 musl): `dist build`, which runs
@@ -117,7 +176,8 @@ name it, and every night on GitHub; see
 [Static analysis](testing.md#static-analysis).
 
 The `deny` job checks the dependencies with `cargo deny`, for the platforms
-irsync is built for. The `deny-license-check` job checks the licenses of
+irsync is built for and for both Windows targets, so it also checks the crates
+only a Windows build uses. The `deny-license-check` job checks the licenses of
 every platform's dependencies; on GitHub its failure blocks a release, not
 a pull request. The `workflows` job runs the workflow rule tests, actionlint
 and zizmor, which needs PyYAML, actionlint and zizmor
@@ -126,8 +186,8 @@ and zizmor, which needs PyYAML, actionlint and zizmor
 request. A warning that is wrong for one line is turned off on that line,
 with the reason in a comment.
 
-Two things run only on GitHub: the macOS and arm64 runs, and the dependency
-review of a pull request.
+Two things run only on GitHub: the macOS, Windows and arm64 runs, and the
+dependency review of a pull request.
 
 The tests run with [cargo-nextest](https://nexte.st), which runs each test
 in its own process and tests from all files side by side. That makes the

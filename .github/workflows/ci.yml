@@ -132,6 +132,46 @@ jobs:
       - name: Format, clippy and tests
         run: tools/ci.sh check
 
+  # filegen, fileset and irsync-glob on Windows. Reports on every pull
+  # request and does not block: `CI result` does not need it. It joins the
+  # required jobs when irsync itself builds on Windows. A release run
+  # (inputs.plan is set) leaves it out, so it can never hold up a release.
+  windows:
+    name: ${{ matrix.os }}
+    needs: changes
+    if: ${{ !inputs.plan && needs.changes.outputs.code == 'true' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The MSVC linker fails on a path over 260 characters.
+      CARGO_TARGET_DIR: C:\t
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust (the version in rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.os }}
+      # No fallback: cargo-binstall would be handed the GitHub token, and a
+      # runner without a prebuilt cargo-nextest should fail loudly.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest@0.9.151
+          fallback: none
+      - name: Format, clippy, tests and the smoke run
+        run: tools/ci.sh check
+
   # Runs the release build itself (dist and packaging/dist/build.sh) for the
   # Linux targets, on the same runners as release.yml, so a broken release
   # build shows up here and not in a release run. The release gate
