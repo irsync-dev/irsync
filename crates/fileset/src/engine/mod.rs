@@ -64,14 +64,13 @@ impl<'a> Warnings<'a> {
 /// The tree-relative path of the directory holding an in-tree store. Its mtime, like the
 /// root's, is not compared: writing the manifest (and its sidecars) changes both.
 pub fn store_parent(cfg: &WalkConfig, root: &Path) -> Option<Vec<u8>> {
-    use std::os::unix::ffi::OsStrExt;
     cfg.store_path
         .as_deref()
         .and_then(Path::parent)
         .and_then(|p| p.strip_prefix(root).ok())
-        .map(|rel| match rel.as_os_str().as_bytes() {
-            b"" => b".".to_vec(),
-            r => r.to_vec(),
+        .map(|rel| match crate::platform::path_to_rel(rel) {
+            r if r.is_empty() => b".".to_vec(),
+            r => r,
         })
 }
 

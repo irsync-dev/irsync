@@ -189,7 +189,10 @@ pub fn locate(
             // A manifest found in the tree may have come with the tree. One
             // that is a symlink would have `update` write to a manifest
             // somewhere else; `--manifest` is the way to name one elsewhere.
-            if path.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+            if path
+                .symlink_metadata()
+                .is_ok_and(|m| crate::platform::is_link(&m))
+            {
                 anyhow::bail!(
                     "{} is a symbolic link; a manifest inside the tree must be a real {}. \
                      Use --manifest to name a manifest elsewhere",
@@ -424,13 +427,14 @@ mod tests {
 
     #[test]
     fn locate_manifest_through_a_symlink_reads_the_kind_behind_it() {
+        use crate::platform::testutil::symlink;
         let d = tempfile::tempdir().unwrap();
         let root = canon(&d);
         std::fs::write(root.join("file"), b"").unwrap();
         std::fs::create_dir(root.join("dir")).unwrap();
-        std::os::unix::fs::symlink(root.join("file"), root.join("to_file")).unwrap();
-        std::os::unix::fs::symlink(root.join("dir"), root.join("to_dir")).unwrap();
-        std::os::unix::fs::symlink(root.join("gone"), root.join("dangling")).unwrap();
+        symlink(&root.join("file"), &root.join("to_file")).unwrap();
+        symlink(&root.join("dir"), &root.join("to_dir")).unwrap();
+        symlink(&root.join("gone"), &root.join("dangling")).unwrap();
         let backend = |name: &str| locate(&root, Some(&root.join(name)), None, true);
         assert_eq!(backend("to_file").unwrap().backend, Backend::Sqlite);
         assert_eq!(backend("to_dir").unwrap().backend, Backend::Fjall);

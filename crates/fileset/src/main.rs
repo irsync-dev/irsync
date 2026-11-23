@@ -1,5 +1,4 @@
 use std::io::{BufWriter, IsTerminal, Write};
-use std::os::unix::ffi::OsStrExt;
 
 use clap::Parser;
 use fileset::cli::{BackendArg, Cli, Command, CommonArgs};
@@ -8,6 +7,7 @@ use fileset::engine::check::{check, CheckOpts};
 use fileset::engine::list::{list, ListOpts};
 use fileset::engine::update::{update, Mode, UpdateOpts};
 use fileset::engine::{CommonOpts, Outcome};
+use fileset::platform;
 use fileset::progress::{NoProgress, Progress, TermProgress};
 use fileset::store::Backend;
 
@@ -138,7 +138,7 @@ fn main() {
             let opts = ListOpts {
                 root: a.path,
                 manifest: a.manifest,
-                pattern: a.pattern.map(|p| p.as_bytes().to_vec()),
+                pattern: a.pattern.map(|p| platform::os_to_bytes(&p)),
                 verbose: a.verbose,
             };
             list(&opts, &mut out)

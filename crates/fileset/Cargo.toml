@@ -17,11 +17,13 @@ rusqlite = { workspace = true }
 fjall = { workspace = true }
 redb = { workspace = true }
 prost = { workspace = true }
-xattr = { workspace = true }
 crossbeam-channel = { workspace = true }
 indicatif = { workspace = true }
 jiff = { workspace = true }
 anyhow = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+xattr = { workspace = true }
 libc = { workspace = true }
 
 [build-dependencies]

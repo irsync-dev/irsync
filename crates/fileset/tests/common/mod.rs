@@ -27,7 +27,7 @@ pub fn tree(spec: &[(&str, &str)]) -> TempDir {
 }
 
 pub fn symlink(dir: &Path, name: &str, target: &str) {
-    std::os::unix::fs::symlink(target, dir.join(name)).unwrap();
+    fileset::platform::testutil::symlink(Path::new(target), &dir.join(name)).unwrap();
 }
 
 pub fn chmod(path: &Path, mode: u32) {

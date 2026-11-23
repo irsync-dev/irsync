@@ -301,11 +301,10 @@ fn cli_unknown_field_exits_2() {
 
 #[test]
 fn cli_fail_on_warnings() {
-    use std::os::unix::fs::PermissionsExt;
     let d = tree();
     let secret = d.path().join("tree/secret");
     std::fs::write(&secret, "x").unwrap();
-    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+    fileset::platform::testutil::set_mode(&secret, 0o000);
     if std::fs::read(&secret).is_ok() {
         return; // running as root: chmod 000 does not block reads
     }
@@ -365,10 +364,7 @@ fn cli_store_redb_creates_one_file_that_reads_where_nothing_can_be_written() {
     assert_eq!(names(&t), [".fileset.redb", "a.txt", "sub"]);
 
     // As on a medium that cannot be written to: nothing may be changed or created.
-    use std::os::unix::fs::PermissionsExt;
-    let chmod = |p: &std::path::Path, mode| {
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
-    };
+    let chmod = |p: &std::path::Path, mode| fileset::platform::testutil::set_mode(p, mode);
     chmod(&manifest, 0o444);
     chmod(&t.join("sub"), 0o555);
     chmod(&t, 0o555);
