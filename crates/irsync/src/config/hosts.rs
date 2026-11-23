@@ -1,16 +1,15 @@
 //! The `[hosts]` table of `irsync.toml`: aliases for daemons.
 
-use super::settings::de_opt_duration;
-use super::{line_of, ConfigError};
+use super::settings::{addresses_from, duration_from, url_from};
+use super::{file_error, ConfigError};
 use crate::config::settings::{Congestion, PqKeyExchange, RelayMode};
-use crate::identity::parse_endpoint_id;
+use crate::identity::{parse_endpoint_id, IdentityError};
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
-use serde::Deserialize;
+use irsync_proto::config as pb;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use toml::Spanned;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,109 +40,65 @@ pub struct HostEntry {
     pub ssh_aliases: Vec<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RawHost {
-    #[serde(default)]
-    endpoint_id: Option<Spanned<String>>,
-    #[serde(default)]
-    client_id: Option<Spanned<String>>,
-    #[serde(default)]
-    relay: Option<Url>,
-    #[serde(default)]
-    relay_mode: Option<RelayMode>,
-    #[serde(default)]
-    congestion: Option<Congestion>,
-    #[serde(default)]
-    pq_key_exchange: Option<PqKeyExchange>,
-    #[serde(default)]
-    address: Vec<HostPort>,
-    #[serde(default)]
-    parallel: Option<u32>,
-    #[serde(default, deserialize_with = "de_opt_duration")]
-    reconnect: Option<Duration>,
-    #[serde(default)]
-    dial_retries: Option<u32>,
-    #[serde(default)]
-    dht: Option<bool>,
-    #[serde(default)]
-    mdns: Option<bool>,
-    #[serde(default)]
-    ssh: Option<String>,
-    #[serde(default)]
-    ssh_aliases: Vec<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hosts {
     pub path: PathBuf,
     pub entries: BTreeMap<String, HostEntry>,
 }
 
-/// The `[hosts]` table as deserialized: alias -> entry, with spans.
-pub(crate) type RawHosts = BTreeMap<String, Spanned<RawHost>>;
+/// The message for an alias that [`valid_alias`] refuses.
+pub(crate) fn invalid_alias(alias: &str) -> String {
+    format!(
+        "invalid host alias {alias:?}: must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
+    )
+}
 
-/// Validates the `[hosts]` table: alias rules and endpoint ids. `text` is
-/// the document the spans point into, `path` the file named in errors.
-pub(crate) fn hosts_from_raw(
-    raw: RawHosts,
-    text: &str,
-    path: &Path,
-) -> Result<BTreeMap<String, HostEntry>, ConfigError> {
-    let at = |offset: usize, message: String| ConfigError::File {
-        path: path.to_path_buf(),
-        line: Some(line_of(text, offset)),
-        message,
-    };
-    let mut entries = BTreeMap::new();
-    for (alias, r) in raw {
-        if !valid_alias(&alias) {
-            return Err(at(
-                r.span().start,
-                format!(
-                    "invalid host alias {alias:?}: must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
-                ),
-            ));
-        }
-        let start = r.span().start;
-        let r = r.into_inner();
-        let id_of = |key: &Option<Spanned<String>>| {
-            key.as_ref()
-                .map(|s| {
-                    parse_endpoint_id(s.get_ref())
-                        .map_err(|e| at(s.span().start, format!("host {alias:?}: {e}")))
-                })
+/// The message for a host with neither id.
+pub(crate) fn needs_an_id(alias: &str) -> String {
+    format!("host {alias:?}: needs an endpoint_id (its daemon), a client_id, or both")
+}
+
+/// An id of the message: 32 bytes that are a valid key.
+fn endpoint_id_from(bytes: &[u8]) -> Result<EndpointId, IdentityError> {
+    <[u8; 32]>::try_from(bytes)
+        .ok()
+        .and_then(|b| EndpointId::from_bytes(&b).ok())
+        .ok_or_else(|| {
+            IdentityError::BadEndpointId(bytes.iter().map(|b| format!("{b:02x}")).collect())
+        })
+}
+
+impl HostEntry {
+    fn from_message(h: &pb::Host) -> Result<HostEntry, String> {
+        let alias = &h.name;
+        let id_of = |id: &Option<Vec<u8>>| {
+            id.as_deref()
+                .map(|b| endpoint_id_from(b).map_err(|e| format!("host {alias:?}: {e}")))
                 .transpose()
         };
-        let endpoint_id = id_of(&r.endpoint_id)?;
-        let client_id = id_of(&r.client_id)?;
+        let endpoint_id = id_of(&h.endpoint_id)?;
+        let client_id = id_of(&h.client_id)?;
         if endpoint_id.is_none() && client_id.is_none() {
-            return Err(at(
-                start,
-                format!("host {alias:?}: needs an endpoint_id (its daemon), a client_id, or both"),
-            ));
+            return Err(needs_an_id(alias));
         }
-        entries.insert(
-            alias,
-            HostEntry {
-                endpoint_id,
-                client_id,
-                relay: r.relay,
-                relay_mode: r.relay_mode,
-                congestion: r.congestion,
-                pq_key_exchange: r.pq_key_exchange,
-                address: r.address,
-                parallel: r.parallel,
-                reconnect: r.reconnect,
-                dial_retries: r.dial_retries,
-                dht: r.dht,
-                mdns: r.mdns,
-                ssh: r.ssh,
-                ssh_aliases: r.ssh_aliases,
-            },
-        );
+        let field = |e: String| format!("host {alias:?}: {e}");
+        Ok(HostEntry {
+            endpoint_id,
+            client_id,
+            relay: url_from(h.relay.as_deref()).map_err(field)?,
+            relay_mode: RelayMode::from_optional(h.relay_mode).map_err(field)?,
+            congestion: Congestion::from_optional(h.congestion).map_err(field)?,
+            pq_key_exchange: PqKeyExchange::from_optional(h.pq_key_exchange).map_err(field)?,
+            address: addresses_from(&h.address).map_err(field)?,
+            parallel: h.parallel,
+            reconnect: duration_from(h.reconnect.as_ref()).map_err(field)?,
+            dial_retries: h.dial_retries,
+            dht: h.dht,
+            mdns: h.mdns,
+            ssh: h.ssh.clone(),
+            ssh_aliases: h.ssh_aliases.iter().map(|e| e.value.clone()).collect(),
+        })
     }
-    Ok(entries)
 }
 
 /// An alias is non-empty, has no `:` or `/`, is not itself an EndpointId,
@@ -181,6 +136,29 @@ impl HostEntry {
 }
 
 impl Hosts {
+    /// The hosts of the message, checked as the reader checks the file:
+    /// alias rules, ids, and no alias twice. `path` is the file named in
+    /// errors (and recorded as `Hosts.path`).
+    pub fn from_message(hosts: &[pb::Host], path: &Path) -> Result<Hosts, ConfigError> {
+        let mut entries = BTreeMap::new();
+        for h in hosts {
+            if !valid_alias(&h.name) {
+                return Err(file_error(path, invalid_alias(&h.name)));
+            }
+            let entry = HostEntry::from_message(h).map_err(|m| file_error(path, m))?;
+            if entries.insert(h.name.clone(), entry).is_some() {
+                return Err(file_error(
+                    path,
+                    format!("duplicate host alias {:?}", h.name),
+                ));
+            }
+        }
+        Ok(Hosts {
+            path: path.to_path_buf(),
+            entries,
+        })
+    }
+
     pub fn get(&self, alias: &str) -> Option<&HostEntry> {
         self.entries.get(alias)
     }

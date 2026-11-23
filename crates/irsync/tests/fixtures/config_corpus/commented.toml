@@ -1,0 +1,22 @@
+# irsync on the nas
+# second header line
+
+identity = "~/k" # my key
+# after the top keys
+
+# about the daemon
+[daemon] # trailing on header
+# above portmap
+portmap = false # why off
+# daemon tail
+
+# the photos
+[exports.photos]
+path = "/photos"
+rw = [
+    # the laptop
+    "laptop", # mine
+    "phone",
+    # after the last
+]
+# the end

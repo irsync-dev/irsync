@@ -216,9 +216,9 @@ impl Authorizer for FileAuthorizer {
         if covered(&self.snapshot()?, root, &peer) {
             return Ok(());
         }
-        let mut doc = lock.load()?;
-        let name = exports::add_auto_export(&mut doc, root, peer)?;
-        lock.save(&mut doc)?;
+        let mut msg = lock.load()?;
+        let name = exports::add_auto_export(&mut msg, root, peer)?;
+        lock.save(&mut msg)?;
         tracing::info!(
             export = %name,
             path = %root.display(),

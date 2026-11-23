@@ -1,0 +1,19 @@
+[daemon]
+# between header and first key
+portmap = false
+listen = [
+    "0.0.0.0:7000",
+    # after the last element
+]
+
+# a block between tables
+
+# above the client
+[client]
+parallel = 2
+
+[exports] # the exports
+# after a bare exports header
+[exports.p]
+path = "/p"
+rw = ["a", "b"]

@@ -2,18 +2,16 @@
 //! A `hosts.toml` or `exports.toml` beside it, once read as part of it, is
 //! ignored with a warning.
 
-use super::exports::{
-    exports_from_raw, immediate_problem, AllGrants, Exports, ImmediateGrants, RawExports,
-};
-use super::hosts::{hosts_from_raw, Hosts, RawHosts};
+use super::exports::Exports;
+use super::hosts::Hosts;
 use super::paths::Paths;
-use super::settings::{ClientSettings, DaemonSettings, Settings, TelemetrySettings};
-use super::{expand_tilde, line_of, read_optional, toml_err, ConfigError};
-use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
+use super::reader::read_values;
+use super::settings::Settings;
+use super::{read_optional, ConfigError};
+use irsync_proto::config as pb;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use toml::Spanned;
 
 /// Everything irsync is configured with, as of one read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,114 +58,21 @@ pub fn first_sighting(path: &Path) -> bool {
         .insert(path.to_path_buf())
 }
 
-/// The typed shape of the merged file.
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct RawMerged {
-    unsafe_config_allowed: bool,
-    identity: Option<PathBuf>,
-    state_dir: Option<PathBuf>,
-    client: ClientSettings,
-    daemon: DaemonSettings,
-    telemetry: TelemetrySettings,
-    hosts: RawHosts,
-    exports: RawExports,
-    all: AllGrants,
-    immediate: ImmediateGrants,
-}
-
 impl Config {
-    /// Parses the text of the config file: a shape pass over the top-level
-    /// keys (with the old-layout hints), then the typed pass.
+    /// Parses the text of the config file (see [`read_values`]).
     pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
-        let at = |offset: usize, message: String| ConfigError::File {
-            path: path.to_path_buf(),
-            line: Some(line_of(text, offset)),
-            message,
-        };
-        let shape: BTreeMap<String, Spanned<toml::Value>> =
-            toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        let mut keys: Vec<_> = shape.iter().collect();
-        keys.sort_by_key(|(_, v)| v.span().start);
-        for (name, value) in keys {
-            let start = value.span().start;
-            let value = value.get_ref();
-            let message = match name.as_str() {
-                "immediate" => match immediate_problem(value) {
-                    Some(m) => m,
-                    None => continue,
-                },
-                "hosts" | "exports" | "all" | "client" | "daemon" | "telemetry"
-                    if value.is_table() =>
-                {
-                    continue
-                }
-                "hosts" | "exports" | "all" | "client" | "daemon" | "telemetry" => {
-                    format!("{name}: expected a table, found {}", value.type_str())
-                }
-                "unsafe_config_allowed" if value.is_bool() => continue,
-                "unsafe_config_allowed" => {
-                    format!("{name}: expected a boolean, found {}", value.type_str())
-                }
-                "identity" | "state_dir" if value.is_str() => continue,
-                "identity" | "state_dir" => {
-                    format!("{name}: expected a string, found {}", value.type_str())
-                }
-                // A bare table is an old-layout host or export: say which
-                // by its keys, both when it has neither.
-                _ if value.is_table() => {
-                    let t = value.as_table().expect("checked");
-                    if t.contains_key("endpoint_id") || t.contains_key("client_id") {
-                        format!("unknown table {name:?}; hosts live under [hosts.{name}]")
-                    } else if t.contains_key("path") {
-                        format!("unknown table {name:?}; exports live under [exports.{name}]")
-                    } else {
-                        format!(
-                            "unknown table {name:?}; hosts live under [hosts.{name}], exports under [exports.{name}]"
-                        )
-                    }
-                }
-                "rw" | "ro" => {
-                    format!("unknown key {name:?}; grants for every export live under [all]")
-                }
-                _ => format!("unknown key {name:?}"),
-            };
-            return Err(at(start, message));
-        }
-        // Typed pass over the same text, so the spans match.
-        let raw: RawMerged = toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-        let defaults = Settings::default();
-        let mut settings = Settings {
-            unsafe_config_allowed: raw.unsafe_config_allowed,
-            // A named identity is the whole answer; the ssh key is only
-            // consulted for the built-in default.
-            ssh_identity: raw
-                .identity
-                .is_none()
-                .then_some(defaults.ssh_identity)
-                .flatten(),
-            identity: raw.identity.unwrap_or(defaults.identity),
-            state_dir: raw.state_dir.unwrap_or(defaults.state_dir),
-            client: raw.client,
-            daemon: raw.daemon,
-            telemetry: raw.telemetry,
-        };
-        for p in [
-            &mut settings.identity,
-            &mut settings.state_dir,
-            &mut settings.daemon.identity,
-        ] {
-            *p = expand_tilde(&p.to_string_lossy());
-        }
-        let hosts = Hosts {
-            path: path.to_path_buf(),
-            entries: hosts_from_raw(raw.hosts, text, path)?,
-        };
-        let exports = exports_from_raw(raw.all, raw.immediate, raw.exports, text, path)?;
+        Self::from_message(&read_values(text, path)?, path)
+    }
+
+    /// The typed view of the message: the defaults for what it leaves
+    /// unset, `~` expanded, and the checks of what an edit can break
+    /// (the reader has made the others). `path` is the file named in
+    /// errors, which have no line.
+    pub fn from_message(msg: &pb::Config, path: &Path) -> Result<Config, ConfigError> {
         Ok(Config {
-            settings,
-            hosts,
-            exports,
+            settings: Settings::from_message(msg, path)?,
+            hosts: Hosts::from_message(&msg.hosts, path)?,
+            exports: Exports::from_message(msg, path)?,
         })
     }
 

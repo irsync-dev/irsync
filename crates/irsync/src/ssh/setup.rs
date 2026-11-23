@@ -28,7 +28,7 @@ use crate::config::settings::RelayMode;
 use crate::daemon_lock::{probe, LockInfo};
 use crate::identity::{load_or_generate, parse_endpoint_id, IdentityError, PassphraseSource};
 use crate::manage::{self, PeerSpec};
-use toml_edit::DocumentMut;
+use irsync_proto::config as pb;
 
 use super::client::OLD_REMOTE_BIN;
 use super::legacy;
@@ -313,12 +313,12 @@ impl SetupReport {
 /// removed, and must not pass to whoever has the name now. A client the
 /// server already has a name for keeps that one, whatever it calls itself.
 pub fn check_client_name(
-    doc: &DocumentMut,
+    msg: &pb::Config,
     path: &Path,
     client: EndpointId,
     name: &str,
 ) -> anyhow::Result<()> {
-    let hosts = Config::parse(&doc.to_string(), path)?.hosts;
+    let hosts = Config::from_message(msg, path)?.hosts;
     if hosts.alias_of(&client).is_some() {
         return Ok(());
     }
@@ -346,7 +346,7 @@ pub fn check_client_name(
             other.fmt_short()
         );
     }
-    let lists = manage::grants::lists_naming(doc, name);
+    let lists = manage::grants::lists_naming(msg, name);
     if !lists.is_empty() {
         let lists: Vec<String> = lists.iter().map(|l| format!("[{l}]")).collect();
         let lists = lists.join(", ");
@@ -370,22 +370,22 @@ pub fn check_client_name(
 
 /// Saves `client` as the `client_id` of `[hosts.name]` (unless it has a
 /// name there already) and grants that name immediate access, after
-/// [`check_client_name`] on `doc` itself. False when the client was
+/// [`check_client_name`] on `msg` itself. False when the client was
 /// already granted, by a name or by its id; the `[hosts]` entry is written
 /// all the same. The name is only ever a label: the daemon decides access
 /// by the id it stands for.
 pub fn grant_client(
-    doc: &mut DocumentMut,
+    msg: &mut pb::Config,
     path: &Path,
     client: EndpointId,
     name: &str,
 ) -> anyhow::Result<bool> {
-    check_client_name(doc, path, client, name)?;
-    let hosts = Config::parse(&doc.to_string(), path)?.hosts;
+    check_client_name(msg, path, client, name)?;
+    let hosts = Config::from_message(msg, path)?.hosts;
     let alias = match hosts.alias_of(&client) {
         Some(a) => a.to_string(),
         None => {
-            manage::hosts::host_set_client(doc, name, client)?;
+            manage::hosts::host_set_client(msg, name, client)?;
             name.to_string()
         }
     };
@@ -396,7 +396,7 @@ pub fn grant_client(
         hosts.get(s).map(|h| h.peer_id())
     };
     let spec = PeerSpec::Alias(alias.clone());
-    Ok(manage::grants::grant_immediate(doc, &spec, &resolve)?)
+    Ok(manage::grants::grant_immediate(msg, &spec, &resolve)?)
 }
 
 /// Does every server-side step for `client`: identity, grant, daemon.
@@ -425,8 +425,8 @@ pub fn run(
     // Before anything is changed: with immediate mode off nothing is
     // granted and the client is not named.
     if settings.daemon.immediate {
-        let doc = manage::lock_config(&paths.config)?.load()?;
-        check_client_name(&doc, &paths.config, client, client_name)
+        let msg = manage::lock_config(&paths.config)?.load()?;
+        check_client_name(&msg, &paths.config, client, client_name)
             .with_context(|| format!("in {}", paths.config.display()))?;
     }
 
@@ -453,24 +453,24 @@ pub fn run(
     // 2. The grant.
     let grant = if settings.daemon.immediate {
         let lock = manage::lock_config(&paths.config)?;
-        let mut doc = lock.load()?;
-        let before = doc.to_string();
-        // Checked again on the locked document: it may have changed.
-        let added = grant_client(&mut doc, &paths.config, client, client_name)
+        let mut msg = lock.load()?;
+        let before = msg.clone();
+        // Checked again on the locked message: it may have changed.
+        let added = grant_client(&mut msg, &paths.config, client, client_name)
             .with_context(|| format!("in {}", paths.config.display()))?;
         match (added, recheck && !generated) {
             (false, _) => {
                 // Granted by its bare id before it had a name: the name
                 // is new.
-                if doc.to_string() != before {
-                    lock.save(&mut doc)?;
+                if msg != before {
+                    lock.save(&mut msg)?;
                 }
                 GrantOutcome::Already
             }
             // Not saved: the edit is dropped with the lock.
             (true, true) => GrantOutcome::Missing,
             (true, false) => {
-                lock.save(&mut doc)?;
+                lock.save(&mut msg)?;
                 GrantOutcome::Added
             }
         }
@@ -483,11 +483,11 @@ pub fn run(
         Dht::Off
     } else if no_dht {
         let lock = manage::lock_config(&paths.config)?;
-        let mut doc = lock.load()?;
+        let mut msg = lock.load()?;
         let key = ["daemon", "discovery", "dht"].map(String::from);
-        manage::config::set(&mut doc, &key, toml_edit::Value::from(false))
+        manage::config::set(&mut msg, &key, manage::config::Value::Bool(false))
             .with_context(|| format!("in {}", paths.config.display()))?;
-        lock.save(&mut doc)?;
+        lock.save(&mut msg)?;
         Dht::TurnedOff
     } else {
         Dht::On

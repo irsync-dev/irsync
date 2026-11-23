@@ -1661,8 +1661,8 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                 }
                 // Load first: a file that would not load is an error.
                 Config::load(&paths)?;
-                let doc = manage::load_doc(&paths.config)?;
-                let lines = match cfg::get(&doc, &path)? {
+                let msg = manage::load_message(&paths.config)?;
+                let lines = match cfg::get(&msg, &path)? {
                     Got::Lines(lines) => lines,
                     Got::Unset => match cfg::default_of(&path) {
                         Some(lines) => lines,
@@ -1687,7 +1687,7 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
             "config list",
             (|| {
                 Config::load(&paths)?;
-                for line in cfg::list(&manage::load_doc(&paths.config)?) {
+                for line in cfg::list(&manage::load_message(&paths.config)?) {
                     println!("{line}");
                 }
                 Ok(())
@@ -1701,11 +1701,11 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                     cfg::kind_of(&path).ok_or_else(|| anyhow::anyhow!("unknown key {key:?}"))?;
                 let value = cfg::parse_value(kind, values).with_context(|| key.to_string())?;
                 let lock = manage::lock_config(&paths.config)?;
-                let mut doc = lock.load()?;
-                let before = peer_ids(&doc, &paths.config);
-                cfg::set(&mut doc, &path, value).with_context(|| key.to_string())?;
-                lock.save(&mut doc).with_context(|| key.to_string())?;
-                note_moved_grants("config set", &before, &doc, &paths.config);
+                let mut msg = lock.load()?;
+                let before = peer_ids(&msg, &paths.config);
+                cfg::set(&mut msg, &path, value).with_context(|| key.to_string())?;
+                lock.save(&mut msg).with_context(|| key.to_string())?;
+                note_moved_grants("config set", &before, &msg, &paths.config);
                 Ok(())
             })(),
         ),
@@ -1717,8 +1717,8 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                     bail!("unknown key {key:?}");
                 }
                 let lock = manage::lock_config(&paths.config)?;
-                let mut doc = lock.load()?;
-                let before = peer_ids(&doc, &paths.config);
+                let mut msg = lock.load()?;
+                let before = peer_ids(&msg, &paths.config);
                 // Unsetting a host's table or its id removes the host: like
                 // `host remove`, not while grants name it.
                 let hosts = if path[0] == "hosts" {
@@ -1727,18 +1727,18 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                     Config::load(&paths)?;
                     match path.get(1) {
                         Some(alias) => {
-                            manage::canonicalize_without(&mut doc, &paths.config, alias)?
+                            manage::canonicalize_without(&mut msg, &paths.config, alias)?
                         }
-                        None => manage::canonicalize_doc(&mut doc, &paths.config)?,
+                        None => manage::canonicalize_doc(&mut msg, &paths.config)?,
                     };
-                    manage::hosts::host_aliases(&doc)
+                    manage::hosts::host_aliases(&msg)
                 } else {
                     Vec::new()
                 };
-                cfg::unset(&mut doc, &path).with_context(|| key.to_string())?;
-                let left = manage::hosts::host_aliases(&doc);
+                cfg::unset(&mut msg, &path).with_context(|| key.to_string())?;
+                let left = manage::hosts::host_aliases(&msg);
                 for alias in hosts.iter().filter(|a| !left.contains(a)) {
-                    let lists = manage::grants::lists_naming(&doc, alias);
+                    let lists = manage::grants::lists_naming(&msg, alias);
                     if !lists.is_empty() {
                         bail!(
                             "host {alias:?} is named by grants in {}: remove those grants \
@@ -1747,21 +1747,21 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                         );
                     }
                 }
-                lock.save(&mut doc).with_context(|| key.to_string())?;
-                note_moved_grants("config unset", &before, &doc, &paths.config);
+                lock.save(&mut msg).with_context(|| key.to_string())?;
+                note_moved_grants("config unset", &before, &msg, &paths.config);
                 Ok(())
             })(),
         ),
     }
 }
 
-/// The id each host of `doc` has as a peer in a grant; none when `doc`
+/// The id each host of `msg` has as a peer in a grant; none when `msg`
 /// does not load.
 fn peer_ids(
-    doc: &toml_edit::DocumentMut,
+    msg: &irsync_proto::config::Config,
     path: &Path,
 ) -> std::collections::BTreeMap<String, iroh::EndpointId> {
-    let Ok(config) = Config::parse(&doc.to_string(), path) else {
+    let Ok(config) = Config::from_message(msg, path) else {
         return Default::default();
     };
     let hosts = config.hosts.entries;
@@ -1774,14 +1774,14 @@ fn peer_ids(
 fn note_moved_grants(
     cmd: &str,
     before: &std::collections::BTreeMap<String, iroh::EndpointId>,
-    doc: &toml_edit::DocumentMut,
+    msg: &irsync_proto::config::Config,
     path: &Path,
 ) {
-    for (alias, new) in peer_ids(doc, path) {
+    for (alias, new) in peer_ids(msg, path) {
         let Some(old) = before.get(&alias).filter(|old| **old != new) else {
             continue;
         };
-        let lists = manage::grants::lists_naming(doc, &alias);
+        let lists = manage::grants::lists_naming(msg, &alias);
         if !lists.is_empty() {
             eprintln!(
                 "irsync {cmd}: note: the grants that name {alias} (in {}) now apply to {new} (was {old})",
@@ -1928,12 +1928,12 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 irsync::identity::refuse_to_generate_with_passphrase_file(daemon_key, &pass)
                     .with_context(|| format!("identity {}", daemon_key.display()))?;
                 let lock = manage::lock_config(&paths.config)?;
-                let mut doc = lock.load()?;
-                manage::exports::add_export(&mut doc, &name, &path, a.ro, a.warm_index)?;
+                let mut msg = lock.load()?;
+                manage::exports::add_export(&mut msg, &name, &path, a.ro, a.warm_index)?;
                 // The daemon identity comes first: when it cannot be had, the
                 // export is not added either.
                 let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
-                lock.save(&mut doc)?;
+                lock.save(&mut msg)?;
                 eprintln!(
                     "added export {name} ({}) to {}",
                     path.display(),
@@ -1947,10 +1947,10 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
             "export remove",
             (|| {
                 let lock = manage::lock_config(&paths.config)?;
-                let mut doc = lock.load()?;
-                manage::exports::remove_export(&mut doc, name)
+                let mut msg = lock.load()?;
+                manage::exports::remove_export(&mut msg, name)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut doc)?;
+                lock.save(&mut msg)?;
                 eprintln!("removed export {name} from {}", paths.config.display());
                 Ok(())
             })(),
@@ -1982,11 +1982,11 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 let spec = PeerSpec::parse(who, &hosts)?;
                 let resolve = |s: &str| hosts.get(s).map(|h| h.peer_id());
                 let lock = manage::lock_config(&paths.config)?;
-                let mut doc = lock.load()?;
+                let mut msg = lock.load()?;
                 if export == "immediate" {
-                    let added = manage::grants::grant_immediate(&mut doc, &spec, &resolve)
+                    let added = manage::grants::grant_immediate(&mut msg, &spec, &resolve)
                         .with_context(|| format!("in {}", paths.config.display()))?;
-                    lock.save(&mut doc)?;
+                    lock.save(&mut msg)?;
                     if added {
                         eprintln!("{}: immediate access", spec.written(&hosts));
                     } else {
@@ -1995,9 +1995,9 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                     return Ok(());
                 }
                 let target = (export != "all").then_some(export.as_str());
-                manage::grants::grant_add(&mut doc, target, &spec, *ro, &resolve)
+                manage::grants::grant_add(&mut msg, target, &spec, *ro, &resolve)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut doc)?;
+                lock.save(&mut msg)?;
                 let mode = if *ro { "ro" } else { "rw" };
                 match target {
                     Some(e) => eprintln!("{}: {mode} on {e}", spec.written(&hosts)),
@@ -2032,14 +2032,14 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                     Some((_, Err(e))) => return Err(e.into()),
                 };
                 let lock = manage::lock_config(&paths.config)?;
-                let mut doc = lock.load()?;
+                let mut msg = lock.load()?;
                 let n = if is_immediate {
-                    manage::grants::grant_remove_immediate(&mut doc, spec.as_ref(), &resolve)
+                    manage::grants::grant_remove_immediate(&mut msg, spec.as_ref(), &resolve)
                 } else {
-                    manage::grants::grant_remove(&mut doc, export, spec.as_ref(), &resolve)
+                    manage::grants::grant_remove(&mut msg, export, spec.as_ref(), &resolve)
                 }
                 .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut doc)?;
+                lock.save(&mut msg)?;
                 eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
                 Ok(())
             })(),
@@ -2087,13 +2087,13 @@ fn run_host(h: &HostArgs, files: &FilesArgs) -> i32 {
                 // A file that does not load is that error, not a refused save.
                 Config::load(&paths)?;
                 let lock = manage::lock_config(&paths.config)?;
-                let mut doc = lock.load()?;
+                let mut msg = lock.load()?;
                 // First, so an EndpointId written for this host is found
                 // as a grant that names it.
-                manage::canonicalize_without(&mut doc, &paths.config, alias)?;
-                let grants = manage::hosts::host_remove(&mut doc, alias, *force)
+                manage::canonicalize_without(&mut msg, &paths.config, alias)?;
+                let grants = manage::hosts::host_remove(&mut msg, alias, *force)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut doc)?;
+                lock.save(&mut msg)?;
                 let also = match grants {
                     0 => String::new(),
                     1 => " and 1 grant".to_string(),
@@ -2109,13 +2109,13 @@ fn run_host(h: &HostArgs, files: &FilesArgs) -> i32 {
                 // A file that does not load is that error, not a refused save.
                 Config::load(&paths)?;
                 let lock = manage::lock_config(&paths.config)?;
-                let mut doc = lock.load()?;
+                let mut msg = lock.load()?;
                 // First, so an EndpointId written for this host is found
                 // as a grant that names it.
-                manage::canonicalize_doc(&mut doc, &paths.config)?;
-                let grants = manage::hosts::host_rename(&mut doc, old, new)
+                manage::canonicalize_doc(&mut msg, &paths.config)?;
+                let grants = manage::hosts::host_rename(&mut msg, old, new)
                     .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut doc)?;
+                lock.save(&mut msg)?;
                 let also = match grants {
                     0 => String::new(),
                     1 => "; updated 1 grant".to_string(),
@@ -2133,8 +2133,8 @@ fn run_host(h: &HostArgs, files: &FilesArgs) -> i32 {
             (|| {
                 // Load first: an old-layout file is an error, not an empty list.
                 let config = Config::load(&paths)?;
-                let doc = manage::load_doc(&config.hosts.path)?;
-                for line in manage::hosts::host_list(&doc) {
+                let msg = manage::load_message(&config.hosts.path)?;
+                for line in manage::hosts::host_list(&msg) {
                     println!("{line}");
                 }
                 Ok(())
@@ -2397,7 +2397,7 @@ fn run_show(f: &FilesArgs) -> i32 {
             let config = Config::load(&paths)?;
             let settings = &config.settings;
             // The hosts section is `host list`, line for line.
-            let host_lines = manage::hosts::host_list(&manage::load_doc(&config.hosts.path)?);
+            let host_lines = manage::hosts::host_list(&manage::load_message(&config.hosts.path)?);
             let pass = PassphraseSource::from_env(
                 f.passphrase_file.clone(),
                 settings.unsafe_config_allowed,
@@ -2439,20 +2439,26 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
         relay_mode: a.relay_mode,
         address: (!a.address.is_empty()).then(|| a.address.clone()),
         parallel: a.parallel,
-        reconnect: a.reconnect.clone(),
+        reconnect: a
+            .reconnect
+            .as_deref()
+            .map(|r| {
+                irsync::config::duration::parse(r).with_context(|| format!("--reconnect {r:?}"))
+            })
+            .transpose()?,
         dial_retries: a.dial_retries,
         dht: a.dht,
         mdns: a.mdns,
         ssh: None,
     };
     let lock = manage::lock_config(&paths.config)?;
-    let mut doc = lock.load()?;
-    let before = peer_ids(&doc, &paths.config);
-    let old = manage::hosts::host_add(&mut doc, &a.alias, id, &flags)?;
+    let mut msg = lock.load()?;
+    let before = peer_ids(&msg, &paths.config);
+    let old = manage::hosts::host_add(&mut msg, &a.alias, id, &flags)?;
     if let Some(client_id) = client_id {
-        manage::hosts::host_set_client(&mut doc, &a.alias, client_id)?;
+        manage::hosts::host_set_client(&mut msg, &a.alias, client_id)?;
     }
-    lock.save(&mut doc)?;
+    lock.save(&mut msg)?;
     match old {
         Some(old) => println!("{}: {old} -> {id}", a.alias),
         None => println!("{}: {id}", a.alias),
@@ -2460,14 +2466,14 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     if let Some(client_id) = client_id {
         println!("{}: client_id {client_id}", a.alias);
         // The id the grants are for was given: say so when it changed.
-        note_moved_grants("host add", &before, &doc, &paths.config);
+        note_moved_grants("host add", &before, &msg, &paths.config);
         return Ok(());
     }
     // This set the daemon's id. Grants that name the alias are for its
     // client id when it has one: they did not move. Else a grant by alias
     // follows the alias: say that it moved.
-    let lists = manage::grants::lists_naming(&doc, &a.alias);
-    let client = Config::parse(&doc.to_string(), &paths.config)
+    let lists = manage::grants::lists_naming(&msg, &a.alias);
+    let client = Config::from_message(&msg, &paths.config)
         .ok()
         .and_then(|c| c.hosts.get(&a.alias).and_then(|h| h.client_id));
     if !lists.is_empty() {

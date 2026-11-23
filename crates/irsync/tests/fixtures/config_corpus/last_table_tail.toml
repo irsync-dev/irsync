@@ -1,0 +1,9 @@
+[client]
+parallel = 2
+
+[daemon]
+portmap = false
+# about the daemon's keys
+# a second line
+
+# the footer

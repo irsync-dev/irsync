@@ -1,14 +1,16 @@
-//! Edits of the `[hosts]` table in `irsync.toml` for `host add`,
-//! `host remove` and `host rename`. Pure on a parsed document; loading and saving belong to the caller.
+//! Edits of the hosts in the config message for `host add`, `host remove`
+//! and `host rename`. Pure on a message; loading and saving belong to the
+//! caller.
 
 use super::grants::{lists_naming, remove_named, rename_named};
-use super::ManageError;
+use super::{id_bytes, id_of, ManageError};
 use crate::config::hosts::valid_alias;
 use crate::config::settings::RelayMode;
-use crate::identity::parse_endpoint_id;
+use crate::config::writer;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
-use toml_edit::{Array, DocumentMut, Item, Key, Table, TableLike};
+use irsync_proto::config as pb;
+use std::time::Duration;
 use url::Url;
 
 /// The optional keys `host add` writes; `None` leaves a key untouched.
@@ -19,34 +21,40 @@ pub struct HostFlags {
     /// Replaces the whole `address` array.
     pub address: Option<Vec<HostPort>>,
     pub parallel: Option<u32>,
-    /// The validated duration text, written verbatim.
-    pub reconnect: Option<String>,
+    pub reconnect: Option<Duration>,
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
     pub mdns: Option<bool>,
     pub ssh: Option<String>,
 }
 
-/// The `[hosts]` table, created (implicit, so only its children print
-/// headers) when missing.
-fn hosts_table(doc: &mut DocumentMut) -> &mut dyn TableLike {
-    let implicit = || {
-        let mut t = Table::new();
-        t.set_implicit(true);
-        Item::Table(t)
-    };
-    let item = doc.entry("hosts").or_insert_with(implicit);
-    if !item.is_table_like() {
-        *item = implicit();
+fn entry(value: &str) -> pb::Entry {
+    pb::Entry {
+        value: value.to_string(),
+        comment: None,
     }
-    item.as_table_like_mut().expect("hosts is a table")
 }
 
-/// Create or update `[hosts.alias]`: set `endpoint_id` and each key given
-/// in `flags`, keeping everything else. Returns the previous id when the
-/// alias existed with a different one.
+/// The host `alias`, created last when missing.
+fn host_entry<'a>(msg: &'a mut pb::Config, alias: &str) -> &'a mut pb::Host {
+    let i = match msg.hosts.iter().position(|h| h.name == alias) {
+        Some(i) => i,
+        None => {
+            msg.hosts.push(pb::Host {
+                name: alias.to_string(),
+                ..Default::default()
+            });
+            msg.hosts.len() - 1
+        }
+    };
+    &mut msg.hosts[i]
+}
+
+/// Create or update host `alias`: set `endpoint_id` and each key given in
+/// `flags`, keeping everything else. Returns the previous id when the alias
+/// existed with a different one.
 pub fn host_add(
-    doc: &mut DocumentMut,
+    msg: &mut pb::Config,
     alias: &str,
     id: EndpointId,
     flags: &HostFlags,
@@ -54,143 +62,109 @@ pub fn host_add(
     if !valid_alias(alias) {
         return Err(ManageError::BadAlias(alias.to_string()));
     }
-    let hosts = hosts_table(doc);
-    let old = hosts
-        .get(alias)
-        .and_then(|t| t.get("endpoint_id"))
-        .and_then(Item::as_str)
-        .and_then(|s| parse_endpoint_id(s).ok())
+    let h = host_entry(msg, alias);
+    let old = h
+        .endpoint_id
+        .as_deref()
+        .and_then(id_of)
         .filter(|old| *old != id);
-    if !hosts.get(alias).is_some_and(Item::is_table_like) {
-        hosts.insert(alias, toml_edit::table());
-    }
-    let t = hosts.get_mut(alias).expect("just inserted");
-    t["endpoint_id"] = toml_edit::value(id.to_string());
+    h.endpoint_id = Some(id_bytes(id));
     if let Some(r) = &flags.relay {
-        t["relay"] = toml_edit::value(r.as_str());
+        h.relay = Some(r.as_str().to_string());
     }
     if let Some(m) = flags.relay_mode {
-        t["relay_mode"] = toml_edit::value(match m {
-            RelayMode::Default => "default",
-            RelayMode::Disabled => "disabled",
-        });
+        h.relay_mode = Some(match m {
+            RelayMode::Default => pb::RelayMode::Default,
+            RelayMode::Disabled => pb::RelayMode::Disabled,
+        } as i32);
     }
     if let Some(a) = &flags.address {
-        let arr: Array = a.iter().map(|h| h.to_string()).collect();
-        t["address"] = toml_edit::value(arr);
+        h.address = a.iter().map(|a| entry(&a.to_string())).collect();
+        h.address_set = true;
     }
     if let Some(p) = flags.parallel {
-        t["parallel"] = toml_edit::value(i64::from(p));
+        h.parallel = Some(p);
     }
-    if let Some(r) = &flags.reconnect {
-        t["reconnect"] = toml_edit::value(r.as_str());
+    if let Some(r) = flags.reconnect {
+        h.reconnect = Some(crate::config::duration::to_proto(r));
     }
     if let Some(n) = flags.dial_retries {
-        t["dial_retries"] = toml_edit::value(i64::from(n));
+        h.dial_retries = Some(n);
     }
     if let Some(d) = flags.dht {
-        t["dht"] = toml_edit::value(d);
+        h.dht = Some(d);
     }
     if let Some(m) = flags.mdns {
-        t["mdns"] = toml_edit::value(m);
+        h.mdns = Some(m);
     }
     if let Some(s) = &flags.ssh {
-        t["ssh"] = toml_edit::value(s.as_str());
+        h.ssh = Some(s.clone());
     }
     Ok(old)
 }
 
-/// Add `dest` to the `ssh_aliases` list of `[hosts.alias]`, unless it is
+/// Add `dest` to the `ssh_aliases` list of host `alias`, unless it is
 /// there: another ssh destination that was typed for this host. Nothing
 /// when there is no such host.
-pub fn host_add_ssh_alias(doc: &mut DocumentMut, alias: &str, dest: &str) {
-    let Some(t) = doc
-        .get_mut("hosts")
-        .and_then(Item::as_table_like_mut)
-        .and_then(|hosts| hosts.get_mut(alias))
-        .and_then(Item::as_table_like_mut)
-    else {
+pub fn host_add_ssh_alias(msg: &mut pb::Config, alias: &str, dest: &str) {
+    let Some(h) = msg.hosts.iter_mut().find(|h| h.name == alias) else {
         return;
     };
-    let mut also = t
-        .get("ssh_aliases")
-        .and_then(Item::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if !also.iter().any(|v| v.as_str() == Some(dest)) {
-        also.push(dest);
-        t.insert("ssh_aliases", toml_edit::value(also));
+    if !h.ssh_aliases.iter().any(|e| e.value == dest) {
+        h.ssh_aliases.push(entry(dest));
+        h.ssh_aliases_set = true;
     }
 }
 
-/// Create `[hosts.alias]` when it is missing and set its `client_id`: the
-/// id `alias` has as a client, the one grants naming it are for. Its other
+/// Create host `alias` when it is missing and set its `client_id`: the id
+/// `alias` has as a client, the one grants naming it are for. Its other
 /// keys, the daemon's `endpoint_id` among them, stay as they are.
 pub fn host_set_client(
-    doc: &mut DocumentMut,
+    msg: &mut pb::Config,
     alias: &str,
     id: EndpointId,
 ) -> Result<(), ManageError> {
     if !valid_alias(alias) {
         return Err(ManageError::BadAlias(alias.to_string()));
     }
-    let hosts = hosts_table(doc);
-    if !hosts.get(alias).is_some_and(Item::is_table_like) {
-        hosts.insert(alias, toml_edit::table());
-    }
-    let t = hosts.get_mut(alias).expect("just inserted");
-    t["client_id"] = toml_edit::value(id.to_string());
+    host_entry(msg, alias).client_id = Some(id_bytes(id));
     Ok(())
 }
 
-/// Remove `[hosts.alias]`; only a host entry (a table) is removed. A host
-/// that grants still name is not removed: without it they would match
-/// nobody. With `force` those grants are removed first. The number of
-/// grants removed.
+/// Remove host `alias`. A host that grants still name is not removed:
+/// without it they would match nobody. With `force` those grants are
+/// removed first. The number of grants removed.
 ///
-/// Grants are matched by the alias: run [`super::canonicalize_doc`] first
-/// so that an EndpointId written for this host counts too.
-pub fn host_remove(doc: &mut DocumentMut, alias: &str, force: bool) -> Result<usize, ManageError> {
-    let is_host = doc
-        .get("hosts")
-        .and_then(Item::as_table_like)
-        .and_then(|hosts| hosts.get(alias))
-        .is_some_and(Item::is_table_like);
-    if !is_host {
+/// Grants are matched by the alias: canonicalize the message first so that
+/// an EndpointId written for this host counts too.
+pub fn host_remove(msg: &mut pb::Config, alias: &str, force: bool) -> Result<usize, ManageError> {
+    if !msg.hosts.iter().any(|h| h.name == alias) {
         return Err(ManageError::NotFound(alias.to_string()));
     }
-    let lists = lists_naming(doc, alias);
+    let lists = lists_naming(msg, alias);
     if !lists.is_empty() && !force {
         return Err(ManageError::HostInUse {
             alias: alias.to_string(),
             lists,
         });
     }
-    let removed = remove_named(doc, alias);
-    if let Some(hosts) = doc.get_mut("hosts").and_then(Item::as_table_like_mut) {
-        hosts.remove(alias);
-    }
+    let removed = remove_named(msg, alias);
+    msg.hosts.retain(|h| h.name != alias);
     Ok(removed)
 }
 
-/// Rename `[hosts.old]` to `[hosts.new]`, keeping its place in the file,
-/// its keys and its comments, and write every grant entry naming `old` as
-/// `new`. The number of grant entries renamed. Refused, with `doc`
-/// unchanged, when `old` is no host, `new` is not a valid alias or `new`
-/// is a host already. Renaming a host to its own name changes nothing.
+/// Rename host `old` to `new`, keeping its place, its keys and its
+/// comments, and write every grant entry naming `old` as `new`. The number
+/// of grant entries renamed. Refused, with `msg` unchanged, when `old` is no
+/// host, `new` is not a valid alias or `new` is a host already. Renaming a
+/// host to its own name changes nothing.
 ///
-/// Grants are matched by the alias: run [`super::canonicalize_doc`] first
-/// so that an EndpointId written for this host counts too. A list that
-/// named both `old` and `new` names `new` twice until the next canonical
-/// rewrite, which every save does.
-pub fn host_rename(doc: &mut DocumentMut, old: &str, new: &str) -> Result<usize, ManageError> {
-    let hosts = doc.get("hosts").and_then(Item::as_table_like);
-    let is_host = |alias: &str| {
-        hosts
-            .and_then(|h| h.get(alias))
-            .is_some_and(Item::is_table_like)
-    };
-    if !is_host(old) {
+/// Grants are matched by the alias: canonicalize the message first so that
+/// an EndpointId written for this host counts too. A list that named both
+/// `old` and `new` names `new` twice until the next canonical rewrite, which
+/// every save does.
+pub fn host_rename(msg: &mut pb::Config, old: &str, new: &str) -> Result<usize, ManageError> {
+    if !msg.hosts.iter().any(|h| h.name == old) {
         return Err(ManageError::NotFound(old.to_string()));
     }
     if old == new {
@@ -199,72 +173,50 @@ pub fn host_rename(doc: &mut DocumentMut, old: &str, new: &str) -> Result<usize,
     if !valid_alias(new) {
         return Err(ManageError::BadAlias(new.to_string()));
     }
-    // Any key, not only a host table: the new entry would replace it.
-    if hosts.is_some_and(|h| h.contains_key(new)) {
+    if msg.hosts.iter().any(|h| h.name == new) {
         return Err(ManageError::HostExists(new.to_string()));
     }
-    let renamed = |key: Key| {
-        Key::new(new)
-            .with_leaf_decor(key.leaf_decor().clone())
-            .with_dotted_decor(key.dotted_decor().clone())
-    };
-    // Every entry is taken out and put back in order, so the renamed one
-    // keeps its place among the others.
-    match doc.get_mut("hosts").expect("checked above") {
-        Item::Table(t) => {
-            let keys: Vec<String> = t.iter().map(|(k, _)| k.to_string()).collect();
-            for k in keys {
-                let (key, item) = t.remove_entry(&k).expect("listed");
-                let key = if k == old { renamed(key) } else { key };
-                t.insert_formatted(&key, item);
-            }
-        }
-        Item::Value(toml_edit::Value::InlineTable(t)) => {
-            let keys: Vec<String> = t.iter().map(|(k, _)| k.to_string()).collect();
-            for k in keys {
-                let (key, value) = t.remove_entry(&k).expect("listed");
-                let key = if k == old { renamed(key) } else { key };
-                t.insert_formatted(&key, value);
-            }
-        }
-        _ => unreachable!("hosts is table-like"),
+    for h in msg.hosts.iter_mut().filter(|h| h.name == old) {
+        h.name = new.to_string();
     }
-    Ok(rename_named(doc, old, new))
+    Ok(rename_named(msg, old, new))
 }
 
-/// The aliases of `doc`: the tables under `[hosts]`, in file order.
-pub fn host_aliases(doc: &DocumentMut) -> Vec<String> {
-    doc.get("hosts")
-        .and_then(Item::as_table_like)
-        .into_iter()
-        .flat_map(|hosts| hosts.iter())
-        .filter(|(_, item)| item.is_table_like())
-        .map(|(alias, _)| alias.to_string())
-        .collect()
+/// The aliases of `msg`, in file order.
+pub fn host_aliases(msg: &pb::Config) -> Vec<String> {
+    msg.hosts.iter().map(|h| h.name.clone()).collect()
 }
 
 /// The lines `host list` prints: `alias: id`, then one indented
-/// `key = value` per other key, in file order.
-pub fn host_list(doc: &DocumentMut) -> Vec<String> {
+/// `key = value` per other key, in the writer's order and spelling.
+pub fn host_list(msg: &pb::Config) -> Vec<String> {
     let mut out = Vec::new();
-    let Some(hosts) = doc.get("hosts").and_then(Item::as_table_like) else {
-        return out;
-    };
-    for (alias, item) in hosts.iter() {
-        let Some(t) = item.as_table_like() else {
-            continue;
-        };
+    for h in &msg.hosts {
         // A host known only as a client has no daemon id to dial.
-        let id = t
-            .get("endpoint_id")
-            .and_then(Item::as_str)
-            .unwrap_or("(client only)");
-        out.push(format!("{alias}: {id}"));
-        for (k, v) in t.iter().filter(|(k, _)| *k != "endpoint_id") {
-            if let Some(v) = v.as_value() {
-                out.push(format!("    {k} = {}", v.to_string().trim()));
-            }
+        let id = match h.endpoint_id.as_deref() {
+            Some(b) => id_of(b).map_or_else(|| "(invalid)".to_string(), |id| id.to_string()),
+            None => "(client only)".to_string(),
+        };
+        out.push(format!("{}: {id}", h.name));
+        // The writer does the spelling: write the host alone, without its
+        // comments and its endpoint_id, and keep the key lines.
+        let mut bare = h.clone();
+        bare.comment = None;
+        bare.key_comments.clear();
+        bare.tail.clear();
+        bare.endpoint_id = None;
+        for e in bare.address.iter_mut().chain(&mut bare.ssh_aliases) {
+            e.comment = None;
         }
+        let text = writer::write(&pb::Config {
+            hosts: vec![bare],
+            ..Default::default()
+        });
+        out.extend(
+            text.lines()
+                .filter(|l| !l.is_empty() && !l.starts_with('['))
+                .map(|l| format!("    {l}")),
+        );
     }
     out
 }

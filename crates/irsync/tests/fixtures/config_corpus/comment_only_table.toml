@@ -1,0 +1,5 @@
+[client]
+parallel = 2
+
+[daemon]
+# nothing set here yet

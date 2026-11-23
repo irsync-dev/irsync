@@ -1,8 +1,8 @@
-//! Edits of the grant arrays in `irsync.toml` for `grant add` and
-//! `grant remove`: the `[all]` table and the `rw`/`ro` arrays of each
-//! export. The editing functions are pure on a parsed document; loading
+//! Edits of the grant lists in the config message for `grant add` and
+//! `grant remove`: the `rw` and `ro` lists of `[all]`, `[immediate]`
+//! and every export. The editing functions are pure on a message; loading
 //! and saving belong to the caller. The `list_*` reporters behind
-//! `grant list` read the parsed files.
+//! `grant list` read the typed config.
 
 use super::show::grant_lines;
 use super::{check_comment, ManageError, PeerSpec};
@@ -11,30 +11,159 @@ use crate::config::exports::Exports;
 use crate::config::hosts::Hosts;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
+use irsync_proto::config as pb;
+use std::collections::BTreeMap;
 use std::fmt::Write;
-use toml_edit::{Array, DocumentMut, Item, TableLike, Value};
 
 type Resolve<'a> = &'a dyn Fn(&str) -> Option<EndpointId>;
 
-/// The table `export` names under `[exports]`, or `[all]` for `None`
-/// (created when missing). Inline tables count: anything the parser reads
-/// as a table, the editors edit.
-fn target<'a>(
-    doc: &'a mut DocumentMut,
-    export: Option<&str>,
-) -> Result<&'a mut dyn TableLike, ManageError> {
+/// The grant lists of one table, `rw` and `ro`, with their `*_set`
+/// flags and the table's key comments.
+struct Lists<'a> {
+    rw: &'a mut Vec<pb::Entry>,
+    rw_set: &'a mut bool,
+    ro: &'a mut Vec<pb::Entry>,
+    ro_set: &'a mut bool,
+    key_comments: &'a mut BTreeMap<String, pb::Comment>,
+}
+
+impl<'a> Lists<'a> {
+    fn of_table(t: &'a mut pb::GrantTable) -> Self {
+        Lists {
+            rw: &mut t.rw,
+            rw_set: &mut t.rw_set,
+            ro: &mut t.ro,
+            ro_set: &mut t.ro_set,
+            key_comments: &mut t.key_comments,
+        }
+    }
+
+    fn of_export(e: &'a mut pb::Export) -> Self {
+        Lists {
+            rw: &mut e.rw,
+            rw_set: &mut e.rw_set,
+            ro: &mut e.ro,
+            ro_set: &mut e.ro_set,
+            key_comments: &mut e.key_comments,
+        }
+    }
+
+    fn list(&mut self, ro: bool) -> &mut Vec<pb::Entry> {
+        if ro {
+            self.ro
+        } else {
+            self.rw
+        }
+    }
+
+    /// Adds `entry` to `ro` or `rw`, last, and marks that list as set.
+    fn push(&mut self, ro: bool, entry: pb::Entry) {
+        let set = if ro {
+            &mut *self.ro_set
+        } else {
+            &mut *self.rw_set
+        };
+        *set = true;
+        self.list(ro).push(entry);
+    }
+
+    /// Removes entry `i` of `ro` or `rw`. Only the rest of its own line
+    /// leaves with it: the comment lines above it stay in the file, in
+    /// front of the next entry, else after the one before, else above the
+    /// key.
+    fn drop_at(&mut self, ro: bool, i: usize) {
+        let list = self.list(ro);
+        let above = match list.remove(i).comment {
+            Some(c) => c.above,
+            None => return,
+        };
+        if above.is_empty() {
+            return;
+        }
+        let list = self.list(ro);
+        if let Some(next) = list.get_mut(i) {
+            let c = next.comment.get_or_insert_with(Default::default);
+            c.above.splice(0..0, above);
+        } else if let Some(prev) = i.checked_sub(1).and_then(|p| list.get_mut(p)) {
+            prev.comment
+                .get_or_insert_with(Default::default)
+                .above
+                .extend(above);
+        } else {
+            let key = if ro { "ro" } else { "rw" };
+            self.key_comments
+                .entry(key.to_string())
+                .or_default()
+                .above
+                .extend(above);
+        }
+    }
+
+    /// Removes the entries of `ro` or `rw` for which `pred` holds, as
+    /// `drop_at` does; the count.
+    fn remove_where_in(&mut self, ro: bool, pred: &dyn Fn(&str) -> bool) -> usize {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.list(ro).len() {
+            if pred(&self.list(ro)[i].value) {
+                self.drop_at(ro, i);
+                n += 1;
+            } else {
+                i += 1;
+            }
+        }
+        n
+    }
+
+    /// Removes the entries of both lists for which `pred` holds; the count.
+    fn remove_where(&mut self, pred: &dyn Fn(&str) -> bool) -> usize {
+        self.remove_where_in(false, pred) + self.remove_where_in(true, pred)
+    }
+}
+
+/// The grant tables, read-only: `[all]`, `[immediate]` and every export,
+/// each with the name `lists_naming` reports it by and its `rw` and
+/// `ro` lists.
+fn grant_lists(msg: &pb::Config) -> Vec<(String, [&Vec<pb::Entry>; 2])> {
+    let mut out = Vec::new();
+    if let Some(t) = &msg.all {
+        out.push(("all".to_string(), [&t.rw, &t.ro]));
+    }
+    if let Some(t) = &msg.immediate {
+        out.push(("immediate".to_string(), [&t.rw, &t.ro]));
+    }
+    for e in &msg.exports {
+        out.push((format!("exports.{}", e.name), [&e.rw, &e.ro]));
+    }
+    out
+}
+
+/// The grant tables, as `grant_lists`, for editing.
+fn grant_lists_mut(msg: &mut pb::Config) -> Vec<Lists<'_>> {
+    let mut out = Vec::new();
+    if let Some(t) = msg.all.as_mut() {
+        out.push(Lists::of_table(t));
+    }
+    if let Some(t) = msg.immediate.as_mut() {
+        out.push(Lists::of_table(t));
+    }
+    out.extend(msg.exports.iter_mut().map(Lists::of_export));
+    out
+}
+
+/// The lists of export `export`, or of `[all]` for `None` (created when
+/// missing).
+fn target<'a>(msg: &'a mut pb::Config, export: Option<&str>) -> Result<Lists<'a>, ManageError> {
     match export {
-        Some(n) => doc
-            .get_mut("exports")
-            .and_then(Item::as_table_like_mut)
-            .and_then(|t| t.get_mut(n))
-            .and_then(Item::as_table_like_mut)
+        Some(n) => msg
+            .exports
+            .iter_mut()
+            .find(|e| e.name == n)
+            .map(Lists::of_export)
             .ok_or_else(|| ManageError::NotFound(n.to_string())),
-        None => doc
-            .entry("all")
-            .or_insert_with(toml_edit::table)
-            .as_table_like_mut()
-            .ok_or_else(|| ManageError::NotFound("all".to_string())),
+        None => Ok(Lists::of_table(
+            msg.all.get_or_insert_with(Default::default),
+        )),
     }
 }
 
@@ -46,7 +175,7 @@ fn who_id(who: &PeerSpec, resolve: Resolve) -> Option<EndpointId> {
     }
 }
 
-/// An array entry names `who` by the same text or by the same id.
+/// A grant entry names `who` by the same text or by the same id.
 fn entry_matches(text: &str, who: &PeerSpec, id: Option<EndpointId>, resolve: Resolve) -> bool {
     if text == who.entry() {
         return true;
@@ -57,107 +186,26 @@ fn entry_matches(text: &str, who: &PeerSpec, id: Option<EndpointId>, resolve: Re
     }
 }
 
-/// Remove the entries of `table[key]` for which `pred` holds; the count.
-fn remove_where(table: &mut dyn TableLike, key: &str, pred: &dyn Fn(&str) -> bool) -> usize {
-    let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
-        return 0;
-    };
-    let mut n = 0;
-    for i in (0..arr.len()).rev() {
-        if arr.get(i).and_then(Value::as_str).is_some_and(pred) {
-            arr.remove(i);
-            n += 1;
+/// The entry `who` is granted by: its text, and a public key's comment
+/// `c` at the end of its line as `# c`. Refused for a comment that would
+/// not stay on one line.
+fn grant_entry(who: &PeerSpec) -> Result<pb::Entry, ManageError> {
+    let comment = match who {
+        PeerSpec::Id {
+            comment: Some(c), ..
+        } => {
+            check_comment(c)?;
+            Some(pb::Comment {
+                above: Vec::new(),
+                trailing: format!("# {c}"),
+            })
         }
-    }
-    // Do not leave `[ "b"]` behind when the first entry went.
-    if let Some(first) = arr.get_mut(0) {
-        if first.decor().prefix().and_then(|p| p.as_str()) == Some(" ") {
-            first.decor_mut().set_prefix("");
-        }
-    }
-    n
-}
-
-fn push_entry(table: &mut dyn TableLike, key: &str, text: &str, comment: Option<&str>) {
-    let item = table
-        .entry(key)
-        .or_insert_with(|| toml_edit::value(Array::new()));
-    let Some(arr) = item.as_array_mut() else {
-        return;
+        _ => None,
     };
-    // A comment kept after the last entry's comma moves in front of the
-    // new entry, so appending never swallows a comma or the bracket.
-    let pending = arr
-        .trailing()
-        .as_str()
-        .filter(|t| t.contains('#'))
-        .map(str::to_string);
-    let mut v = Value::from(text);
-    let prefix = match (&pending, arr.is_empty()) {
-        (Some(p), _) => format!("{p}    "),
-        (None, true) => String::new(),
-        (None, false) => " ".to_string(),
-    };
-    v.decor_mut().set_prefix(prefix);
-    arr.push_formatted(v);
-    if pending.is_some() {
-        arr.set_trailing("\n");
-    }
-    if let Some(c) = comment {
-        arr.set_trailing(format!(" # {c}\n"));
-        arr.set_trailing_comma(true);
-    }
-}
-
-/// Removes entry `i` of `arr` together with the comment after it, which
-/// toml_edit keeps in front of the next entry (or, for the last entry,
-/// before the closing bracket, or behind the entry itself when no comma
-/// follows it). The comment after the entry before `i` sits in front of
-/// `i` and stays, and so do comment lines below a last entry.
-fn remove_entry(arr: &mut Array, i: usize) {
-    let text = |raw: Option<&toml_edit::RawString>| {
-        raw.and_then(|r| r.as_str()).unwrap_or_default().to_string()
-    };
-    // What follows the first line of `s`; that line itself when it holds
-    // no comment and `keep_plain` is set.
-    let below = |s: &str, keep_plain: bool| -> String {
-        match s.split_once('\n') {
-            Some((line, rest)) if line.contains('#') || !keep_plain => rest.to_string(),
-            Some(_) => s.to_string(),
-            None if s.contains('#') || !keep_plain => String::new(),
-            None => s.to_string(),
-        }
-    };
-    let before = text(arr.get(i).and_then(|v| v.decor().prefix()));
-    // Behind the entry: the rest of its line is its own, lines below are not.
-    let behind = below(&text(arr.get(i).and_then(|v| v.decor().suffix())), false);
-    let last = i + 1 == arr.len();
-    let after = if last {
-        text(Some(arr.trailing()))
-    } else {
-        text(arr.get(i + 1).and_then(|v| v.decor().prefix()))
-    };
-    // After the comma, the rest of the line is the removed entry's comment.
-    let after = below(&after, true);
-    let joined = format!("{}{behind}{after}", before.trim_end_matches([' ', '\t']));
-    arr.remove(i);
-    if last {
-        // On one line nothing but blanks can be left before the bracket.
-        let joined = if joined.trim().is_empty() && !joined.contains('\n') {
-            String::new()
-        } else {
-            joined
-        };
-        arr.set_trailing(joined);
-    } else if let Some(next) = arr.get_mut(i) {
-        // Do not leave `[ "b"]` behind when the first entry went.
-        let joined = if i == 0 && joined == " " {
-            String::new()
-        } else {
-            joined
-        };
-        next.decor_mut().set_prefix(joined);
-    }
+    Ok(pb::Entry {
+        value: who.entry(),
+        comment,
+    })
 }
 
 /// Writes every grant entry in its canonical form: an EndpointId that
@@ -168,54 +216,33 @@ fn remove_entry(arr: &mut Array, i: usize) {
 /// first place, and an entry in both `rw` and `ro` leaves `ro`: `rw` wins
 /// when the file is read, so nobody's access changes.
 ///
-/// Covers `[all]`, `[immediate]` and every table under `[exports]`.
-/// Comments and layout are kept. True when the document changed; a second
-/// run changes nothing.
-pub fn canonicalize(doc: &mut DocumentMut, hosts: &Hosts) -> bool {
+/// Covers `[all]`, `[immediate]` and every export. An entry keeps its
+/// comments; a removed one takes only the rest of its line along. True when the message
+/// changed; a second run changes nothing.
+pub fn canonicalize(msg: &mut pb::Config, hosts: &Hosts) -> bool {
     let mut changed = false;
-    let mut table = |table: &mut dyn TableLike| {
+    for mut lists in grant_lists_mut(msg) {
         // What this table already names, `rw` before `ro`.
         let mut seen: Vec<String> = Vec::new();
-        for key in ["rw", "ro"] {
-            let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
-                continue;
-            };
+        for ro in [false, true] {
             let mut i = 0;
-            while i < arr.len() {
-                let Some(text) = arr.get(i).and_then(Value::as_str) else {
-                    i += 1;
-                    continue;
-                };
+            while i < lists.list(ro).len() {
+                let text = &lists.list(ro)[i].value;
                 let alias = parse_endpoint_id(text)
                     .ok()
                     .and_then(|id| hosts.alias_of(&id));
                 let name = alias.unwrap_or(text).to_string();
                 if seen.contains(&name) {
-                    remove_entry(arr, i);
+                    lists.drop_at(ro, i);
                     changed = true;
                     continue;
                 }
                 if alias.is_some() {
-                    let v = arr.get_mut(i).expect("in range");
-                    let decor = v.decor().clone();
-                    *v = Value::from(name.as_str());
-                    *v.decor_mut() = decor;
+                    lists.list(ro)[i].value = name.clone();
                     changed = true;
                 }
                 seen.push(name);
                 i += 1;
-            }
-        }
-    };
-    for name in ["all", "immediate"] {
-        if let Some(t) = doc.get_mut(name).and_then(Item::as_table_like_mut) {
-            table(t);
-        }
-    }
-    if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
-        for (_, item) in exports.iter_mut() {
-            if let Some(t) = item.as_table_like_mut() {
-                table(t);
             }
         }
     }
@@ -224,95 +251,33 @@ pub fn canonicalize(doc: &mut DocumentMut, hosts: &Hosts) -> bool {
 
 /// The tables with a grant entry whose text is `name`: `all`,
 /// `immediate`, then `exports.NAME` in file order, each once.
-pub fn lists_naming(doc: &DocumentMut, name: &str) -> Vec<String> {
-    let names = |table: &dyn TableLike| {
-        ["rw", "ro"].iter().any(|key| {
-            table
-                .get(key)
-                .and_then(Item::as_array)
-                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(name)))
-        })
-    };
-    let mut out = Vec::new();
-    for top in ["all", "immediate"] {
-        if doc
-            .get(top)
-            .and_then(Item::as_table_like)
-            .is_some_and(names)
-        {
-            out.push(top.to_string());
-        }
-    }
-    if let Some(exports) = doc.get("exports").and_then(Item::as_table_like) {
-        for (export, item) in exports.iter() {
-            if item.as_table_like().is_some_and(names) {
-                out.push(format!("exports.{export}"));
-            }
-        }
-    }
-    out
+pub fn lists_naming(msg: &pb::Config, name: &str) -> Vec<String> {
+    grant_lists(msg)
+        .into_iter()
+        .filter(|(_, lists)| lists.iter().any(|l| l.iter().any(|e| e.value == name)))
+        .map(|(table, _)| table)
+        .collect()
 }
 
 /// Removes every grant entry whose text is `name`, from `[all]`,
-/// `[immediate]` and every export; the count.
-pub fn remove_named(doc: &mut DocumentMut, name: &str) -> usize {
-    let mut n = 0;
-    let mut table = |table: &mut dyn TableLike| {
-        for key in ["rw", "ro"] {
-            let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
-                continue;
-            };
-            for i in (0..arr.len()).rev() {
-                if arr.get(i).and_then(Value::as_str) == Some(name) {
-                    remove_entry(arr, i);
-                    n += 1;
-                }
-            }
-        }
-    };
-    for top in ["all", "immediate"] {
-        if let Some(t) = doc.get_mut(top).and_then(Item::as_table_like_mut) {
-            table(t);
-        }
-    }
-    if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
-        for (_, item) in exports.iter_mut() {
-            if let Some(t) = item.as_table_like_mut() {
-                table(t);
-            }
-        }
-    }
-    n
+/// `[immediate]` and every export; the count. The comment lines above a
+/// removed entry stay in the file.
+pub fn remove_named(msg: &mut pb::Config, name: &str) -> usize {
+    grant_lists_mut(msg)
+        .into_iter()
+        .map(|mut lists| lists.remove_where(&|t| t == name))
+        .sum()
 }
 
 /// Writes every grant entry whose text is `old` as `new`, in `[all]`,
 /// `[immediate]` and every export, keeping its comments; the count.
-pub fn rename_named(doc: &mut DocumentMut, old: &str, new: &str) -> usize {
+pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
     let mut n = 0;
-    let mut table = |table: &mut dyn TableLike| {
-        for key in ["rw", "ro"] {
-            let Some(arr) = table.get_mut(key).and_then(Item::as_array_mut) else {
-                continue;
-            };
-            for v in arr.iter_mut() {
-                if v.as_str() == Some(old) {
-                    let decor = v.decor().clone();
-                    *v = Value::from(new);
-                    *v.decor_mut() = decor;
-                    n += 1;
-                }
-            }
-        }
-    };
-    for top in ["all", "immediate"] {
-        if let Some(t) = doc.get_mut(top).and_then(Item::as_table_like_mut) {
-            table(t);
-        }
-    }
-    if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
-        for (_, item) in exports.iter_mut() {
-            if let Some(t) = item.as_table_like_mut() {
-                table(t);
+    for lists in grant_lists_mut(msg) {
+        for e in lists.rw.iter_mut().chain(lists.ro.iter_mut()) {
+            if e.value == old {
+                e.value = new.to_string();
+                n += 1;
             }
         }
     }
@@ -321,82 +286,75 @@ pub fn rename_named(doc: &mut DocumentMut, old: &str, new: &str) -> usize {
 
 /// Grant `who` access to `export` (`[all]` for `None`): read-only or
 /// read-write. Any earlier grant of the same peer there, under either
-/// spelling, is replaced.
+/// spelling, is replaced; the new entry goes last. An earlier entry of the
+/// same text moves there with its comments (the key's comment, when given,
+/// replaces the rest of its line); one of another spelling leaves only the
+/// comment lines above it behind.
 pub fn grant_add(
-    doc: &mut DocumentMut,
+    msg: &mut pb::Config,
     export: Option<&str>,
     who: &PeerSpec,
     ro: bool,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<(), ManageError> {
-    if let PeerSpec::Id {
-        comment: Some(c), ..
-    } = who
-    {
-        check_comment(c)?;
+    let mut entry = grant_entry(who)?;
+    let mut lists = target(msg, export)?;
+    let text = who.entry();
+    for from in [false, true] {
+        if let Some(i) = lists.list(from).iter().position(|e| e.value == text) {
+            let moved = lists.list(from).remove(i);
+            if entry.comment.is_none() {
+                entry.comment = moved.comment;
+            } else if let (Some(new), Some(old)) = (entry.comment.as_mut(), moved.comment) {
+                new.above = old.above;
+            }
+            break;
+        }
     }
-    let table = target(doc, export)?;
     let id = who_id(who, resolve);
-    let pred = |t: &str| entry_matches(t, who, id, resolve);
-    remove_where(table, "rw", &pred);
-    remove_where(table, "ro", &pred);
-    let comment = match who {
-        PeerSpec::Id { comment, .. } => comment.as_deref(),
-        PeerSpec::Alias(_) => None,
-    };
-    push_entry(table, if ro { "ro" } else { "rw" }, &who.entry(), comment);
+    lists.remove_where(&|t| entry_matches(t, who, id, resolve));
+    lists.push(ro, entry);
     Ok(())
 }
 
 /// Grant `who` immediate access (`[immediate].rw`). False when the peer
 /// was already granted, under either spelling.
 pub fn grant_immediate(
-    doc: &mut DocumentMut,
+    msg: &mut pb::Config,
     who: &PeerSpec,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<bool, ManageError> {
-    if let PeerSpec::Id {
-        comment: Some(c), ..
-    } = who
-    {
-        check_comment(c)?;
-    }
-    let table = doc
-        .entry("immediate")
-        .or_insert_with(toml_edit::table)
-        .as_table_like_mut()
-        .ok_or_else(|| ManageError::NotATable("immediate".to_string()))?;
+    let entry = grant_entry(who)?;
+    let mut lists = Lists::of_table(msg.immediate.get_or_insert_with(Default::default));
     let id = who_id(who, resolve);
-    let present = table.get("rw").and_then(Item::as_array).is_some_and(|a| {
-        a.iter()
-            .filter_map(Value::as_str)
-            .any(|t| entry_matches(t, who, id, resolve))
-    });
-    if present {
+    if lists
+        .rw
+        .iter()
+        .any(|e| entry_matches(&e.value, who, id, resolve))
+    {
         return Ok(false);
     }
-    let comment = match who {
-        PeerSpec::Id { comment, .. } => comment.as_deref(),
-        PeerSpec::Alias(_) => None,
-    };
-    push_entry(table, "rw", &who.entry(), comment);
+    lists.push(false, entry);
     Ok(true)
 }
 
 /// Remove `who` from `[immediate].rw` (`None`: everyone); the count.
 pub fn grant_remove_immediate(
-    doc: &mut DocumentMut,
+    msg: &mut pb::Config,
     who: Option<&PeerSpec>,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<usize, ManageError> {
-    let n = match doc.get_mut("immediate").and_then(Item::as_table_like_mut) {
-        Some(t) => match who {
-            None => remove_where(t, "rw", &|_| true),
-            Some(w) => {
-                let id = who_id(w, resolve);
-                remove_where(t, "rw", &|s| entry_matches(s, w, id, resolve))
+    let n = match msg.immediate.as_mut() {
+        Some(t) => {
+            let mut lists = Lists::of_table(t);
+            match who {
+                None => lists.remove_where_in(false, &|_| true),
+                Some(w) => {
+                    let id = who_id(w, resolve);
+                    lists.remove_where_in(false, &|s| entry_matches(s, w, id, resolve))
+                }
             }
-        },
+        }
         None => 0,
     };
     if n == 0 {
@@ -406,42 +364,39 @@ pub fn grant_remove_immediate(
     Ok(n)
 }
 
-fn remove_in(table: &mut dyn TableLike, who: Option<&PeerSpec>, resolve: Resolve) -> usize {
+/// Removes the grants of `who` (`None`: everyone) from both lists.
+fn remove_in(lists: &mut Lists, who: Option<&PeerSpec>, resolve: Resolve) -> usize {
     match who {
-        None => remove_where(table, "rw", &|_| true) + remove_where(table, "ro", &|_| true),
+        None => lists.remove_where(&|_| true),
         Some(w) => {
             let id = who_id(w, resolve);
-            let pred = |t: &str| entry_matches(t, w, id, resolve);
-            remove_where(table, "rw", &pred) + remove_where(table, "ro", &pred)
+            lists.remove_where(&|t| entry_matches(t, w, id, resolve))
         }
     }
 }
 
 /// Remove grants; the number of entries removed. `who = None` empties both
-/// arrays of `export` (or of `[all]`); `export = None` walks `[all]` and
-/// every export, so `(None, None)` empties every array in the file.
+/// lists of `export` (or of `[all]`); `export = None` walks `[all]` and
+/// every export, so `(None, None)` empties every list but `[immediate]`.
+/// An emptied list stays in the file, as `rw = []`.
 pub fn grant_remove(
-    doc: &mut DocumentMut,
+    msg: &mut pb::Config,
     export: Option<&str>,
     who: Option<&PeerSpec>,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<usize, ManageError> {
     let n = match export {
         None => {
-            let mut n = match doc.get_mut("all").and_then(Item::as_table_like_mut) {
-                Some(all) => remove_in(all, who, resolve),
+            let mut n = match msg.all.as_mut() {
+                Some(all) => remove_in(&mut Lists::of_table(all), who, resolve),
                 None => 0,
             };
-            if let Some(exports) = doc.get_mut("exports").and_then(Item::as_table_like_mut) {
-                for (_, item) in exports.iter_mut() {
-                    if let Some(t) = item.as_table_like_mut() {
-                        n += remove_in(t, who, resolve);
-                    }
-                }
+            for e in msg.exports.iter_mut() {
+                n += remove_in(&mut Lists::of_export(e), who, resolve);
             }
             n
         }
-        Some(_) => remove_in(target(doc, export)?, who, resolve),
+        Some(_) => remove_in(&mut target(msg, export)?, who, resolve),
     };
     if n == 0 {
         let what = match (who, export) {

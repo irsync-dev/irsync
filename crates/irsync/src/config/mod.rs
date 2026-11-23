@@ -1,11 +1,14 @@
 //! Settings, host aliases and exports (TOML) configuration.
 
+mod comments;
 pub mod duration;
 pub mod exports;
 pub mod file;
 pub mod hosts;
 pub mod paths;
+pub mod reader;
 pub mod settings;
+pub mod writer;
 
 use std::path::PathBuf;
 
@@ -43,8 +46,6 @@ pub enum ConfigError {
     UnknownAlias { alias: String, hosts: PathBuf },
     #[error("bad peer {0:?}: expected a host alias or an EndpointId")]
     BadPeer(String),
-    #[error("daemon config: {0}")]
-    Toml(#[from] toml::de::Error),
 }
 
 /// Expand a leading `~` or `~/` using the user's home directory.
@@ -64,11 +65,13 @@ pub(crate) fn line_of(text: &str, offset: usize) -> usize {
     text[..offset.min(text.len())].matches('\n').count() + 1
 }
 
-pub(crate) fn toml_err(text: &str, path: &std::path::Path, e: toml::de::Error) -> ConfigError {
+/// An error in a config that has no line to point at, such as one a
+/// command built.
+pub(crate) fn file_error(path: &std::path::Path, message: String) -> ConfigError {
     ConfigError::File {
         path: path.to_path_buf(),
-        line: e.span().map(|s| line_of(text, s.start)),
-        message: e.message().to_string(),
+        line: None,
+        message,
     }
 }
 

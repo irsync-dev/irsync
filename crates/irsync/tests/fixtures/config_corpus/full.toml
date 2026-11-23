@@ -1,0 +1,71 @@
+unsafe_config_allowed = true
+identity = "~/keys/client"
+state_dir = "/var/lib/irsync"
+
+[client]
+parallel = 7
+reconnect = "90s"
+dial_retries = 9
+dht = false
+ssh_install = false
+mdns = false
+relay = "https://relay.example.com/"
+relay_mode = "disabled"
+congestion = "cubic"
+pq_key_exchange = "require"
+
+[daemon]
+identity = "~/keys/daemon"
+idle_timeout = "2h"
+dormant_session_timeout = "3d"
+max_dormant_sessions_per_key = 5
+listen = ["0.0.0.0:7000", "[::]:7000"]
+portmap = false
+relay = "https://relay.example.com/"
+relay_mode = "disabled"
+congestion = "cubic"
+pq_key_exchange = "require"
+debug_addr = "127.0.0.1:9000"
+immediate = false
+allow_root = true
+
+[daemon.discovery]
+dht = false
+dns = false
+mdns = false
+
+[telemetry]
+otlp_endpoint = "http://collector.lan:4317/"
+otlp_protocol = "http"
+
+[hosts.nas]
+endpoint_id = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"
+client_id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"
+relay = "https://relay.example.com/"
+relay_mode = "disabled"
+congestion = "cubic"
+pq_key_exchange = "require"
+address = ["10.0.0.2:4433", "nas.lan:4433"]
+parallel = 3
+reconnect = "30m"
+dial_retries = 2
+dht = false
+mdns = false
+ssh = "me@nas"
+ssh_aliases = ["10.0.0.2", "nas.local"]
+
+[exports.photos]
+path = "/srv/photos"
+read_only = true
+warm_index = true
+fsync = true
+auto = true
+rw = ["nas"]
+ro = ["92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"]
+
+[all]
+rw = ["nas"]
+ro = ["92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"]
+
+[immediate]
+rw = ["nas"]

@@ -3,7 +3,8 @@
 One file holds everything: `~/.config/irsync/irsync.toml`. It is optional; a
 missing file is the same as an empty one, and every key has a default except
 where noted. The [management commands](management.md) edit it for you and keep
-its comments; `irsync config` reads and writes any key; you can also edit it by
+its comments and the order of its hosts and exports (they rewrite the rest in
+one standard form); `irsync config` reads and writes any key; you can also edit it by
 hand.
 
 Every command takes `--config PATH` to use another file. Unknown keys and

@@ -18,6 +18,15 @@ pub fn parse(s: &str) -> Result<Duration, ConfigError> {
     n.checked_mul(mult).map(Duration::from_secs).ok_or_else(bad)
 }
 
+/// A duration as the config message holds it. One past `i64::MAX`
+/// seconds stays at `i64::MAX`.
+pub fn to_proto(d: Duration) -> prost_types::Duration {
+    prost_types::Duration {
+        seconds: i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        nanos: i32::try_from(d.subsec_nanos()).expect("under a second"),
+    }
+}
+
 /// A duration as the config spells it: the largest of `d`, `h`, `m`, `s`
 /// that divides it evenly (`1800s` is `30m`; `90s` stays `90s`).
 pub fn format(d: Duration) -> String {
