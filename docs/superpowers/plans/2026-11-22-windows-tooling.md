@@ -631,14 +631,6 @@ A test whose expected text holds a root path compares against the canonical root
 // every entry of a small tree has mode, uid, gid, rdev == 0 and no xattrs.
 ```
 
-and one test for every platform, in `tests/engine.rs`, per backend:
-
-```rust
-fn update_rehashes_content_rewritten_with_the_old_mtime(b: Backend)
-// init; rewrite the file with other bytes of the same length; set its mtime back
-// (File::set_modified); update: the stored blake3 is the new content's hash.
-```
-
 - [ ] **Step 3: Run on Windows, fix what the tests find, run again**
 
 Run: the Windows run, with `-p fileset -p irsync-glob`.

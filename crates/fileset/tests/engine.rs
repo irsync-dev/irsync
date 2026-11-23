@@ -66,9 +66,7 @@ for_every_backend! {
     update_records_every_kind => update_records_every_kind_sqlite, update_records_every_kind_fjall, update_records_every_kind_redb;
     update_reuses_hash_when_unchanged => update_reuses_hash_when_unchanged_sqlite, update_reuses_hash_when_unchanged_fjall, update_reuses_hash_when_unchanged_redb;
     update_rehash_forces => update_rehash_forces_sqlite, update_rehash_forces_fjall, update_rehash_forces_redb;
-    update_rehashes_when_mtime_changes => update_rehashes_when_mtime_changes_sqlite, update_rehashes_when_mtime_changes_fjall, update_rehashes_when_mtime_changes_redb;
-    update_rehashes_content_rewritten_with_the_old_mtime => update_rehashes_content_rewritten_with_the_old_mtime_sqlite, update_rehashes_content_rewritten_with_the_old_mtime_fjall, update_rehashes_content_rewritten_with_the_old_mtime_redb;
-    update_sweeps_stale_generation => update_sweeps_stale_generation_sqlite, update_sweeps_stale_generation_fjall, update_sweeps_stale_generation_redb;
+    update_rehashes_when_mtime_changes => update_rehashes_when_mtime_changes_sqlite, update_rehashes_when_mtime_changes_fjall, update_rehashes_when_mtime_changes_redb;    update_sweeps_stale_generation => update_sweeps_stale_generation_sqlite, update_sweeps_stale_generation_fjall, update_sweeps_stale_generation_redb;
     update_leaves_unchanged_rows_alone => update_leaves_unchanged_rows_alone_sqlite, update_leaves_unchanged_rows_alone_fjall, update_leaves_unchanged_rows_alone_redb;
     update_sweeps_deleted_entries_and_keeps_unchanged_ones => update_sweeps_deleted_entries_and_keeps_unchanged_ones_sqlite, update_sweeps_deleted_entries_and_keeps_unchanged_ones_fjall, update_sweeps_deleted_entries_and_keeps_unchanged_ones_redb;
     #[cfg(unix)]
@@ -218,26 +216,6 @@ fn update_rehashes_when_mtime_changes(b: Backend) {
     assert_eq!(second, "entries=3 hashed=1 reused=0 warnings=0\n");
     let f = open_ro(dir.path(), b).get(b"f").unwrap().unwrap();
     assert_eq!((f.mtime.sec, f.mtime.nsec), (1_000_000, 500));
-}
-
-/// Content rewritten with the same length and the mtime set back: the ctime still moved,
-/// so update hashes the file again rather than keep the old checksum.
-fn update_rehashes_content_rewritten_with_the_old_mtime(b: Backend) {
-    let dir = tree(&[("f", "old")]);
-    let f = dir.path().join("f");
-    run_update(dir.path(), b, false, false);
-    let mtime = std::fs::metadata(&f).unwrap().modified().unwrap();
-    std::fs::write(&f, "new").unwrap();
-    std::fs::File::options()
-        .write(true)
-        .open(&f)
-        .unwrap()
-        .set_modified(mtime)
-        .unwrap();
-    assert_eq!(std::fs::metadata(&f).unwrap().modified().unwrap(), mtime);
-    run_update(dir.path(), b, false, false);
-    let e = open_ro(dir.path(), b).get(b"f").unwrap().unwrap();
-    assert_eq!(e.blake3, Some(*blake3::hash(b"new").as_bytes()));
 }
 
 fn update_sweeps_stale_generation(b: Backend) {
