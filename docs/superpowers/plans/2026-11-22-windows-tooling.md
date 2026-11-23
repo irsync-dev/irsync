@@ -1049,6 +1049,8 @@ GitHub sets `CI=true`, so a runner that cannot create symlinks fails the symlink
 
 Add both Windows targets to `targets`, and rewrite the comment above the list: it now says Windows is covered because `filegen` and `fileset` are built for it.
 
+**First, `ctrlc`.** PR 4 pins `ctrlc = "=3.5.2"`, because 3.5.3 was under a week old. 3.5.2 asks for nix 0.31, and with a Windows target in the list `cargo deny` counts that as a second nix version (it checks one graph for all targets), so the bans check fails. If today is 2026-11-25 or later, move `ctrlc` to 3.5.3 (which takes nix 0.32), run `tools/sync-fuzz-lock.sh`, and update its entry in `docs/SUPPLY_CHAIN_DECISIONS.md`. Otherwise add a `skip` for `nix@0.31` with ctrlc 3.5.2 as the reason and a note to remove it with the bump.
+
 Task 0 found one advisory with the Windows targets, and the maintainer accepted it (2026-11-23). Add it to `[advisories].ignore`, following "How to accept an advisory" in `book/src/contributing/supply-chain.md`:
 
 ```toml
