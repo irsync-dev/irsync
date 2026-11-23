@@ -4,12 +4,12 @@
 
 use std::collections::{BinaryHeap, HashMap};
 use std::ffi::OsString;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 
 use crate::escape::escape;
 use crate::model::{Entry, Flags, Partial};
+use crate::platform;
 use crate::store::{Reader, NAMES};
 
 #[derive(Clone, Debug)]
@@ -170,7 +170,11 @@ fn is_sidecar(cfg: &WalkConfig, abs: &Path) -> bool {
     let (Some(store_name), Some(name)) = (store.file_name(), abs.file_name()) else {
         return false;
     };
-    let Some(suffix) = name.as_bytes().strip_prefix(store_name.as_bytes()) else {
+    let (store_name, name) = (
+        platform::os_to_bytes(store_name),
+        platform::os_to_bytes(name),
+    );
+    let Some(suffix) = name.strip_prefix(&store_name[..]) else {
         return false;
     };
     abs.parent() == store.parent() && [&b"-wal"[..], b"-shm", b"-journal"].contains(&suffix)
@@ -408,13 +412,17 @@ fn list_dir(
     let mut items = Vec::new();
     let mut subdirs = Vec::new();
     let dir_rel = job.rel.as_slice();
-    let mut names: Vec<OsString> = match std::fs::read_dir(&job.abs) {
+    // Each name with its stored bytes, which are what it sorts by.
+    let mut names: Vec<(Vec<u8>, OsString)> = match std::fs::read_dir(&job.abs) {
         Ok(rd) => {
             let mut names = Vec::new();
             let mut warned = false;
             for item in rd {
                 match item {
-                    Ok(e) => names.push(e.file_name()),
+                    Ok(e) => {
+                        let name = e.file_name();
+                        names.push((platform::os_to_bytes(&name), name));
+                    }
                     Err(err) if !warned => {
                         warned = true;
                         items.push(Item::Event(WalkEvent::Warning(cannot_read_dir(
@@ -435,15 +443,15 @@ fn list_dir(
         }
     };
     if cfg.sort {
-        names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        // By the bytes: no two names of a directory have the same.
+        names.sort();
     }
     let mut named = Vec::with_capacity(names.len());
-    for name in names {
+    for (name_bytes, name) in names {
         let abs = job.abs.join(&name);
         if is_sidecar(cfg, &abs) {
             continue;
         }
-        let name_bytes = name.into_vec();
         let excluded = cfg.builtin_excludes
             && job.volume_top
             && BUILTIN_EXCLUDES.iter().any(|n| n.as_bytes() == name_bytes);
@@ -536,6 +544,7 @@ fn list_dir(
 mod tests {
     use super::*;
     use crate::model::{Flags, Kind};
+    use crate::platform::testutil;
     use std::path::Path;
 
     fn run(cfg: &WalkConfig) -> (Vec<Observed>, Vec<String>) {
@@ -622,7 +631,7 @@ mod tests {
         }
         std::fs::create_dir(r.join(".Trashes")).unwrap();
         std::fs::write(r.join("a/x/.fileset.sqlite"), b"").unwrap();
-        std::os::unix::fs::symlink("a", r.join("s")).unwrap();
+        testutil::symlink(Path::new("a"), &r.join("s")).unwrap();
         (t, r)
     }
 
@@ -776,7 +785,7 @@ mod tests {
         let base = std::fs::canonicalize(t.path()).unwrap();
         std::fs::create_dir(base.join("real")).unwrap();
         std::fs::write(base.join("real/f"), b"").unwrap();
-        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        testutil::symlink(&base.join("real"), &base.join("link")).unwrap();
         let root = std::fs::canonicalize(base.join("link")).unwrap();
         let (e, _) = run(&cfg(&root, None));
         assert_eq!(e[0].path, b".");
@@ -789,7 +798,7 @@ mod tests {
     fn walk_non_utf8_name() {
         let t = tempfile::tempdir().unwrap();
         let r = std::fs::canonicalize(t.path()).unwrap();
-        if let Err(e) = std::fs::write(r.join(std::ffi::OsStr::from_bytes(b"bad\xff")), b"") {
+        if let Err(e) = std::fs::write(r.join(platform::bytes_to_os(b"bad\xff").unwrap()), b"") {
             // ZFS with utf8only=on refuses such names (EILSEQ, 84 on Linux).
             // CI's filesystem takes them, so there a refusal must fail.
             assert_eq!(e.raw_os_error(), Some(84), "{e}");
@@ -803,21 +812,20 @@ mod tests {
 
     #[test]
     fn walk_unreadable_dir_warns_and_reports_not_descended() {
-        use std::os::unix::fs::PermissionsExt;
         let t = tempfile::tempdir().unwrap();
         let r = std::fs::canonicalize(t.path()).unwrap();
         std::fs::create_dir(r.join("d")).unwrap();
         std::fs::write(r.join("d/f"), b"").unwrap();
         std::fs::write(r.join("e"), b"").unwrap();
-        let mode = |m| std::fs::set_permissions(r.join("d"), std::fs::Permissions::from_mode(m));
-        mode(0o000).unwrap();
+        let mode = |m| testutil::set_mode(&r.join("d"), m);
+        mode(0o000);
         if std::fs::read_dir(r.join("d")).is_ok() {
-            mode(0o755).unwrap();
+            mode(0o755);
             eprintln!("skipping: running with privileges that bypass directory permissions");
             return;
         }
         let (e, mut w, skipped) = run_all(&cfg(&r, None));
-        mode(0o755).unwrap();
+        mode(0o755);
         // macOS and FreeBSD also refuse to read the xattrs of an unreadable directory.
         if cfg!(any(target_os = "macos", target_os = "freebsd")) {
             w.retain(|m| !m.starts_with("cannot read xattrs of d: "));
@@ -864,21 +872,20 @@ mod tests {
 
     #[test]
     fn walk_unstatable_entry_warns_and_reports_not_descended() {
-        use std::os::unix::fs::PermissionsExt;
         let t = tempfile::tempdir().unwrap();
         let r = std::fs::canonicalize(t.path()).unwrap();
         std::fs::create_dir(r.join("d")).unwrap();
         std::fs::write(r.join("d/f"), b"").unwrap();
         // Listable but not searchable: the names are readable, the entries cannot be stat'ed.
-        let mode = |m| std::fs::set_permissions(r.join("d"), std::fs::Permissions::from_mode(m));
-        mode(0o644).unwrap();
+        let mode = |m| testutil::set_mode(&r.join("d"), m);
+        mode(0o644);
         if std::fs::symlink_metadata(r.join("d/f")).is_ok() {
-            mode(0o755).unwrap();
+            mode(0o755);
             eprintln!("skipping: running with privileges that bypass directory permissions");
             return;
         }
         let (e, mut w, skipped) = run_all(&cfg(&r, None));
-        mode(0o755).unwrap();
+        mode(0o755);
         if cfg!(any(target_os = "macos", target_os = "freebsd")) {
             w.retain(|m| !m.starts_with("cannot read xattrs of "));
         }
@@ -965,7 +972,7 @@ mod tests {
         let r = std::fs::canonicalize(t.path()).unwrap();
         std::fs::create_dir(r.join("d")).unwrap();
         std::fs::write(r.join("d/file"), b"").unwrap();
-        std::os::unix::fs::symlink(r.join("d"), r.join("s")).unwrap();
+        testutil::symlink(&r.join("d"), &r.join("s")).unwrap();
         let (e, _) = run(&cfg(&r, None));
         let p = paths(&e);
         let s = e.iter().find(|o| o.path == b"s").unwrap();

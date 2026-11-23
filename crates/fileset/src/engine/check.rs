@@ -1,10 +1,8 @@
 //! `check`: walk the tree and report how it differs from the manifest.
 
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
 use std::io::{ErrorKind, Write};
 use std::ops::Bound;
-use std::os::unix::ffi::OsStrExt;
 
 use anyhow::Context;
 
@@ -15,6 +13,7 @@ use crate::compare::{diff, Field, Selection, Tier};
 use crate::escape::escape;
 use crate::model::{Flags, Kind};
 use crate::pipeline::{self, Decision};
+use crate::platform;
 use crate::progress::Progress;
 use crate::report::{line_add, line_chg, line_del, line_entry, line_skp, CheckSummary, FieldDiff};
 use crate::store::{self, OpenMode};
@@ -140,7 +139,13 @@ pub fn check(
             summary.deleted += 1;
             return Ok(());
         }
-        match root.join(OsStr::from_bytes(path)).symlink_metadata() {
+        // A path this system cannot name is not there.
+        let Ok(abs) = platform::rel_to_path(&root, path) else {
+            report.line(&line_del(path))?;
+            summary.deleted += 1;
+            return Ok(());
+        };
+        match abs.symlink_metadata() {
             Ok(_) => {}
             Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
                 report.line(&line_del(path))?;

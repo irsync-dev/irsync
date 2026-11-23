@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use crossbeam_channel::{bounded, select, unbounded, Receiver, Sender};
 
-use crate::cpu::thread_cpu_time;
 use crate::hash::hash_file;
 use crate::model::Flags;
+use crate::platform::thread_cpu_time;
 use crate::walk::{Observed, WalkEvent};
 
 pub enum Decision {
@@ -193,8 +193,8 @@ where
 mod tests {
     use super::*;
     use crate::model::{Entry, Flags};
+    use crate::platform::testutil;
     use crate::walk::{Observed, WalkEvent};
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     fn observed(abs: &Path, rel: &str) -> Observed {
@@ -302,11 +302,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("f");
         std::fs::write(&p, b"secret").unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
-        if std::fs::read(&p).is_ok() {
+        let Some(_unreadable) = testutil::make_unreadable(&p) else {
             eprintln!("skipping: running with privileges that bypass file permissions");
             return;
-        }
+        };
         let mut seen = Vec::new();
         run(
             1,

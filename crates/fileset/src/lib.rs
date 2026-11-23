@@ -7,6 +7,7 @@ pub mod glob;
 pub mod hash;
 pub mod model;
 pub mod pipeline;
+pub mod platform;
 pub mod progress;
 pub mod report;
 pub mod store;
