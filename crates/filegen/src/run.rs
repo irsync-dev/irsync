@@ -10,6 +10,7 @@ use indicatif::{HumanBytes, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
+use crate::caps::{self, Caps};
 use crate::chain::{cap_pressure, Chain};
 use crate::cli::{self, RunArgs};
 use crate::config::{self, Config, ConfigError};
@@ -21,7 +22,7 @@ use crate::ops::file::create_file;
 use crate::ops::{dispatch, Applied, OpCtx, OpError, OpOutcome};
 use crate::pace::Pace;
 use crate::pick::anchor_of;
-use crate::platform;
+use crate::platform::{self, Platform};
 use crate::state::{self, ChainState, LastRun, State, StateError, TreeInfo, FORMAT_VERSION};
 use crate::walk;
 
@@ -132,6 +133,8 @@ pub struct Runner {
     steps_done: u64,
     start_step: u64,
     dry: bool,
+    platform: Platform,
+    caps: Caps,
     log: LogWriter,
     log_path: PathBuf,
     state_path: PathBuf,
@@ -185,7 +188,9 @@ impl Runner {
             .map_err(RunError::Config)?;
         config::apply_flags(&mut cfg, &opts.flags);
         cfg.validate().map_err(RunError::Config)?;
-        let chain = Chain::from_weights(&cfg.weights).map_err(RunError::Config)?;
+        // Checked as the user gave it, before anything else is looked at; the
+        // chain itself is built below, once the capabilities are known.
+        Chain::from_weights(&cfg.weights).map_err(RunError::Config)?;
 
         let seed = match (&opts.start, &resumed) {
             (_, Some(s)) => s.seed,
@@ -261,6 +266,35 @@ impl Runner {
         }
         fs::create_dir_all(&out_dir).map_err(RunError::Io)?;
 
+        // A dry run must not write to the tree, so it probes in the output
+        // directory; a real run probes where it will write.
+        let platform = Platform::CURRENT;
+        let probe_dir = if opts.dry_run { &out_dir } else { &root };
+        let caps = platform::probe_caps(probe_dir).map_err(RunError::Io)?;
+        if let (Some(s), Start::Resume(path)) = (&resumed, &opts.start) {
+            if s.platform != platform {
+                return Err(RunError::Usage(format!(
+                    "{} was written on {}, but this machine is {}: \
+                     the run would no longer be the one the seed gave",
+                    path.display(),
+                    s.platform.as_str(),
+                    platform.as_str()
+                )));
+            }
+            if s.caps != caps {
+                return Err(RunError::Usage(format!(
+                    "{} was written with capabilities {}, but this machine has {}: \
+                     the run would no longer be the one the seed gave",
+                    path.display(),
+                    s.caps.log_value(),
+                    caps.log_value()
+                )));
+            }
+        }
+        let disabled = caps::disabled(platform, caps);
+        let chain = Chain::from_weights(&caps::without(&cfg.weights, &disabled))
+            .map_err(RunError::Config)?;
+
         let model = walk::from_disk(&root).map_err(RunError::Io)?;
         // Only now that the walk succeeded: a failed start must not
         // destroy the previous history.
@@ -290,9 +324,18 @@ impl Runner {
             config_file: opts.config_file.clone(),
             dry_run: opts.dry_run,
             started,
+            platform,
+            caps,
         })
         .map_err(RunError::Io)?;
         if !opts.quiet {
+            if !disabled.is_empty() {
+                let names: Vec<&str> = disabled.iter().map(|k| k.name()).collect();
+                eprintln!(
+                    "filegen: not available here, weight set to 0: {}",
+                    names.join(", ")
+                );
+            }
             eprintln!("log: {}", log_path.display());
             eprintln!("state: {}", state_path.display());
         }
@@ -308,6 +351,8 @@ impl Runner {
             steps_done,
             start_step: steps_done,
             dry: opts.dry_run,
+            platform,
+            caps,
             log,
             log_path,
             state_path,
@@ -488,6 +533,8 @@ impl Runner {
                 anchor: escape(&self.model.rel_path(self.anchor)),
             },
             dry_run: self.dry,
+            platform: self.platform,
+            caps: self.caps,
             config: self.cfg.clone(),
             tree: TreeInfo {
                 entries: self.model.entries() as u64,
@@ -626,10 +673,12 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::caps::Caps;
     use crate::ops::testutil::triples;
     #[cfg(unix)]
     use crate::platform::testutil;
     use crate::platform::testutil::symlink;
+    use crate::platform::Platform;
     use crate::state;
     use crate::walk::from_disk;
 
@@ -987,6 +1036,91 @@ mod tests {
         assert!(out.join("mine.state.yaml").exists());
     }
 
+    /// Rewrites the state file at `p` line by line.
+    fn edit_state(p: &Path, f: impl Fn(&str) -> String) {
+        let yaml = text(p);
+        let edited: Vec<String> = yaml.lines().map(f).collect();
+        fs::write(p, edited.join("\n") + "\n").unwrap();
+    }
+
+    #[test]
+    fn the_log_header_and_state_record_the_platform_and_capabilities() {
+        let (t, root) = base();
+        let out = t.path().join("out");
+        run_ok(opts(&root, &out, 20, Start::Seed(31)));
+        let s = state::read(&out.join("filegen-31.state.yaml")).unwrap();
+        assert_eq!(s.format_version, 4);
+        assert_eq!(s.platform, Platform::CURRENT);
+        let header = text(&out.join("filegen-31.log"))
+            .lines()
+            .find(|l| l.starts_with("# run"))
+            .unwrap()
+            .to_string();
+        assert!(
+            header.ends_with(&format!(
+                " platform={} caps={}",
+                s.platform.as_str(),
+                s.caps.log_value()
+            )),
+            "{header}"
+        );
+        // The state keeps the config as the user gave it, whatever the
+        // chain was built from.
+        assert_eq!(s.config.weights, config::default_weights());
+    }
+
+    #[test]
+    fn resume_refuses_a_state_from_the_other_platform() {
+        let (t, root) = base();
+        let out = t.path().join("out");
+        run_ok(opts(&root, &out, 20, Start::Seed(32)));
+        let state_path = out.join("filegen-32.state.yaml");
+        let other = match Platform::CURRENT {
+            Platform::Unix => Platform::Windows,
+            Platform::Windows => Platform::Unix,
+        };
+        let here = Platform::CURRENT;
+        edit_state(&state_path, |l| {
+            if l == format!("platform: {}", here.as_str()) {
+                format!("platform: {}", other.as_str())
+            } else {
+                l.to_string()
+            }
+        });
+        let msg = usage(run(opts(&root, &out, 5, Start::Resume(state_path))));
+        assert!(
+            msg.contains(other.as_str()) && msg.contains(here.as_str()),
+            "{msg}"
+        );
+        assert!(msg.contains("no longer be the one the seed gave"), "{msg}");
+    }
+
+    #[test]
+    fn resume_refuses_a_state_with_other_capabilities() {
+        let (t, root) = base();
+        let out = t.path().join("out");
+        run_ok(opts(&root, &out, 5, Start::Seed(33)));
+        let state_path = out.join("filegen-33.state.yaml");
+        let here = state::read(&state_path).unwrap().caps;
+        let other = Caps {
+            sparse: !here.sparse,
+            ..here
+        };
+        edit_state(&state_path, |l| {
+            if l.trim_start() == format!("sparse: {}", here.sparse) {
+                format!("  sparse: {}", other.sparse)
+            } else {
+                l.to_string()
+            }
+        });
+        assert_eq!(state::read(&state_path).unwrap().caps, other);
+        let msg = usage(run(opts(&root, &out, 5, Start::Resume(state_path))));
+        assert!(
+            msg.contains(&here.log_value()) && msg.contains(&other.log_value()),
+            "{msg}"
+        );
+        assert!(msg.contains("no longer be the one the seed gave"), "{msg}");
+    }
     #[test]
     fn run_dry_run_files_and_state() {
         let (t, root) = base();

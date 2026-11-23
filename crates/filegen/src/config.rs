@@ -160,6 +160,10 @@ pub struct NamesConfig {
     pub classes: NameClassWeights,
     pub extensions: Vec<String>,
     pub max_len: u32,
+    /// The share of names drawn from the platform's edge cases. Read by
+    /// nothing yet.
+    #[serde(default = "default_edge_rate")]
+    pub edge_rate: f64,
 }
 
 impl Default for NamesConfig {
@@ -171,8 +175,13 @@ impl Default for NamesConfig {
                 .map(|s| s.to_string())
                 .collect(),
             max_len: 255,
+            edge_rate: default_edge_rate(),
         }
     }
+}
+
+fn default_edge_rate() -> f64 {
+    0.02
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -593,6 +602,7 @@ impl Config {
             ("locality.parent", self.locality.parent),
             ("locality.anywhere", self.locality.anywhere),
             ("mknod.char_fraction", self.mknod.char_fraction),
+            ("names.edge_rate", self.names.edge_rate),
         ] {
             check_probability(name, p)?;
         }
@@ -813,6 +823,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn edge_rate_must_be_a_probability() {
+        assert_eq!(Config::default().names.edge_rate, 0.02);
+        for bad in [-0.1, 1.5] {
+            let mut c = Config::default();
+            c.names.edge_rate = bad;
+            let e = c.validate().unwrap_err();
+            assert!(matches!(e, ConfigError::Invalid(_)), "{e}");
+            assert!(e.to_string().contains("names.edge_rate"), "{e}");
+        }
+        for ok in [0.0, 1.0] {
+            let mut c = Config::default();
+            c.names.edge_rate = ok;
+            c.validate().unwrap();
+        }
+    }
     #[test]
     fn flags_override_everything() {
         let args = RunArgs {

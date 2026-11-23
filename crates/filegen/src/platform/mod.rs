@@ -17,7 +17,8 @@ mod windows;
 pub use windows::*;
 
 /// The kind of system a build runs on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Platform {
     Unix,
     Windows,

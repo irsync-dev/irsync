@@ -1192,6 +1192,22 @@ mod tests {
     }
 
     #[test]
+    fn filegen_ran_reads_a_header_with_platform_and_capabilities() {
+        let t = tempfile::tempdir().unwrap();
+        let log = t.path().join("filegen-7.log");
+        let body = "step=41 ts=2026-11-12T00:00:00Z op=create_file path=\"a\" bytes=1 size=1 content=random post=f:1:664:1\n\
+                    # end steps_done=42 outcome=ok elapsed_ms=9 skipped=1\n";
+        let header = "# run seed=7 start_step=40 steps=2 log=\"x\" state=\"y\" config=\"-\" dry_run=0 started=2026-11-12T00:00:00.000000Z";
+        let mut ran = Vec::new();
+        for tail in ["", " platform=unix caps=symlinks,sparse"] {
+            std::fs::write(&log, format!("{header}{tail}\n{body}")).unwrap();
+            let r = filegen_ran(&log, 0).unwrap();
+            ran.push((r.lines.len(), r.steps));
+        }
+        assert_eq!(ran[0], (1, 3));
+        assert_eq!(ran[0], ran[1]);
+    }
+    #[test]
     fn gave_up_paths_are_split_by_touched() {
         let touched: BTreeSet<Vec<u8>> = [b"a".to_vec(), b"b/c".to_vec()].into();
         let lines = [

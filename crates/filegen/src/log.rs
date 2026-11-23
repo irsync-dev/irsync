@@ -1,9 +1,10 @@
 //! Operation log: one parseable text line per step, plus run header/footer
 //! and per-kind statistics.
 
+use crate::caps::Caps;
 use crate::escape::{escape, unescape};
 use crate::kind::OpKind;
-use crate::platform::{self, FileKind, Stat};
+use crate::platform::{self, FileKind, Platform, Stat};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
@@ -115,6 +116,8 @@ pub struct Header {
     pub config_file: Option<PathBuf>,
     pub dry_run: bool,
     pub started: jiff::Timestamp,
+    pub platform: Platform,
+    pub caps: Caps,
 }
 
 /// Run outcome written as the `# end` line.
@@ -243,7 +246,7 @@ impl LogWriter {
             None => "\"-\"".to_string(),
         };
         let s = format!(
-            "# run seed={} start_step={} steps={} log={} state={} config={} dry_run={} started={}",
+            "# run seed={} start_step={} steps={} log={} state={} config={} dry_run={} started={} platform={} caps={}",
             h.seed,
             h.start_step,
             h.steps,
@@ -252,6 +255,8 @@ impl LogWriter {
             config,
             u8::from(h.dry_run),
             fmt_ts(h.started),
+            h.platform.as_str(),
+            h.caps.log_value(),
         );
         self.line(&s)
     }
@@ -566,6 +571,8 @@ mod tests {
             config_file: None,
             dry_run: false,
             started: ts(),
+            platform: Platform::Unix,
+            caps: Caps::ALL,
         };
         {
             let mut w = LogWriter::open_append(&p, false).unwrap();
@@ -610,7 +617,7 @@ mod tests {
         assert_eq!(lines.len(), 4);
         assert!(lines[0].starts_with("# run seed=42 start_step=0 steps=10 log=\""));
         assert!(lines[0].ends_with(
-            "state=\"s.yaml\" config=\"-\" dry_run=0 started=2026-10-20T12:00:00.123456Z"
+            "state=\"s.yaml\" config=\"-\" dry_run=0 started=2026-10-20T12:00:00.123456Z platform=unix caps=symlinks,sparse"
         ));
         assert!(lines[1].starts_with("step=0 "));
         assert_eq!(lines[2], "# end steps_done=1 outcome=ok elapsed_ms=5");
