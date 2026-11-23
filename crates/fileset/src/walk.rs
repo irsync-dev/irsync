@@ -442,9 +442,8 @@ fn list_dir(
         if is_sidecar(cfg, &abs) {
             continue;
         }
-        let excluded = cfg.builtin_excludes
-            && job.volume_top
-            && platform::is_builtin_exclude(&name_bytes);
+        let excluded =
+            cfg.builtin_excludes && job.volume_top && platform::is_builtin_exclude(&name_bytes);
         let rel = if dir_rel == b"." {
             name_bytes.clone()
         } else {

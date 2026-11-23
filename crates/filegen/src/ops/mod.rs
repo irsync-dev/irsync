@@ -465,7 +465,11 @@ mod tests {
 
     #[test]
     fn op_error_paths_are_stored_paths() {
-        let root = Path::new(if cfg!(windows) { r"\?\C:\root" } else { "/root" });
+        let root = if cfg!(windows) {
+            Path::new(r"\\?\C:\root")
+        } else {
+            Path::new("/root")
+        };
         let path = root.join("a").join("b").join("c");
         let e = OpError::wrap(root, &path, Some(&root.join("d")), io::Error::other("x"));
         let o = OpError::of(&e).unwrap();
