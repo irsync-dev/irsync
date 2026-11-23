@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use common::{archive_opts, sync_trees, Flow};
 use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
+use pbwalk::render::hex_blocks;
 use pbwalk::Parser as _;
 use prost::encoding::encoded_len_varint;
 use prost::Message as _;
@@ -156,6 +157,64 @@ fn check_with_pbwalk(path: &Path, records: &[Record]) {
         table_total(&out, "By direction (with prefixes)"),
         with_prefixes
     );
+    check_hex_columns(path);
+}
+
+/// The bytes of the message or event inside a record, as they are in
+/// `body`, the record's packet; empty for a record without one.
+fn payload(body: &[u8]) -> Vec<u8> {
+    use prost::bytes::Buf as _;
+    use prost::encoding::{decode_key, decode_varint, skip_field, DecodeContext, WireType};
+    let Some(msg) = Record::decode(body).expect("a record").msg else {
+        return Vec::new();
+    };
+    // The field number of the message: that of a record holding only it.
+    let only = Record {
+        msg: Some(msg),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let (number, _) = decode_key(&mut &only[..]).unwrap();
+    let mut buf = body;
+    while buf.has_remaining() {
+        let (n, wire_type) = decode_key(&mut buf).unwrap();
+        if n == number && wire_type == WireType::LengthDelimited {
+            let len = decode_varint(&mut buf).unwrap() as usize;
+            return buf[..len].to_vec();
+        }
+        skip_field(wire_type, n, &mut buf, DecodeContext::default()).unwrap();
+    }
+    panic!("the record's message is not in its packet")
+}
+
+/// pbwalk's hex columns are the capture: put back together they are each
+/// packet byte for byte, and, unwrapped, the message inside it.
+fn check_hex_columns(path: &Path) {
+    let listing = |extra: &[&str]| {
+        let args = pbwalk::Args::parse_from(
+            ["pbwalk", "-C", "--no-totals"]
+                .iter()
+                .chain(extra)
+                .copied()
+                .chain([path.to_str().unwrap()]),
+        );
+        let mut out = Vec::new();
+        pbwalk::run(&args, File::open(path).unwrap(), &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let bodies: Vec<Vec<u8>> = pbcap::Reader::new(&std::fs::read(path).unwrap()[..])
+        .expect("a capture file")
+        .map(|p| p.expect("every block is whole").body)
+        .collect();
+    assert_eq!(
+        hex_blocks(&listing(&["--no-unwrap"])),
+        bodies,
+        "the hex column is not the capture"
+    );
+    let unwrapped = hex_blocks(&listing(&[]));
+    let payloads: Vec<Vec<u8>> = bodies.iter().map(|b| payload(b)).collect();
+    assert_eq!(unwrapped, payloads, "the hex column is not the messages");
+    assert!(unwrapped.iter().any(|b| !b.is_empty()));
 }
 
 fn write_files(dir: &Path, n: usize, size: usize) {

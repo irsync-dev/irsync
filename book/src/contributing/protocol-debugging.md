@@ -199,7 +199,10 @@ per field, and per kind of overhead. Use it to see where the bytes of a
 session go, or to check what a protocol change saves.
 
 It counts irsync's messages as they are on the wire, with their length
-prefixes. It leaves out what QUIC, TLS and UDP add below that. File content
+prefixes. It leaves out what QUIC, TLS and UDP add below that. So its
+totals come out smaller than the `sent … bytes  received … bytes` line
+irsync prints at the end of a run with `-v` or `--stats`, which counts
+the UDP bytes of the connection. File content
 is not in a capture, but its size is still counted: `pbwalk` takes it from
 the record's `encoded_len` and `trimmed` fields, and prints it as cut.
 
@@ -277,6 +280,15 @@ Overhead
 the tags, the length bytes, the length prefixes, and what the capture
 does not hold.
 
+`By direction` splits the messages into those sent and those received, as
+seen by the side that wrote each one, length prefixes included. Its last
+line is called `sum`, not `total`: in a file that both sides wrote, each
+message is counted once sent and once received, so the sum can be twice
+what went over the wire (see [One side or both](#one-side-or-both)). Two
+more rows appear only when they are not empty: `unspecified` for a record
+without a direction, such as a stream being opened, and `other` for a
+direction this build does not know.
+
 ### Cut rows
 
 A `DataChunk` in the listing shows what the capture left out:
@@ -319,15 +331,46 @@ The fields it takes are those on the second line of each message's block:
 `side`, `direction`, `stream` and so on. `encoded_len`,
 `trimmed` and the message itself are not among them.
 
+### Pick messages
+
+Each block starts with its message's number, such as `#120`. To see only
+that message, or a range of them:
+
+```sh
+cargo run -p pbwalk -- --message 120 ~/push.pcapng
+cargo run -p pbwalk -- --message 100-120 ~/push.pcapng
+```
+
+`--message-type` keeps the messages of one type, as `By message` names
+it:
+
+```sh
+cargo run -p pbwalk -- --message-type DataChunk ~/push.pcapng
+```
+
+Give either more than once to pick more. Note the difference from
+`--where`: a second `--where` narrows, since a message must match both,
+while a second `--message` or `--message-type` widens, since a message
+matches one of them. The options combine with each other and with
+`--where`: a message is shown only if every option picks it. A
+message keeps its number, whatever else is left out. As with `--where`,
+the totals then count only the messages picked.
+
 ### More views
 
 - `--group-by stream` adds totals per stream kind (control, listing, data).
   `--group-by side,stream` adds one table per field, not one table of the
   two combined. It takes the same fields as `--where`. `direction` adds
   nothing, since the totals always have a `By direction` table.
+- `--top N` keeps the `N` largest rows of `By message`, `By field` and
+  each `--group-by` table, and folds the rest into one row, such as
+  `(97 more rows)`. The totals stay the same. `By field` lists about a
+  hundred rows for a real push; `--top 10` shows where most bytes go.
 - `--totals-only` skips the listing; `--no-totals` skips the totals.
 - Long byte strings, long repeated fields and long header values are
   shortened in the listing. `--full` prints them whole.
+- `-C` puts each field's bytes in front of its line; see
+  [See the bytes](#see-the-bytes).
 
 The `By stream` totals of the same push:
 
@@ -339,6 +382,60 @@ By stream (with prefixes)
   STREAM_KIND_LISTING(2)            8             323 B   <0.1%
   total                            41         901,120 B  100.0%
 ```
+
+### See the bytes
+
+`-C`, or `--canonical-hex-dump`, puts the bytes of each field in front of
+its line: first in hex, 16 to a line, then the same bytes as characters,
+with a `.` for every byte that is not a printable ASCII character. It is
+the layout of `hexdump -C` without the offsets. A `HelloAck`:
+
+```sh
+cargo run -p pbwalk -- -C --no-totals ~/push.pcapng
+```
+
+```text
+                                                                      #7 0.010483 fd69:7273::1:0:0 → fd69:7273::2 port 1  HelloAck  47 B + 1 B prefix
+                                                                         side=SIDE_DAEMON(2) direction=DIRECTION_SENT(1) stream=STREAM_KIND_CONTROL(1) …
+0a 10 b9 db 55 0a f3 b7  18 a1 33 5d 80 f1 62 46  |....U.....3]..bF|    session_id = b9db550af3b718a1335d80f16246cd08           18 B  (tag 1, len 1, value 16)
+cd 08                                             |..|
+18 05                                             |..|                  protocol_version = 5                                     2 B  (tag 1, value 1)
+22 19                                             |".|                  build: BuildInfo                                        27 B  (tag 1, len 1, value 25)
+0a 0c 30 2e 31 2e 30 2d  62 65 74 61 2e 36        |..0.1.0-beta.6|        version = "0.1.0-beta.6"                              14 B  (tag 1, len 1, value 12)
+12 07 63 39 64 35 64 64  65                       |..c9d5dde|             commit = "c9d5dde"                                     9 B  (tag 1, len 1, value 7)
+18 01                                             |..|                    dirty = true                                           2 B  (tag 1, value 1)
+```
+
+A field with more than 16 bytes, such as `session_id` with its 18,
+continues on the next line. A nested message such as `build` shows only
+its own two bytes, the tag and the length; the fields under it show the
+rest. So no byte is printed twice and none is left out: the hex of one
+block, read from top to bottom, is the message. Lines that stand for no
+bytes in the file, such as a block's first two lines and the `cut content`
+row, leave both columns empty. `--full` changes the text only; the hex is
+always complete.
+
+The hex column is the first 48 characters of each line, so the bytes can
+be had back:
+
+```sh
+cargo run -p pbwalk -- -C --no-totals ~/push.pcapng | cut -c1-48 | xxd -r -p > messages.bin
+```
+
+That gives every message of the capture, one after the other; narrow it
+with `--where`. Without `--no-totals` the command works the same: under
+`-C` the totals are moved right as well, so nothing but hex is ever in
+those 48 characters. `-C` cannot be combined with `--totals-only`.
+
+Two things the hex is not:
+
+- **The message as it was on the wire, when the capture cut something.**
+  The bytes are those in the file. File content, and the entries dropped
+  from a message over 256 KiB, are not there (see [Trimming](#trimming)).
+- **The length prefix.** It is not in the file; `pbwalk` works its size
+  out. The hex of a block starts with the message's first field.
+
+With `--no-unwrap`, a block is the whole packet, and so is its hex.
 
 ### Other protocols
 

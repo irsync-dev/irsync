@@ -1815,6 +1815,7 @@ pub(super) async fn run(
         usage: Default::default(),
         reconnects: 0,
         conn: None,
+        key_exchange: None,
         #[cfg(feature = "test-hooks")]
         retained_files: r.files.len(),
     })

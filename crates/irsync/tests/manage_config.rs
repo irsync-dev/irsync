@@ -156,6 +156,15 @@ fn defaults_for_settings_keys() {
         Some(vec!["bbr".into()])
     );
     assert!(kind_of(&p("hosts.home.congestion")).is_some());
+    assert_eq!(
+        default_of(&p("client.pq_key_exchange")),
+        Some(vec!["prefer".into()])
+    );
+    assert_eq!(
+        default_of(&p("daemon.pq_key_exchange")),
+        Some(vec!["prefer".into()])
+    );
+    assert!(kind_of(&p("hosts.home.pq_key_exchange")).is_some());
     assert_eq!(default_of(&p("daemon.relay")), None);
     assert_eq!(default_of(&p("hosts.home.relay")), None);
 }
@@ -383,6 +392,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("client.relay", &["https://r/"]),
     ("client.relay_mode", &["disabled"]),
     ("client.congestion", &["cubic"]),
+    ("client.pq_key_exchange", &["require"]),
     ("daemon.identity", &["/d"]),
     ("daemon.idle_timeout", &["10m"]),
     ("daemon.dormant_session_timeout", &["1d"]),
@@ -392,6 +402,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("daemon.relay", &["https://r/"]),
     ("daemon.relay_mode", &["disabled"]),
     ("daemon.congestion", &["cubic"]),
+    ("daemon.pq_key_exchange", &["require"]),
     ("daemon.debug_addr", &["127.0.0.1:9000"]),
     ("daemon.immediate", &["true"]),
     ("daemon.allow_root", &["true"]),
@@ -405,6 +416,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("hosts.nas.relay", &["https://r/"]),
     ("hosts.nas.relay_mode", &["disabled"]),
     ("hosts.nas.congestion", &["cubic"]),
+    ("hosts.nas.pq_key_exchange", &["require"]),
     ("hosts.nas.address", &["10.0.0.1:4000"]),
     ("hosts.nas.parallel", &["4"]),
     ("hosts.nas.reconnect", &["1h"]),

@@ -181,10 +181,12 @@ job_check() {
     run cargo test --locked --workspace --all-features --doc ${target_args[@]+"${target_args[@]}"}
 }
 
-# Known vulnerabilities, unmaintained or yanked crates, licenses and sources,
-# as set in deny.toml, for the platforms irsync is built for.
+# Known vulnerabilities, unmaintained or yanked crates, licenses, sources and
+# duplicate crate versions, as set in deny.toml, for the platforms irsync is
+# built for. An exception in deny.toml that no longer matches anything fails
+# too, so it gets removed.
 job_deny() {
-    run cargo deny --locked check -D advisory-not-detected
+    run cargo deny --locked check -D advisory-not-detected -D unmatched-skip -D unnecessary-skip
 }
 
 # The licenses of every crate in Cargo.lock, whatever platform it is built

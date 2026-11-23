@@ -34,6 +34,25 @@ pub struct Field<'a> {
     pub name: Option<String>,
     pub sizes: Sizes,
     pub value: Value<'a>,
+    /// The bytes of this field's own line: its tag and length for a
+    /// [`Value::Message`], whose fields carry the rest; else the whole
+    /// field.
+    pub own: &'a [u8],
+}
+
+/// Every field's own bytes, depth first: the input of the walk.
+pub fn own_bytes(fields: &[Field]) -> Vec<u8> {
+    fn collect(fields: &[Field], out: &mut Vec<u8>) {
+        for f in fields {
+            out.extend_from_slice(f.own);
+            if let Value::Message { fields, .. } = &f.value {
+                collect(fields, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    collect(fields, &mut out);
+    out
 }
 
 /// What a field holds.
@@ -89,6 +108,7 @@ fn walk_at<'a>(desc: &MessageDescriptor, bytes: &'a [u8], depth: usize) -> Vec<F
                         value: rest.len() as u64,
                     },
                     value: Value::Undecodable(rest),
+                    own: rest,
                 });
                 break;
             }
@@ -137,13 +157,20 @@ fn field_at<'a>(
         len: len as u64,
         value: raw.len() as u64,
     };
+    let used = tag + len + raw.len();
+    // A nested message's fields carry its value themselves.
+    let own = match value {
+        Value::Message { .. } => &rest[..tag + len],
+        _ => &rest[..used],
+    };
     let field = Field {
         number,
         name: field.map(|f| f.name().to_owned()),
         sizes,
         value,
+        own,
     };
-    Some((field, tag + len + raw.len()))
+    Some((field, used))
 }
 
 /// The value of a field the type declares, or `None` when the bytes do not
@@ -655,6 +682,7 @@ mod tests {
                         value: 1
                     },
                     value: Value::Scalar("5".into()),
+                    own: &bytes[0..2],
                 },
                 Field {
                     number: 4,
@@ -665,6 +693,7 @@ mod tests {
                         value: 1
                     },
                     value: Value::Bytes(b"m"),
+                    own: &bytes[2..5],
                 },
             ]
         );
@@ -831,6 +860,7 @@ mod tests {
                 value: bytes.len() as u64,
             },
             value: Value::Undecodable(bytes),
+            own: bytes,
         }
     }
 
@@ -955,5 +985,83 @@ mod tests {
         };
         assert_eq!(type_name, "irsync.v1.Settle");
         assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn own_bytes_are_the_input() {
+        let bytes = v1::Hello {
+            protocol_version: 5,
+            path: b"m".into(),
+            build: Some(v1::BuildInfo {
+                version: "0.1.0".into(),
+                commit: "abc".into(),
+                dirty: Some(false),
+            }),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let fields = walk(&desc("irsync.v1.Hello"), &bytes);
+        assert_eq!(own_bytes(&fields), bytes);
+        let named = |name: &str| {
+            fields
+                .iter()
+                .find(|f| f.name.as_deref() == Some(name))
+                .unwrap()
+        };
+        // A nested message's own bytes are its tag and length only.
+        let build = named("build");
+        assert_eq!(build.own.len() as u64, build.sizes.tag + build.sizes.len);
+        let path = named("path");
+        assert_eq!(path.own.len() as u64, path.sizes.total());
+    }
+
+    #[test]
+    fn own_bytes_of_malformed_input() {
+        let d = desc("irsync.v1.Hello");
+        let mut tail = vec![0x08, 0x05]; // protocol_version = 5
+        tail.extend([0x0b; 20]); // then a group tag: 20 bytes that do not parse
+        for bytes in [
+            &[0x0b, 0x0c][..],
+            &[0x02, 0x00],
+            &[0x08, 0x05, 0x22, 0x09, 0x61],
+            &tail,
+        ] {
+            assert_eq!(own_bytes(&walk(&d, bytes)), bytes, "{bytes:x?}");
+        }
+    }
+
+    #[test]
+    fn own_bytes_cover_a_packed_field() {
+        // NeedChunks.chunk_idx is packed; 20 elements are over 16 bytes.
+        let need = v1::NeedChunks {
+            file_id: 1,
+            chunk_idx: (0..20).collect(),
+        };
+        let bytes = need.encode_to_vec();
+        let fields = walk(&desc("irsync.v1.NeedChunks"), &bytes);
+        let packed = fields
+            .iter()
+            .find(|f| matches!(f.value, Value::Packed(_)))
+            .unwrap();
+        assert!(packed.own.len() > 16);
+        assert_eq!(packed.own.len() as u64, packed.sizes.total());
+        assert_eq!(own_bytes(&fields), bytes);
+    }
+
+    #[test]
+    fn own_bytes_of_the_session_capture() {
+        let file = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fuzz/seeds/pbwalk/session.pcapng"
+        ))
+        .unwrap();
+        let d = desc("irsync.capture.v1.Record");
+        let mut packets = 0;
+        for packet in pbcap::Reader::new(&file[..]).unwrap() {
+            let body = packet.unwrap().body;
+            assert_eq!(own_bytes(&walk(&d, &body)), body);
+            packets += 1;
+        }
+        assert!(packets > 0);
     }
 }

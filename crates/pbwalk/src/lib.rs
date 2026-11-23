@@ -16,7 +16,7 @@ use prost_reflect::MessageDescriptor;
 pub use account::{raw, unwrap, Entry, Kind, Prefix};
 pub use clap::Parser;
 pub use schema::Schema;
-pub use walk::{walk, Field, Sizes, Value, MAX_DEPTH};
+pub use walk::{own_bytes, walk, Field, Sizes, Value, MAX_DEPTH};
 
 use render::Place;
 use totals::Totals;
@@ -50,9 +50,21 @@ pub struct Args {
     /// than once.
     #[arg(long = "where", value_name = "F=V")]
     pub filters: Vec<String>,
+    /// Only the messages numbered N, or N to M (the `#N` that starts each
+    /// block); may be given more than once.
+    #[arg(long = "message", value_name = "N[-M]", value_parser = parse_numbers)]
+    pub numbers: Vec<(u64, u64)>,
+    /// Only messages of type NAME, such as DataChunk; may be given more
+    /// than once.
+    #[arg(long = "message-type", value_name = "NAME")]
+    pub message_types: Vec<String>,
     /// Wrapper fields to break the totals down by.
     #[arg(long, value_name = "F,...", value_delimiter = ',')]
     pub group_by: Vec<String>,
+    /// In the tables by message, by field and by --group-by field, show
+    /// only the N largest rows and fold the rest into one.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub top: Option<u64>,
     /// Skip the per-message listing.
     #[arg(long, conflicts_with = "no_totals")]
     pub totals_only: bool,
@@ -62,19 +74,24 @@ pub struct Args {
     /// Print long byte strings, repeated fields and header values in full.
     #[arg(long)]
     pub full: bool,
+    /// Put each field's bytes in front of its line, in hex and as
+    /// characters; the first 48 columns of the output are then the bytes.
+    #[arg(short = 'C', long, conflicts_with = "totals_only")]
+    pub canonical_hex_dump: bool,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct Summary {
     /// Packets read from the file.
     pub packets: u64,
-    /// Wire messages (or, with `--no-unwrap`, packets) that passed `--where`.
+    /// Wire messages (or, with `--no-unwrap`, packets) that were picked:
+    /// that passed `--where`, `--message` and `--message-type`.
     pub messages: u64,
     /// Their sizes on the wire, without prefixes.
     pub wire_bytes: u64,
     /// Their length prefixes.
     pub prefix_bytes: u64,
-    /// Records that passed `--where` whose numbers do not add up.
+    /// Picked records whose numbers do not add up.
     pub mismatches: u64,
     /// The file ended in the middle of a block.
     pub truncated: bool,
@@ -98,8 +115,15 @@ pub fn run(
         Schema::from_dirs(&args.proto_path)?
     };
     let wrapper = schema.message(&args.type_name)?;
-    if args.no_unwrap && !(args.filters.is_empty() && args.group_by.is_empty()) {
-        bail!("--where and --group-by need the wrapper unwrapped; drop --no-unwrap");
+    if args.no_unwrap
+        && !(args.filters.is_empty() && args.group_by.is_empty() && args.message_types.is_empty())
+    {
+        bail!(
+            "--where, --group-by and --message-type need the wrapper unwrapped; drop --no-unwrap"
+        );
+    }
+    for name in &args.message_types {
+        check_message_type(&wrapper, name).with_context(|| format!("--message-type {name}"))?;
     }
     let filters = args
         .filters
@@ -156,6 +180,41 @@ fn check_header_field(wrapper: &MessageDescriptor, name: &str) -> anyhow::Result
     )
 }
 
+/// Fails unless `name` is the type of a message the wrapper can carry,
+/// naming those it can.
+fn check_message_type(wrapper: &MessageDescriptor, name: &str) -> anyhow::Result<()> {
+    let known: Vec<String> = wrapper
+        .oneofs()
+        .flat_map(|o| o.fields().collect::<Vec<_>>())
+        .filter_map(|f| f.kind().as_message().map(|m| m.name().to_owned()))
+        .collect();
+    if known.iter().any(|k| k == name) {
+        return Ok(());
+    }
+    bail!(
+        "{} carries no message of type {name}; it carries: {}",
+        wrapper.full_name(),
+        known.join(", ")
+    )
+}
+
+/// `N` or `N-M`, as the first and last number, both kept.
+fn parse_numbers(s: &str) -> Result<(u64, u64), String> {
+    let number = |n: &str| {
+        n.trim()
+            .parse::<u64>()
+            .map_err(|_| format!("{n:?} is not a message number"))
+    };
+    let (first, last) = match s.split_once('-') {
+        Some((a, b)) => (number(a)?, number(b)?),
+        None => (number(s)?, number(s)?),
+    };
+    if first > last {
+        return Err(format!("{s}: the range ends before it starts"));
+    }
+    Ok((first, last))
+}
+
 /// `printed` is `want`, or `want` followed by `(...)`: so `SIDE_CLIENT`
 /// matches `SIDE_CLIENT(1)`.
 fn matches(printed: &str, want: &str) -> bool {
@@ -180,8 +239,14 @@ impl Pass<'_> {
         summary: &mut Summary,
     ) -> io::Result<()> {
         let pool = self.wrapper.parent_pool();
-        let mut totals = Totals::new(&self.args.group_by, self.wrapper);
+        let top = self
+            .args
+            .top
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX));
+        let mut totals = Totals::new(&self.args.group_by, self.wrapper, top);
         let mut first_ts = None;
+        // Whether anything came before the totals.
+        let mut listed = false;
         for packet in reader {
             let packet = match packet {
                 Ok(packet) => packet,
@@ -190,11 +255,12 @@ impl Pass<'_> {
                         pbcap::Error::Truncated => summary.truncated = true,
                         _ => summary.stopped = Some(e.to_string()),
                     }
-                    writeln!(
-                        out,
+                    let text = format!(
                         "! stopped reading after {} packets: {e}",
                         render::grouped(summary.packets)
-                    )?;
+                    );
+                    render::line(out, self.args.canonical_hex_dump, &[], &text)?;
+                    listed = true;
                     break;
                 }
             };
@@ -205,7 +271,7 @@ impl Pass<'_> {
             } else {
                 unwrap(self.wrapper, &packet.body, self.args.prefix)
             };
-            if !self.passes(&entry) {
+            if !self.passes(&entry, summary.packets) {
                 continue;
             }
             if entry.kind != Kind::Event {
@@ -222,22 +288,38 @@ impl Pass<'_> {
                     micros: i128::from(packet.ts_micros) - i128::from(first),
                     packet: &packet,
                 };
-                render::entry(out, &place, &entry, pool, self.args.full)?;
+                let listing = render::Listing {
+                    full: self.args.full,
+                    hex: self.args.canonical_hex_dump,
+                };
+                render::entry(out, &place, &entry, pool, listing)?;
+                listed = true;
             }
             totals.add(&entry, self.wrapper);
         }
         if !self.args.no_totals {
-            totals.write(out, summary)?;
+            if self.args.canonical_hex_dump {
+                // Clear of the hex columns, so that cutting them out of
+                // the whole output gives the bytes and nothing else.
+                totals.write(&mut render::Indented::new(out), summary, listed)?;
+            } else {
+                totals.write(out, summary, listed)?;
+            }
         }
         out.flush()
     }
 
-    fn passes(&self, entry: &Entry) -> bool {
-        self.filters.iter().all(|(name, want)| {
-            entry
-                .header_value(self.wrapper, name)
-                .is_some_and(|v| matches(&v, want))
-        })
+    /// Whether the entry numbered `number` is picked by `--message`,
+    /// `--message-type` and `--where`.
+    fn passes(&self, entry: &Entry, number: u64) -> bool {
+        let args = self.args;
+        (args.numbers.is_empty() || args.numbers.iter().any(|&(a, b)| (a..=b).contains(&number)))
+            && (args.message_types.is_empty() || args.message_types.contains(&entry.type_name))
+            && self.filters.iter().all(|(name, want)| {
+                entry
+                    .header_value(self.wrapper, name)
+                    .is_some_and(|v| matches(&v, want))
+            })
     }
 }
 
@@ -247,6 +329,7 @@ mod tests {
     use irsync_proto::capture::v1::{record::Msg, ContentSummary, Record, StreamEvent, Trimmed};
     use irsync_proto::v1;
     use prost::Message as _;
+    use render::hex_blocks;
     use std::net::Ipv6Addr;
 
     const A: Ipv6Addr = Ipv6Addr::new(0xfd69, 0x7273, 0, 0, 0, 0, 0, 1);
@@ -254,13 +337,19 @@ mod tests {
 
     /// A capture file holding `records`, one packet each, 12.345 ms apart.
     fn capture(records: &[Record]) -> Vec<u8> {
+        let bodies: Vec<Vec<u8>> = records.iter().map(Record::encode_to_vec).collect();
+        capture_bodies(&bodies)
+    }
+
+    /// [`capture`] for packets given as their bytes.
+    fn capture_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
         let mut f = pbcap::write::section_header();
         f.extend(pbcap::write::interface(
             pbcap::LINKTYPE_WIRESHARK_UPPER_PDU,
             0,
         ));
-        for (i, r) in records.iter().enumerate() {
-            let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, &r.encode_to_vec());
+        for (i, body) in bodies.iter().enumerate() {
+            let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, body);
             f.extend(pbcap::write::packet(1_000_000 + i as u64 * 12_345, &pdu));
         }
         f
@@ -474,9 +563,11 @@ mod tests {
     #[test]
     fn unknown_direction_has_its_own_row() {
         let n = hello().encoded_len() as u64;
-        let (_, out) = run_on(&[], &capture(&[hello_record(1, 7)]));
-        let table = out.split("By direction").nth(1).expect(&out);
-        let row = |key: &str| {
+        let table = |direction: i32| {
+            let (_, out) = run_on(&[], &capture(&[hello_record(1, direction)]));
+            out.split("By direction").nth(1).expect(&out).to_string()
+        };
+        let row = |table: &str, key: &str| {
             table
                 .lines()
                 .find(|l| l.trim_start().starts_with(key))
@@ -486,12 +577,20 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert_eq!(row("other"), format!("1 {} B 100.0%", n + 1));
-        assert_eq!(row("unspecified"), "0 0 B 0.0%");
-        // Absent when every direction is known.
-        let (_, out) = run_on(&[], &capture(&[hello_record(1, 1)]));
-        let table = out.split("By direction").nth(1).expect(&out);
-        assert!(!table.contains("other"), "{table}");
+        let whole = format!("1 {} B 100.0%", n + 1);
+        // A direction this build does not know.
+        let t = table(7);
+        assert_eq!(row(&t, "other"), whole);
+        assert!(!t.contains("unspecified"), "{t}");
+        // No direction at all.
+        let t = table(0);
+        assert_eq!(row(&t, "unspecified"), whole);
+        assert!(!t.contains("other"), "{t}");
+        // Both absent when every direction is known; sent and received stay.
+        let t = table(1);
+        assert!(!t.contains("other"), "{t}");
+        assert!(!t.contains("unspecified"), "{t}");
+        assert_eq!(row(&t, "received"), "0 0 B 0.0%");
     }
 
     #[test]
@@ -506,6 +605,109 @@ mod tests {
         assert!(out.contains("protocol_version = 5"), "{out}");
         assert!(!out.contains("By message"), "{out}");
         assert!(Args::try_parse_from(["pbwalk", "f", "--totals-only", "--no-totals"]).is_err());
+    }
+
+    /// The numbers of the listing's blocks: the `N` of each `#N` line.
+    fn blocks(out: &str) -> Vec<u64> {
+        out.lines()
+            .filter_map(|l| l.strip_prefix('#')?.split(' ').next()?.parse().ok())
+            .collect()
+    }
+
+    #[test]
+    fn message_picks_by_number() {
+        let file = capture(&[hello_record(1, 1), cut_chunk_record(), hello_record(1, 1)]);
+        let (s, out) = run_on(&["--message", "2"], &file);
+        assert_eq!((s.packets, s.messages), (3, 1));
+        assert_eq!(blocks(&out), [2], "{out}");
+        // The totals cover only what was picked.
+        let by_message = out.split("By message").nth(1).expect(&out);
+        assert!(!by_message.contains("Hello"), "{by_message}");
+        let (s, out) = run_on(&["--message", "2-3"], &file);
+        assert_eq!(s.messages, 2);
+        assert_eq!(blocks(&out), [2, 3], "{out}");
+        let (s, _) = run_on(&["--message", "3", "--message", "1"], &file);
+        assert_eq!(s.messages, 2);
+        let (s, _) = run_on(&["--message", "7-9"], &file);
+        assert_eq!((s.packets, s.messages), (3, 0));
+        // With other filters, a message keeps its number.
+        let (s, _) = run_on(&["--message", "3", "--message-type", "Hello"], &file);
+        assert_eq!(s.messages, 1);
+        let (s, _) = run_on(&["--no-unwrap", "--message", "1"], &file);
+        assert_eq!(s.messages, 1);
+        for bad in ["x", "1-", "-2", "3-1", "1-2-3"] {
+            let parsed = Args::try_parse_from(["pbwalk", "f", "--message", bad]);
+            assert!(parsed.is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn message_type_picks_by_type() {
+        let file = capture(&[hello_record(1, 1), cut_chunk_record(), hello_record(1, 1)]);
+        let (s, out) = run_on(&["--message-type", "DataChunk"], &file);
+        assert_eq!(s.messages, 1);
+        assert_eq!(blocks(&out), [2], "{out}");
+        let (s, _) = run_on(&["--message-type", "Hello"], &file);
+        assert_eq!(s.messages, 2);
+        let (s, _) = run_on(
+            &["--message-type", "Hello", "--message-type", "DataChunk"],
+            &file,
+        );
+        assert_eq!(s.messages, 3);
+        let mut out = Vec::new();
+        let err = run(&args(&["--message-type", "Helo"]), &file[..], &mut out).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("--message-type Helo") && text.contains("Hello"),
+            "{text}"
+        );
+        let err = run(
+            &args(&["--no-unwrap", "--message-type", "Hello"]),
+            &file[..],
+            &mut out,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("--no-unwrap"), "{err:#}");
+    }
+
+    #[test]
+    fn totals_only_starts_with_the_totals() {
+        let (_, out) = run_on(&["--totals-only"], &capture(&[hello_record(1, 1)]));
+        assert!(out.starts_with("Totals: "), "{out:?}");
+        // After a listing, a blank line keeps the two apart.
+        let (_, out) = run_on(&[], &capture(&[hello_record(1, 1)]));
+        assert!(out.contains("\n\nTotals: "), "{out}");
+    }
+
+    #[test]
+    fn top_folds_the_rest_of_a_table() {
+        let file = capture(&[hello_record(1, 1), cut_chunk_record()]);
+        let table = |out: &str, title: &str| -> Vec<String> {
+            let rest = out.split(&format!("\n{title}\n")).nth(1).expect(out);
+            rest.lines()
+                .skip(1)
+                .take_while(|l| !l.is_empty())
+                // The key column narrows when long rows are folded away.
+                .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect()
+        };
+        let (_, whole) = run_on(&["--totals-only"], &file);
+        let (_, top) = run_on(&["--totals-only", "--top", "1"], &file);
+        let all = table(&whole, "By field");
+        // At least three rows and the total, so that two or more fold.
+        assert!(all.len() >= 4, "{whole}");
+        let short = table(&top, "By field");
+        assert_eq!(short.len(), 3, "{top}");
+        assert_eq!(short[0], all[0]);
+        let folded = format!("({} more rows)", all.len() - 2);
+        assert!(short[1].starts_with(&folded), "{top}");
+        assert_eq!(short[2], all[all.len() - 1], "the total stays the same");
+        // The fixed tables are left whole.
+        assert_eq!(table(&top, "Overhead"), table(&whole, "Overhead"));
+        // A table no longer than N is not folded.
+        let (_, wide) = run_on(&["--totals-only", "--top", "1000"], &file);
+        assert_eq!(table(&wide, "By field"), all);
+        assert!(Args::try_parse_from(["pbwalk", "f", "--top", "0"]).is_err());
     }
 
     #[test]
@@ -772,5 +974,170 @@ mod tests {
         assert_eq!(builtin, loaded);
         let mut out = Vec::new();
         assert!(run(&args(&["--type", "no.such.Type"]), &file[..], &mut out).is_err());
+    }
+
+    /// The records every hex test runs over, each with the bytes of the
+    /// message or event inside it as they were built: short and long
+    /// fields, a nested message, an event, a message with nothing in the
+    /// file, a payload of a type the protos lack (field 29, 20 bytes), a
+    /// packed field of over 16 bytes, and a message with 20 bytes at its
+    /// end that do not parse.
+    fn hex_records() -> Vec<(Vec<u8>, Vec<u8>)> {
+        // A record holding `payload` as field `number`, written by hand.
+        fn by_hand(number: u8, payload: &[u8]) -> Vec<u8> {
+            let mut record = Record {
+                direction: 1,
+                encoded_len: payload.len() as u32,
+                ..Default::default()
+            }
+            .encode_to_vec();
+            record.extend([number << 3 | 2, 0x01, payload.len() as u8]);
+            record.extend(payload);
+            record
+        }
+        let ack = v1::HelloAck {
+            build: Some(v1::BuildInfo {
+                version: "0.1.0".into(),
+                commit: "abc".into(),
+                dirty: None,
+            }),
+            ..hello_ack()
+        };
+        let event = StreamEvent {
+            kind: 1,
+            detail: String::new(),
+        };
+        let unknown: Vec<u8> = (100..120).collect();
+        let need = v1::Control {
+            msg: Some(v1::control::Msg::Need(v1::NeedChunks {
+                file_id: 1,
+                chunk_idx: (0..20).collect(),
+            })),
+        };
+        let mut junk_tail = hello().encode_to_vec();
+        junk_tail.extend([0x0b; 20]); // group tags: they do not parse
+        vec![
+            (hello_record(1, 1).encode_to_vec(), hello().encode_to_vec()),
+            (
+                message(1, 2, Msg::HelloAck(ack.clone()), ack.encoded_len()).encode_to_vec(),
+                ack.encode_to_vec(),
+            ),
+            (event_record().encode_to_vec(), event.encode_to_vec()),
+            (cut_chunk_record().encode_to_vec(), Vec::new()),
+            (by_hand(29, &unknown), unknown),
+            (
+                message(1, 1, Msg::Control(need.clone()), need.encoded_len()).encode_to_vec(),
+                need.encode_to_vec(),
+            ),
+            (by_hand(20, &junk_tail), junk_tail),
+        ]
+    }
+
+    /// A capture of [`hex_records`].
+    fn hex_file() -> Vec<u8> {
+        let bodies: Vec<Vec<u8>> = hex_records().into_iter().map(|(r, _)| r).collect();
+        capture_bodies(&bodies)
+    }
+
+    #[test]
+    fn hex_reassembles_each_block() {
+        let (bodies, payloads): (Vec<_>, Vec<_>) = hex_records().into_iter().unzip();
+        let file = hex_file();
+        // As it is in the file: each block is the packet.
+        let (_, out) = run_on(&["-C", "--no-unwrap", "--no-totals"], &file);
+        assert_eq!(hex_blocks(&out), bodies);
+        // Unwrapped: each block is the message as it was built.
+        let (_, out) = run_on(&["-C", "--no-totals"], &file);
+        assert_eq!(hex_blocks(&out), payloads);
+        assert!(out.contains("bytes not decodable"), "{out}");
+        assert!(out.contains("type not in the protos"), "{out}");
+        assert!(out.contains("chunk_idx = [0, 1, 2"), "{out}");
+        // --full changes the text only.
+        let (_, full) = run_on(&["-C", "--no-totals", "--full"], &file);
+        assert_eq!(hex_blocks(&full), payloads);
+    }
+
+    /// What `cut -c1-48` keeps of the output, without the blanks.
+    fn cut_hex(out: &str) -> String {
+        out.lines()
+            .flat_map(|l| l.chars().take(render::HEX_WIDTH))
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    }
+
+    #[test]
+    fn totals_stay_out_of_the_hex_column() {
+        let file = hex_file();
+        let (_, listing) = run_on(&["-C", "--no-totals"], &file);
+        let (_, both) = run_on(&["-C"], &file);
+        assert!(both.contains("By message"), "{both}");
+        // Cutting the hex column gives the same with the totals as without.
+        assert_eq!(cut_hex(&both), cut_hex(&listing));
+        // The output is that without -C, moved right; empty lines stay empty.
+        let (_, plain) = run_on(&[], &file);
+        let stripped: Vec<String> = both
+            .lines()
+            .filter(|l| l.chars().count() > render::DUMP_WIDTH)
+            .map(|l| l.chars().skip(render::DUMP_WIDTH).collect())
+            .collect();
+        let want: Vec<&str> = plain.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(stripped, want);
+        assert_eq!(
+            both.lines().filter(|l| l.is_empty()).count(),
+            plain.lines().filter(|l| l.is_empty()).count()
+        );
+    }
+
+    #[test]
+    fn hex_columns_shift_the_listing_and_nothing_else() {
+        let file = hex_file();
+        let (_, plain) = run_on(&["--no-totals"], &file);
+        let (_, dumped) = run_on(&["-C", "--no-totals"], &file);
+        // Drop the continuation lines, which are shorter than the columns,
+        // and the columns from the rest: the listing without -C.
+        let stripped: Vec<String> = dumped
+            .lines()
+            .filter(|l| l.chars().count() > render::DUMP_WIDTH)
+            .map(|l| l.chars().skip(render::DUMP_WIDTH).collect())
+            .collect();
+        assert_eq!(stripped, plain.lines().collect::<Vec<_>>());
+        assert!(dumped.lines().all(|l| !l.ends_with(' ')));
+        // A 16-byte session_id with tag and length is 18 bytes: two lines.
+        assert!(
+            dumped.contains(&format!("\n{:<48}  |..|\n", "07 07")),
+            "{dumped}"
+        );
+    }
+
+    #[test]
+    fn stopped_line_keeps_the_columns_clear() {
+        // Two records, the second cut in half, as in
+        // truncated_file_lists_what_it_read.
+        let records = [hello_record(1, 1), hello_record(2, 2)];
+        let whole = capture(&records);
+        let last = pbcap::write::packet(
+            0,
+            &pbcap::write::exported_pdu("irsync", A, B, 1, 1, &records[1].encode_to_vec()),
+        )
+        .len();
+        let cut = &whole[..whole.len() - last / 2];
+        let (s, out) = run_on(&["-C", "--no-totals"], cut);
+        assert!(s.truncated);
+        let line = out
+            .lines()
+            .find(|l| l.contains("! stopped reading"))
+            .unwrap();
+        assert!(
+            line.starts_with(&" ".repeat(render::DUMP_WIDTH)),
+            "{line:?}"
+        );
+        assert_eq!(hex_blocks(&out).len(), 1);
+    }
+
+    #[test]
+    fn hex_needs_a_listing() {
+        assert!(Args::try_parse_from(["pbwalk", "-C", "--totals-only", "c"]).is_err());
+        let args = Args::try_parse_from(["pbwalk", "--canonical-hex-dump", "c"]).unwrap();
+        assert!(args.canonical_hex_dump);
     }
 }

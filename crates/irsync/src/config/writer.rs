@@ -107,6 +107,10 @@ fn client(c: &pb::Client) -> Keys<'_> {
     k.string("relay", c.relay.as_deref());
     k.string("relay_mode", c.relay_mode.and_then(relay_mode));
     k.string("congestion", c.congestion.and_then(congestion));
+    k.string(
+        "pq_key_exchange",
+        c.pq_key_exchange.and_then(pq_key_exchange),
+    );
     k
 }
 
@@ -127,6 +131,10 @@ fn daemon(d: &pb::Daemon) -> Keys<'_> {
     k.string("relay", d.relay.as_deref());
     k.string("relay_mode", d.relay_mode.and_then(relay_mode));
     k.string("congestion", d.congestion.and_then(congestion));
+    k.string(
+        "pq_key_exchange",
+        d.pq_key_exchange.and_then(pq_key_exchange),
+    );
     k.string("debug_addr", d.debug_addr.as_deref());
     k.bool("immediate", d.immediate);
     k.bool("allow_root", d.allow_root);
@@ -155,6 +163,10 @@ fn host(h: &pb::Host) -> Keys<'_> {
     k.string("relay", h.relay.as_deref());
     k.string("relay_mode", h.relay_mode.and_then(relay_mode));
     k.string("congestion", h.congestion.and_then(congestion));
+    k.string(
+        "pq_key_exchange",
+        h.pq_key_exchange.and_then(pq_key_exchange),
+    );
     k.array("address", &h.address, h.address_set);
     k.int("parallel", h.parallel);
     k.duration("reconnect", h.reconnect.as_ref());
@@ -313,6 +325,14 @@ pub(crate) fn congestion(c: i32) -> Option<&'static str> {
         pb::Congestion::Bbr => Some("bbr"),
         pb::Congestion::Cubic => Some("cubic"),
         pb::Congestion::Unspecified => None,
+    }
+}
+
+pub(crate) fn pq_key_exchange(p: i32) -> Option<&'static str> {
+    match pb::PqKeyExchange::try_from(p).ok()? {
+        pb::PqKeyExchange::Prefer => Some("prefer"),
+        pb::PqKeyExchange::Require => Some("require"),
+        pb::PqKeyExchange::Unspecified => None,
     }
 }
 

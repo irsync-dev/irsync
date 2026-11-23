@@ -14,7 +14,7 @@ use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
 use serde::{Deserialize, Deserializer};
-use spelled::{Congestion, OtlpProtocol, RelayMode};
+use spelled::{Congestion, OtlpProtocol, PqKeyExchange, RelayMode};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -55,6 +55,7 @@ struct RawClient {
     relay: Option<UrlText>,
     relay_mode: Option<RelayMode>,
     congestion: Option<Congestion>,
+    pq_key_exchange: Option<PqKeyExchange>,
 }
 
 #[derive(Deserialize)]
@@ -72,6 +73,7 @@ struct RawDaemon {
     relay: Option<UrlText>,
     relay_mode: Option<RelayMode>,
     congestion: Option<Congestion>,
+    pq_key_exchange: Option<PqKeyExchange>,
     discovery: Option<RawDiscovery>,
     #[serde(default, deserialize_with = "de_opt_debug_addr")]
     debug_addr: Option<String>,
@@ -103,6 +105,7 @@ struct RawHost {
     relay: Option<UrlText>,
     relay_mode: Option<RelayMode>,
     congestion: Option<Congestion>,
+    pq_key_exchange: Option<PqKeyExchange>,
     address: Option<Vec<HostPort>>,
     parallel: Option<u32>,
     #[serde(default, deserialize_with = "de_opt_duration")]
@@ -156,6 +159,13 @@ mod spelled {
     pub(super) enum Congestion {
         Bbr,
         Cubic,
+    }
+
+    #[derive(Clone, Copy, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub(super) enum PqKeyExchange {
+        Prefer,
+        Require,
     }
 
     #[derive(Clone, Copy, Deserialize)]
@@ -369,6 +379,7 @@ fn client(r: RawClient) -> pb::Client {
         relay: r.relay.map(|u| u.0),
         relay_mode: r.relay_mode.map(relay_mode),
         congestion: r.congestion.map(congestion),
+        pq_key_exchange: r.pq_key_exchange.map(pq_key_exchange),
         ..Default::default()
     }
 }
@@ -386,6 +397,7 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
         relay: r.relay.map(|u| u.0),
         relay_mode: r.relay_mode.map(relay_mode),
         congestion: r.congestion.map(congestion),
+        pq_key_exchange: r.pq_key_exchange.map(pq_key_exchange),
         discovery: r.discovery.map(|d| pb::Discovery {
             dht: d.dht,
             dns: d.dns,
@@ -449,6 +461,7 @@ fn hosts(
             relay: r.relay.map(|u| u.0),
             relay_mode: r.relay_mode.map(relay_mode),
             congestion: r.congestion.map(congestion),
+            pq_key_exchange: r.pq_key_exchange.map(pq_key_exchange),
             address,
             address_set,
             parallel: r.parallel,
@@ -554,5 +567,12 @@ fn congestion(c: Congestion) -> i32 {
     (match c {
         Congestion::Bbr => pb::Congestion::Bbr,
         Congestion::Cubic => pb::Congestion::Cubic,
+    }) as i32
+}
+
+fn pq_key_exchange(p: PqKeyExchange) -> i32 {
+    (match p {
+        PqKeyExchange::Prefer => pb::PqKeyExchange::Prefer,
+        PqKeyExchange::Require => pb::PqKeyExchange::Require,
     }) as i32
 }

@@ -253,11 +253,27 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn(("release-tooling.yml", "scripts"), found)
 
     def test_deny_job_present(self):
-        self.ci_script_runs("deny", "cargo deny --locked check -D advisory-not-detected")
+        self.ci_script_runs(
+            "deny",
+            "cargo deny --locked check -D advisory-not-detected -D unmatched-skip -D unnecessary-skip")
 
     def test_stale_advisory_exception_fails(self):
         with open(os.path.join(ROOT, "tools", "ci.sh")) as f:
-            self.assertIn("run cargo deny --locked check -D advisory-not-detected", f.read())
+            self.assertIn("-D advisory-not-detected", f.read())
+
+    def test_duplicate_crate_versions_fail(self):
+        # A second version of a crate fails unless deny.toml lists it under
+        # skip, and a skip entry that no longer matches fails too.
+        with open(os.path.join(ROOT, "deny.toml"), "rb") as f:
+            bans = tomllib.load(f)["bans"]
+        self.assertEqual(bans["multiple-versions"], "deny")
+        for entry in bans.get("skip", []):
+            self.assertTrue(entry.get("reason", "").strip(),
+                            f"skip entry {entry.get('crate')} has no reason")
+        with open(os.path.join(ROOT, "tools", "ci.sh")) as f:
+            script = f.read()
+        self.assertIn("-D unmatched-skip", script)
+        self.assertIn("-D unnecessary-skip", script)
 
     def test_deny_license_check_blocks_only_a_release(self):
         self.ci_script_runs(

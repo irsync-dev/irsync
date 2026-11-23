@@ -628,6 +628,7 @@ fn session_end(index: usize, of: usize, failed: bool) -> Event {
         to: "nas:/backup".into(),
         reconnects: 0,
         conn: Some(ConnState::Direct),
+        key_exchange: None,
         usage: Default::default(),
         files_transferred: 0,
         files_hashed: 0,

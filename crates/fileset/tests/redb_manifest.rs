@@ -136,3 +136,47 @@ fn a_killed_update_is_repaired_by_the_next_update() {
     let (outcome, out, _) = run_check(dir.path(), fileset::compare::Tier::Default, &[], &[], false);
     assert_eq!((outcome, out.as_str()), (Outcome::Clean, ""));
 }
+
+/// redb panics on some damaged files. `fileset` reports the manifest as damaged, and
+/// redb's own panic message stays off stderr.
+#[test]
+fn a_panic_inside_redb_is_reported_as_damage_and_nothing_else() {
+    let dir = many_files(200);
+    run_update(dir.path(), Backend::Redb, false, false);
+    let manifest = dir.path().join(REDB_NAME);
+    let bytes = std::fs::read(&manifest).unwrap();
+    let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut caught = 0;
+    for case in 0..300u32 {
+        let mut b = bytes.clone();
+        let at = (rnd() as usize) % b.len();
+        if case % 2 == 0 {
+            let n = ((rnd() % 4096) as usize).min(b.len() - at);
+            b[at..at + n].fill(0);
+        } else {
+            let n = ((rnd() % 64) as usize).min(b.len() - at);
+            b[at..at + n].fill_with(|| rnd() as u8);
+        }
+        std::fs::write(&manifest, &b).unwrap();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_fileset"))
+            .arg("list")
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains("panicked"), "case {case}: {err}");
+        if err.contains("its redb database cannot be read") {
+            assert_eq!(out.status.code(), Some(2), "case {case}: {err}");
+            assert_eq!(err.lines().count(), 1, "case {case}: {err}");
+            caught += 1;
+        }
+    }
+    // Without a case where redb panicked, this would have shown nothing.
+    assert!(caught > 0);
+}

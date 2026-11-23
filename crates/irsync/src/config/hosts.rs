@@ -2,7 +2,7 @@
 
 use super::settings::{addresses_from, duration_from, url_from};
 use super::{file_error, ConfigError};
-use crate::config::settings::{Congestion, RelayMode};
+use crate::config::settings::{Congestion, PqKeyExchange, RelayMode};
 use crate::identity::{parse_endpoint_id, IdentityError};
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
@@ -25,6 +25,8 @@ pub struct HostEntry {
     pub relay_mode: Option<RelayMode>,
     /// For pushes to this host; unset: the client settings'.
     pub congestion: Option<Congestion>,
+    /// For connections to this host; unset: the client settings'.
+    pub pq_key_exchange: Option<PqKeyExchange>,
     pub address: Vec<HostPort>,
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
@@ -86,6 +88,7 @@ impl HostEntry {
             relay: url_from(h.relay.as_deref()).map_err(field)?,
             relay_mode: RelayMode::from_optional(h.relay_mode).map_err(field)?,
             congestion: Congestion::from_optional(h.congestion).map_err(field)?,
+            pq_key_exchange: PqKeyExchange::from_optional(h.pq_key_exchange).map_err(field)?,
             address: addresses_from(&h.address).map_err(field)?,
             parallel: h.parallel,
             reconnect: duration_from(h.reconnect.as_ref()).map_err(field)?,

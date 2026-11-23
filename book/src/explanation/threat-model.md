@@ -45,6 +45,9 @@ daemon, or send the client to another machine.
 
 - Every connection is QUIC with TLS, between two Ed25519 keys. The handshake
   proves each end holds its private key before any irsync message is sent.
+- The connection's keys come from a hybrid key exchange, X25519 together
+  with ML-KEM, when both sides offer it. See
+  [Networking](networking.md#tls-13-inside-quic).
 - The client dials one key and accepts no other. There is no trust on first
   use and no prompt to accept a new key.
 - A relay forwards packets that are encrypted end to end. It cannot read or
@@ -58,6 +61,19 @@ daemon, or send the client to another machine.
   and roughly how much. The public lookup records tie a daemon's key to its
   relay. irsync does not hide who talks to whom.
 - Anyone on the path can block or slow the connection.
+- **A recording of a connection could be decrypted later** by someone with a
+  large quantum computer, when one side does not offer the hybrid key
+  exchange. No such machine exists today. Two irsync versions with the
+  hybrid (`X25519MLKEM768`) use it, and a recording of their connection
+  stays safe as long as X25519 or ML-KEM holds. An older irsync on either
+  side gets X25519 alone, without a warning: `-vv` shows which one a
+  connection got. Set `pq_key_exchange = "require"` to refuse such a
+  connection instead; see
+  [Post-quantum key exchange](../reference/configuration.md#post-quantum-key-exchange).
+  It is not the default, so that older versions can still connect.
+- **The keys are Ed25519,** which such a machine could forge too. That would
+  let it pretend to be a daemon or a client from then on. It does not open
+  up connections recorded before.
 
 ## A key without a grant
 
@@ -204,9 +220,12 @@ is fine.
   symlinks inside. It opens a SQLite manifest with SQLite's settings for
   files that are not trusted, and refuses one with views, triggers or
   virtual tables. In a redb manifest every entry carries a checksum of its
-  path and content, the whole file is verified before `update` writes to
-  it, and a failure inside the database engine is reported as a damaged
-  manifest.
+  path and content, and the manifest carries one of all its entries
+  together, so an entry that is altered or gone is an error. The whole
+  file is verified before `update` writes to it, and a failure inside the
+  database engine is reported as a damaged manifest. These checksums catch
+  damage, not someone who rewrites the manifest and its checksums to
+  match.
 
 **What is left:**
 
@@ -272,6 +291,8 @@ In one place:
   it inside your destination directory. It can also check guesses about
   what that directory already holds.
 - Traffic analysis: who talks to whom, when, and how much.
+- A future quantum computer: it could forge a key, and decrypt a recorded
+  connection in which one side did not offer the hybrid key exchange.
 - A client with a grant, or a stranger, who sets out to use up the daemon's
   CPU, memory, disk or network.
 - Other users of the same machine who can write in the tree being synced.

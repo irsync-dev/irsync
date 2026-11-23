@@ -40,6 +40,9 @@ pub struct ReconnectOpts {
     /// own handshake timeout). Used for a host that can be checked over ssh
     /// instead of waiting long.
     pub first_dial_timeout: Option<Duration>,
+    /// `pq_key_exchange = "require"`: refuse a connection that did not get
+    /// the hybrid key exchange.
+    pub require_pq: bool,
     /// Which source of the command line this session is (for its trace).
     pub source_index: usize,
 }
@@ -52,6 +55,7 @@ impl Default for ReconnectOpts {
             backoff_max: Duration::from_secs(60),
             dial_retries: 4,
             first_dial_timeout: None,
+            require_pq: false,
             source_index: 0,
         }
     }
@@ -270,6 +274,27 @@ pub fn explain(
     }
 }
 
+/// With `require`, closes `conn` and fails unless its handshake agreed on
+/// the post-quantum hybrid key exchange. Call it before the first irsync
+/// message is sent. The error is final: a redial would get the same answer.
+pub fn check_pq_key_exchange(
+    conn: &Connection,
+    require: bool,
+    target: &EndpointId,
+) -> anyhow::Result<()> {
+    if !require || crate::net::has_pq_key_exchange(conn) {
+        return Ok(());
+    }
+    let got = crate::net::key_exchange(conn).unwrap_or_else(|| "unknown".into());
+    conn.close(2u32.into(), b"post-quantum key exchange required");
+    Err(anyhow::anyhow!(
+        "the daemon {} does not offer post-quantum key exchange (the connection got {got}), \
+         and pq_key_exchange = \"require\" refuses such a connection. Upgrade irsync on \
+         the daemon's machine, or allow it with --pq-key-exchange prefer",
+        target.fmt_short()
+    ))
+}
+
 /// What `path` is on the daemon ([`super::single::probe`]), asked before a
 /// pull picks its local root. Dials the way a session's first connection
 /// does: each dial bounded by `opts.first_dial_timeout`, up to
@@ -307,7 +332,10 @@ pub async fn probe_path(
             Ok(conn) => {
                 reached = true;
                 crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
-                let res = super::single::probe(&conn, path, timeout).await;
+                let res = match check_pq_key_exchange(&conn, opts.require_pq, &target.id) {
+                    Ok(()) => super::single::probe(&conn, path, timeout).await,
+                    Err(e) => Err(e),
+                };
                 conn.close(0u32.into(), b"done");
                 match res {
                     Ok(kind) => return Ok(kind),
@@ -531,6 +559,8 @@ async fn attempts(
     let mut attempt = 0u32;
     // Set by the first dial that succeeds; until then retries are few.
     let mut reached = false;
+    // The key exchange group of the latest connection, for the outcome.
+    let mut key_exchange = None;
     loop {
         on_state(match attempt {
             0 => ConnState::Connecting,
@@ -558,15 +588,25 @@ async fn attempts(
             Ok(conn) => {
                 reached = true;
                 crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
-                let run = run_client_inner(
-                    conn.clone(),
-                    hello_for(session),
-                    local.clone(),
-                    sync_opts,
-                    span,
-                    &mut tried,
+                key_exchange = crate::net::key_exchange(&conn);
+                tracing::info!(
+                    key_exchange = key_exchange.as_deref().unwrap_or("unknown"),
+                    "handshake done"
                 );
-                let res = watch_paths(&conn, run, &mut on_state).await;
+                let res = match check_pq_key_exchange(&conn, opts.require_pq, &target.id) {
+                    Ok(()) => {
+                        let run = run_client_inner(
+                            conn.clone(),
+                            hello_for(session),
+                            local.clone(),
+                            sync_opts,
+                            span,
+                            &mut tried,
+                        );
+                        watch_paths(&conn, run, &mut on_state).await
+                    }
+                    Err(e) => Err(e),
+                };
                 (res, Some(conn))
             }
             Err(msg) => (Err(anyhow::Error::new(TransportError(msg))), None),
@@ -582,6 +622,7 @@ async fn attempts(
             Ok(mut out) => {
                 out.reconnects = attempt;
                 out.conn = *kind.lock().unwrap();
+                out.key_exchange = key_exchange;
                 return Ok(out);
             }
             Err(e) => e,

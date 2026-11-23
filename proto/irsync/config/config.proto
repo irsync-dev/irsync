@@ -18,6 +18,7 @@ message Entry {                // one element of a string array
 
 enum RelayMode { RELAY_MODE_UNSPECIFIED = 0; RELAY_MODE_DEFAULT = 1; RELAY_MODE_DISABLED = 2; }
 enum Congestion { CONGESTION_UNSPECIFIED = 0; CONGESTION_BBR = 1; CONGESTION_CUBIC = 2; }
+enum PqKeyExchange { PQ_KEY_EXCHANGE_UNSPECIFIED = 0; PQ_KEY_EXCHANGE_PREFER = 1; PQ_KEY_EXCHANGE_REQUIRE = 2; }
 enum OtlpProtocol { OTLP_PROTOCOL_UNSPECIFIED = 0; OTLP_PROTOCOL_GRPC = 1; OTLP_PROTOCOL_HTTP = 2; }
 
 // Every table has: comment (its own), key_comments (by key name) and
@@ -51,6 +52,7 @@ message Client {
   optional string relay = 10;
   optional RelayMode relay_mode = 11;
   optional Congestion congestion = 12;
+  optional PqKeyExchange pq_key_exchange = 13;
 }
 
 message Daemon {
@@ -65,10 +67,11 @@ message Daemon {
   optional string relay = 11;
   optional RelayMode relay_mode = 12;
   optional Congestion congestion = 13;
-  Discovery discovery = 14;
-  optional string debug_addr = 15;
-  optional bool immediate = 16;
-  optional bool allow_root = 17;
+  optional PqKeyExchange pq_key_exchange = 14;
+  Discovery discovery = 15;
+  optional string debug_addr = 16;
+  optional bool immediate = 17;
+  optional bool allow_root = 18;
 }
 
 message Discovery {
@@ -92,16 +95,17 @@ message Host {
   optional string relay = 7;
   optional RelayMode relay_mode = 8;
   optional Congestion congestion = 9;
-  repeated Entry address = 10;
-  bool address_set = 11;
-  optional uint32 parallel = 12;
-  google.protobuf.Duration reconnect = 13;
-  optional uint32 dial_retries = 14;
-  optional bool dht = 15;
-  optional bool mdns = 16;
-  optional string ssh = 17;
-  repeated Entry ssh_aliases = 18;
-  bool ssh_aliases_set = 19;
+  optional PqKeyExchange pq_key_exchange = 10;
+  repeated Entry address = 11;
+  bool address_set = 12;
+  optional uint32 parallel = 13;
+  google.protobuf.Duration reconnect = 14;
+  optional uint32 dial_retries = 15;
+  optional bool dht = 16;
+  optional bool mdns = 17;
+  optional string ssh = 18;
+  repeated Entry ssh_aliases = 19;
+  bool ssh_aliases_set = 20;
 }
 
 message Export {

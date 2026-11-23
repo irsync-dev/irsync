@@ -26,7 +26,7 @@ use crate::autoexport::{auto_root, check_root, AutoRootError};
 use crate::config::exports::Export;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
-use crate::config::settings::{listen_sockets, DaemonSettings, Settings};
+use crate::config::settings::{listen_sockets, DaemonSettings, PqKeyExchange, Settings};
 use crate::filter::FilterSet;
 use crate::fs::paths::{escape_path, RelPath};
 use crate::identity::PassphraseSource;
@@ -72,6 +72,9 @@ struct Shared {
     /// cloned into each connection, so a reload's `idle_timeout` applies to
     /// the connections accepted after it.
     hosting: Mutex<DaemonSessions>,
+    /// `pq_key_exchange = "require"`; read at every connection, so a
+    /// reload applies.
+    require_pq: std::sync::atomic::AtomicBool,
     #[cfg(feature = "test-hooks")]
     hellos: Arc<std::sync::atomic::AtomicU64>,
     /// Finished sessions, and files their hashers read.
@@ -106,6 +109,10 @@ impl Shared {
             .store(d.max_dormant_sessions_per_key, Ordering::Relaxed);
         self.dormant_secs
             .store(d.dormant_session_timeout.as_secs(), Ordering::Relaxed);
+        self.require_pq.store(
+            d.pq_key_exchange == PqKeyExchange::Require,
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -182,6 +189,7 @@ impl Daemon {
                 fault: Some(Arc::default()),
                 ..DaemonSessions::default()
             }),
+            require_pq: (settings.daemon.pq_key_exchange == PqKeyExchange::Require).into(),
             #[cfg(feature = "test-hooks")]
             hellos: Default::default(),
             #[cfg(feature = "test-hooks")]
@@ -506,6 +514,20 @@ async fn handle(
         conn.close(1u32.into(), b"unauthorized");
         return Ok(());
     }
+    let key_exchange = crate::net::key_exchange(&conn);
+    let key_exchange = key_exchange.as_deref().unwrap_or("unknown");
+    // After the grant check, so a stranger learns nothing about the setting.
+    if shared.require_pq.load(Ordering::Relaxed) && !crate::net::has_pq_key_exchange(&conn) {
+        tracing::warn!(
+            peer = %id.fmt_short(),
+            key_exchange,
+            "rejecting a connection without post-quantum key exchange (pq_key_exchange = \"require\")"
+        );
+        let (code, reason) = crate::net::PQ_REQUIRED_CLOSE;
+        conn.close(code.into(), reason);
+        return Ok(());
+    }
+    tracing::info!(peer = %id.fmt_short(), key_exchange, "connection accepted");
     let first = tokio::time::timeout(HELLO_TIMEOUT, async {
         let (send, mut recv) = conn.accept_bi().await.context("accept control stream")?;
         let tap = conn_tap.stream(TapStream::Control, u64::from(recv.id()));

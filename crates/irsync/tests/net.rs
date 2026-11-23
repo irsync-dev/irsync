@@ -172,6 +172,7 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
         relay: Some("https://r.example".parse().unwrap()),
         relay_mode: None,
         congestion: None,
+        pq_key_exchange: None,
         address: vec!["127.0.0.1:1".parse().unwrap()],
         parallel: None,
         reconnect: None,
@@ -281,6 +282,7 @@ fn opts_carry_the_congestion_controller() {
     let cs = ClientSettings::default();
     let cubic = ClientSettings {
         congestion: Some(Congestion::Cubic),
+        pq_key_exchange: None,
         ..ClientSettings::default()
     };
     let mut he = HostEntry {
@@ -289,6 +291,7 @@ fn opts_carry_the_congestion_controller() {
         relay: None,
         relay_mode: None,
         congestion: None,
+        pq_key_exchange: None,
         address: vec![],
         parallel: None,
         reconnect: None,
@@ -382,6 +385,7 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
         relay: None,
         relay_mode: Some(RelayMode::Default),
         congestion: None,
+        pq_key_exchange: None,
         address: vec![],
         parallel: None,
         reconnect: None,
@@ -432,4 +436,46 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
         o.relay,
         RelayChoice::Custom("https://cli.example".parse().unwrap())
     );
+}
+
+/// Two irsync endpoints agree on the hybrid key exchange, and both ends
+/// can tell.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_irsync_endpoints_use_the_hybrid_key_exchange() {
+    let (a, b) = loopback_pair().await;
+    let (client, server) = connect_pair(&b, &a).await;
+    assert_eq!(
+        irsync::net::key_exchange(&client).as_deref(),
+        Some("X25519MLKEM768")
+    );
+    assert_eq!(
+        irsync::net::key_exchange(&server).as_deref(),
+        Some("X25519MLKEM768")
+    );
+    client.close(0u32.into(), b"done");
+    a.close().await;
+    b.close().await;
+}
+
+/// A peer without the hybrid still connects, in either direction, with
+/// X25519.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_without_the_hybrid_falls_back_to_x25519() {
+    let ours = common::loopback_endpoint().await;
+    let old = common::classical_endpoint().await;
+    for (dialler, listener) in [(&old, &ours), (&ours, &old)] {
+        let (client, server) = connect_pair(dialler, listener).await;
+        assert_eq!(
+            irsync::net::key_exchange(&client).as_deref(),
+            Some("X25519")
+        );
+        assert_eq!(
+            irsync::net::key_exchange(&server).as_deref(),
+            Some("X25519")
+        );
+        client.close(0u32.into(), b"done");
+        within(server.closed()).await;
+    }
+    ours.close().await;
+    old.close().await;
 }

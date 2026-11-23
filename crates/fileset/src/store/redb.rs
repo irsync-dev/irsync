@@ -12,13 +12,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use prost::Message;
 use redb::{
     Builder, CompactionMode, Database, DatabaseError, Durability, ReadOnlyDatabase,
-    ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition,
+    ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction,
 };
+use std::cell::Cell;
 use std::io::Read;
 use std::ops::Bound;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 const ENTRIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("entries");
@@ -51,11 +52,40 @@ pub fn is_redb_file(path: &Path) -> bool {
 /// and its own documentation says that a plain open of an altered file may panic. A
 /// manifest can come with a tree someone else made, or sit on a medium that rots, so
 /// such a panic is an error here.
+///
+/// The message Rust prints for such a panic is kept off stderr: the error says what
+/// there is to say. That holds only for a panic raised in redb's own code while `f`
+/// runs on this thread. Any other panic is a fault of ours and prints as usual.
 fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
-    match catch_unwind(AssertUnwindSafe(f)) {
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let print = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let redb = info.location().is_some_and(|l| in_redb(l.file()));
+            if !(redb && GUARDED.get() > 0) {
+                print(info);
+            }
+        }));
+    });
+    GUARDED.set(GUARDED.get() + 1);
+    let caught = catch_unwind(AssertUnwindSafe(f));
+    GUARDED.set(GUARDED.get() - 1);
+    match caught {
         Ok(r) => r,
         Err(_) => bail!("the manifest is damaged: its redb database cannot be read"),
     }
+}
+
+thread_local! {
+    /// How many `guarded` calls this thread is inside.
+    static GUARDED: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Whether `file`, the source file a panic names, is one of redb's: Cargo unpacks the
+/// crate into a directory called `redb-` and its version.
+fn in_redb(file: &str) -> bool {
+    file.split(['/', '\\'])
+        .any(|part| part.starts_with("redb-"))
 }
 
 /// The database, as `init` and `update` open it or as the commands that only read do.
@@ -87,21 +117,61 @@ impl Db {
 fn get_in(txn: &ReadTransaction, path: &[u8]) -> Result<Option<Entry>> {
     let table = txn.open_table(ENTRIES)?;
     let found = table.get(path)?;
-    found.map(|v| unseal(path, v.value())).transpose()
+    let entry = found.map(|v| unseal(path, v.value())).transpose()?;
+    Ok(entry.map(|(e, _)| e))
 }
 
 /// Bytes of checksum at the end of every stored entry.
 const SEAL: usize = 4;
 
-/// What ties a stored entry to its path: the start of the BLAKE3 hash of both.
-fn seal_of(path: &[u8], record: &[u8]) -> [u8; SEAL] {
+/// The meta row that holds the digest of all entries, as 32 hex digits.
+const DIGEST_KEY: &str = "entries_digest";
+
+/// The BLAKE3 hash of a path and the entry stored for it. Its start is the entry's seal,
+/// which ties the entry to its path. Its end is the entry's mark.
+///
+/// The marks of all entries, combined with XOR, are the digest in the meta table. Every
+/// write keeps it current in the transaction that changes the entries, and a read of
+/// all entries compares it. The seals cannot tell when an entry is gone, or is the one
+/// an earlier run stored, in a file that is otherwise sound; the digest can.
+fn hash_of(path: &[u8], record: &[u8]) -> ([u8; SEAL], u128) {
     let mut h = blake3::Hasher::new();
     h.update(&(path.len() as u64).to_le_bytes());
     h.update(path);
     h.update(record);
-    let mut seal = [0u8; SEAL];
-    seal.copy_from_slice(&h.finalize().as_bytes()[..SEAL]);
-    seal
+    let hash = h.finalize();
+    let (seal, _) = hash
+        .as_bytes()
+        .split_first_chunk()
+        .expect("a hash is 32 bytes");
+    let (_, mark) = hash
+        .as_bytes()
+        .split_last_chunk()
+        .expect("a hash is 32 bytes");
+    (*seal, u128::from_le_bytes(*mark))
+}
+
+/// The digest in `meta`, the meta table.
+fn read_digest(meta: &impl ReadableTable<&'static str, &'static str>) -> Result<u128> {
+    let found = meta.get(DIGEST_KEY)?.ok_or_else(|| {
+        anyhow!(
+            "manifest is damaged, or an older fileset made it: it lacks the digest of \
+             its entries. Run 'fileset init' again"
+        )
+    })?;
+    u128::from_str_radix(found.value(), 16)
+        .map_err(|_| anyhow!("manifest is damaged: the digest of its entries is not a number"))
+}
+
+/// Applies `change`, the marks of the entries a transaction added and removed, to the
+/// digest.
+fn shift_digest(txn: &WriteTransaction, change: u128) -> Result<()> {
+    if change != 0 {
+        let mut meta = txn.open_table(META)?;
+        let digest = read_digest(&meta)? ^ change;
+        meta.insert(DIGEST_KEY, format!("{digest:032x}").as_str())?;
+    }
+    Ok(())
 }
 
 /// The entry as it is stored: its protobuf encoding, then its seal.
@@ -110,14 +180,17 @@ fn seal_of(path: &[u8], record: &[u8]) -> [u8; SEAL] {
 /// writing, not when it reads one. A manifest on a medium that cannot be written to is
 /// only ever read, so without the seal a flipped bit in it came back as an entry that
 /// was a little different.
-fn sealed(path: &[u8], e: &Entry) -> Vec<u8> {
+///
+/// With it comes the entry's mark.
+fn sealed(path: &[u8], e: &Entry) -> (Vec<u8>, u128) {
     let mut bytes = to_pb(e).encode_to_vec();
-    let seal = seal_of(path, &bytes);
+    let (seal, mark) = hash_of(path, &bytes);
     bytes.extend_from_slice(&seal);
-    bytes
+    (bytes, mark)
 }
 
-fn unseal(path: &[u8], bytes: &[u8]) -> Result<Entry> {
+/// The protobuf encoding in a stored entry whose seal holds, and the entry's mark.
+fn open_seal<'a>(path: &[u8], bytes: &'a [u8]) -> Result<(&'a [u8], u128)> {
     let damaged = || {
         anyhow!(
             "manifest is damaged: the entry of {} does not match its checksum",
@@ -125,10 +198,16 @@ fn unseal(path: &[u8], bytes: &[u8]) -> Result<Entry> {
         )
     };
     let (record, seal) = bytes.split_last_chunk::<SEAL>().ok_or_else(damaged)?;
-    if *seal != seal_of(path, record) {
+    let (want, mark) = hash_of(path, record);
+    if *seal != want {
         return Err(damaged());
     }
-    decode(record)
+    Ok((record, mark))
+}
+
+fn unseal(path: &[u8], bytes: &[u8]) -> Result<(Entry, u128)> {
+    let (record, mark) = open_seal(path, bytes)?;
+    Ok((decode(record)?, mark))
 }
 
 /// Shares the open database. Every lookup is a read transaction of its own, so it sees
@@ -163,6 +242,7 @@ fn read_meta(db: &Db) -> Result<Meta> {
     guarded(|| {
         let txn = db.begin_read()?;
         let table = txn.open_table(META)?;
+        read_digest(&table)?;
         let get = |key: &str| -> Result<Option<String>> {
             Ok(table.get(key)?.map(|v| v.value().to_string()))
         };
@@ -195,10 +275,14 @@ fn open_error(path: &Path, mode: OpenMode, e: DatabaseError) -> anyhow::Error {
             "{} is damaged: its redb database cannot be repaired",
             path.display()
         ),
-        DatabaseError::DatabaseAlreadyOpen => anyhow!(
+        DatabaseError::DatabaseAlreadyOpen if mode == OpenMode::ReadOnly => anyhow!(
             "{} is open in another fileset that is writing it",
             path.display()
         ),
+        // A writer needs the file alone, and a reader holds it too.
+        DatabaseError::DatabaseAlreadyOpen => {
+            anyhow!("{} is open in another fileset", path.display())
+        }
         e => anyhow::Error::new(e).context(format!("opening {}", path.display())),
     }
 }
@@ -307,6 +391,7 @@ impl RedbStore {
             }
             if create {
                 txn.open_table(ENTRIES)?;
+                t.insert(DIGEST_KEY, format!("{:032x}", 0).as_str())?;
             }
         }
         txn.commit()?;
@@ -336,6 +421,7 @@ impl Store for RedbStore {
         })?;
         let mut rows = guarded(|| Ok(table.iter()?))?;
         let mut last: Option<Vec<u8>> = None;
+        let mut digest = 0;
         loop {
             // Only the read is guarded: what `f` does is not redb's.
             let entry = guarded(|| {
@@ -354,7 +440,9 @@ impl Store for RedbStore {
                 let prev = last.get_or_insert_with(Vec::new);
                 prev.clear();
                 prev.extend_from_slice(path);
-                Ok(Some(unseal(path, v.value())?))
+                let (entry, mark) = unseal(path, v.value())?;
+                digest ^= mark;
+                Ok(Some(entry))
             })?;
             let (Some(entry), Some(path)) = (entry, last.as_deref()) else {
                 break;
@@ -363,7 +451,12 @@ impl Store for RedbStore {
         }
         drop(rows);
         drop(table);
+        let written = guarded(|| read_digest(&txn.open_table(META)?))?;
         drop(txn);
+        anyhow::ensure!(
+            digest == written,
+            "manifest is damaged: entries are missing or are not the ones last written"
+        );
         Ok(())
     }
 
@@ -371,18 +464,25 @@ impl Store for RedbStore {
         let durability = self.durability();
         let mut txn = self.writable()?.begin_write()?;
         txn.set_durability(durability)?;
+        let mut change = 0;
         {
             let mut t = txn.open_table(ENTRIES)?;
             for (path, e) in items {
-                t.insert(path.as_slice(), sealed(path, e).as_slice())?;
+                let (bytes, mark) = sealed(path, e);
+                change ^= mark;
+                if let Some(old) = t.insert(path.as_slice(), bytes.as_slice())? {
+                    change ^= open_seal(path, old.value())?.1;
+                }
             }
         }
+        shift_digest(&txn, change)?;
         txn.commit()?;
         Ok(())
     }
 
     fn sweep(&mut self, keep: &dyn Fn(&[u8]) -> bool) -> Result<u64> {
         let mut deleted = 0u64;
+        let mut change = 0;
         let mut txn = self.writable()?.begin_write()?;
         // The meta rows that end a run are written next, and force this to disk too.
         txn.set_durability(Durability::None)?;
@@ -413,13 +513,16 @@ impl Store for RedbStore {
                 }
                 deleted += doomed.len() as u64;
                 for k in doomed.drain(..) {
-                    t.remove(k.as_slice())?;
+                    if let Some(old) = t.remove(k.as_slice())? {
+                        change ^= open_seal(&k, old.value())?.1;
+                    }
                 }
                 if scanned < SWEEP_CHUNK {
                     break;
                 }
             }
         }
+        shift_digest(&txn, change)?;
         txn.commit()?;
         Ok(deleted)
     }
@@ -510,6 +613,134 @@ mod tests {
     }
 
     #[test]
+    fn only_a_panic_in_redbs_own_source_is_redbs() {
+        assert!(in_redb(
+            "/home/me/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/redb-5.0.0/src/tree_store/btree.rs"
+        ));
+        assert!(in_redb(
+            r"C:\Users\me\.cargo\registry\src\x\redb-5.0.0\src\db.rs"
+        ));
+        assert!(!in_redb(file!()), "{}", file!());
+        assert!(!in_redb("/rustc/abc/library/core/src/slice/index.rs"));
+    }
+
+    /// A panic of our own inside a guarded read still prints: only redb's are kept quiet.
+    #[test]
+    fn a_panic_that_is_not_redbs_is_still_printed() {
+        let _ = guarded(|| Ok(())); // installs the hook this test wraps
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let inner = Arc::new(std::panic::take_hook());
+        let (log, print) = (seen.clone(), inner.clone());
+        std::panic::set_hook(Box::new(move |info| {
+            log.lock().unwrap().push(info.to_string());
+            print(info);
+        }));
+        let err = guarded::<()>(|| panic!("ours")).unwrap_err();
+        std::panic::set_hook(Box::new(move |info| inner(info)));
+        assert!(err.to_string().contains("damaged"), "{err}");
+        assert!(seen.lock().unwrap().iter().any(|m| m.contains("ours")));
+    }
+
+    /// An entry that is gone, or is an older one, in a file that is sound to redb: each
+    /// entry still matches its seal, so only the digest of all of them can tell.
+    #[test]
+    fn a_lost_or_stale_entry_is_found_by_a_full_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let read_all = |p: &Path| -> Result<usize> {
+            let s = RedbStore::open(p, OpenMode::ReadOnly)?;
+            let mut n = 0;
+            s.for_each(&mut |_, _| {
+                n += 1;
+                Ok(())
+            })?;
+            Ok(n)
+        };
+        let all = items(50);
+        type Entries<'a> = redb::Table<'a, &'static [u8], &'static [u8]>;
+        let tamper = |name: &str, change: &dyn Fn(&mut Entries)| {
+            let p = dir.path().join(name);
+            manifest(&p, &all);
+            assert_eq!(read_all(&p).unwrap(), 50);
+            let db = Database::open(&p).unwrap();
+            let txn = db.begin_write().unwrap();
+            change(&mut txn.open_table(ENTRIES).unwrap());
+            txn.commit().unwrap();
+            drop(db);
+            read_all(&p).unwrap_err().to_string()
+        };
+        let (path, _) = &all[7];
+        let err = tamper("lost", &|t| {
+            t.remove(path.as_slice()).unwrap().unwrap();
+        });
+        assert!(err.contains("entries are missing or are not"), "{err}");
+        let err = tamper("stale", &|t| {
+            let (other, _) = sealed(path, &entry(999));
+            t.insert(path.as_slice(), other.as_slice()).unwrap();
+        });
+        assert!(err.contains("entries are missing or are not"), "{err}");
+    }
+
+    /// What `update` does to a manifest keeps the digest that of its entries.
+    #[test]
+    fn the_digest_follows_replaced_and_swept_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("m");
+        let all = items(300);
+        manifest(&p, &all);
+        let mut s = RedbStore::open(&p, OpenMode::ReadWrite).unwrap();
+        let changed: Vec<_> = all[..40]
+            .iter()
+            .map(|(k, _)| (k.clone(), entry(5000)))
+            .collect();
+        s.put_batch(&changed).unwrap();
+        s.put_batch(&changed).unwrap();
+        assert_eq!(s.sweep(&|k| k != all[100].0.as_slice()).unwrap(), 1);
+        let mut n = 0;
+        s.for_each(&mut |_, _| {
+            n += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(n, 299);
+        Box::new(s).close().unwrap();
+        let s = RedbStore::open(&p, OpenMode::ReadOnly).unwrap();
+        s.for_each(&mut |_, _| Ok(())).unwrap();
+    }
+
+    /// redb locks the file, in a way that differs between systems. Whatever the way:
+    /// readers share a manifest, and a writer has it alone.
+    #[test]
+    fn readers_share_a_manifest_and_a_writer_has_it_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("m");
+        manifest(&p, &items(10));
+        let refused = |mode| match RedbStore::open(&p, mode) {
+            Ok(_) => panic!("opened {mode:?}"),
+            Err(e) => e.to_string(),
+        };
+
+        let writer = RedbStore::open(&p, OpenMode::ReadWrite).unwrap();
+        for mode in [OpenMode::ReadOnly, OpenMode::ReadWrite] {
+            let err = refused(mode);
+            assert!(
+                err.contains("is open in another fileset"),
+                "{mode:?}: {err}"
+            );
+        }
+        Box::new(writer).close().unwrap();
+
+        let first = RedbStore::open(&p, OpenMode::ReadOnly).unwrap();
+        let second = RedbStore::open(&p, OpenMode::ReadOnly).unwrap();
+        assert!(first.get(b"d03/f00003").unwrap().is_some());
+        assert!(second.get(b"d03/f00003").unwrap().is_some());
+        let err = refused(OpenMode::ReadWrite);
+        assert!(err.contains("is open in another fileset"), "{err}");
+        Box::new(first).close().unwrap();
+        Box::new(second).close().unwrap();
+        RedbStore::open(&p, OpenMode::ReadWrite).unwrap();
+    }
+
+    #[test]
     fn only_a_file_that_starts_like_redb_is_one() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("m");
@@ -567,7 +798,7 @@ mod tests {
         let txn = db.begin_write().unwrap();
         txn.open_table(ENTRIES)
             .unwrap()
-            .insert(&b"d01/f00001"[..], stored.as_slice())
+            .insert(&b"d01/f00001"[..], stored.0.as_slice())
             .unwrap();
         txn.commit().unwrap();
         db.close().unwrap();

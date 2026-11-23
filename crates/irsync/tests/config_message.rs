@@ -293,7 +293,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[client]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `parallel`, `reconnect`, `dial_retries`, `dht`, `ssh_install`, `mdns`, `relay`, `relay_mode`, `congestion`",
+            "f:2: unknown field `bogus`, expected one of `parallel`, `reconnect`, `dial_retries`, `dht`, `ssh_install`, `mdns`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`",
         ),
         (
             "[daemon]\nidentity = 1\n",
@@ -376,6 +376,10 @@ fn errors_are_those_of_config_parse() {
             "f:2: unknown variant `reno`, expected `bbr` or `cubic`",
         ),
         (
+            "[hosts.h]\npq_key_exchange = \"only\"\n",
+            "f:2: unknown variant `only`, expected `prefer` or `require`",
+        ),
+        (
             "[telemetry]\notlp_protocol = 1\n",
             "f:2: wanted string or table",
         ),
@@ -409,7 +413,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[daemon]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `congestion`, `discovery`, `debug_addr`, `immediate`, `allow_root`",
+            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `discovery`, `debug_addr`, `immediate`, `allow_root`",
         ),
         (
             "[telemetry]\nbogus = 1\n",
@@ -417,7 +421,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[hosts.nas]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `client_id`, `relay`, `relay_mode`, `congestion`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`",
+            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `client_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`",
         ),
         (
             "[all]\nbogus = 1\n",

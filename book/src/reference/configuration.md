@@ -41,6 +41,7 @@ mdns = true
 relay = "https://relay.example.net"   # no default: n0's relays
 relay_mode = "default"       # or "disabled": no relay
 congestion = "bbr"           # or "cubic", for pushes
+pq_key_exchange = "prefer"   # or "require"
 
 [daemon]
 identity = "~/.config/irsync/daemon_ed25519"
@@ -53,6 +54,7 @@ portmap = true               # UPnP, PCP and NAT-PMP
 relay = "https://relay.example.net"      # no default: n0's relays
 relay_mode = "default"       # or "disabled"
 congestion = "bbr"           # or "cubic", for pulls
+pq_key_exchange = "prefer"   # or "require"
 debug_addr = "127.0.0.1:9464"            # no default: off
 immediate = true             # false: ignore [immediate]
 allow_root = false           # true: let the daemon run as root
@@ -73,6 +75,7 @@ endpoint_id = "4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff"
 relay = "https://relay.example.net"   # the rest is optional
 relay_mode = "disabled"
 congestion = "cubic"
+pq_key_exchange = "require"
 address = ["192.168.1.10:4000"]
 parallel = 64
 reconnect = "1h"
@@ -182,11 +185,32 @@ built-in default.
 | `relay` | n0's relays | The relay server to use, for a self-hosted relay. Flag: `--relay`. |
 | `relay_mode` | `default` | `disabled`: direct connections only, never through a relay; the lookups stay on. Flag: `--no-relay`. |
 | `congestion` | `bbr` | QUIC's congestion controller when the client sends, that is for a push: `bbr` or `cubic`. |
+| `pq_key_exchange` | `prefer` | `require`: refuse a daemon that does not offer the post-quantum key exchange. See [Post-quantum key exchange](#post-quantum-key-exchange). Flag: `--pq-key-exchange`. |
 
 `congestion` picks the congestion controller of the side that sends: the
 client's (the host's, else `[client]`'s) for a push, the daemon's for a pull.
 When to choose `cubic` over `bbr`, with measurements, is in
 [Connections](../explanation/connections.md#congestion-control).
+
+### Post-quantum key exchange
+
+irsync always offers a key exchange that also holds against a quantum
+computer (`X25519MLKEM768`, see
+[Networking](../explanation/networking.md#tls-13-inside-quic)), and uses it
+when the other side offers it too. `pq_key_exchange` says what happens when
+the other side does not, as irsync 0.1.0-beta.6 and older do not:
+
+- `prefer`, the default: the connection is made with the classical key
+  exchange. Someone who records it could decrypt it once a large quantum
+  computer exists. `-vv` shows which key exchange a connection got.
+- `require`: the connection is refused, before any file name or data is
+  sent. The side that refuses says why, and the other side prints it.
+
+Each side decides for itself. On the client it is the flag, else the host's
+table, else `[client]`. On the daemon it is `pq_key_exchange` in
+[`[daemon]`](#daemon), and it holds for every client: there is no setting
+per export or per grant yet. A daemon tells only a client that has a grant;
+a key without one is turned away as before.
 
 ## Hosts
 
@@ -206,6 +230,7 @@ be an `EndpointId`.
 | `relay` | `[client]`'s | This host's relay server. |
 | `relay_mode` | `[client]`'s | `disabled`: reach this host directly only. |
 | `congestion` | `[client]`'s | The congestion controller for pushes to this host. |
+| `pq_key_exchange` | `[client]`'s | `require`: refuse this host when it does not offer the post-quantum key exchange. |
 | `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. Cannot be combined with `--relay`. |
 | `parallel` | `[client]`'s | Data streams a push to this host keeps open at once. |
 | `reconnect` | `[client]`'s | How long to keep redialling. |
@@ -234,6 +259,7 @@ take effect at the next start.
 | `relay` | n0's relays | The relay server to use, for a self-hosted relay. |
 | `relay_mode` | `default` | `disabled`: no relay, direct connections only. |
 | `congestion` | `bbr` | The congestion controller when the daemon sends, that is for a pull. |
+| `pq_key_exchange` | `prefer` | `require`: close the connection of a client that does not offer the post-quantum key exchange, for every export. The client is told to upgrade. See [Post-quantum key exchange](#post-quantum-key-exchange). |
 | `debug_addr` | off | Serve metrics and span timings over HTTP at `IP:PORT`; a bare port means `127.0.0.1`. |
 | `immediate` | `true` | Honour the `[immediate]` grants. `false`: the daemon ignores `[immediate]` and makes no automatic exports, so peers reach only the exports granted to them. |
 | `allow_root` | `false` | Let the daemon run as root. Without it, or the flag `--run-as-root-i-know-what-i-am-doing`, a daemon started as root exits at once. See [Do not run it as root](../how-to/run-the-daemon.md#do-not-run-it-as-root). |

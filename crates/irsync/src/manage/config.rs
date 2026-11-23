@@ -47,21 +47,21 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["client", "dial_retries"] => Int,
         ["client", "dht" | "mdns" | "ssh_install"] => Bool,
         ["client", "relay"] => Url,
-        ["client", "relay_mode"] | ["client", "congestion"] => Str,
+        ["client", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "identity"] => Path,
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
         ["daemon", "max_dormant_sessions_per_key"] => Int,
         ["daemon", "listen"] => AddrArray,
         ["daemon", "portmap"] | ["daemon", "immediate"] | ["daemon", "allow_root"] => Bool,
         ["daemon", "relay"] => Url,
-        ["daemon", "relay_mode"] | ["daemon", "congestion"] => Str,
+        ["daemon", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "debug_addr"] => Str,
         ["telemetry", "otlp_endpoint"] => Url,
         ["telemetry", "otlp_protocol"] => Str,
         ["daemon", "discovery", "dht" | "dns" | "mdns"] => Bool,
         ["hosts", _, "endpoint_id" | "client_id"] => Id,
         ["hosts", _, "relay"] => Url,
-        ["hosts", _, "relay_mode" | "congestion" | "ssh"] => Str,
+        ["hosts", _, "relay_mode" | "congestion" | "pq_key_exchange" | "ssh"] => Str,
         ["hosts", _, "address"] => AddrArray,
         ["hosts", _, "ssh_aliases"] => StrArray,
         ["hosts", _, "parallel"] => Int,
@@ -118,6 +118,9 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["client", "congestion"] => one(crate::config::settings::Congestion::default()
             .as_str()
             .into()),
+        ["client", "pq_key_exchange"] => one(crate::config::settings::PqKeyExchange::default()
+            .as_str()
+            .into()),
         ["state_dir"] => one(as_written(&s.state_dir)),
         ["daemon", "identity"] => one(as_written(&s.daemon.identity)),
         ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),
@@ -135,6 +138,7 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         }
         .to_string()),
         ["daemon", "congestion"] => one(s.daemon.congestion.as_str().to_string()),
+        ["daemon", "pq_key_exchange"] => one(s.daemon.pq_key_exchange.as_str().to_string()),
         ["daemon", "discovery", "dht"] => one(s.daemon.discovery.dht.to_string()),
         ["daemon", "discovery", "dns"] => one(s.daemon.discovery.dns.to_string()),
         ["daemon", "discovery", "mdns"] => one(s.daemon.discovery.mdns.to_string()),
@@ -310,6 +314,7 @@ enum Field<'a> {
     Id(&'a mut Option<Vec<u8>>),
     RelayMode(&'a mut Option<i32>),
     Congestion(&'a mut Option<i32>),
+    PqKeyExchange(&'a mut Option<i32>),
     OtlpProtocol(&'a mut Option<i32>),
     /// A string array and whether its key is in the file.
     List(&'a mut Vec<pb::Entry>, &'a mut bool),
@@ -398,6 +403,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "relay" => Url(&mut c.relay),
                 "relay_mode" => RelayMode(&mut c.relay_mode),
                 "congestion" => Congestion(&mut c.congestion),
+                "pq_key_exchange" => PqKeyExchange(&mut c.pq_key_exchange),
                 _ => return None,
             };
             (f, &mut c.key_comments)
@@ -425,6 +431,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "relay" => Url(&mut d.relay),
                 "relay_mode" => RelayMode(&mut d.relay_mode),
                 "congestion" => Congestion(&mut d.congestion),
+                "pq_key_exchange" => PqKeyExchange(&mut d.pq_key_exchange),
                 "debug_addr" => Text(&mut d.debug_addr),
                 "immediate" => Bool(&mut d.immediate),
                 "allow_root" => Bool(&mut d.allow_root),
@@ -449,6 +456,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "relay" => Url(&mut h.relay),
                 "relay_mode" => RelayMode(&mut h.relay_mode),
                 "congestion" => Congestion(&mut h.congestion),
+                "pq_key_exchange" => PqKeyExchange(&mut h.pq_key_exchange),
                 "address" => Addresses(&mut h.address, &mut h.address_set),
                 "parallel" => Int(&mut h.parallel),
                 "reconnect" => Duration(&mut h.reconnect),
@@ -505,6 +513,7 @@ const CLIENT: &[&str] = &[
     "relay",
     "relay_mode",
     "congestion",
+    "pq_key_exchange",
 ];
 const DAEMON: &[&str] = &[
     "identity",
@@ -516,6 +525,7 @@ const DAEMON: &[&str] = &[
     "relay",
     "relay_mode",
     "congestion",
+    "pq_key_exchange",
     "debug_addr",
     "immediate",
     "allow_root",
@@ -528,6 +538,7 @@ const HOST: &[&str] = &[
     "relay",
     "relay_mode",
     "congestion",
+    "pq_key_exchange",
     "address",
     "parallel",
     "reconnect",
@@ -719,6 +730,7 @@ fn shown(field: &Field) -> Option<Shown> {
         Field::Id(v) => v.as_deref().map(|b| text(&writer::id(b))),
         Field::RelayMode(v) => v.and_then(writer::relay_mode).map(text),
         Field::Congestion(v) => v.and_then(writer::congestion).map(text),
+        Field::PqKeyExchange(v) => v.and_then(writer::pq_key_exchange).map(text),
         Field::OtlpProtocol(v) => v.and_then(writer::otlp_protocol).map(text),
         Field::List(v, set) | Field::Addresses(v, set) => list(v, **set),
         Field::ExportPath(p) => (!p.is_empty()).then(|| text(p)),
@@ -733,7 +745,10 @@ fn clear(field: Field) -> bool {
         Field::Duration(v) => v.take().is_some(),
         Field::Text(v) | Field::Url(v) => v.take().is_some(),
         Field::Id(v) => v.take().is_some(),
-        Field::RelayMode(v) | Field::Congestion(v) | Field::OtlpProtocol(v) => v.take().is_some(),
+        Field::RelayMode(v)
+        | Field::Congestion(v)
+        | Field::PqKeyExchange(v)
+        | Field::OtlpProtocol(v) => v.take().is_some(),
         Field::List(v, set) | Field::Addresses(v, set) => {
             let was = *set || !v.is_empty();
             v.clear();
@@ -809,6 +824,13 @@ fn assign(field: Field, value: Value) -> Result<(), String> {
                 &s,
                 ("bbr", pb::Congestion::Bbr as i32),
                 ("cubic", pb::Congestion::Cubic as i32),
+            )?);
+        }
+        (Field::PqKeyExchange(f), Value::Text(s)) => {
+            *f = Some(variant(
+                &s,
+                ("prefer", pb::PqKeyExchange::Prefer as i32),
+                ("require", pb::PqKeyExchange::Require as i32),
             )?);
         }
         (Field::OtlpProtocol(f), Value::Text(s)) => {
