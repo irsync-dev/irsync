@@ -109,9 +109,16 @@ fn ioctl_in(file: &File, code: u32, input: Option<&FILE_ZERO_DATA_INFORMATION>) 
     // borrows, with its exact size; the call only reads it. There is no
     // output buffer: the pointer is null and the length 0. `lpBytesReturned`
     // points to the local `returned`, which outlives the call.
-    // `lpOverlapped` is null, and no handle in this crate is opened for
-    // overlapped I/O (std never sets FILE_FLAG_OVERLAPPED, and no caller
-    // passes it), so the call completes before it returns.
+    // `lpOverlapped` is null, which is sound only for a handle not opened for
+    // overlapped I/O. That holds for every handle that reaches here:
+    // `ioctl_in` is private, called only by `set_sparse` and `zero_range`,
+    // which are private too. Their only callers are `punch_hole`, which is
+    // `pub(crate)` and whose callers (the `punch_hole` op in `ops/file.rs`
+    // and this file's tests) open the file with std's `OpenOptions` and no
+    // custom flags, and `probe_caps`, which creates its own file with
+    // `File::create_new`. std sets FILE_FLAG_OVERLAPPED only when a caller
+    // passes it as a custom flag, so none of these handles has it, and the
+    // call completes before it returns.
     let ok = unsafe {
         DeviceIoControl(
             file.as_raw_handle() as HANDLE,
@@ -135,17 +142,21 @@ fn set_sparse(file: &File) -> io::Result<()> {
     ioctl_in(file, FSCTL_SET_SPARSE, None)
 }
 
-/// Zeroes `[offset, end)` of `file`, deallocating it if the file is sparse.
-fn zero_range(file: &File, offset: u64, end: u64) -> io::Result<()> {
-    let to_i64 = |v: u64| {
-        i64::try_from(v)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "offset out of range"))
-    };
-    let info = FILE_ZERO_DATA_INFORMATION {
-        FileOffset: to_i64(offset)?,
-        BeyondFinalZero: to_i64(end)?,
-    };
-    ioctl_in(file, FSCTL_SET_ZERO_DATA, Some(&info))
+/// The range `[offset, offset + len)` as `FSCTL_SET_ZERO_DATA` takes it; an
+/// error if its end does not fit in an `i64`.
+fn zero_data(offset: u64, len: u64) -> io::Result<FILE_ZERO_DATA_INFORMATION> {
+    let out_of_range = || io::Error::new(io::ErrorKind::InvalidInput, "range out of bounds");
+    let end = offset.checked_add(len).ok_or_else(out_of_range)?;
+    Ok(FILE_ZERO_DATA_INFORMATION {
+        FileOffset: i64::try_from(offset).map_err(|_| out_of_range())?,
+        BeyondFinalZero: i64::try_from(end).map_err(|_| out_of_range())?,
+    })
+}
+
+/// Zeroes the range `info` names in `file`, deallocating it if the file is
+/// sparse.
+fn zero_range(file: &File, info: &FILE_ZERO_DATA_INFORMATION) -> io::Result<()> {
+    ioctl_in(file, FSCTL_SET_ZERO_DATA, Some(info))
 }
 
 /// Whether `e` says the filesystem has no sparse files.
@@ -329,17 +340,17 @@ pub fn read_link(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 /// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
-/// if the filesystem cannot. Marks the file sparse first.
-pub fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
+/// if the filesystem cannot. Marks the file sparse first, once the range is
+/// known to be valid. Crate-private: `f` must not be opened for overlapped
+/// I/O (see `ioctl_in`), which every caller here ensures.
+pub(crate) fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
+    let info = zero_data(offset, len)?;
     match set_sparse(f) {
         Ok(()) => {}
         Err(e) if sparse_unsupported(&e) => return Ok(false),
         Err(e) => return Err(e),
     }
-    let end = offset
-        .checked_add(len)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "range out of bounds"))?;
-    zero_range(f, offset, end)?;
+    zero_range(f, &info)?;
     Ok(true)
 }
 
@@ -708,6 +719,25 @@ mod tests {
         assert!(back[65_536..196_608].iter().all(|&b| b == 0));
         assert!(back[196_608..].iter().all(|&b| b == 0xAB));
         f.write_all(b"still writable").unwrap();
+    }
+
+    #[test]
+    fn a_bad_range_is_refused_before_the_file_is_marked_sparse() {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SPARSE_FILE;
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("f");
+        fs::write(&p, b"abc").unwrap();
+        let f = OpenOptions::new().write(true).open(&p).unwrap();
+        for (offset, len) in [(u64::MAX, 2), (1 << 63, 0), (0, 1 << 63)] {
+            let err = punch_hole(&f, offset, len).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{offset} {len}");
+        }
+        let sparse =
+            |p: &Path| fs::metadata(p).unwrap().file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE;
+        assert_eq!(sparse(&p), 0);
+        assert!(punch_hole(&f, 0, 1).unwrap());
+        assert_ne!(sparse(&p), 0);
     }
 
     #[test]

@@ -169,7 +169,7 @@ pub fn read_link(path: &Path) -> io::Result<Vec<u8>> {
 /// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
 /// if the filesystem cannot.
 #[cfg(target_os = "linux")]
-pub fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
+pub(crate) fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
     use nix::errno::Errno;
     use nix::fcntl::{fallocate, FallocateFlags};
     let flags = FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE;
@@ -183,7 +183,7 @@ pub fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
 /// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
 /// if the filesystem cannot.
 #[cfg(target_os = "macos")]
-pub fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
+pub(crate) fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
     use std::os::fd::AsRawFd;
     let arg = libc::fpunchhole_t {
         fp_flags: 0,
@@ -202,7 +202,7 @@ pub fn punch_hole(f: &File, offset: u64, len: u64) -> io::Result<bool> {
 /// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
 /// if the filesystem cannot, as always here.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub fn punch_hole(_: &File, _: u64, _: u64) -> io::Result<bool> {
+pub(crate) fn punch_hole(_: &File, _: u64, _: u64) -> io::Result<bool> {
     Ok(false)
 }
 
