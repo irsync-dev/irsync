@@ -41,7 +41,9 @@ recorded are requested again.
 The client redials with exponential backoff: 1 second, doubling up to 60
 seconds, plus up to a quarter of random jitter, so that many clients do not
 redial in step. It keeps going for `--reconnect`, 24 hours by default, measured
-from the last time the session made progress. A connection that the daemon
+from the first dropped connection since the session last made progress: however
+long a connection worked before it dropped, the client dials again at least
+once. A connection that the daemon
 accepts but that moves no data and places no file does not count as progress,
 so a daemon that accepts and drops every connection cannot keep a client
 retrying forever. `--reconnect 0` gives up at once, as rsync does.
