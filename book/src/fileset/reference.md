@@ -47,8 +47,8 @@ refuses to run if there is no manifest, or if the manifest was left by an
 interrupted `init` (run `init` again). A manifest in a subdirectory is a
 warning, not an error.
 
-A regular file is hashed again only when its size, `mtime`, `ctime` or inode
-differ from the manifest, or when the manifest holds no hash for it. Otherwise the
+A regular file is hashed again only when its size, `mtime` or inode differ
+from the manifest, or when the manifest holds no hash for it. Otherwise the
 stored hash is kept. A file that cannot be read produces the warning
 `cannot hash <path>` and is recorded without a hash. Rows that have not changed are not rewritten. Whatever
 the scan did not see is removed from the manifest: deleted entries, and also

@@ -329,8 +329,6 @@ impl Seen {
 }
 
 /// Reuses the stored hash of an unchanged regular file; hashes other regular files.
-/// The change time is part of "unchanged": content rewritten with its old mtime set back
-/// still moves it.
 fn reuse_or_hash(stored: Option<&Entry>, obs: &mut Observed, rehash: bool) -> Decision {
     let e = &mut obs.entry;
     if e.kind != Kind::File || e.flags.contains(Flags::STORE) {
@@ -345,7 +343,6 @@ fn reuse_or_hash(stored: Option<&Entry>, obs: &mut Observed, rehash: bool) -> De
                 && s.blake3.is_some()
                 && s.size == e.size
                 && s.mtime == e.mtime
-                && s.ctime == e.ctime
                 && s.ino == e.ino =>
         {
             e.blake3 = s.blake3;
