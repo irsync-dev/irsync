@@ -25,12 +25,13 @@ tempfile = "3"
 # A workspace of its own.
 [workspace]
 
-# The same iroh as the main workspace (see the patch in ../Cargo.toml).
+# The same iroh and redb as the main workspace (see the patch in ../Cargo.toml).
 [patch.crates-io]
 iroh = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
 iroh-base = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
 iroh-dns = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
 iroh-relay = { git = "https://github.com/n0-computer/iroh", rev = "970c5690e7358f92d393c33ad373094004bdca46" }
+redb = { git = "https://github.com/lambdanature/redb", rev = "bd6b63e22109e15f5cd3419768b2d6751faf114c" }
 
 [profile.release]
 debug = 1

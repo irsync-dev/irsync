@@ -58,10 +58,11 @@ allow = [
 confidence-threshold = 0.9
 
 [sources]
-# crates.io, and upstream iroh (pinned to a commit in Cargo.toml). Nothing else.
+# crates.io, upstream iroh, and our redb fork with the scan visit cap until a
+# redb release has it (#250), each pinned to a commit in Cargo.toml. Nothing else.
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/n0-computer/iroh"]
+allow-git = ["https://github.com/n0-computer/iroh", "https://github.com/lambdanature/redb"]
 
 [bans]
 # A second version of a crate fails the check. A crate may have more than one

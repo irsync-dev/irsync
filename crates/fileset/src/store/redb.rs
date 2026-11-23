@@ -12,7 +12,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use prost::Message;
 use redb::{
     Builder, CompactionMode, Database, DatabaseError, Durability, ReadOnlyDatabase,
-    ReadTransaction, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction,
+    ReadTransaction, ReadableDatabase, ReadableTable, StorageError, TableDefinition,
+    WriteTransaction,
 };
 use std::cell::Cell;
 use std::io::Read;
@@ -71,6 +72,11 @@ fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     let caught = catch_unwind(AssertUnwindSafe(f));
     GUARDED.set(GUARDED.get() - 1);
     match caught {
+        // redb found the file unsound, such as a scan that visits more pages than the
+        // file holds.
+        Ok(Err(e)) if matches!(e.downcast_ref(), Some(StorageError::Corrupted(_))) => {
+            Err(e.context("the manifest is damaged"))
+        }
         Ok(r) => r,
         Err(_) => bail!("the manifest is damaged: its redb database cannot be read"),
     }

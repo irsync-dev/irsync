@@ -431,10 +431,17 @@ What was checked before building, and what came of it:
     migration.
 
   With these, the same 4,000 corruptions gave an error or the stored
-  entries, every time. A smaller run of them is a test. What is not
-  covered: a file crafted to make redb loop. Nothing bounds a read, and
-  none has been seen to loop: the fuzz target below fails on an input that
-  takes over 10 seconds.
+  entries, every time. A smaller run of them is a test.
+
+  A file can also be crafted to make a scan run for ever: branch pages that
+  list the same child again and again, ending in a leaf with no entries
+  (issue #250). The scan walks every path, 2^40 leaves at 40 levels, and
+  returns neither an entry nor an error, so the guard in `for_each` never
+  fires. redb now stops a scan that loads more pages than the file holds
+  (cberner/redb#1705; until a release has it, irsync builds redb from our
+  fork). fileset reports that as a damaged manifest, and a test builds such
+  a file. The fuzz target below fails on an input that takes over 10
+  seconds.
 
   There was no fuzz target at first, because under the fuzzer a panic
   inside redb is a crash whatever `fileset` does with it. The panic hook
