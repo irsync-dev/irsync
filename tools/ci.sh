@@ -8,7 +8,13 @@
 #
 #   check          formatting, the dev-setup and man page tests, clippy
 #                  with and without OpenTelemetry, every test including
-#                  the slow ones, and the doc tests
+#                  the slow ones, and the doc tests. On Windows (Git Bash)
+#                  it covers filegen, fileset and irsync-glob only, the
+#                  crates that build there: formatting, one clippy run, their
+#                  tests and doc tests, then a smoke run of filegen and
+#                  fileset together. It needs only cargo-nextest; the Python
+#                  tests, the fuzz lock and the fuzz target formatting are
+#                  left out. With no job, only check runs on Windows.
 #   deny           the dependency check (cargo deny, see deny.toml), for
 #                  the platforms irsync is built for
 #   deny-license-check
@@ -47,6 +53,13 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 cd "$root"
 os=$(uname -s)
+# Git Bash, MSYS2 and Cygwin name their Windows version, e.g.
+# MINGW64_NT-10.0-26100.
+case $os in
+    MINGW* | MSYS* | CYGWIN*) os=Windows ;;
+esac
+# The crates that build and test on Windows; check covers only these there.
+windows_packages=(filegen fileset irsync-glob)
 
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
 
@@ -61,7 +74,10 @@ for arg in "$@"; do
 done
 if [ -z "$jobs" ]; then
     jobs=$all_jobs
-    if [ "$os" = FreeBSD ]; then
+    if [ "$os" = Windows ]; then
+        jobs="check"
+        echo "ci.sh: on Windows only check runs, for filegen, fileset and irsync-glob"
+    elif [ "$os" = FreeBSD ]; then
         jobs="workflows shell-scripts deny deny-license-check check freebsd-build"
         echo "ci.sh: leaving out fuzz-build and release-build, which run on Linux only"
     elif [ "$os" != Linux ]; then
@@ -97,6 +113,10 @@ need() {
 
 needs_check() {
     need cargo-nextest cargo nextest --version
+    # The rest is for the Python and rsync tests, which Windows does not run.
+    if [ "$os" = Windows ]; then
+        return
+    fi
     need rsync rsync --version
     need python3 python3 --version
     need pandoc pandoc --version
@@ -143,9 +163,45 @@ needs_freebsd_build() {
     need pandoc pandoc --version
 }
 
+smoke_dir=
+
+# Removes the smoke run's directory. On Windows filegen makes names that Git
+# Bash's rm cannot open (unpaired surrogates, NUL), so PowerShell removes what
+# rm leaves, through the \?\ form of the path. A failure here must not fail a
+# check that has passed.
+remove_smoke_dir() {
+    [ -n "$smoke_dir" ] || return 0
+    if ! rm -rf "$smoke_dir" 2>/dev/null && [ "$os" = Windows ]; then
+        SMOKE_DIR=$(cygpath -w "$smoke_dir") powershell -NoProfile -NonInteractive -Command \
+            'Remove-Item -LiteralPath ("\?\" + $env:SMOKE_DIR) -Recurse -Force' >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+# A short run of filegen and fileset together, on a tree filegen builds: each
+# tool's own tests stop at the other's edge. fileset must take the tree
+# filegen leaves, also after filegen changes it again. The tree and filegen's
+# output directory are beside each other in a temporary directory, removed on
+# exit.
+smoke_tools() {
+    smoke_dir=$(mktemp -d)
+    trap remove_smoke_dir EXIT
+    mkdir "$smoke_dir/tree" "$smoke_dir/out"
+    printf '\n== smoke run of filegen and fileset in %s\n' "$smoke_dir"
+    run cargo run --locked -q -p filegen -- run --seed 1 --steps 300 --quiet \
+        --out-dir "$smoke_dir/out" "$smoke_dir/tree"
+    run cargo run --locked -q -p fileset -- init --quiet "$smoke_dir/tree"
+    run cargo run --locked -q -p fileset -- check --quiet "$smoke_dir/tree"
+    run cargo run --locked -q -p filegen -- run --resume "$smoke_dir/out/filegen-1.state.yaml" \
+        --steps 100 --quiet "$smoke_dir/tree"
+    # update exits 0 unless --fail-on-warnings is given, so 0 is required.
+    run cargo run --locked -q -p fileset -- update --quiet "$smoke_dir/tree"
+    run cargo run --locked -q -p fileset -- check --quiet "$smoke_dir/tree"
+}
+
 job_check() {
     # ${target_args[@]+...} below: bash 3.2 on macOS calls an empty array unset.
-    local target_args=() profile=ci
+    local target_args=() profile=ci scope=(--workspace) p
     if [ -n "${CARGO_BUILD_TARGET:-}" ]; then
         target_args=(--target "$CARGO_BUILD_TARGET")
     fi
@@ -155,30 +211,45 @@ job_check() {
     if [ "${GITHUB_ACTIONS:-}" = true ] && [ "$os" = Darwin ]; then
         profile=ci-macos
     fi
-    # Re-runs the build script, which bakes in the git commit; a test
-    # compares the two. A fresh checkout does not need it, a used one does.
-    touch crates/irsync/build.rs
+    # Only the crates that build on Windows, by name instead of --workspace.
+    if [ "$os" = Windows ]; then
+        scope=()
+        for p in "${windows_packages[@]}"; do
+            scope+=(-p "$p")
+        done
+    else
+        # Re-runs the build script, which bakes in the git commit; a test
+        # compares the two. A fresh checkout does not need it, a used one does.
+        touch crates/irsync/build.rs
+    fi
 
     run cargo fmt --all --check
-    # The fuzz targets are outside the workspace, so cargo fmt skips them.
-    run rustfmt --edition 2021 --check fuzz/fuzz_targets/*.rs
-    # fuzz/Cargo.lock follows Cargo.lock. Here and not only in fuzz-build,
-    # which needs a nightly and runs on Linux only.
-    run tools/sync-fuzz-lock.sh --check
-    # Tests tools/dev-setup.sh and tools/build-man.sh. They are Python, so no
-    # cargo command runs them. A missing pandoc or mandoc fails here instead
-    # of skipping the man page tests.
-    MAN_TESTS_REQUIRED=1 run python3 -m unittest discover -s tools/tests
-    run cargo clippy --locked --workspace --all-targets --all-features ${target_args[@]+"${target_args[@]}"} -- -D warnings
-    # Keeps the build without the otel feature compiling.
-    run cargo clippy --locked --workspace --all-targets --no-default-features ${target_args[@]+"${target_args[@]}"} -- -D warnings
+    if [ "$os" != Windows ]; then
+        # The fuzz targets are outside the workspace, so cargo fmt skips them.
+        run rustfmt --edition 2021 --check fuzz/fuzz_targets/*.rs
+        # fuzz/Cargo.lock follows Cargo.lock. Here and not only in fuzz-build,
+        # which needs a nightly and runs on Linux only.
+        run tools/sync-fuzz-lock.sh --check
+        # Tests tools/dev-setup.sh and tools/build-man.sh. They are Python, so no
+        # cargo command runs them. A missing pandoc or mandoc fails here instead
+        # of skipping the man page tests.
+        MAN_TESTS_REQUIRED=1 run python3 -m unittest discover -s tools/tests
+    fi
+    run cargo clippy --locked "${scope[@]}" --all-targets --all-features ${target_args[@]+"${target_args[@]}"} -- -D warnings
+    if [ "$os" != Windows ]; then
+        # Keeps the build without the otel feature compiling.
+        run cargo clippy --locked "${scope[@]}" --all-targets --no-default-features ${target_args[@]+"${target_args[@]}"} -- -D warnings
+    fi
     # nextest runs each test in its own process, tests from all files side
     # by side, and kills a hung test (see .config/nextest.toml).
     # --run-ignored all adds the slow netstress tests.
-    run cargo nextest run --locked --workspace --all-features --profile "$profile" \
+    run cargo nextest run --locked "${scope[@]}" --all-features --profile "$profile" \
         --run-ignored all ${target_args[@]+"${target_args[@]}"}
     # nextest does not run doc tests.
-    run cargo test --locked --workspace --all-features --doc ${target_args[@]+"${target_args[@]}"}
+    run cargo test --locked "${scope[@]}" --all-features --doc ${target_args[@]+"${target_args[@]}"}
+    if [ "$os" = Windows ]; then
+        smoke_tools
+    fi
 }
 
 # Known vulnerabilities, unmaintained or yanked crates, licenses, sources and
@@ -291,6 +362,8 @@ job_fuzz() {
 #   irsync-proto            the wire messages and the chunker
 #   irsync --test sub_chunk the delta codec (irsync::delta) on its own
 #   fileset --lib -- ...    fileset's comparison, escaping and wildcards
+#   fileset --lib wtf8::    its name conversion for Windows, which is plain
+#                           code and is tested on every platform
 # A test here that is too slow under Miri is marked
 # #[cfg_attr(miri, ignore = "reason")]: those that chunk megabytes, and
 # the delta tests on hundreds of KiB. With them, this takes about three
@@ -304,6 +377,7 @@ miri_packages=(
     "irsync-proto"
     "irsync --test sub_chunk"
     "fileset --lib -- compare:: escape:: glob::"
+    "fileset --lib wtf8::"
 )
 
 # The tests of each entry in miri_packages under Miri, with the nightly in
