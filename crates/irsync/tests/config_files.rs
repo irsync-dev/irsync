@@ -76,6 +76,27 @@ fn congestion_is_bbr_unless_set_to_cubic() {
 }
 
 #[test]
+fn pq_key_exchange_is_prefer_unless_set_to_require() {
+    use irsync::config::settings::PqKeyExchange;
+    let d = Settings::default();
+    assert_eq!(
+        (d.client.pq_key_exchange, d.daemon.pq_key_exchange),
+        (None, PqKeyExchange::Prefer)
+    );
+    let s = Settings::parse(
+        "[client]\npq_key_exchange = \"require\"\n[daemon]\npq_key_exchange = \"require\"\n",
+        p(),
+    )
+    .unwrap();
+    assert_eq!(s.client.pq_key_exchange, Some(PqKeyExchange::Require));
+    assert_eq!(s.daemon.pq_key_exchange, PqKeyExchange::Require);
+    let s = Settings::parse("[client]\npq_key_exchange = \"prefer\"\n", p()).unwrap();
+    assert_eq!(s.client.pq_key_exchange, Some(PqKeyExchange::Prefer));
+    let e = Settings::parse("[daemon]\npq_key_exchange = \"only\"\n", p()).unwrap_err();
+    assert!(e.to_string().contains("only"), "{e}");
+}
+
+#[test]
 fn settings_unknown_key_names_file_and_key() {
     let e = Settings::parse("[client]\nbogus = 1\n", p()).unwrap_err();
     let msg = e.to_string();

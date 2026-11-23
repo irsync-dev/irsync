@@ -150,6 +150,15 @@ classical groups after it (`crypto_provider` in
 hybrid, such as an irsync before this change, still connects, with X25519.
 ML-KEM comes from aws-lc-rs, the crypto library rustls runs on here.
 
+To refuse a connection that did not get the hybrid, set
+`pq_key_exchange = "require"`; see
+[Post-quantum key exchange](../reference/configuration.md#post-quantum-key-exchange).
+It is a check after the handshake, before the first irsync message: both
+sides still offer the classical groups, because the relays and lookup
+servers, which use the same list, do not know the hybrid yet. Nobody on the
+path can take the hybrid out of the offer unnoticed, since TLS signs the
+whole handshake.
+
 The group a connection got is in the logs at info level (`-vv`):
 `handshake done key_exchange=X25519MLKEM768` on the client and
 `connection accepted` with the same field on the daemon. The client's

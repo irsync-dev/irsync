@@ -172,6 +172,7 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
         relay: Some("https://r.example".parse().unwrap()),
         relay_mode: None,
         congestion: None,
+        pq_key_exchange: None,
         address: vec!["127.0.0.1:1".parse().unwrap()],
         parallel: None,
         reconnect: None,
@@ -281,6 +282,7 @@ fn opts_carry_the_congestion_controller() {
     let cs = ClientSettings::default();
     let cubic = ClientSettings {
         congestion: Some(Congestion::Cubic),
+        pq_key_exchange: None,
         ..ClientSettings::default()
     };
     let mut he = HostEntry {
@@ -289,6 +291,7 @@ fn opts_carry_the_congestion_controller() {
         relay: None,
         relay_mode: None,
         congestion: None,
+        pq_key_exchange: None,
         address: vec![],
         parallel: None,
         reconnect: None,
@@ -382,6 +385,7 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
         relay: None,
         relay_mode: Some(RelayMode::Default),
         congestion: None,
+        pq_key_exchange: None,
         address: vec![],
         parallel: None,
         reconnect: None,
@@ -453,30 +457,12 @@ async fn two_irsync_endpoints_use_the_hybrid_key_exchange() {
     b.close().await;
 }
 
-/// An endpoint that offers the classical groups only, as an irsync built
-/// on ring does.
-async fn classical_endpoint() -> iroh::Endpoint {
-    use rustls::crypto::aws_lc_rs::{self, kx_group};
-    let mut provider = aws_lc_rs::default_provider();
-    provider.kx_groups = vec![kx_group::X25519, kx_group::SECP256R1, kx_group::SECP384R1];
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(iroh::RelayMode::Disabled)
-        .crypto_provider(std::sync::Arc::new(provider))
-        .alpns(vec![ALPN.to_vec()])
-        .clear_ip_transports()
-        .bind_addr("127.0.0.1:0")
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
 /// A peer without the hybrid still connects, in either direction, with
 /// X25519.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_without_the_hybrid_falls_back_to_x25519() {
     let ours = common::loopback_endpoint().await;
-    let old = classical_endpoint().await;
+    let old = common::classical_endpoint().await;
     for (dialler, listener) in [(&old, &ours), (&ours, &old)] {
         let (client, server) = connect_pair(dialler, listener).await;
         assert_eq!(

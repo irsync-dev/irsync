@@ -39,6 +39,41 @@ impl Congestion {
     }
 }
 
+/// Whether a connection must have used the post-quantum hybrid key
+/// exchange (`X25519MLKEM768`). Every endpoint offers it first either way;
+/// this says what happens when the other side does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PqKeyExchange {
+    /// Use the hybrid when the other side offers it, a classical key
+    /// exchange otherwise.
+    #[default]
+    Prefer,
+    /// Refuse a connection that did not get the hybrid.
+    Require,
+}
+
+impl PqKeyExchange {
+    /// The name the config files use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PqKeyExchange::Prefer => "prefer",
+            PqKeyExchange::Require => "require",
+        }
+    }
+}
+
+impl std::str::FromStr for PqKeyExchange {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "prefer" => Ok(PqKeyExchange::Prefer),
+            "require" => Ok(PqKeyExchange::Require),
+            _ => Err(format!("{s:?}: expected prefer or require")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Discovery {
@@ -173,6 +208,8 @@ pub struct ClientSettings {
     pub relay_mode: Option<RelayMode>,
     /// For pushes; unset: BBR.
     pub congestion: Option<Congestion>,
+    /// Unset: prefer.
+    pub pq_key_exchange: Option<PqKeyExchange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -193,6 +230,10 @@ pub struct DaemonSettings {
     pub relay_mode: RelayMode,
     /// For pulls.
     pub congestion: Congestion,
+    /// `require`: close a connection that did not get the hybrid key
+    /// exchange. For the whole daemon; read at every connection, so a
+    /// reload applies.
+    pub pq_key_exchange: PqKeyExchange,
     pub discovery: Discovery,
     /// The debug HTTP port's address (see [`parse_debug_addr`]); off when unset.
     #[serde(deserialize_with = "de_debug_addr")]
@@ -231,6 +272,7 @@ impl Default for DaemonSettings {
             relay: None,
             relay_mode: RelayMode::Default,
             congestion: Congestion::Bbr,
+            pq_key_exchange: PqKeyExchange::Prefer,
             discovery: Discovery::default(),
             debug_addr: None,
             immediate: true,

@@ -118,6 +118,27 @@ pub fn key_exchange(conn: &iroh::endpoint::Connection) -> Option<String> {
     data.negotiated_key_exchange_group.map(|g| format!("{g:?}"))
 }
 
+/// Whether `conn`'s handshake agreed on the post-quantum hybrid
+/// (`X25519MLKEM768`). False too when the connection does not say.
+pub fn has_pq_key_exchange(conn: &iroh::endpoint::Connection) -> bool {
+    conn.handshake_data()
+        .and_then(|d| {
+            d.downcast::<noq_proto::crypto::rustls::HandshakeData>()
+                .ok()
+        })
+        .and_then(|d| d.negotiated_key_exchange_group)
+        == Some(rustls::NamedGroup::X25519MLKEM768)
+}
+
+/// The close code and reason of a daemon that requires the hybrid key
+/// exchange and did not get it. The code is the one for a rejected
+/// connection, which every client takes as final; an older client prints
+/// the reason after "the daemon closed the connection: ".
+pub const PQ_REQUIRED_CLOSE: (u32, &[u8]) = (
+    2,
+    b"this daemon requires post-quantum key exchange; upgrade irsync on the client",
+);
+
 /// Ask the peer to ACK every packet, within 1 ms. A data stream holds one
 /// of the sender's send permits until `stopped()` resolves, which is when
 /// the peer has ACKed every byte (see `send.rs`, where the permit is held

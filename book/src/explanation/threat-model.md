@@ -67,8 +67,10 @@ daemon, or send the client to another machine.
   hybrid (`X25519MLKEM768`) use it, and a recording of their connection
   stays safe as long as X25519 or ML-KEM holds. An older irsync on either
   side gets X25519 alone, without a warning: `-vv` shows which one a
-  connection got. A setting that refuses such a connection is planned
-  ([issue 241](https://github.com/irsync-dev/irsync/issues/241)).
+  connection got. Set `pq_key_exchange = "require"` to refuse such a
+  connection instead; see
+  [Post-quantum key exchange](../reference/configuration.md#post-quantum-key-exchange).
+  It is not the default, so that older versions can still connect.
 - **The keys are Ed25519,** which such a machine could forge too. That would
   let it pretend to be a daemon or a client from then on. It does not open
   up connections recorded before.

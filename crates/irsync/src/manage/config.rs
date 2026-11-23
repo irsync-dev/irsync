@@ -43,21 +43,21 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["client", "dial_retries"] => Int,
         ["client", "dht" | "mdns" | "ssh_install"] => Bool,
         ["client", "relay"] => Url,
-        ["client", "relay_mode"] | ["client", "congestion"] => Str,
+        ["client", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "identity"] => Path,
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
         ["daemon", "max_dormant_sessions_per_key"] => Int,
         ["daemon", "listen"] => AddrArray,
         ["daemon", "portmap"] | ["daemon", "immediate"] | ["daemon", "allow_root"] => Bool,
         ["daemon", "relay"] => Url,
-        ["daemon", "relay_mode"] | ["daemon", "congestion"] => Str,
+        ["daemon", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "debug_addr"] => Str,
         ["telemetry", "otlp_endpoint"] => Url,
         ["telemetry", "otlp_protocol"] => Str,
         ["daemon", "discovery", "dht" | "dns" | "mdns"] => Bool,
         ["hosts", _, "endpoint_id" | "client_id"] => Id,
         ["hosts", _, "relay"] => Url,
-        ["hosts", _, "relay_mode" | "congestion" | "ssh"] => Str,
+        ["hosts", _, "relay_mode" | "congestion" | "pq_key_exchange" | "ssh"] => Str,
         ["hosts", _, "address"] => AddrArray,
         ["hosts", _, "ssh_aliases"] => StrArray,
         ["hosts", _, "parallel"] => Int,
@@ -114,6 +114,9 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["client", "congestion"] => one(crate::config::settings::Congestion::default()
             .as_str()
             .into()),
+        ["client", "pq_key_exchange"] => one(crate::config::settings::PqKeyExchange::default()
+            .as_str()
+            .into()),
         ["state_dir"] => one(as_written(&s.state_dir)),
         ["daemon", "identity"] => one(as_written(&s.daemon.identity)),
         ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),
@@ -131,6 +134,7 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         }
         .to_string()),
         ["daemon", "congestion"] => one(s.daemon.congestion.as_str().to_string()),
+        ["daemon", "pq_key_exchange"] => one(s.daemon.pq_key_exchange.as_str().to_string()),
         ["daemon", "discovery", "dht"] => one(s.daemon.discovery.dht.to_string()),
         ["daemon", "discovery", "dns"] => one(s.daemon.discovery.dns.to_string()),
         ["daemon", "discovery", "mdns"] => one(s.daemon.discovery.mdns.to_string()),
