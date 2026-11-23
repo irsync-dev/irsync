@@ -521,12 +521,25 @@ impl<'a> Attached<'a> {
         read_only: bool,
     ) -> Result<Self, String> {
         let mut c = Command::new("hdiutil");
-        c.args(["attach", "-quiet", "-nobrowse"]);
+        // Not -quiet: a failed attach then says why.
+        c.args(["attach", "-nobrowse"]);
         if read_only {
             c.arg("-readonly");
         }
         hdiutil(c.arg("-mountpoint").arg(mount).arg(image))?;
         Ok(Attached { mount })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Attached<'_> {
+    /// Detaches the image; an error is what `hdiutil` said.
+    fn detach(self) -> Result<(), String> {
+        let mut c = Command::new("hdiutil");
+        hdiutil(c.args(["detach"]).arg(self.mount))?;
+        // Detached: nothing left for drop to do. On an error, drop still forces it.
+        std::mem::forget(self);
+        Ok(())
     }
 }
 
@@ -571,7 +584,7 @@ fn cli_redb_manifest_reads_on_a_read_only_disk_image() {
         let mut c = Command::new("hdiutil");
         c.args(["create", "-quiet", "-size", "16m", "-fs", "HFS+"]);
         hdiutil(c.args(["-volname", "fileset-test"]).arg(&image))?;
-        let _attached = Attached::new(&image, &mount, false)?;
+        let attached = Attached::new(&image, &mount, false)?;
         std::fs::create_dir_all(t.join("sub")).map_err(|e| e.to_string())?;
         std::fs::write(t.join("a.txt"), "hello").map_err(|e| e.to_string())?;
         std::fs::write(t.join("sub/b.txt"), "world").map_err(|e| e.to_string())?;
@@ -581,9 +594,26 @@ fn cli_redb_manifest_reads_on_a_read_only_disk_image() {
             .output()
             .unwrap();
         assert!(init.status.success(), "{init:?}");
-        Ok::<_, String>(std::fs::read(&manifest).unwrap())
+        let before = std::fs::read(&manifest).unwrap();
+        attached.detach()?;
+        Ok::<_, String>(before)
     })();
-    let attached = made.and_then(|before| Ok((before, Attached::new(&image, &mount, true)?)));
+    // The image can still be busy for a moment after the detach, so the attach for
+    // reading only gets a few tries.
+    let attach_read_only = || {
+        let mut tries = 0;
+        loop {
+            match Attached::new(&image, &mount, true) {
+                Err(e) if tries < 5 => {
+                    eprintln!("retrying: {e}");
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                done => return done,
+            }
+        }
+    };
+    let attached = made.and_then(|before| Ok((before, attach_read_only()?)));
     let (before, _attached) = match attached {
         Ok(a) => a,
         Err(e) => {
