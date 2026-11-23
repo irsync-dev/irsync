@@ -380,15 +380,35 @@ fn metered_handle_times_only_contended_locks() {
     let ix = plain.metered(meter.clone());
     drop(ix.lock().unwrap());
     assert_eq!(meter.usage().busy(Activity::IndexWait), Duration::ZERO);
+    assert_eq!(meter.usage().active(Activity::IndexWait), Duration::ZERO);
     let held = plain.lock().unwrap();
     std::thread::scope(|s| {
         let waiter = s.spawn(|| drop(ix.lock().unwrap()));
+        // Let go only once the waiter has started its wait, however late
+        // its thread was scheduled: the wait clock runs from then.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while meter.usage().active(Activity::IndexWait).is_zero() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the waiter never waited"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         std::thread::sleep(Duration::from_millis(30));
         drop(held);
         waiter.join().unwrap();
     });
-    let waited = meter.usage().busy(Activity::IndexWait);
-    assert!(waited >= Duration::from_millis(25), "{waited:?}");
+    // The wait clock started before the 30 ms and stopped after the lock
+    // was free. The waiter's own stopwatch starts a moment after that
+    // clock, so it only has to show that the wait was counted.
+    let u = meter.usage();
+    let active = u.active(Activity::IndexWait);
+    assert!(active >= Duration::from_millis(30), "{active:?}");
+    let waited = u.busy(Activity::IndexWait);
+    assert!(
+        !waited.is_zero() && waited <= active,
+        "{waited:?} of {active:?}"
+    );
 }
 
 #[test]
