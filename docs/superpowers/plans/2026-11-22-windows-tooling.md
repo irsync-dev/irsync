@@ -25,7 +25,8 @@
 - A new dependency is the newest release at least 7 days old, gets an entry in `docs/SUPPLY_CHAIN_DECISIONS.md` in the pull request that adds it, and is declared in `[workspace.dependencies]`.
 - Checks live in `tools/ci.sh`, and a change there is tested in `tools/tests/test_ci_script.py`. A change under `.github/` passes `tools/ci.sh workflows` and the policy tests in `.github/scripts/tests/`.
 - Windows builds use a short target directory (`CARGO_TARGET_DIR=C:\t`): the MSVC linker fails on a path over 260 characters.
-- Commit messages: a short summary line, a blank line, then why, in plain English, ending with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`. Pull request descriptions end with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
+- Commit messages: a short summary line, a blank line, then why, in plain English.
+- No attribution of any kind in commits, branches, pull requests or comments (no `Co-Authored-By`, no "Generated with").
 - Book and Markdown text: short sentences, plain words, in the style of `book/src/contributing/supply-chain.md`.
 
 ## Where to work
