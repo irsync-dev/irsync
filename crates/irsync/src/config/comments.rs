@@ -14,7 +14,10 @@
 //! - lines above an array element: its `above`; the rest of its line,
 //!   after the comma: its `trailing`; lines after the last element: the
 //!   last element's `above` (the key's, for an empty array);
-//! - lines after everything: the file's `footer`.
+//! - the text after the last key of the file: up to its first blank
+//!   line, the `tail` of the last table (of the top level when the file
+//!   has top-level keys and no table header); the rest: the file's
+//!   `footer`. In a file of comments only, all of it is the footer.
 //!
 //! A comment is the whole line from `#` on. The comments of a bare
 //! `[hosts]` or `[exports]` header, or of a top-level `hosts = { … }`
@@ -99,7 +102,21 @@ impl Walk {
             .split('\n')
             .map(str::trim)
             .collect();
-        self.with_blanks(trim_blanks(&rest), &Place::Footer);
+        // The lines right after the last key belong to its table, as the
+        // writer writes a tail; those after a blank line, to the file.
+        let tail = match before {
+            Some(p) => Some(Place::Tail(p)),
+            None if has_top_keys(doc) => Some(Place::Tail(Vec::new())),
+            None => None,
+        };
+        let (own, footer) = match tail {
+            Some(_) if !self.at_start => split_at_first_blank(&rest),
+            _ => (&[][..], &rest[..]),
+        };
+        if let Some(place) = tail {
+            self.with_blanks(own, &place);
+        }
+        self.with_blanks(trim_blanks(footer), &Place::Footer);
     }
 
     /// The keys of a table with a header (or of the top level), in order.
@@ -281,6 +298,23 @@ fn split_first_line(text: &str) -> (&str, Vec<&str>) {
     }
 }
 
+/// The lines before the first blank one, and the lines from it on.
+fn split_at_first_blank<'a, 'b>(lines: &'b [&'a str]) -> (&'b [&'a str], &'b [&'a str]) {
+    lines.split_at(
+        lines
+            .iter()
+            .position(|l| l.is_empty())
+            .unwrap_or(lines.len()),
+    )
+}
+
+/// True when the top level has a key the writer writes there, above the
+/// first table: a value that is not an inline table.
+fn has_top_keys(doc: &DocumentMut) -> bool {
+    doc.iter()
+        .any(|(_, item)| matches!(item, Item::Value(v) if !v.is_inline_table()))
+}
+
 /// The lines up to the last blank one, without blank lines at their
 /// ends, and the lines after it.
 fn split_at_last_blank<'a, 'b>(lines: &'b [&'a str]) -> (&'b [&'a str], &'b [&'a str]) {
@@ -442,3 +476,4 @@ fn put(c: &mut pb::Config, place: Place, line: String) {
         None => c.footer.push(line),
     }
 }
+

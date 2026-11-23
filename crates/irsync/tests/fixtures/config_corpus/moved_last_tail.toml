@@ -1,0 +1,6 @@
+[all]
+rw = ["nas"]
+# the writer moves all last
+
+[daemon]
+portmap = false

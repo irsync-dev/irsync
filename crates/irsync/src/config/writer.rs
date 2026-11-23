@@ -13,8 +13,9 @@ use std::time::Duration;
 use toml_edit::{Key, Value};
 
 /// The text of `irsync.toml` for `msg`. What it writes reads back into
-/// the same message, with one exception: the tail comment block of the
-/// table written last reads back as the file's footer.
+/// the same message, as long as the tail of the table written last has
+/// no blank line: the first blank line after the last key starts the
+/// footer.
 pub fn write(msg: &pb::Config) -> String {
     let mut top = Keys::new(&msg.key_comments);
     top.bool("unsafe_config_allowed", msg.unsafe_config_allowed);

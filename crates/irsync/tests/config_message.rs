@@ -538,7 +538,20 @@ fn every_comment_has_a_home() {
         e.rw[1].comment.as_ref().unwrap().above,
         ["# after the last"]
     );
-    assert_eq!(c.footer, ["# the end"]);
+    // No blank line before it: the tail of the table it ends.
+    assert_eq!(e.tail, ["# the end"]);
+    assert!(c.footer.is_empty());
+}
+
+#[test]
+fn the_footer_starts_at_the_first_blank_line_after_the_last_key() {
+    let c = commented("[daemon]\nportmap = false\n# daemon tail\n\n# the footer\n\n# more\n");
+    assert_eq!(c.daemon.unwrap().tail, ["# daemon tail"]);
+    assert_eq!(c.footer, ["# the footer", "", "# more"]);
+    // Top-level keys and no table: the top level's tail.
+    let c = commented("identity = \"~/k\"\n# top tail\n\n# the footer\n");
+    assert_eq!(c.tail, ["# top tail"]);
+    assert_eq!(c.footer, ["# the footer"]);
 }
 
 #[test]
@@ -600,7 +613,8 @@ fn a_bare_group_header_gives_its_comments_to_the_first_entry() {
 #[test]
 fn a_comment_without_a_place_goes_to_the_footer() {
     let c = commented("[hosts] # none yet\n[daemon]\n# end");
-    assert_eq!(c.footer, ["# none yet", "# end"]);
+    assert_eq!(c.footer, ["# none yet"]);
+    assert_eq!(c.daemon.unwrap().tail, ["# end"]);
 }
 
 #[test]
@@ -702,7 +716,6 @@ rw = [
     # after the last
     \"phone\",
 ]
-
 # the end
 "
     );
