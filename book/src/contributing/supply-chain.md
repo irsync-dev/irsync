@@ -39,10 +39,12 @@ maintainer can do. Why each choice was made is in
 - `cargo deny --locked check` runs on every change (`deny.toml`). It fails on:
   - any RustSec advisory, including unmaintained or yanked crates;
   - a license that isn't on the list;
-  - a crate from anywhere but crates.io and the pinned upstream iroh commit.
+  - a crate from anywhere but crates.io and the pinned upstream iroh commit;
+  - a second version of a crate that isn't listed as accepted (see
+    [Accepting a second version of a crate](#accepting-a-second-version-of-a-crate)).
 
-  An exception in `deny.toml` that no longer matches any advisory also
-  fails the check, so a stale one gets removed.
+  An exception in `deny.toml` that no longer matches anything also fails
+  the check, so a stale one gets removed.
 
   It looks at the crates built for the platforms irsync is built for,
   listed under `targets` in `deny.toml`. A crate that only a Windows build
@@ -168,6 +170,37 @@ ignore = [
 
 Remove the entry once a fix is in. A reason like "not used" without saying
 why is not a reason.
+
+## Accepting a second version of a crate
+
+Each copy of a crate is more code to build, ship and keep an eye on. So
+`cargo deny` fails when a crate is in the tree in more than one version,
+unless `deny.toml` lists that version under `skip` in `[bans]`. A routine
+`cargo update` or a new dependency can set this off.
+
+First see who pulls in each version:
+
+```sh
+cargo tree -i aes-gcm@0.10 --all-features -e normal,build,dev
+```
+
+If one of our own crates or a direct dependency is behind, update it. If the
+older version comes from a crate we don't control, accept it: add the older
+version to `skip`, with the crate that pulls it in as the reason:
+
+```toml
+skip = [
+    { crate = "aes-gcm@0.10", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+]
+```
+
+Write the version without the last part (`0.10`, or `2` for `2.x`), so a
+patch release doesn't need a change here. Each version gets its own entry.
+`skip-tree`, which accepts a crate and everything below it, would also hide
+the next duplicate in that part of the tree.
+
+When upstream catches up and the older version is gone, the entry no longer
+matches and the check fails until you remove it.
 
 ## Maintainer steps
 

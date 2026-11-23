@@ -64,4 +64,45 @@ unknown-git = "deny"
 allow-git = ["https://github.com/n0-computer/iroh"]
 
 [bans]
-multiple-versions = "warn"
+# A second version of a crate fails the check. A crate may have more than one
+# version only if it is listed under `skip` below, with the crate that pulls
+# in the older version as the reason. When that crate catches up, the entry
+# no longer matches and the check fails until it is removed (CI runs with
+# `-D unmatched-skip`). How to handle a new duplicate:
+# book/src/contributing/supply-chain.md.
+multiple-versions = "deny"
+# Single entries, not `skip-tree`: skip-tree would also hide any new
+# duplicate further down the same tree, which is what this check is for.
+skip = [
+    # iroh's QUIC stack (noq-proto) is still on the older RustCrypto AES-GCM
+    # stack; ssh-key is on the newer one.
+    { crate = "aead@0.5", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "aes@0.8", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "aes-gcm@0.10", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "cipher@0.4", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "cpufeatures@0.2", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "crypto-common@0.1", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "ctr@0.9", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "ghash@0.5", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "inout@0.1", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "polyval@0.6", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    { crate = "universal-hash@0.5", reason = "noq-proto (iroh) uses aes-gcm 0.10" },
+    # The OpenTelemetry SDK and the metrics crates are on rand 0.9; irsync,
+    # filegen and iroh are on rand 0.10.
+    { crate = "getrandom@0.3", reason = "rand_core 0.9, from opentelemetry_sdk and metrics-util" },
+    { crate = "rand@0.9", reason = "opentelemetry_sdk and metrics-util use rand 0.9" },
+    { crate = "rand_chacha@0.9", reason = "rand 0.9, from opentelemetry_sdk and metrics-util" },
+    { crate = "rand_core@0.9", reason = "rand 0.9, from opentelemetry_sdk and metrics-util" },
+    { crate = "rand_xoshiro@0.7", reason = "metrics-util uses rand_xoshiro 0.7" },
+    # hashbrown: 0.17 is current; three older versions come from fjall,
+    # prost-build and the metrics crates.
+    { crate = "hashbrown@0.14", reason = "dashmap, from fjall" },
+    { crate = "hashbrown@0.15", reason = "petgraph, from prost-build" },
+    { crate = "hashbrown@0.16", reason = "metrics-util, and quick_cache from fjall's lsm-tree" },
+    { crate = "foldhash@0.1", reason = "hashbrown 0.15, from petgraph and prost-build" },
+    { crate = "spin@0.9", reason = "flume, from fjall" },
+    { crate = "lru@0.18", reason = "n0-dns-resolver (iroh); iroh-relay is on 0.19" },
+    { crate = "base64@0.22", reason = "tonic, tokio-websockets (iroh) and metrics-exporter-prometheus" },
+    { crate = "unicode-width@0.1", reason = "miette, from prost-reflect and protox" },
+    { crate = "syn@2", reason = "proc macros not yet on syn 3: derive_more (iroh), curve25519-dalek, enum_dispatch (fjall) and others" },
+]
