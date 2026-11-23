@@ -5,30 +5,29 @@
 use std::fs::File;
 use std::io;
 use std::os::fd::OwnedFd;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use nix::fcntl::{openat, OFlag, AT_FDCWD};
 use nix::sys::stat::{fstat, FileStat, Mode, SFlag};
 
 use crate::fs::paths::RelPath;
+use crate::platform::{self, bytes_to_os, Cause};
 
 pub(crate) fn errno(e: nix::Error) -> io::Error {
     io::Error::from_raw_os_error(e as i32)
 }
 
 /// True for the error an `O_NOFOLLOW` open gives when the final component
-/// is a symlink: `ELOOP`, except on FreeBSD, which says `EMLINK`.
+/// is a symlink: [`Cause::LinkRefused`] (`ELOOP`, except on FreeBSD, which
+/// says `EMLINK`).
 pub(crate) fn is_symlink_errno(e: nix::Error) -> bool {
-    e == nix::Error::ELOOP || (cfg!(target_os = "freebsd") && e == nix::Error::EMLINK)
+    platform::cause(&errno(e)) == Cause::LinkRefused
 }
 
 /// Turns the error of an `O_NOFOLLOW` open of a symlink (see
 /// [`is_symlink_errno`]) into one that says so.
 pub fn nofollow_error(e: io::Error, what: &Path) -> io::Error {
-    if e.raw_os_error()
-        .is_some_and(|n| is_symlink_errno(nix::Error::from_raw(n)))
-    {
+    if platform::cause(&e) == Cause::LinkRefused {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("refusing to follow symlink {}", what.display()),
@@ -112,7 +111,8 @@ pub fn open_dir_beneath(root: &Path, dir: &RelPath) -> io::Result<OwnedFd> {
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
     let mut fd = openat(AT_FDCWD, root, flags, Mode::empty()).map_err(errno)?;
     for c in dir.components() {
-        let name = std::ffi::OsStr::from_bytes(c);
+        let owned = bytes_to_os(c)?;
+        let name = owned.as_os_str();
         fd = openat(&fd, name, flags | OFlag::O_NOFOLLOW, Mode::empty()).map_err(|e| {
             if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
                 io::Error::new(
@@ -170,18 +170,17 @@ impl DirStack {
                 .below
                 .last()
                 .map_or(self.base.as_fd(), |(_, fd)| fd.as_fd());
-            let fd = openat(parent, std::ffi::OsStr::from_bytes(c), flags, Mode::empty()).map_err(
-                |e| {
-                    if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "a path component is a symlink or not a directory",
-                        )
-                    } else {
-                        errno(e)
-                    }
-                },
-            )?;
+            let name = bytes_to_os(c)?;
+            let fd = openat(parent, name.as_os_str(), flags, Mode::empty()).map_err(|e| {
+                if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "a path component is a symlink or not a directory",
+                    )
+                } else {
+                    errno(e)
+                }
+            })?;
             self.below.push((c.to_vec(), fd));
         }
         Ok(self
@@ -205,7 +204,7 @@ pub fn open_parent_beneath(
 ) -> io::Result<(OwnedFd, std::ffi::OsString)> {
     let (parent, name) = split_last(rel)?;
     let dir = open_dir_beneath(base, &parent)?;
-    Ok((dir, std::ffi::OsStr::from_bytes(&name).to_owned()))
+    Ok((dir, bytes_to_os(&name)?))
 }
 
 /// Creates the directory `root/dir` and what is missing above it, without
@@ -216,7 +215,8 @@ pub fn create_dir_all_beneath(root: &Path, dir: &RelPath, mode: u32) -> io::Resu
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
     let mut fd = openat(AT_FDCWD, root, flags, Mode::empty()).map_err(errno)?;
     for c in dir.components() {
-        let name = std::ffi::OsStr::from_bytes(c);
+        let owned = bytes_to_os(c)?;
+        let name = owned.as_os_str();
         let open = |fd: &OwnedFd| openat(fd, name, flags | OFlag::O_NOFOLLOW, Mode::empty());
         let next = match open(&fd) {
             Err(nix::Error::ENOENT) => {

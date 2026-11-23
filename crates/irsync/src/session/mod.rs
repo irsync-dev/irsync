@@ -29,6 +29,7 @@ use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
 use crate::index::{IndexHandle, SessionRow};
+use crate::platform::{bytes_to_os, os_to_bytes};
 use crate::telemetry::meter::{Meter, Usage};
 
 /// Files hashed concurrently by a session's hasher, at most
@@ -51,7 +52,6 @@ fn field(h: &mut blake3::Hasher, tag: &[u8], v: &[u8]) {
 }
 
 fn location_bytes(l: &Location) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt;
     let mut v = Vec::new();
     match l {
         Location::Local {
@@ -61,7 +61,7 @@ fn location_bytes(l: &Location) -> Vec<u8> {
             let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
             v.extend_from_slice(b"local\0");
             v.push(*contents_only as u8);
-            v.extend_from_slice(canon.as_os_str().as_bytes());
+            v.extend_from_slice(&os_to_bytes(canon.as_os_str()));
         }
         // The host string is an alias; the daemon id passed alongside identifies it.
         Location::Remote {
@@ -122,15 +122,14 @@ impl SessionKey {
         // A dry run's record must never be resumed by a real run (or back).
         field(&mut h, b"dry-run", &[opts.dry_run as u8]);
         for r in &opts.filters {
-            use std::os::unix::ffi::OsStrExt;
             match r {
                 FilterRule::Include(s) => field(&mut h, b"include", s.as_bytes()),
                 FilterRule::Exclude(s) => field(&mut h, b"exclude", s.as_bytes()),
                 FilterRule::IncludeFrom(p) => {
-                    field(&mut h, b"include-from", p.as_os_str().as_bytes())
+                    field(&mut h, b"include-from", &os_to_bytes(p.as_os_str()))
                 }
                 FilterRule::ExcludeFrom(p) => {
-                    field(&mut h, b"exclude-from", p.as_os_str().as_bytes())
+                    field(&mut h, b"exclude-from", &os_to_bytes(p.as_os_str()))
                 }
             }
         }
@@ -1232,13 +1231,12 @@ pub fn resolve_roots(
     remote: &[u8],
     remote_contents_only: bool,
 ) -> (PathBuf, Vec<u8>) {
-    use std::os::unix::ffi::OsStrExt;
     match direction {
         Direction::ClientSends => {
             let name = (!local_contents_only)
                 .then(|| local.file_name())
                 .flatten()
-                .map(|n| n.as_bytes().to_vec())
+                .map(os_to_bytes)
                 .unwrap_or_default();
             (local.to_path_buf(), name)
         }
@@ -1247,9 +1245,10 @@ pub fn resolve_roots(
                 .rsplit(|&b| b == b'/')
                 .find(|c| !c.is_empty() && *c != b"." && *c != b"~");
             let root = match last {
-                Some(name) if !remote_contents_only => {
-                    local.join(std::ffi::OsStr::from_bytes(name))
-                }
+                // The remote path was typed here as text (`Location::parse`
+                // takes a `&str`), so it is a name on every system.
+                Some(name) if !remote_contents_only => local
+                    .join(bytes_to_os(name).expect("a path typed here is a name of this system")),
                 _ => local.to_path_buf(),
             };
             (root, Vec::new())

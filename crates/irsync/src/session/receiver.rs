@@ -13,7 +13,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -1503,7 +1502,7 @@ impl Receiver {
 /// `--partial-dir` inside the root, as a path to leave out of the listing.
 fn partial_dir_rel(pd: Option<&Path>) -> Option<RelPath> {
     let pd = pd.filter(|p| p.is_relative())?;
-    RelPath::new(pd.as_os_str().as_bytes()).ok()
+    RelPath::new(&crate::platform::os_to_bytes(pd.as_os_str())).ok()
 }
 
 /// Runs the receiver role to completion: `SessionDone` is sent once the

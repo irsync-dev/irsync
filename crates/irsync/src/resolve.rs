@@ -5,9 +5,8 @@
 use crate::authz::{Access, Grants};
 use crate::config::exports::Export;
 use crate::fs::paths::RelPath;
+use crate::platform::{bytes_to_os, os_to_bytes};
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,12 +44,14 @@ fn components(path: &[u8]) -> Result<(bool, Vec<&[u8]>), ResolveError> {
     Ok((absolute, out))
 }
 
-fn join(base: PathBuf, parts: &[&[u8]]) -> PathBuf {
+/// `base` with `parts` appended; a part that is not a name of this system
+/// is a bad path (never on Unix, where any bytes are a name).
+fn join(base: PathBuf, parts: &[&[u8]]) -> Result<PathBuf, ResolveError> {
     let mut p = base;
     for c in parts {
-        p.push(OsStr::from_bytes(c));
+        p.push(bytes_to_os(c).map_err(|_| ResolveError::BadPath)?);
     }
-    p
+    Ok(p)
 }
 
 /// `path` as typed, to an absolute path: an export's directory when the
@@ -75,7 +76,7 @@ fn resolve_path_where<'a>(
 ) -> Result<Option<(PathBuf, Option<&'a str>)>, ResolveError> {
     let (absolute, parts) = components(path)?;
     if absolute {
-        return Ok(Some((join(PathBuf::from("/"), &parts), None)));
+        return Ok(Some((join(PathBuf::from("/"), &parts)?, None)));
     }
     if let Some(first) = parts.first() {
         if let Some((name, e)) = std::str::from_utf8(first)
@@ -83,7 +84,7 @@ fn resolve_path_where<'a>(
             .and_then(|n| exports.get_key_value(n))
             .filter(|(n, e)| usable(n, e))
         {
-            return Ok(Some((join(e.path.clone(), &parts[1..]), Some(name))));
+            return Ok(Some((join(e.path.clone(), &parts[1..])?, Some(name))));
         }
     }
     let Some(home) = home else {
@@ -93,16 +94,16 @@ fn resolve_path_where<'a>(
         Some(&b"~") => &parts[1..],
         _ => &parts[..],
     };
-    Ok(Some((join(home.to_path_buf(), rest), None)))
+    Ok(Some((join(home.to_path_buf(), rest)?, None)))
 }
 
 /// Component-wise, with `.` and empty components dropped (an export path
 /// may be written `/srv/photos/`).
-pub(crate) fn parts_of(p: &Path) -> Vec<&[u8]> {
-    p.as_os_str()
-        .as_bytes()
+pub(crate) fn parts_of(p: &Path) -> Vec<Vec<u8>> {
+    os_to_bytes(p.as_os_str())
         .split(|&b| b == b'/')
         .filter(|c| !c.is_empty() && *c != b".")
+        .map(<[u8]>::to_vec)
         .collect()
 }
 

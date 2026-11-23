@@ -1,8 +1,7 @@
 //! Byte-exact relative paths with component-wise ordering.
 
 use std::cmp::Ordering;
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
+use std::ffi::OsString;
 use std::path::Path;
 
 /// Error for bytes that are not a canonical relative path.
@@ -77,8 +76,10 @@ impl RelPath {
         Ok(RelPath(v))
     }
 
-    pub fn to_os(&self) -> &OsStr {
-        OsStr::from_bytes(&self.0)
+    /// The path as a name of this system. On Unix any bytes are a name, so
+    /// this cannot fail there.
+    pub fn to_os(&self) -> OsString {
+        crate::platform::bytes_to_os(&self.0).expect("a relative path is a name of this system")
     }
 }
 

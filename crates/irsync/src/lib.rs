@@ -17,6 +17,7 @@ pub mod index;
 pub mod manage;
 pub mod net;
 pub mod plan;
+pub mod platform;
 pub mod recv;
 pub mod resolve;
 pub mod scan;
