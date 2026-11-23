@@ -436,6 +436,44 @@ fn read_only_mount(dir: &std::path::Path) -> Option<Command> {
     })
 }
 
+/// Runs `check` (with `check_args`), `list` and `update` on `t`, a tree with a redb
+/// manifest on a read-only mount, through `fileset`, which starts a command that runs
+/// fileset. The reads pass, the update says why it cannot write, and nothing changes:
+/// the manifest is still `before`.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn assert_reads_on_read_only_mount(
+    t: &std::path::Path,
+    before: &[u8],
+    check_args: &[&str],
+    fileset: impl Fn() -> Command,
+) {
+    let run = |args: &[&str]| {
+        let out = fileset().args(args).arg(t).output().unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let check = run(&[&["check", "-q"], check_args].concat());
+    assert_eq!((check.0, check.1.as_str()), (Some(0), ""), "{}", check.2);
+    let list = run(&["list"]);
+    assert_eq!(list.0, Some(0), "{}", list.2);
+    assert_eq!(list.1.lines().count(), 5, "{}", list.1);
+    // An update has to write, and says why it cannot.
+    let update = run(&["update", "-q"]);
+    assert_eq!(update.0, Some(2), "{}", update.2);
+    assert!(update.2.contains("Read-only file system"), "{}", update.2);
+
+    assert_eq!(std::fs::read(t.join(".fileset.redb")).unwrap(), before);
+    let mut names: Vec<_> = std::fs::read_dir(t)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, [".fileset.redb", "a.txt", "sub"]);
+}
+
 /// What the redb store is for, on the real thing: `check` and `list` read a manifest on
 /// a mount that cannot be written to, and nothing tries to write.
 #[cfg(target_os = "linux")]
@@ -443,14 +481,13 @@ fn read_only_mount(dir: &std::path::Path) -> Option<Command> {
 fn cli_redb_manifest_reads_on_a_read_only_mount() {
     let d = tree();
     let t = d.path().join("tree");
-    let manifest = t.join(".fileset.redb");
     let init = bin()
         .args(["init", "-q", "--store", "redb"])
         .arg(&t)
         .output()
         .unwrap();
     assert!(init.status.success());
-    let before = std::fs::read(&manifest).unwrap();
+    let before = std::fs::read(t.join(".fileset.redb")).unwrap();
 
     let Some(_) = read_only_mount(&t) else {
         // CI must not pass by skipping this: its runners have sudo.
@@ -461,37 +498,205 @@ fn cli_redb_manifest_reads_on_a_read_only_mount() {
         eprintln!("skipping: no bwrap, unshare or sudo that can make a read-only mount");
         return;
     };
-    let run = |args: &[&str]| {
-        let out = read_only_mount(&t)
-            .unwrap()
-            .arg(env!("CARGO_BIN_EXE_fileset"))
-            .args(args)
+    assert_reads_on_read_only_mount(&t, &before, &[], || {
+        let mut c = read_only_mount(&t).unwrap();
+        c.arg(env!("CARGO_BIN_EXE_fileset"));
+        c
+    });
+}
+
+/// A disk image attached at `mount`, detached again when this is dropped.
+#[cfg(target_os = "macos")]
+struct Attached<'a> {
+    mount: &'a std::path::Path,
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> Attached<'a> {
+    /// Attaches `image` at `mount`, for reading only if `read_only`. An error is what
+    /// `hdiutil` said.
+    fn new(
+        image: &std::path::Path,
+        mount: &'a std::path::Path,
+        read_only: bool,
+    ) -> Result<Self, String> {
+        let mut c = Command::new("hdiutil");
+        // Not -quiet: a failed attach then says why.
+        c.args(["attach", "-nobrowse"]);
+        if read_only {
+            c.arg("-readonly");
+        }
+        hdiutil(c.arg("-mountpoint").arg(mount).arg(image))?;
+        Ok(Attached { mount })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Attached<'_> {
+    /// Detaches the image; an error is what `hdiutil` said.
+    fn detach(self) -> Result<(), String> {
+        let mut c = Command::new("hdiutil");
+        hdiutil(c.args(["detach"]).arg(self.mount))?;
+        // Detached: nothing left for drop to do. On an error, drop still forces it.
+        std::mem::forget(self);
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for Attached<'_> {
+    fn drop(&mut self) {
+        let mut c = Command::new("hdiutil");
+        let _ = hdiutil(c.args(["detach", "-quiet", "-force"]).arg(self.mount));
+    }
+}
+
+/// Runs an `hdiutil` command; an error is what it printed.
+#[cfg(target_os = "macos")]
+fn hdiutil(c: &mut Command) -> Result<(), String> {
+    let out = c.output().map_err(|e| e.to_string())?;
+    match out.status.success() {
+        true => Ok(()),
+        false => Err(format!(
+            "{c:?}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )),
+    }
+}
+
+/// The same on macOS, where a mount needs no root if it is a disk image: the tree and
+/// its manifest are made on an image attached for writing, which is then attached
+/// again for reading only.
+#[cfg(target_os = "macos")]
+#[test]
+fn cli_redb_manifest_reads_on_a_read_only_disk_image() {
+    let d = tempfile::tempdir().unwrap();
+    let image = d.path().join("tree.dmg");
+    let mount = d.path().join("mnt");
+    std::fs::create_dir(&mount).unwrap();
+    // The tree is a directory of the volume, not its root, which macOS keeps files
+    // of its own in.
+    let t = mount.join("tree");
+    let manifest = t.join(".fileset.redb");
+
+    let made = (|| {
+        let mut c = Command::new("hdiutil");
+        c.args(["create", "-quiet", "-size", "16m", "-fs", "HFS+"]);
+        hdiutil(c.args(["-volname", "fileset-test"]).arg(&image))?;
+        let attached = Attached::new(&image, &mount, false)?;
+        std::fs::create_dir_all(t.join("sub")).map_err(|e| e.to_string())?;
+        std::fs::write(t.join("a.txt"), "hello").map_err(|e| e.to_string())?;
+        std::fs::write(t.join("sub/b.txt"), "world").map_err(|e| e.to_string())?;
+        let init = bin()
+            .args(["init", "-q", "--store", "redb"])
             .arg(&t)
             .output()
             .unwrap();
-        (
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
+        assert!(init.status.success(), "{init:?}");
+        let before = std::fs::read(&manifest).unwrap();
+        attached.detach()?;
+        Ok::<_, String>(before)
+    })();
+    // The image can still be busy for a moment after the detach, so the attach for
+    // reading only gets a few tries.
+    let attach_read_only = || {
+        let mut tries = 0;
+        loop {
+            match Attached::new(&image, &mount, true) {
+                Err(e) if tries < 5 => {
+                    eprintln!("retrying: {e}");
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                done => return done,
+            }
+        }
     };
-    let check = run(&["check", "-q"]);
-    assert_eq!((check.0, check.1.as_str()), (Some(0), ""), "{}", check.2);
-    let list = run(&["list"]);
-    assert_eq!(list.0, Some(0), "{}", list.2);
-    assert_eq!(list.1.lines().count(), 5, "{}", list.1);
-    // An update has to write, and says why it cannot.
-    let update = run(&["update", "-q"]);
-    assert_eq!(update.0, Some(2), "{}", update.2);
-    assert!(update.2.contains("Read-only file system"), "{}", update.2);
+    let attached = made.and_then(|before| Ok((before, attach_read_only()?)));
+    let (before, _attached) = match attached {
+        Ok(a) => a,
+        Err(e) => {
+            // CI must not pass by skipping this.
+            assert!(std::env::var_os("GITHUB_ACTIONS").is_none(), "{e}");
+            eprintln!("skipping: no read-only disk image: {e}");
+            return;
+        }
+    };
+    let probe = std::fs::write(t.join("probe"), b"").unwrap_err();
+    assert_eq!(probe.raw_os_error(), Some(30), "{probe}");
 
-    assert_eq!(std::fs::read(&manifest).unwrap(), before);
-    let mut names: Vec<_> = std::fs::read_dir(&t)
-        .unwrap()
-        .map(|e| e.unwrap().file_name())
-        .collect();
-    names.sort();
-    assert_eq!(names, [".fileset.redb", "a.txt", "sub"]);
+    assert_reads_on_read_only_mount(&t, &before, &["--relaxed"], bin);
+}
+
+/// A read-only nullfs mount of `lower` at `upper`, unmounted again when this is
+/// dropped. FreeBSD lets an ordinary user make it if the sysctl `vfs.usermount` is 1,
+/// the user owns `upper` and nullfs is loaded; .github/scripts/freebsd-vm.sh sees to
+/// the last two as root. An error is what `mount` said.
+#[cfg(target_os = "freebsd")]
+struct NullMount<'a> {
+    upper: &'a std::path::Path,
+}
+
+#[cfg(target_os = "freebsd")]
+impl<'a> NullMount<'a> {
+    fn new(lower: &std::path::Path, upper: &'a std::path::Path) -> Result<Self, String> {
+        let mut c = Command::new("mount");
+        c.args(["-t", "nullfs", "-o", "ro"]).arg(lower).arg(upper);
+        let out = c.output().map_err(|e| format!("{c:?}: {e}"))?;
+        match out.status.success() {
+            true => Ok(NullMount { upper }),
+            false => Err(format!(
+                "{c:?}: {}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )),
+        }
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+impl Drop for NullMount<'_> {
+    fn drop(&mut self) {
+        let _ = Command::new("umount").arg("-f").arg(self.upper).output();
+    }
+}
+
+/// The same on FreeBSD, where redb locks the whole file rather than ranges of it: the
+/// tree is mounted read-only somewhere else with nullfs, which an ordinary user may do
+/// where root allows it.
+#[cfg(target_os = "freebsd")]
+#[test]
+fn cli_redb_manifest_reads_on_a_read_only_nullfs_mount() {
+    let d = tree();
+    let lower = d.path().join("tree");
+    let t = d.path().join("mnt");
+    std::fs::create_dir(&t).unwrap();
+    let init = bin()
+        .args(["init", "-q", "--store", "redb"])
+        .arg(&lower)
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "{init:?}");
+    let before = std::fs::read(lower.join(".fileset.redb")).unwrap();
+
+    let _mounted = match NullMount::new(&lower, &t) {
+        Ok(m) => m,
+        Err(e) => {
+            // The FreeBSD workflow sets CI and allows the mount: it must not pass by
+            // skipping this.
+            assert!(std::env::var_os("CI").is_none(), "{e}");
+            eprintln!(
+                "skipping: no read-only nullfs mount (sysctl vfs.usermount=1 and \
+                 kldload nullfs as root allow it): {e}"
+            );
+            return;
+        }
+    };
+    let probe = std::fs::write(t.join("probe"), b"").unwrap_err();
+    assert_eq!(probe.raw_os_error(), Some(30), "{probe}");
+
+    assert_reads_on_read_only_mount(&t, &before, &[], bin);
 }
 
 #[test]
