@@ -32,6 +32,11 @@ if [ "$(id -u)" -eq 0 ]; then
     # for another package, add it here.
     pkg install -y bash curl git hs-pandoc python3 rsync rustup-init
 
+    # Lets the ordinary user mount a folder read-only with nullfs, for the
+    # test of a redb manifest on a read-only mount (crates/fileset/tests/cli.rs).
+    kldload -n nullfs
+    sysctl vfs.usermount=1
+
     if ! pw usershow "$user" >/dev/null 2>&1; then
         pw useradd "$user" -m
     fi
