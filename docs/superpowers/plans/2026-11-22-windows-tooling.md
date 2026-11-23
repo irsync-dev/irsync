@@ -23,6 +23,8 @@
 - `fileset`'s `SCHEMA_VERSION` stays 1. The protobuf `Entry` is unchanged. `filegen`'s `FORMAT_VERSION` goes from 3 to 4.
 - Targets: `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`. No GNU toolchain, no 32-bit.
 - A new dependency is the newest release at least 7 days old, gets an entry in `docs/SUPPLY_CHAIN_DECISIONS.md` in the pull request that adds it, and is declared in `[workspace.dependencies]`.
+- A new dependency must not bring a second version of any crate: `deny.toml` has `multiple-versions = "deny"`. Check with `tools/ci.sh deny`.
+- After any change to `Cargo.lock`, run `tools/sync-fuzz-lock.sh` and commit both lock files; `tools/ci.sh check` fails if they differ.
 - Checks live in `tools/ci.sh`, and a change there is tested in `tools/tests/test_ci_script.py`. A change under `.github/` passes `tools/ci.sh workflows` and the policy tests in `.github/scripts/tests/`.
 - Windows builds use a short target directory (`CARGO_TARGET_DIR=C:\t`): the MSVC linker fails on a path over 260 characters.
 - Commit messages: a short summary line, a blank line, then why, in plain English.
@@ -102,6 +104,8 @@ Expected: `advisories ok, bans ok, licenses ok, sources ok`.
 Run: `git restore deny.toml`
 
 If the check passed, go on to Task 1. If it reported anything, **stop: needs the maintainer.** Give them the full output and the three choices in the spec ("Needs the maintainer").
+
+**Done 2026-11-23**, on `main` at `6479896`, with CI's flags (`-D advisory-not-detected -D unmatched-skip -D unnecessary-skip`): bans, licenses and sources pass; one advisory, `chrono` RUSTSEC-2026-0543 (unmaintained), through `netwatch` from iroh. The maintainer accepted it for the Windows build; Task 10 records that in `deny.toml`.
 
 ---
 
@@ -1052,6 +1056,14 @@ GitHub sets `CI=true`, so a runner that cannot create symlinks fails the symlink
 - [ ] **Step 3: Add the targets to `deny.toml`**
 
 Add both Windows targets to `targets`, and rewrite the comment above the list: it now says Windows is covered because `filegen` and `fileset` are built for it.
+
+Task 0 found one advisory with the Windows targets, and the maintainer accepted it (2026-11-23). Add it to `[advisories].ignore`, following "How to accept an advisory" in `book/src/contributing/supply-chain.md`:
+
+```toml
+{ id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; it is only in the Windows build, through netwatch (iroh); tracked in #174" },
+```
+
+Add `test_deny_accepts_chrono_for_windows_only` to the policy tests: the `ignore` list holds exactly that ID, and its reason names `#174`.
 
 - [ ] **Step 4: Run the checks**
 
