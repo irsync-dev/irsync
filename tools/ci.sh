@@ -13,8 +13,9 @@
 #                  crates that build there: formatting, one clippy run, their
 #                  tests and doc tests, then a smoke run of filegen and
 #                  fileset together. It needs only cargo-nextest; the Python
-#                  tests, the fuzz lock and the fuzz target formatting are
-#                  left out. With no job, only check runs on Windows.
+#                  tests and the fuzz target formatting are
+#                  left out; the fuzz lock check runs. With no job, only
+#                  check runs on Windows.
 #   deny           the dependency check (cargo deny, see deny.toml), for
 #                  the platforms irsync is built for
 #   deny-license-check
@@ -167,8 +168,9 @@ smoke_dir=
 
 # Removes the smoke run's directory. On Windows filegen makes names that Git
 # Bash's rm cannot open (unpaired surrogates, NUL), so PowerShell removes what
-# rm leaves, using the extended-length form of the path. A failure here must not fail a
-# check that has passed.
+# rm leaves, using the extended-length form of the path. A failure here
+# must not fail a check that has passed.
+# shellcheck disable=SC2317 # only a trap calls it; some versions call that unreachable
 remove_smoke_dir() {
     [ -n "$smoke_dir" ] || return 0
     if ! rm -rf "$smoke_dir" 2>/dev/null && [ "$os" = Windows ]; then
@@ -228,9 +230,11 @@ job_check() {
     if [ "$os" != Windows ]; then
         # The fuzz targets are outside the workspace, so cargo fmt skips them.
         run rustfmt --edition 2021 --check fuzz/fuzz_targets/*.rs
-        # fuzz/Cargo.lock follows Cargo.lock. Here and not only in fuzz-build,
-        # which needs a nightly and runs on Linux only.
-        run tools/sync-fuzz-lock.sh --check
+    fi
+    # fuzz/Cargo.lock follows Cargo.lock. Here and not only in fuzz-build,
+    # which needs a nightly and runs on Linux only.
+    run tools/sync-fuzz-lock.sh --check
+    if [ "$os" != Windows ]; then
         # Tests tools/dev-setup.sh and tools/build-man.sh. They are Python, so no
         # cargo command runs them. A missing pandoc or mandoc fails here instead
         # of skipping the man page tests.

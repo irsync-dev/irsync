@@ -139,14 +139,16 @@ class CiScriptTests(unittest.TestCase):
             all_jobs = re.search(r'^all_jobs="(.*)"$', f.read(), re.M).group(1)
         self.assertNotIn("miri", all_jobs.split())
 
-    def run_check(self, args, uname, fakes=None):
+    def run_check(self, args, uname, fakes=None, fail=None):
         """Runs ci.sh with a fake cargo that succeeds and logs each call as
         one line. Returns the result and the logged calls, cargo's and the
-        other fakes' (`python3 ...`), in order."""
+        other fakes' (`python3 ...`), in order. With fail, a
+        substring of a cargo call's arguments: that call exits 1."""
         log = os.path.join(tempfile.mkdtemp(prefix="ci-check-log-"), "calls")
         self.addCleanup(shutil.rmtree, os.path.dirname(log), ignore_errors=True)
         logging = {n: f'echo "{n} $*" >> {log}; exit 0' for n in (fakes or ())}
-        r = self.run_with(args, f'echo "cargo $*" >> {log}; exit 0', uname=uname, fakes=logging)
+        stop = f'case "$*" in *"{fail}"*) exit 1 ;; esac; ' if fail else ""
+        r = self.run_with(args, f'echo "cargo $*" >> {log}; {stop}exit 0', uname=uname, fakes=logging)
         calls = []
         if os.path.exists(log):
             with open(log) as f:
@@ -159,8 +161,11 @@ class CiScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(calls[0], "cargo nextest --version")
         pkgs = "-p filegen -p fileset -p irsync-glob"
-        self.assertEqual(calls[1:5], [
+        self.assertEqual(calls[1:6], [
             "cargo fmt --all --check",
+            # tools/sync-fuzz-lock.sh --check: its one cargo call; the fake
+            # exits 0 with no output, which the script takes as a good lock.
+            "cargo metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml",
             f"cargo clippy --locked {pkgs} --all-targets --all-features -- -D warnings",
             f"cargo nextest run --locked {pkgs} --all-features --profile ci --run-ignored all",
             f"cargo test --locked {pkgs} --all-features --doc",
@@ -172,7 +177,7 @@ class CiScriptTests(unittest.TestCase):
     def test_windows_check_ends_with_the_smoke_run(self):
         r, calls = self.run_check(["check"], WINDOWS)
         self.assertEqual(r.returncode, 0, r.stderr)
-        smoke = calls[5:]
+        smoke = calls[6:]
         self.assertEqual(len(smoke), 6, smoke)
         for c in smoke:
             self.assertRegex(c, r"^cargo run --locked -q -p (filegen|fileset) -- ")
@@ -206,22 +211,44 @@ class CiScriptTests(unittest.TestCase):
 
     def test_check_elsewhere_still_takes_the_workspace(self):
         # A Linux uname, so the run is the same on every host. The tools the
-        # check needs there are fakes that succeed.
+        # check needs there are fakes that succeed and log their calls. The
+        # list is what tools/ci.sh on main ran for Linux, word for word.
         fakes = {n: "" for n in ("python3", "rsync", "pandoc", "mandoc", "touch", "rustfmt")}
         r, calls = self.run_check(["check"], "echo Linux", fakes)
         self.assertEqual(r.returncode, 0, r.stderr)
-        cargo = [c for c in calls if c.startswith("cargo ")]
-        clippy = [c for c in cargo if c.startswith("cargo clippy")]
-        self.assertEqual(len(clippy), 2, cargo)
-        self.assertIn("--all-features", clippy[0])
-        self.assertIn("--no-default-features", clippy[1])
-        for c in clippy + [c for c in cargo if c.startswith("cargo nextest run")]:
-            self.assertIn(" --workspace ", c)
-            self.assertNotIn(" -p ", c)
-        self.assertTrue([c for c in cargo if c.startswith("cargo test --locked --workspace")], cargo)
-        # The Python tests run, and the smoke run does not.
-        self.assertTrue([c for c in calls if c.startswith("python3 -m unittest")], calls)
-        self.assertFalse([c for c in cargo if c.startswith("cargo run ")], cargo)
+        targets = sorted(f for f in os.listdir(os.path.join(ROOT, "fuzz", "fuzz_targets")) if f.endswith(".rs"))
+        targets = " ".join(f"fuzz/fuzz_targets/{t}" for t in targets)
+        self.assertEqual(calls, [
+            # the checks for tools before the job
+            "cargo nextest --version",
+            "rsync --version",
+            "python3 --version",
+            "pandoc --version",
+            "mandoc -T ascii /dev/null",
+            # job_check
+            "touch crates/irsync/build.rs",
+            "cargo fmt --all --check",
+            f"rustfmt --edition 2021 --check {targets}",
+            # tools/sync-fuzz-lock.sh --check
+            "cargo metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml",
+            "python3 -m unittest discover -s tools/tests",
+            "cargo clippy --locked --workspace --all-targets --all-features -- -D warnings",
+            "cargo clippy --locked --workspace --all-targets --no-default-features -- -D warnings",
+            "cargo nextest run --locked --workspace --all-features --profile ci --run-ignored all",
+            "cargo test --locked --workspace --all-features --doc",
+        ])
+
+    def test_a_failing_smoke_step_fails_the_check(self):
+        r, calls = self.run_check(["check"], WINDOWS, fail="-p fileset -- update ")
+        self.assertNotEqual(r.returncode, 0)
+        # The calls stop at the failing update: no check after it.
+        self.assertIn("-p fileset -- update ", calls[-1])
+        self.assertEqual(len([c for c in calls if "-p fileset -- check " in c]), 1, calls)
+        self.assertNotIn("passed", r.stdout)
+        # The temporary directory is gone all the same.
+        tree = calls[-1].split()[-1]
+        self.assertTrue(tree.endswith("/tree"), tree)
+        self.assertFalse(os.path.exists(os.path.dirname(tree)))
 
     def test_job_builds_then_packs(self):
         with open(CI) as f:
