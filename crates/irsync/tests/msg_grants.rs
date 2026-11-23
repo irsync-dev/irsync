@@ -522,3 +522,84 @@ fn duplicate_removal_keeps_other_comments() {
         )
     );
 }
+
+/// The written form of `body` after `f` ran on it.
+fn after(body: &str, f: impl FnOnce(&mut pb::Config)) -> String {
+    let mut m = msg(body);
+    f(&mut m);
+    write(&m)
+}
+
+#[test]
+fn removing_a_middle_entry_keeps_the_lines_above_it_on_the_next() {
+    let text = after(
+        "[all]\nrw = [\n    \"a\",\n    # about b\n    \"b\", # bee\n    \"c\",\n]\n",
+        |m| {
+            grant_remove(m, None, Some(&PeerSpec::Alias("b".into())), &|_| None).unwrap();
+        },
+    );
+    assert_eq!(
+        text,
+        "[all]\nrw = [\n    \"a\",\n    # about b\n    \"c\",\n]\n"
+    );
+}
+
+#[test]
+fn removing_the_last_entry_keeps_the_lines_before_the_bracket() {
+    let text = after(
+        "[all]\nrw = [\n    \"a\",\n    \"b\", # bee\n    # tail\n]\n",
+        |m| {
+            grant_remove(m, None, Some(&PeerSpec::Alias("b".into())), &|_| None).unwrap();
+        },
+    );
+    assert_eq!(text, "[all]\nrw = [\n    # tail\n    \"a\",\n]\n");
+}
+
+#[test]
+fn removing_the_only_entry_moves_its_lines_above_the_key() {
+    let text = after("[all]\nrw = [\n    # heading\n    \"b\", # bee\n]\n", |m| {
+        assert_eq!(remove_named(m, "b"), 1);
+    });
+    assert_eq!(text, "[all]\n# heading\nrw = []\n");
+}
+
+#[test]
+fn a_duplicate_dropped_by_canonicalize_leaves_its_lines_above() {
+    let mut m = msg(&format!(
+        "{}[all]\nrw = [\n    \"box\", # mine\n    # the id\n    \"{}\", # dup\n    \"x\",\n]\n",
+        host_tables(BOX),
+        id(1)
+    ));
+    assert!(canonicalize(&mut m, &known(BOX)));
+    m.hosts.clear();
+    assert_eq!(
+        write(&m),
+        "[all]\nrw = [\n    \"box\", # mine\n    # the id\n    \"x\",\n]\n"
+    );
+}
+
+#[test]
+fn grant_add_moves_an_entry_with_its_comment_and_replaces_another_spelling() {
+    let resolve = |s: &str| (s == "lap").then(|| id(1));
+    // Same text, rw to ro: the whole comment goes along.
+    let text = after(
+        "[all]\nrw = [\n    \"x\",\n    # the laptop\n    \"lap\", # mine\n]\n",
+        |m| grant_add(m, None, &PeerSpec::Alias("lap".into()), true, &resolve).unwrap(),
+    );
+    assert_eq!(
+        text,
+        "[all]\nrw = [\"x\"]\nro = [\n    # the laptop\n    \"lap\", # mine\n]\n"
+    );
+    // Another spelling: replaced, the lines above it stay.
+    let text = after(
+        &format!(
+            "[all]\nrw = [\n    \"x\",\n    # the laptop\n    \"{}\", # old\n]\n",
+            id(1)
+        ),
+        |m| grant_add(m, None, &PeerSpec::Alias("lap".into()), false, &resolve).unwrap(),
+    );
+    assert_eq!(
+        text,
+        "[all]\nrw = [\n    # the laptop\n    \"x\",\n    \"lap\",\n]\n"
+    );
+}

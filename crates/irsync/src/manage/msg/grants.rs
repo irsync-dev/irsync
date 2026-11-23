@@ -8,15 +8,18 @@ use crate::identity::parse_endpoint_id;
 use crate::manage::{check_comment, ManageError, PeerSpec};
 use iroh::EndpointId;
 use irsync_proto::config as pb;
+use std::collections::BTreeMap;
 
 type Resolve<'a> = &'a dyn Fn(&str) -> Option<EndpointId>;
 
-/// The grant lists of one table, `rw` and `ro` with their `*_set` flags.
+/// The grant lists of one table, `rw` and `ro`, with their `*_set`
+/// flags and the table's key comments.
 struct Lists<'a> {
     rw: &'a mut Vec<pb::Entry>,
     rw_set: &'a mut bool,
     ro: &'a mut Vec<pb::Entry>,
     ro_set: &'a mut bool,
+    key_comments: &'a mut BTreeMap<String, pb::Comment>,
 }
 
 impl<'a> Lists<'a> {
@@ -26,6 +29,7 @@ impl<'a> Lists<'a> {
             rw_set: &mut t.rw_set,
             ro: &mut t.ro,
             ro_set: &mut t.ro_set,
+            key_comments: &mut t.key_comments,
         }
     }
 
@@ -35,23 +39,80 @@ impl<'a> Lists<'a> {
             rw_set: &mut e.rw_set,
             ro: &mut e.ro,
             ro_set: &mut e.ro_set,
+            key_comments: &mut e.key_comments,
+        }
+    }
+
+    fn list(&mut self, ro: bool) -> &mut Vec<pb::Entry> {
+        if ro {
+            self.ro
+        } else {
+            self.rw
         }
     }
 
     /// Adds `entry` to `ro` or `rw`, last, and marks that list as set.
     fn push(&mut self, ro: bool, entry: pb::Entry) {
-        let (list, set) = if ro {
-            (&mut *self.ro, &mut *self.ro_set)
+        let set = if ro {
+            &mut *self.ro_set
         } else {
-            (&mut *self.rw, &mut *self.rw_set)
+            &mut *self.rw_set
         };
-        list.push(entry);
         *set = true;
+        self.list(ro).push(entry);
+    }
+
+    /// Removes entry `i` of `ro` or `rw`. Only the rest of its own line
+    /// leaves with it: the comment lines above it stay in the file, in
+    /// front of the next entry, else after the one before, else above the
+    /// key.
+    fn drop_at(&mut self, ro: bool, i: usize) {
+        let list = self.list(ro);
+        let above = match list.remove(i).comment {
+            Some(c) => c.above,
+            None => return,
+        };
+        if above.is_empty() {
+            return;
+        }
+        let list = self.list(ro);
+        if let Some(next) = list.get_mut(i) {
+            let c = next.comment.get_or_insert_with(Default::default);
+            c.above.splice(0..0, above);
+        } else if let Some(prev) = i.checked_sub(1).and_then(|p| list.get_mut(p)) {
+            prev.comment
+                .get_or_insert_with(Default::default)
+                .above
+                .extend(above);
+        } else {
+            let key = if ro { "ro" } else { "rw" };
+            self.key_comments
+                .entry(key.to_string())
+                .or_default()
+                .above
+                .extend(above);
+        }
+    }
+
+    /// Removes the entries of `ro` or `rw` for which `pred` holds, as
+    /// `drop_at` does; the count.
+    fn remove_where_in(&mut self, ro: bool, pred: &dyn Fn(&str) -> bool) -> usize {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.list(ro).len() {
+            if pred(&self.list(ro)[i].value) {
+                self.drop_at(ro, i);
+                n += 1;
+            } else {
+                i += 1;
+            }
+        }
+        n
     }
 
     /// Removes the entries of both lists for which `pred` holds; the count.
     fn remove_where(&mut self, pred: &dyn Fn(&str) -> bool) -> usize {
-        remove_where(self.rw, pred) + remove_where(self.ro, pred)
+        self.remove_where_in(false, pred) + self.remove_where_in(true, pred)
     }
 }
 
@@ -120,14 +181,6 @@ fn entry_matches(text: &str, who: &PeerSpec, id: Option<EndpointId>, resolve: Re
     }
 }
 
-/// Removes the entries of `list` for which `pred` holds, their comments
-/// with them; the count.
-fn remove_where(list: &mut Vec<pb::Entry>, pred: &dyn Fn(&str) -> bool) -> usize {
-    let before = list.len();
-    list.retain(|e| !pred(&e.value));
-    before - list.len()
-}
-
 /// The entry `who` is granted by: its text, and a public key's comment
 /// `c` at the end of its line as `# c`. Refused for a comment that would
 /// not stay on one line.
@@ -159,28 +212,28 @@ fn grant_entry(who: &PeerSpec) -> Result<pb::Entry, ManageError> {
 /// when the file is read, so nobody's access changes.
 ///
 /// Covers `[all]`, `[immediate]` and every export. An entry keeps its
-/// comments; a removed one takes its own along. True when the message
+/// comments; a removed one takes only the rest of its line along. True when the message
 /// changed; a second run changes nothing.
 pub fn canonicalize(msg: &mut pb::Config, hosts: &Hosts) -> bool {
     let mut changed = false;
-    for lists in grant_lists_mut(msg) {
+    for mut lists in grant_lists_mut(msg) {
         // What this table already names, `rw` before `ro`.
         let mut seen: Vec<String> = Vec::new();
-        for list in [lists.rw, lists.ro] {
+        for ro in [false, true] {
             let mut i = 0;
-            while i < list.len() {
-                let text = &list[i].value;
+            while i < lists.list(ro).len() {
+                let text = &lists.list(ro)[i].value;
                 let alias = parse_endpoint_id(text)
                     .ok()
                     .and_then(|id| hosts.alias_of(&id));
                 let name = alias.unwrap_or(text).to_string();
                 if seen.contains(&name) {
-                    list.remove(i);
+                    lists.drop_at(ro, i);
                     changed = true;
                     continue;
                 }
                 if alias.is_some() {
-                    list[i].value = name.clone();
+                    lists.list(ro)[i].value = name.clone();
                     changed = true;
                 }
                 seen.push(name);
@@ -202,7 +255,8 @@ pub fn lists_naming(msg: &pb::Config, name: &str) -> Vec<String> {
 }
 
 /// Removes every grant entry whose text is `name`, from `[all]`,
-/// `[immediate]` and every export; the count.
+/// `[immediate]` and every export; the count. The comment lines above a
+/// removed entry stay in the file.
 pub fn remove_named(msg: &mut pb::Config, name: &str) -> usize {
     grant_lists_mut(msg)
         .into_iter()
@@ -227,7 +281,10 @@ pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
 
 /// Grant `who` access to `export` (`[all]` for `None`): read-only or
 /// read-write. Any earlier grant of the same peer there, under either
-/// spelling, is replaced; the new entry goes last.
+/// spelling, is replaced; the new entry goes last. An earlier entry of the
+/// same text moves there with its comments (the key's comment, when given,
+/// replaces the rest of its line); one of another spelling leaves only the
+/// comment lines above it behind.
 pub fn grant_add(
     msg: &mut pb::Config,
     export: Option<&str>,
@@ -235,8 +292,20 @@ pub fn grant_add(
     ro: bool,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<(), ManageError> {
-    let entry = grant_entry(who)?;
+    let mut entry = grant_entry(who)?;
     let mut lists = target(msg, export)?;
+    let text = who.entry();
+    for from in [false, true] {
+        if let Some(i) = lists.list(from).iter().position(|e| e.value == text) {
+            let moved = lists.list(from).remove(i);
+            if entry.comment.is_none() {
+                entry.comment = moved.comment;
+            } else if let (Some(new), Some(old)) = (entry.comment.as_mut(), moved.comment) {
+                new.above = old.above;
+            }
+            break;
+        }
+    }
     let id = who_id(who, resolve);
     lists.remove_where(&|t| entry_matches(t, who, id, resolve));
     lists.push(ro, entry);
@@ -271,13 +340,16 @@ pub fn grant_remove_immediate(
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<usize, ManageError> {
     let n = match msg.immediate.as_mut() {
-        Some(t) => match who {
-            None => remove_where(&mut t.rw, &|_| true),
-            Some(w) => {
-                let id = who_id(w, resolve);
-                remove_where(&mut t.rw, &|s| entry_matches(s, w, id, resolve))
+        Some(t) => {
+            let mut lists = Lists::of_table(t);
+            match who {
+                None => lists.remove_where_in(false, &|_| true),
+                Some(w) => {
+                    let id = who_id(w, resolve);
+                    lists.remove_where_in(false, &|s| entry_matches(s, w, id, resolve))
+                }
             }
-        },
+        }
         None => 0,
     };
     if n == 0 {
