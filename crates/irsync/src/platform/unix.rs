@@ -533,19 +533,25 @@ impl Stat {
 pub mod testutil {
     use std::io;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::thread::JoinHandle;
+    use std::time::Duration;
 
     /// Makes `link` a symlink to `target`.
     pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
         std::os::unix::fs::symlink(target, link)
     }
 
-    /// A thread that swaps `dir` for a link to `outside` and back until
-    /// dropped. Dropping it waits for the thread, which always stops with
-    /// `dir` back in its place.
-    pub fn swap_for_link(dir: &Path, outside: &Path) -> impl Drop {
+    /// How long the swapping thread leaves each state (the link, then the
+    /// directory) in place: long enough that an operation running in the
+    /// other thread meets it, short enough for many swaps a second.
+    const HOLD: Duration = Duration::from_micros(100);
+
+    /// A thread that swaps `dir` for a link to `outside` and back until the
+    /// returned [`Swap`] is dropped. Dropping it waits for the thread, which
+    /// always stops with `dir` back in its place.
+    pub fn swap_for_link(dir: &Path, outside: &Path) -> Swap {
         let mut aside = dir.as_os_str().to_owned();
         aside.push(".swapped-aside");
         let (dir, aside, outside) = (
@@ -554,9 +560,11 @@ pub mod testutil {
             outside.to_path_buf(),
         );
         let stop = Arc::new(AtomicBool::new(false));
+        let swaps = Arc::new(AtomicUsize::new(0));
         let thread = std::thread::spawn({
-            let stop = stop.clone();
+            let (stop, swaps) = (stop.clone(), swaps.clone());
             move || {
+                // `stop` is only looked at here, with `dir` in its place.
                 while !stop.load(Ordering::Relaxed) {
                     // Fails while the other thread holds the tree in some
                     // way a rename cannot pass; then try again.
@@ -564,14 +572,20 @@ pub mod testutil {
                         std::thread::yield_now();
                         continue;
                     }
-                    let _ = symlink(&outside, &dir);
-                    std::thread::yield_now();
+                    // Fails when the other thread made a directory at the
+                    // free name meanwhile: no swap this time.
+                    if symlink(&outside, &dir).is_ok() {
+                        swaps.fetch_add(1, Ordering::Relaxed);
+                        std::thread::sleep(HOLD);
+                    }
                     put_back(&dir, &aside);
+                    std::thread::sleep(HOLD);
                 }
             }
         });
         Swap {
             stop,
+            swaps,
             thread: Some(thread),
         }
     }
@@ -596,9 +610,19 @@ pub mod testutil {
         }
     }
 
-    struct Swap {
+    /// The running swap of [`swap_for_link`].
+    #[must_use = "the swapping stops when this is dropped"]
+    pub struct Swap {
         stop: Arc<AtomicBool>,
+        swaps: Arc<AtomicUsize>,
         thread: Option<JoinHandle<()>>,
+    }
+
+    impl Swap {
+        /// How many times the link has been put in place so far.
+        pub fn swaps(&self) -> usize {
+            self.swaps.load(Ordering::Relaxed)
+        }
     }
 
     impl Drop for Swap {
