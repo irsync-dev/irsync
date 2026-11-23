@@ -384,11 +384,18 @@ pub mod testutil {
 
     /// Denies the current user (`USERNAME`) read access to `path`, its
     /// attributes included, with `icacls`, until the result is dropped.
-    /// `None`, saying so on stderr, when `icacls` cannot do it here.
+    /// `R` holds read-attributes already: `(R,RA)` makes the same entry. An
+    /// elevated process may still stat `path` (see the test that uses it).
+    /// `None`, saying so on stderr, when `icacls` cannot do it here; panics
+    /// instead when the environment variable `CI` is set.
     pub fn deny_read(path: &Path) -> Option<ReadDenied> {
+        let skip = |why: String| {
+            assert!(std::env::var_os("CI").is_none(), "CI is set, but {why}");
+            eprintln!("skipping: {why}");
+            None
+        };
         let Some(user) = std::env::var_os("USERNAME").and_then(|u| u.into_string().ok()) else {
-            eprintln!("skipping: USERNAME is not set");
-            return None;
+            return skip("USERNAME is not set".into());
         };
         let out = std::process::Command::new("icacls")
             .arg(path)
@@ -400,17 +407,11 @@ pub mod testutil {
                 path: path.to_path_buf(),
                 user,
             }),
-            Ok(o) => {
-                eprintln!(
-                    "skipping: icacls /deny failed: {}",
-                    String::from_utf8_lossy(&o.stdout).trim()
-                );
-                None
-            }
-            Err(e) => {
-                eprintln!("skipping: cannot run icacls: {e}");
-                None
-            }
+            Ok(o) => skip(format!(
+                "icacls /deny failed: {}",
+                String::from_utf8_lossy(&o.stdout).trim()
+            )),
+            Err(e) => skip(format!("cannot run icacls: {e}")),
         }
     }
 

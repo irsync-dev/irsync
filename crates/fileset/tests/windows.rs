@@ -294,7 +294,12 @@ fn a_file_held_without_sharing_is_unreadable_not_fatal() {
 }
 
 /// A stored file the walk cannot stat is unverified, a difference, even when its name
-/// still shows in the directory listing.
+/// still shows in the directory listing. Never Clean.
+///
+/// Where the deny entry also stops the walk's stat (an ordinary user), this is the
+/// regression case: `check`'s second pass must not take the listing's word for it. Where
+/// the stat gets through anyway (an elevated administrator, as on CI's runners) only the
+/// read is refused, and the file is `unreadable`.
 #[test]
 fn a_file_this_user_may_not_stat_is_unverified() {
     // Not the `\\?\` form: icacls does not take it.
@@ -308,13 +313,23 @@ fn a_file_this_user_may_not_stat_is_unverified() {
         return;
     };
     let (outcome, out, err) = run_check(r, Tier::Default, &[], &[], false);
-    assert_eq!(out, "CHG b kind=file→unverified\n", "{err}");
-    assert!(err.starts_with("WARN cannot stat b: "), "{err}");
-    assert!(
-        err.ends_with("\nadded=0 deleted=0 changed=1 unchanged=3 warnings=1\n"),
-        "{err}"
-    );
-    assert_eq!(outcome, Outcome::Differences);
+    assert_eq!(outcome, Outcome::Differences, "{out}{err}");
+    if out == "CHG b kind=file→unverified\n" {
+        assert!(err.starts_with("WARN cannot stat b: "), "{err}");
+        assert!(
+            err.ends_with("\nadded=0 deleted=0 changed=1 unchanged=3 warnings=1\n"),
+            "{err}"
+        );
+        eprintln!("note: stat of b was denied here; the unverified path was exercised");
+    } else {
+        let hex = fileset::report::fmt_blake3(blake3::hash(b"y").as_bytes());
+        assert_eq!(out, format!("CHG b blake3={hex}→unreadable\n"), "{err}");
+        assert!(
+            err.ends_with("added=0 deleted=0 changed=1 unchanged=3 warnings=0\n"),
+            "{err}"
+        );
+        eprintln!("note: stat of b was allowed here; the unverified path was not exercised");
+    }
 }
 
 #[test]
