@@ -724,6 +724,21 @@ fn check_fails_on_a_stored_path_not_valid_here(b: Backend) {
             fileset::escape::escape(b"a\xffb")
         )
     );
+
+    // WTF-8, but not a name NTFS can hold: `ab:c` would name a stream of `ab`.
+    let dir = tree(&[("f", "x")]);
+    run_update(dir.path(), b, false, false);
+    let path = dir.path().join(store_name(b));
+    let mut st = store::open(&path, b, OpenMode::ReadWrite).unwrap();
+    let f = st.get(b"f").unwrap().unwrap();
+    st.put_batch(&[(b"ab:c".to_vec(), f)]).unwrap();
+    st.close().unwrap();
+    let opts = check_opts(dir.path(), Tier::Default, &[], &[], false);
+    let err = run_check_opts(&opts).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "manifest path ab:c is not a valid name on this platform"
+    );
 }
 
 fn check_symlink_retarget(b: Backend) {

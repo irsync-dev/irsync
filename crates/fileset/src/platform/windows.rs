@@ -187,10 +187,16 @@ pub fn bytes_to_os(bytes: &[u8]) -> io::Result<OsString> {
 /// The path below `root` of the stored, `/`-separated relative path `rel`.
 /// Each component must name exactly one entry: a stored name that Windows
 /// would read as a drive, a root, `.`, `..` or more than one component is an
-/// error.
+/// error, and so is one NTFS cannot hold (see [`ntfs_refuses`]).
 pub fn rel_to_path(root: &Path, rel: &[u8]) -> io::Result<PathBuf> {
     let mut path = root.to_path_buf();
     for part in rel.split(|&b| b == b'/') {
+        if ntfs_refuses(part) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "not a stored path component",
+            ));
+        }
         let name = bytes_to_os(part)?;
         let mut components = Path::new(&name).components();
         match (components.next(), components.next()) {
@@ -204,6 +210,15 @@ pub fn rel_to_path(root: &Path, rel: &[u8]) -> io::Result<PathBuf> {
         }
     }
     Ok(path)
+}
+
+/// Whether the stored name `part` holds a character NTFS refuses in a
+/// name: one of `< > : " | ? *` or one below U+0020. (`:` would name an
+/// alternate data stream.) In WTF-8 every byte below 0x80 is such a
+/// character itself, never part of a longer one.
+fn ntfs_refuses(part: &[u8]) -> bool {
+    part.iter()
+        .any(|&b| b < 0x20 || matches!(b, b'<' | b'>' | b':' | b'"' | b'|' | b'?' | b'*'))
 }
 
 /// The stored bytes of the relative path `rel`: its components, joined with
@@ -486,6 +501,23 @@ mod tests {
         for bad in [&b"a/../b"[..], b"C:x", b"a/./b", b"a\\b", b"a//b", b"a\xFF"] {
             assert!(rel_to_path(root, bad).is_err(), "{bad:?}");
         }
+        // Names NTFS cannot hold: `ab:c` would name a stream of `ab`.
+        for bad in [
+            &b"ab:c"[..],
+            b"d/ab:c",
+            b"a<b",
+            b"a>b",
+            b"a\"b",
+            b"a|b",
+            b"a?b",
+            b"a*b",
+            b"a\x01b",
+            b"a\x1Fb",
+        ] {
+            let err = rel_to_path(root, bad).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{bad:?}");
+        }
+        assert!(rel_to_path(root, b"a b/c.d").is_ok());
     }
 
     #[test]
