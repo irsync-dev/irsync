@@ -252,6 +252,19 @@ differ, the code is what shipped.
     features in `Cargo.toml`, and loses the hybrid. The measurements are in
     `docs/superpowers/specs/2026-11-22-post-quantum-key-exchange-design.md`.
 
+26. **A second version of a crate fails the dependency check** (2026-11-23,
+    issue 209). `deny.toml` sets `multiple-versions = "deny"` and lists
+    each duplicate we accept today under `skip`, one entry per version,
+    with the crate that pulls it in. `cargo deny` runs with
+    `-D unmatched-skip -D unnecessary-skip`, so an entry that no longer
+    matches fails the check, as a stale advisory exception does (19). Why:
+    as a warning, a new duplicate was easy to miss in the CI log, and
+    duplicates built up unnoticed. Single entries, not `skip-tree`:
+    skip-tree accepts a crate and all it depends on, and would hide the
+    next duplicate in that tree. Cost if wrong: a routine `cargo update`
+    can fail the check and need a `skip` entry or a fix, and an upstream
+    fix needs an entry removed.
+
 ## Left open
 
 - `cargo-vet`, reproducible builds and signed commits. Not now, see the
