@@ -1011,3 +1011,65 @@ fn server_keys_are_read_like_host_keys() {
     assert_eq!(c.servers.by_ssh("other"), Ok(None));
     assert_eq!(c.servers.get("nas").unwrap().parallel, Some(4));
 }
+
+/// A message with one server and one client, each with comments, as
+/// `irsync.toml` of version 2 holds them.
+fn split_message() -> pb::Config {
+    let comment = |above: &[&str], trailing: &str| pb::Comment {
+        above: above.iter().map(|s| s.to_string()).collect(),
+        trailing: trailing.into(),
+    };
+    pb::Config {
+        config_version: Some(2),
+        servers: vec![pb::ServerEntry {
+            comment: Some(comment(&["# the nas"], "")),
+            name: "nas".into(),
+            endpoint_id: id(1).as_bytes().to_vec(),
+            address: vec![pb::Entry {
+                value: "nas.lan:4433".into(),
+                ..Default::default()
+            }],
+            address_set: true,
+            ssh: Some("me@nas".into()),
+            ..Default::default()
+        }],
+        clients: vec![pb::ClientEntry {
+            name: "laptop".into(),
+            client_id: id(2).as_bytes().to_vec(),
+            key_comments: [("client_id".to_string(), comment(&[], "# my laptop"))].into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn writer_writes_servers_then_clients() {
+    assert_eq!(
+        write(&split_message()),
+        format!(
+            "config_version = 2\n\n# the nas\n[servers.nas]\nendpoint_id = \"{}\"\naddress = [\"nas.lan:4433\"]\nssh = \"me@nas\"\n\n[clients.laptop]\nclient_id = \"{}\" # my laptop\n",
+            id(1),
+            id(2)
+        )
+    );
+}
+
+#[test]
+fn the_new_tables_sit_between_telemetry_and_exports() {
+    let mut msg = split_message();
+    msg.telemetry = Some(pb::Telemetry {
+        otlp_endpoint: Some("http://c:4318".into()),
+        ..Default::default()
+    });
+    msg.exports = vec![pb::Export {
+        name: "data".into(),
+        path: "/data".into(),
+        ..Default::default()
+    }];
+    let text = write(&msg);
+    let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s} in {text}"));
+    assert!(at("[telemetry]") < at("[servers.nas]"));
+    assert!(at("[servers.nas]") < at("[clients.laptop]"));
+    assert!(at("[clients.laptop]") < at("[exports.data]"));
+}
