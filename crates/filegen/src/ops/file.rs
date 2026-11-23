@@ -12,8 +12,8 @@ use crate::content::Content;
 use crate::kind::OpKind;
 use crate::model::{NodeId, NodeKind};
 use crate::ops::{
-    applied, budget, draw_kind, maybe_fsync, new_name, pick_kind, removed, syscalls, OpCtx,
-    OpOutcome,
+    applied, budget, draw_kind, maybe_fsync, new_name, new_path, pick_kind, removed, syscalls,
+    OpCtx, OpOutcome,
 };
 use crate::pick::pick_dir_or_root;
 use crate::platform;
@@ -48,7 +48,7 @@ pub fn create_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     );
     let mut content = Content::draw(ctx.rng, &ctx.cfg.content, size);
     let label = content.label();
-    let path = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let path = new_path(ctx, dir, &name);
     let (ino, dur) = syscalls(ctx, &path, None, |ctx| {
         let mut f = OpenOptions::new()
             .write(true)
@@ -66,9 +66,7 @@ pub fn create_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     } else {
         ino
     };
-    let id = ctx
-        .model
-        .insert(dir, name.into_bytes(), NodeKind::File, size, ino);
+    let id = ctx.model.insert(dir, name, NodeKind::File, size, ino);
     let details = vec![("size", size.to_string()), ("content", label.into())];
     Ok(with_gen(
         applied(ctx, OpKind::CreateFile, id, size, details, dur),

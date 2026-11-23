@@ -8,7 +8,9 @@ use rand::{Rng, RngExt};
 
 use crate::kind::OpKind;
 use crate::model::{NodeId, NodeKind};
-use crate::ops::{applied, draw_kind, new_ino, new_name, pick_kind, syscalls, OpCtx, OpOutcome};
+use crate::ops::{
+    applied, draw_kind, new_ino, new_name, new_path, pick_kind, syscalls, OpCtx, OpOutcome,
+};
 use crate::pick::pick_dir_or_root;
 use crate::platform;
 
@@ -198,14 +200,12 @@ pub fn mknod(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     }
     let label = if char_dev { "char" } else { "block" };
-    let path = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let path = new_path(ctx, dir, &name);
     let ((), dur) = syscalls(ctx, &path, None, |_| {
         platform::mknod(&path, char_dev, 0o644, major, minor)
     })?;
     let ino = new_ino(ctx, &path)?;
-    let id = ctx
-        .model
-        .insert(dir, name.into_bytes(), NodeKind::Device, 0, ino);
+    let id = ctx.model.insert(dir, name, NodeKind::Device, 0, ino);
     let details = vec![
         ("kind", label.into()),
         ("major", major.to_string()),

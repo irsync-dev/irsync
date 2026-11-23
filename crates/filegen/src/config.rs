@@ -160,8 +160,9 @@ pub struct NamesConfig {
     pub classes: NameClassWeights,
     pub extensions: Vec<String>,
     pub max_len: u32,
-    /// The share of names drawn from the platform's edge cases. Read by
-    /// nothing yet.
+    /// The share of names drawn from the platform's edge cases (unpaired
+    /// surrogates and reserved device names on Windows). Read only where
+    /// the platform has such names; Unix ignores it.
     #[serde(default = "default_edge_rate")]
     pub edge_rate: f64,
 }

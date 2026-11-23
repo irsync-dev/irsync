@@ -7,7 +7,9 @@ use rand::RngExt;
 
 use crate::kind::OpKind;
 use crate::model::{Model, NodeId, NodeKind};
-use crate::ops::{applied, new_ino, new_name, pick_kind, removed, syscalls, OpCtx, OpOutcome};
+use crate::ops::{
+    applied, new_ino, new_name, new_path, pick_kind, removed, syscalls, OpCtx, OpOutcome,
+};
 use crate::pick::{pick, pick_dir_or_root};
 use crate::platform::{self, LinkTarget};
 
@@ -53,14 +55,12 @@ pub fn symlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let target = draw_target(ctx, dir);
-    let path = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let path = new_path(ctx, dir, &name);
     let ((), dur) = syscalls(ctx, &path, None, |_| {
         platform::symlink(&target.bytes, &path, target.link_kind())
     })?;
     let ino = new_ino(ctx, &path)?;
-    let id = ctx
-        .model
-        .insert(dir, name.into_bytes(), NodeKind::Symlink, 0, ino);
+    let id = ctx.model.insert(dir, name, NodeKind::Symlink, 0, ino);
     Ok(applied(ctx, OpKind::Symlink, id, 0, target.details(), dur))
 }
 

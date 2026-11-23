@@ -10,8 +10,8 @@ use crate::kind::OpKind;
 use crate::log::OpRecord;
 use crate::model::{NodeId, NodeKind};
 use crate::ops::{
-    applied, budget, draw_kind, new_ino, new_name, pick_kind, removed, syscalls, Applied, OpCtx,
-    OpOutcome,
+    applied, budget, draw_kind, new_ino, new_name, new_path, pick_kind, removed, syscalls, Applied,
+    OpCtx, OpOutcome,
 };
 use crate::pick::{anchor_of, descend, pick_dest_dir, pick_dir_or_root};
 use crate::platform;
@@ -65,12 +65,10 @@ pub fn mkdir(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(name) = new_name(ctx, dir) else {
         return Ok(OpOutcome::NoTarget);
     };
-    let path = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let path = new_path(ctx, dir, &name);
     let ((), dur) = syscalls(ctx, &path, None, |_| fs::create_dir(&path))?;
     let ino = new_ino(ctx, &path)?;
-    let id = ctx
-        .model
-        .insert(dir, name.into_bytes(), NodeKind::Dir, 0, ino);
+    let id = ctx.model.insert(dir, name, NodeKind::Dir, 0, ino);
     Ok(applied(ctx, OpKind::Mkdir, id, 0, Vec::new(), dur))
 }
 
@@ -145,10 +143,10 @@ pub fn rename(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     }
     let from = ctx.model.abs_path(ctx.root, id);
-    let to = ctx.model.abs_path(ctx.root, new_dir).join(&name);
+    let to = new_path(ctx, new_dir, &name);
     let ((), dur) = syscalls(ctx, &from, Some(&to), |_| fs::rename(&from, &to))?;
     let path = ctx.model.rel_path(id);
-    ctx.model.rename(id, new_dir, name.into_bytes());
+    ctx.model.rename(id, new_dir, name);
     Ok(moved(ctx, OpKind::Rename, path, id, dur))
 }
 
@@ -221,12 +219,10 @@ pub fn hardlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     }
     let from = ctx.model.abs_path(ctx.root, src);
-    let to = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let to = new_path(ctx, dir, &name);
     let ((), dur) = syscalls(ctx, &from, Some(&to), |_| fs::hard_link(&from, &to))?;
     let ino = ctx.model.node(src).ino;
-    let id = ctx
-        .model
-        .insert(dir, name.into_bytes(), NodeKind::File, size, ino);
+    let id = ctx.model.insert(dir, name, NodeKind::File, size, ino);
     Ok(OpOutcome::Done(Applied {
         rec: OpRecord {
             kind: OpKind::Hardlink,
@@ -247,12 +243,10 @@ pub fn mkfifo(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(name) = new_name(ctx, dir) else {
         return Ok(OpOutcome::NoTarget);
     };
-    let path = ctx.model.abs_path(ctx.root, dir).join(&name);
+    let path = new_path(ctx, dir, &name);
     let ((), dur) = syscalls(ctx, &path, None, |_| platform::mkfifo(&path, 0o644))?;
     let ino = new_ino(ctx, &path)?;
-    let id = ctx
-        .model
-        .insert(dir, name.into_bytes(), NodeKind::Fifo, 0, ino);
+    let id = ctx.model.insert(dir, name, NodeKind::Fifo, 0, ino);
     Ok(applied(ctx, OpKind::Mkfifo, id, 0, Vec::new(), dur))
 }
 
