@@ -5,6 +5,7 @@ pub mod config;
 pub mod exports;
 pub mod grants;
 pub mod hosts;
+pub mod msg;
 pub mod show;
 
 use crate::config::file::Config;
