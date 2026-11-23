@@ -1,14 +1,8 @@
 //! Metadata operations: modes, times, extended attributes, ownership, and
 //! device nodes.
 
-use std::fs::{self, Permissions};
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 
-use nix::fcntl::{AtFlags, AT_FDCWD};
-use nix::sys::stat::{utimensat, Mode, SFlag, UtimensatFlags};
-use nix::sys::time::TimeSpec;
-use nix::unistd::{fchownat, geteuid, Gid, Uid};
 use rand::distr::{weighted::WeightedIndex, Distribution};
 use rand::{Rng, RngExt};
 
@@ -16,6 +10,7 @@ use crate::kind::OpKind;
 use crate::model::{NodeId, NodeKind};
 use crate::ops::{applied, draw_kind, new_ino, new_name, pick_kind, syscalls, OpCtx, OpOutcome};
 use crate::pick::pick_dir_or_root;
+use crate::platform;
 
 /// The instant `set_mtime` draws relative to (2026-10-20T00:00:00Z). A
 /// constant rather than the clock, so the drawn times, and the log
@@ -60,9 +55,7 @@ pub fn chmod(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         mode = (mode | 0o600) & !0o1000;
     }
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, &path, None, |_| {
-        fs::set_permissions(&path, Permissions::from_mode(mode))
-    })?;
+    let ((), dur) = syscalls(ctx, &path, None, |_| platform::chmod(&path, mode))?;
     let details = vec![("mode", format!("{mode:04o}"))];
     Ok(applied(ctx, OpKind::Chmod, id, 0, details, dur))
 }
@@ -94,19 +87,19 @@ pub fn set_mtime(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     };
     let offset = ctx.rng.random_range(0..=span);
     let nanos: i32 = ctx.rng.random_range(0..1_000_000_000);
-    let secs = (MTIME_REFERENCE.as_second() + sign * offset).max(0);
+    // Within what the platform can store: no earlier than its first
+    // second, nanoseconds a multiple of its step. Both do nothing where
+    // any time is stored (Unix), which clippy sees through the constant.
+    #[allow(clippy::unnecessary_min_or_max)]
+    let secs = (MTIME_REFERENCE.as_second() + sign * offset)
+        .max(0)
+        .max(platform::MIN_MTIME_SEC);
+    let step = platform::MTIME_STEP_NS as i32;
+    let nanos = nanos / step * step;
     let ts = jiff::Timestamp::new(secs, nanos).expect("within jiff's range");
     let path = ctx.model.abs_path(ctx.root, id);
     let ((), dur) = syscalls(ctx, &path, None, |_| {
-        let spec = TimeSpec::new(secs as _, nanos.into());
-        utimensat(
-            AT_FDCWD,
-            &path,
-            &spec,
-            &spec,
-            UtimensatFlags::NoFollowSymlink,
-        )
-        .map_err(io::Error::from)
+        platform::set_mtime(&path, secs, nanos as u32)
     })?;
     let details = vec![
         ("mtime", ts.strftime("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()),
@@ -136,14 +129,14 @@ pub fn set_xattr(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     ctx.rng.fill_bytes(&mut value);
     let path = ctx.model.abs_path(ctx.root, id);
     let (taken, dur) = syscalls(ctx, &path, None, |_| {
-        let exists = drawn != "set" && xattr::get(&path, &name)?.is_some();
+        let exists = drawn != "set" && platform::get_xattr(&path, &name)?.is_some();
         Ok(Some(match drawn {
             "remove" if exists => {
-                xattr::remove(&path, &name)?;
+                platform::remove_xattr(&path, &name)?;
                 "remove"
             }
             _ => {
-                xattr::set(&path, &name, &value)?;
+                platform::set_xattr(&path, &name, &value)?;
                 if exists {
                     "replace"
                 } else {
@@ -183,16 +176,7 @@ pub fn chown(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let uid = (!uids.is_empty()).then(|| uids[ctx.rng.random_range(0..uids.len())]);
     let gid = (!gids.is_empty()).then(|| gids[ctx.rng.random_range(0..gids.len())]);
     let path = ctx.model.abs_path(ctx.root, id);
-    let ((), dur) = syscalls(ctx, &path, None, |_| {
-        fchownat(
-            AT_FDCWD,
-            &path,
-            uid.map(Uid::from_raw),
-            gid.map(Gid::from_raw),
-            AtFlags::AT_SYMLINK_NOFOLLOW,
-        )
-        .map_err(io::Error::from)
-    })?;
+    let ((), dur) = syscalls(ctx, &path, None, |_| platform::chown(&path, uid, gid))?;
     let show = |v: Option<u32>| v.map_or("-".to_string(), |v| v.to_string());
     let details = vec![("uid", show(uid)), ("gid", show(gid))];
     Ok(applied(ctx, OpKind::Chown, id, 0, details, dur))
@@ -210,19 +194,13 @@ pub fn mknod(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let char_dev = ctx.rng.random::<f64>() < ctx.cfg.mknod.char_fraction;
     let major: u32 = ctx.rng.random_range(1..256);
     let minor: u32 = ctx.rng.random_range(0..256);
-    if !geteuid().is_root() {
+    if !platform::is_root() {
         return Ok(OpOutcome::NoTarget);
     }
-    let (kind, label) = if char_dev {
-        (SFlag::S_IFCHR, "char")
-    } else {
-        (SFlag::S_IFBLK, "block")
-    };
+    let label = if char_dev { "char" } else { "block" };
     let path = ctx.model.abs_path(ctx.root, dir).join(&name);
     let ((), dur) = syscalls(ctx, &path, None, |_| {
-        let rdev = libc::makedev(major as _, minor as _);
-        nix::sys::stat::mknod(&path, kind, Mode::from_bits_truncate(0o644), rdev)
-            .map_err(io::Error::from)
+        platform::mknod(&path, char_dev, 0o644, major, minor)
     })?;
     let ino = new_ino(ctx, &path)?;
     let id = ctx
@@ -241,7 +219,6 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use std::fs;
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
     use std::path::Path;
 
     use rand::{Rng, SeedableRng};
@@ -256,6 +233,7 @@ mod tests {
         abs, assert_matches_disk, config, detail, done, is_no_target, put_file, step, triples,
     };
     use crate::ops::Applied;
+    use crate::platform::{testutil, FileKind, Stat};
     use crate::walk::from_disk;
 
     fn caps(extra: &[(&'static str, &'static str)]) -> Config {
@@ -292,8 +270,8 @@ mod tests {
         step(root, cfg, m, rng, anchor, kind, false).expect("a target exists")
     }
 
-    fn mtime_of(md: &fs::Metadata) -> jiff::Timestamp {
-        jiff::Timestamp::new(md.mtime(), md.mtime_nsec() as i32).unwrap()
+    fn mtime_of(md: &Stat) -> jiff::Timestamp {
+        jiff::Timestamp::from_nanosecond(md.mtime_ns).unwrap()
     }
 
     #[test]
@@ -314,8 +292,8 @@ mod tests {
                 OpKind::Chmod,
             );
             let id = m.resolve(&a.rec.path).unwrap();
-            let md = fs::symlink_metadata(abs(tmp.path(), &a.rec.path)).unwrap();
-            let mode = md.mode() & 0o7777;
+            let md = platform::lstat(&abs(tmp.path(), &a.rec.path)).unwrap();
+            let mode = md.mode & 0o7777;
             let text = detail(&a.rec, "mode").unwrap();
             assert_eq!(text.len(), 4, "{text}");
             let logged = u32::from_str_radix(text, 8).unwrap();
@@ -324,19 +302,19 @@ mod tests {
             match m.node(id).kind {
                 NodeKind::Dir => {
                     dirs += 1;
-                    assert!(md.is_dir());
+                    assert_eq!(md.kind, FileKind::Dir);
                     assert_eq!(mode & 0o700, 0o700);
                     assert_eq!(a.anchor, id);
                 }
                 NodeKind::File => {
                     files += 1;
-                    assert!(md.is_file());
+                    assert_eq!(md.kind, FileKind::File);
                     assert_eq!(mode & 0o600, 0o600);
                     assert_eq!(logged & 0o1000, 0, "sticky bit on a file");
                 }
                 NodeKind::Fifo => {
                     fifos += 1;
-                    assert!(md.file_type().is_fifo());
+                    assert_eq!(md.kind, FileKind::Fifo);
                     assert_eq!(mode & 0o600, 0o600);
                 }
                 k => panic!("chmod on {k:?}"),
@@ -368,14 +346,14 @@ mod tests {
         let outside = TempDir::new().unwrap();
         let target = outside.path().join("t");
         fs::write(&target, b"target").unwrap();
-        let before = mtime_of(&fs::metadata(&target).unwrap());
+        let before = mtime_of(&platform::lstat(&target).unwrap());
         let cfg = caps(&[]);
         let mut m = Model::new();
         let mut rng = ChaCha8Rng::seed_from_u64(3);
         // The only entry is a symlink, so every set_mtime takes it.
         let link = tmp.path().join("l");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let ino = fs::symlink_metadata(&link).unwrap().ino();
+        testutil::symlink(&target, &link).unwrap();
+        let ino = platform::lstat(&link).unwrap().ino;
         m.insert(m.root(), b"l".to_vec(), NodeKind::Symlink, 0, ino);
         let mut classes = BTreeSet::new();
         let mut nanos = false;
@@ -384,11 +362,11 @@ mod tests {
             assert_eq!(a.rec.kind, OpKind::SetMtime);
             assert_eq!(a.rec.path, b"l");
             assert_eq!(a.anchor, m.root());
-            let md = fs::symlink_metadata(&link).unwrap();
-            assert!(md.file_type().is_symlink());
+            let md = platform::lstat(&link).unwrap();
+            assert_eq!(md.kind, FileKind::Symlink);
             let logged: jiff::Timestamp = detail(&a.rec, "mtime").unwrap().parse().unwrap();
             assert_eq!(mtime_of(&md), logged);
-            nanos |= md.mtime_nsec() != 0;
+            nanos |= md.mtime_ns.rem_euclid(1_000_000_000) != 0;
             let class = detail(&a.rec, "class").unwrap().to_string();
             let secs = logged.as_second() - MTIME_REFERENCE.as_second();
             match class.as_str() {
@@ -401,7 +379,7 @@ mod tests {
         }
         assert!(nanos, "nanoseconds always zero");
         assert_eq!(classes.len(), 3, "{classes:?}");
-        assert_eq!(mtime_of(&fs::metadata(&target).unwrap()), before);
+        assert_eq!(mtime_of(&platform::lstat(&target).unwrap()), before);
 
         // Future class only: always after the reference instant.
         let cfg = caps(&[
@@ -413,15 +391,10 @@ mod tests {
         for _ in 0..20 {
             let a = done(set_mtime(&mut ctx!(tmp, cfg, m, rng)).unwrap());
             assert_eq!(detail(&a.rec, "class"), Some("future"));
-            let md = fs::symlink_metadata(abs(tmp.path(), &a.rec.path)).unwrap();
+            let md = platform::lstat(&abs(tmp.path(), &a.rec.path)).unwrap();
             assert!(mtime_of(&md) > MTIME_REFERENCE);
         }
         assert_matches_disk(tmp.path(), &m);
-    }
-
-    /// Whether `e` says the filesystem has no user xattrs.
-    fn unsupported(e: &io::Error) -> bool {
-        e.raw_os_error() == Some(libc::ENOTSUP) || e.raw_os_error() == Some(libc::EOPNOTSUPP)
     }
 
     /// Every xattr in the tree, by relative path and name.
@@ -432,11 +405,8 @@ mod tests {
                 continue;
             }
             let p = abs(root, &rel);
-            let mut names: Vec<_> = xattr::list(&p).unwrap().collect();
-            names.sort();
-            for n in names {
-                let v = xattr::get(&p, &n).unwrap().unwrap();
-                out.push((rel.clone(), n.to_string_lossy().into_owned(), v));
+            for (n, v) in testutil::xattrs(&p) {
+                out.push((rel.clone(), n, v));
             }
         }
         out
@@ -447,8 +417,8 @@ mod tests {
         let probe = TempDir::new().unwrap();
         let p = probe.path().join("p");
         fs::write(&p, b"").unwrap();
-        if let Err(e) = xattr::set(&p, "user.filegen.probe", b"1") {
-            if unsupported(&e) {
+        if let Err(e) = platform::set_xattr(&p, "user.filegen.probe", b"1") {
+            if testutil::xattr_unsupported(&e) {
                 eprintln!("skipping set_xattr_round_trip: no user xattrs here ({e})");
                 return;
             }
@@ -477,7 +447,7 @@ mod tests {
                 assert!(cfg.xattr.names.iter().any(|n| n == name));
                 let len: usize = detail(&a.rec, "len").unwrap().parse().unwrap();
                 assert!(len <= 64);
-                let got = xattr::get(&path, name).unwrap();
+                let got = platform::get_xattr(&path, name).unwrap();
                 let action = detail(&a.rec, "action").unwrap().to_string();
                 match action.as_str() {
                     "set" | "replace" => assert_eq!(got.map(|v| v.len()), Some(len)),
@@ -511,8 +481,8 @@ mod tests {
     fn chown_to_own_ids() {
         // An unprivileged user may chown to its own uid and gid.
         let tmp = TempDir::new().unwrap();
-        let uid = nix::unistd::geteuid().as_raw();
-        let gid = nix::unistd::getegid().as_raw();
+        let uid = platform::euid();
+        let gid = platform::egid();
         let mut cfg = caps(&[]);
         cfg.chown.uids = vec![uid];
         cfg.chown.gids = vec![gid];
@@ -530,8 +500,7 @@ mod tests {
             );
             assert_eq!(detail(&a.rec, "uid"), Some(uid.to_string().as_str()));
             assert_eq!(detail(&a.rec, "gid"), Some(gid.to_string().as_str()));
-            let md = fs::symlink_metadata(abs(tmp.path(), &a.rec.path)).unwrap();
-            assert_eq!((md.uid(), md.gid()), (uid, gid));
+            assert_eq!(testutil::owner(&abs(tmp.path(), &a.rec.path)), (uid, gid));
         }
         cfg.chown.gids.clear();
         let a = run(
@@ -552,11 +521,10 @@ mod tests {
         let cfg = caps(&[]);
         let mut m = Model::new();
         let mut rng = ChaCha8Rng::seed_from_u64(7);
-        if nix::unistd::geteuid().is_root() {
+        if platform::is_root() {
             let a = done(mknod(&mut ctx!(tmp, cfg, m, rng)).unwrap());
-            let md = fs::symlink_metadata(abs(tmp.path(), &a.rec.path)).unwrap();
-            let ft = md.file_type();
-            assert!(ft.is_char_device() || ft.is_block_device());
+            let md = platform::lstat(&abs(tmp.path(), &a.rec.path)).unwrap();
+            assert!(matches!(md.kind, FileKind::CharDev | FileKind::BlockDev));
             let id = m.resolve(&a.rec.path).unwrap();
             assert_eq!(m.node(id).kind, NodeKind::Device);
             assert_matches_disk(tmp.path(), &m);
@@ -588,7 +556,7 @@ mod tests {
     fn dry_run_follows_real_run_through_meta_ops() {
         let tmp = TempDir::new().unwrap();
         let mut cfg = caps(&[]);
-        cfg.chown.uids = vec![nix::unistd::geteuid().as_raw()];
+        cfg.chown.uids = vec![platform::euid()];
         let kinds = [
             OpKind::CreateFile,
             OpKind::Mkdir,

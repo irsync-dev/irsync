@@ -4,7 +4,6 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
-use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
 
 use rand::RngExt;
@@ -17,6 +16,7 @@ use crate::ops::{
     OpOutcome,
 };
 use crate::pick::pick_dir_or_root;
+use crate::platform;
 use crate::sizes::{draw_delta, draw_file_size, draw_range, draw_truncate};
 
 /// Probability that `punch_hole` extends the file instead.
@@ -56,7 +56,7 @@ pub fn create_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
             .open(&path)?;
         content.write_to(&mut f)?;
         maybe_fsync(ctx, &f)?;
-        Ok(f.metadata()?.ino())
+        Ok(platform::fstat(&f)?.ino)
     })?;
     let (dur, gen) = content_timing(dur, &content);
     // A dry run has no real inode; give it a unique one, since hard links
@@ -226,7 +226,7 @@ pub fn punch_hole(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let (offset, len) = align_range(draw_range(ctx.rng, old), old);
     let (emulated, dur) = syscalls(ctx, &path, None, |ctx| {
         let mut f = OpenOptions::new().write(true).open(&path)?;
-        let emulated = !punch(&f, offset, len)?;
+        let emulated = !platform::punch_hole(&f, offset, len)?;
         if emulated {
             write_zeros(&mut f, offset, len)?;
         }
@@ -258,42 +258,6 @@ fn align_range((offset, len): (u64, u64), size: u64) -> (u64, u64) {
         .saturating_mul(BLOCK)
         .min(size);
     (start, end - start)
-}
-
-/// Deallocates `[offset, offset + len)` of `f`, keeping its size; `false`
-/// if the filesystem cannot.
-#[cfg(target_os = "linux")]
-fn punch(f: &File, offset: u64, len: u64) -> io::Result<bool> {
-    use nix::errno::Errno;
-    use nix::fcntl::{fallocate, FallocateFlags};
-    let flags = FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE;
-    match fallocate(f, flags, offset as libc::off_t, len as libc::off_t) {
-        Ok(()) => Ok(true),
-        Err(Errno::EOPNOTSUPP | Errno::ENOSYS) => Ok(false),
-        Err(e) => Err(e.into()),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn punch(f: &File, offset: u64, len: u64) -> io::Result<bool> {
-    use std::os::fd::AsRawFd;
-    let arg = libc::fpunchhole_t {
-        fp_flags: 0,
-        reserved: 0,
-        fp_offset: offset as libc::off_t,
-        fp_length: len as libc::off_t,
-    };
-    // SAFETY: F_PUNCHHOLE reads a `fpunchhole_t` through its pointer
-    // argument; `&arg` points to a fully initialised one on the stack that
-    // outlives the call, and the kernel only reads it. `f` is borrowed, so
-    // its descriptor stays open.
-    let r = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_PUNCHHOLE, &arg) };
-    Ok(r == 0)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn punch(_: &File, _: u64, _: u64) -> io::Result<bool> {
-    Ok(false)
 }
 
 /// Splits the timed span of a content write into the syscall part and the
@@ -352,9 +316,7 @@ pub fn delete_file(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use std::ffi::OsStr;
     use std::fs;
-    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
     use std::time::Duration;
 
@@ -384,8 +346,8 @@ mod tests {
             for e in fs::read_dir(dir).unwrap() {
                 let p = e.unwrap().path();
                 let md = fs::symlink_metadata(&p).unwrap();
-                let rel = p.strip_prefix(root).unwrap().as_os_str().as_bytes();
-                out.insert(rel.to_vec(), if md.is_file() { md.len() } else { 0 });
+                let rel = platform::path_to_bytes(p.strip_prefix(root).unwrap());
+                out.insert(rel, if md.is_file() { md.len() } else { 0 });
                 if md.is_dir() {
                     walk(root, &p, out);
                 }
@@ -438,7 +400,7 @@ mod tests {
             assert_eq!(a.rec.kind, OpKind::CreateFile);
             let id = m.resolve(&a.rec.path).expect("created node in model");
             assert_eq!(m.node(id).kind, NodeKind::File);
-            let p = tmp.path().join(OsStr::from_bytes(&a.rec.path));
+            let p = platform::rel_to_path(tmp.path(), &a.rec.path).unwrap();
             let len = fs::metadata(&p).unwrap().len();
             assert_eq!(len, m.node(id).size);
             assert_eq!(detail(&a.rec, "size"), Some(len.to_string().as_str()));
@@ -521,11 +483,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cfg = small();
         let (mut m, mut rng) = ctx_in(&tmp, &cfg, 4);
-        nix::unistd::mkfifo(
-            &tmp.path().join("p"),
-            nix::sys::stat::Mode::from_bits_truncate(0o644),
-        )
-        .unwrap();
+        platform::mkfifo(&tmp.path().join("p"), 0o644).unwrap();
         let root = m.root();
         m.insert(root, b"p".to_vec(), NodeKind::Fifo, 0, 0);
         let a = done(delete_file(&mut ctx!(tmp, cfg, m, rng)).unwrap());

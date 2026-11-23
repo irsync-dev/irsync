@@ -4,7 +4,6 @@ use std::fs;
 use std::io;
 use std::time::Duration;
 
-use nix::sys::stat::Mode;
 use rand::RngExt;
 
 use crate::kind::OpKind;
@@ -15,6 +14,7 @@ use crate::ops::{
     OpOutcome,
 };
 use crate::pick::{anchor_of, descend, pick_dest_dir, pick_dir_or_root};
+use crate::platform;
 
 /// How many directories `mkdir` draws before giving up on finding one
 /// shallow enough.
@@ -177,7 +177,12 @@ pub fn rename_over(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(dst) = descend(ctx.rng, ctx.model, root, NodeKind::File) else {
         return Ok(OpOutcome::NoTarget);
     };
-    // Links to one inode: rename(2) would do nothing and succeed.
+    // Source and destination are regular files, so a platform that cannot
+    // rename over a directory (`!platform::RENAME_OVER_DIRS`) needs nothing
+    // more here.
+    // Links to one inode: rename(2) would do nothing and succeed. The same
+    // check keeps a platform that refuses it (`!RENAME_OVER_SAME_FILE`)
+    // from ever trying.
     if ctx.model.linked(src).contains(&dst) {
         return Ok(OpOutcome::NoTarget);
     }
@@ -203,6 +208,10 @@ pub fn hardlink(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
     let Some(src) = pick_kind(ctx, NodeKind::File) else {
         return Ok(OpOutcome::NoTarget);
     };
+    // A file with as many names as the platform allows takes no more.
+    if ctx.model.linked(src).len() as u64 >= platform::MAX_LINKS {
+        return Ok(OpOutcome::NoTarget);
+    }
     let dir = pick_dir(ctx);
     let Some(name) = new_name(ctx, dir) else {
         return Ok(OpOutcome::NoTarget);
@@ -239,9 +248,7 @@ pub fn mkfifo(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
         return Ok(OpOutcome::NoTarget);
     };
     let path = ctx.model.abs_path(ctx.root, dir).join(&name);
-    let ((), dur) = syscalls(ctx, &path, None, |_| {
-        nix::unistd::mkfifo(&path, Mode::from_bits_truncate(0o644)).map_err(io::Error::from)
-    })?;
+    let ((), dur) = syscalls(ctx, &path, None, |_| platform::mkfifo(&path, 0o644))?;
     let ino = new_ino(ctx, &path)?;
     let id = ctx
         .model
@@ -253,7 +260,6 @@ pub fn mkfifo(ctx: &mut OpCtx) -> io::Result<OpOutcome> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
     use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
@@ -461,7 +467,7 @@ mod tests {
         // Two links to one inode never replace each other.
         let src = abs(tmp.path(), &to);
         fs::hard_link(&src, tmp.path().join("link")).unwrap();
-        let ino = fs::metadata(&src).unwrap().ino();
+        let ino = platform::lstat(&src).unwrap().ino;
         let root = m.root();
         m.insert(
             root,
@@ -580,7 +586,7 @@ mod tests {
         .expect("room for one link");
         assert_eq!(a.rec.path, b"f");
         let to = a.rec.to.clone().unwrap();
-        let ino = |p: &[u8]| fs::symlink_metadata(abs(tmp.path(), p)).unwrap().ino();
+        let ino = |p: &[u8]| platform::lstat(&abs(tmp.path(), p)).unwrap().ino;
         assert_eq!(ino(b"f"), ino(&to));
         assert_eq!(detail(&a.rec, "size"), Some("400"));
         let link = m.resolve(&to).unwrap();
@@ -652,12 +658,12 @@ mod tests {
                 false,
             )
             .expect("a dir is always available");
-            let md = fs::symlink_metadata(abs(tmp.path(), &a.rec.path)).unwrap();
-            assert!(md.file_type().is_fifo());
+            let md = platform::lstat(&abs(tmp.path(), &a.rec.path)).unwrap();
+            assert_eq!(md.kind, platform::FileKind::Fifo);
             let id = m.resolve(&a.rec.path).unwrap();
             assert_eq!(m.node(id).kind, NodeKind::Fifo);
             assert_eq!(m.node(id).size, 0);
-            assert_eq!(m.node(id).ino, md.ino());
+            assert_eq!(m.node(id).ino, md.ino);
             assert_eq!(Some(a.anchor), m.node(id).parent);
         }
         assert_matches_disk(tmp.path(), &m);

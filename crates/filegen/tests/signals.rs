@@ -1,41 +1,35 @@
 //! Signal flag behaviour. A test binary of its own: raising signals in the
 //! library's test process would interrupt its concurrent runs. One test,
 //! so nothing else in this process races the handlers.
+#![cfg(unix)]
 
 use std::sync::atomic::Ordering;
 
-use nix::sys::signal::{raise, sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
+use filegen::platform::{self, testutil};
+use testutil::{SIGINT, SIGTERM};
 
 #[test]
 fn first_signal_wins_install_clears_and_syscalls_restart() {
-    let flag = filegen::signals::install();
+    let flag = platform::install_interrupt();
     assert_eq!(flag.load(Ordering::SeqCst), 0);
 
     // SA_RESTART: a step in flight finishes instead of failing with EINTR.
-    for sig in [Signal::SIGINT, Signal::SIGTERM] {
-        let probe = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-        // SAFETY: the default action runs no code of ours, so installing
-        // it cannot break a handler's rules. No signal is raised before
-        // the old action goes back on the next line, and this is the only
-        // test in this binary, so nothing else in the process races it.
-        let installed = unsafe { sigaction(sig, &probe) }.unwrap();
-        // SAFETY: puts back the action `filegen::signals::install` set,
-        // whose handler is safe to run at any time (see its own SAFETY
-        // comment).
-        unsafe { sigaction(sig, &installed) }.unwrap();
-        assert!(installed.flags().contains(SaFlags::SA_RESTART), "{sig:?}");
+    // This is the only test in this binary, so nothing else in the process
+    // races the probe.
+    for sig in [SIGINT, SIGTERM] {
+        assert!(testutil::interrupt_restarts_syscalls(sig), "{sig}");
     }
 
-    raise(Signal::SIGTERM).unwrap();
-    assert_eq!(flag.load(Ordering::SeqCst), libc::SIGTERM);
-    raise(Signal::SIGTERM).unwrap();
-    assert_eq!(flag.load(Ordering::SeqCst), libc::SIGTERM);
-    assert_eq!(filegen::signals::name(libc::SIGTERM), "SIGTERM");
+    testutil::raise_interrupt(SIGTERM);
+    assert_eq!(flag.load(Ordering::SeqCst), SIGTERM);
+    testutil::raise_interrupt(SIGTERM);
+    assert_eq!(flag.load(Ordering::SeqCst), SIGTERM);
+    assert_eq!(platform::interrupt_name(SIGTERM), "SIGTERM");
     // Reinstalling clears the flag; the handler keeps the same flag.
-    let again = filegen::signals::install();
+    let again = platform::install_interrupt();
     assert_eq!(flag.load(Ordering::SeqCst), 0);
-    raise(Signal::SIGINT).unwrap();
-    assert_eq!(again.load(Ordering::SeqCst), libc::SIGINT);
+    testutil::raise_interrupt(SIGINT);
+    assert_eq!(again.load(Ordering::SeqCst), SIGINT);
     // A second SIGINT would `_exit(130)`. The binary-level tests
     // `cli_sigint_resumable` and `cli_sigterm_resumable` cover the first
     // signal's orderly shutdown; the immediate exit on a second SIGINT is

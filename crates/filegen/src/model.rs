@@ -5,13 +5,12 @@
 //! with entry count rather than path length.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use unicode_normalization::UnicodeNormalization;
 
 use crate::escape::escape;
+use crate::platform;
 
 /// First inode number handed out by [`Model::synthetic_ino`].
 const SYNTHETIC_INO_BASE: u64 = 1 << 63;
@@ -185,7 +184,11 @@ impl Model {
         if rel.is_empty() {
             root.to_path_buf()
         } else {
-            root.join(OsStr::from_bytes(&rel))
+            // A stored path always has a name here on Unix; a platform that
+            // cannot name it is a bug in filegen, not a step that fails.
+            platform::rel_to_path(root, &rel).unwrap_or_else(|e| {
+                panic!("cannot name {} below {}: {e}", escape(&rel), root.display())
+            })
         }
     }
 

@@ -3,11 +3,10 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use crate::model::{Model, NodeId, NodeKind};
+use crate::platform::{self, FileKind};
 
 /// Prefix of names filegen never touches or descends (fileset's own files).
 const OFF_LIMITS_PREFIX: &[u8] = b".fileset";
@@ -26,41 +25,41 @@ pub fn is_off_limits_name(name: &[u8]) -> bool {
 /// denied, or vanished) becomes `OffLimits` too.
 ///
 /// Unless running as root, so are the entries filegen could not safely
-/// change (see [`Guard`]): a subdirectory it cannot list, any entry not
-/// owned by the effective uid, a regular file without owner read and
-/// write, and a directory without owner read, write and search. As root, a
-/// subdirectory that cannot be listed (it vanished) stays an empty `Dir`.
+/// change (see [`platform::may_change`]): a subdirectory it cannot list,
+/// any entry not owned by the effective uid, a regular file without owner
+/// read and write, and a directory without owner read, write and search.
+/// As root, a subdirectory that cannot be listed (it vanished) stays an
+/// empty `Dir`.
 pub fn from_disk(root: &Path) -> io::Result<Model> {
-    let root_meta = fs::symlink_metadata(root)?;
-    if !root_meta.is_dir() {
+    let root_meta = platform::lstat(root)?;
+    if root_meta.kind != FileKind::Dir {
         return Err(io::Error::new(
             io::ErrorKind::NotADirectory,
             format!("{} is not a directory", root.display()),
         ));
     }
-    let root_dev = root_meta.dev();
-    let guard = Guard::current();
+    let root_dev = root_meta.dev;
+    let guarded = !platform::is_root();
     let mut model = Model::new();
     let mut stack: Vec<(PathBuf, NodeId)> = vec![(root.to_path_buf(), model.root())];
     while let Some((dir_path, dir_id)) = stack.pop() {
         let names = match list_sorted(&dir_path) {
             Ok(names) => names,
             Err(e) if tolerated(&e) && dir_id != model.root() => {
-                if guard.is_some() {
+                if guarded {
                     mark_off_limits(&mut model, dir_id);
                 }
                 continue;
             }
             Err(e) => return Err(e),
         };
-        for name in names {
-            let path = dir_path.join(&name);
-            let name = name.into_vec();
+        for (name, os_name) in names {
+            let path = dir_path.join(&os_name);
             if is_off_limits_name(&name) {
                 model.insert(dir_id, name, NodeKind::OffLimits, 0, 0);
                 continue;
             }
-            let meta = match fs::symlink_metadata(&path) {
+            let meta = match platform::lstat(&path) {
                 Ok(meta) => meta,
                 // Listed but not statable (dir lacks search permission, or
                 // the entry vanished): keep the name, never touch it.
@@ -70,32 +69,27 @@ pub fn from_disk(root: &Path) -> io::Result<Model> {
                 }
                 Err(e) => return Err(e),
             };
-            let ft = meta.file_type();
-            let kind = if meta.dev() != root_dev {
+            let kind = if meta.dev != root_dev {
                 NodeKind::OffLimits
-            } else if ft.is_dir() {
-                NodeKind::Dir
-            } else if ft.is_file() {
-                NodeKind::File
-            } else if ft.is_symlink() {
-                NodeKind::Symlink
-            } else if ft.is_fifo() {
-                NodeKind::Fifo
-            } else if ft.is_char_device() || ft.is_block_device() {
-                NodeKind::Device
+            } else {
+                match meta.kind {
+                    FileKind::Dir => NodeKind::Dir,
+                    FileKind::File => NodeKind::File,
+                    FileKind::Symlink => NodeKind::Symlink,
+                    FileKind::Fifo => NodeKind::Fifo,
+                    FileKind::CharDev | FileKind::BlockDev => NodeKind::Device,
+                    FileKind::Socket | FileKind::Other => NodeKind::OffLimits,
+                }
+            };
+            // Off limits already (another device, a socket) stays so
+            // whatever the guard says.
+            let kind = if platform::may_change(&meta) {
+                kind
             } else {
                 NodeKind::OffLimits
             };
-            let kind = match guard {
-                Some(g) if !g.may_change(&meta, kind) => NodeKind::OffLimits,
-                _ => kind,
-            };
-            let size = if kind == NodeKind::File {
-                meta.len()
-            } else {
-                0
-            };
-            let id = model.insert(dir_id, name, kind, size, meta.ino());
+            let size = if kind == NodeKind::File { meta.size } else { 0 };
+            let id = model.insert(dir_id, name, kind, size, meta.ino);
             if kind == NodeKind::Dir {
                 stack.push((path, id));
             }
@@ -117,49 +111,20 @@ fn mark_off_limits(model: &mut Model, id: NodeId) {
     debug_assert_eq!(again, id);
 }
 
-/// What an unprivileged filegen may change; `None` when running as root,
-/// which may change anything.
-///
-/// The rules look only at ownership and the owner's permission bits, which
-/// filegen's own operations never take away (`chmod` always keeps owner
-/// rw, rwx on directories; giving an entry to another uid needs root), so a
-/// later walk never puts an entry filegen made off limits.
-#[derive(Clone, Copy)]
-struct Guard {
-    euid: u32,
-}
-
-impl Guard {
-    fn current() -> Option<Guard> {
-        let euid = nix::unistd::geteuid();
-        (!euid.is_root()).then(|| Guard {
-            euid: euid.as_raw(),
+/// Names in `dir`, each as its stored bytes and as the OS name, sorted by
+/// the bytes. Any failure, opening the directory or mid-iteration, is
+/// reported the same way.
+fn list_sorted(dir: &Path) -> io::Result<Vec<(Vec<u8>, OsString)>> {
+    let mut names: Vec<(Vec<u8>, OsString)> = fs::read_dir(dir)?
+        .map(|entry| {
+            entry.map(|e| {
+                let name = e.file_name();
+                (platform::os_to_bytes(&name), name)
+            })
         })
-    }
-
-    /// Whether an entry of `kind` may be a target: owned by the effective
-    /// uid, with owner read and write on a file and read, write and search
-    /// on a directory. Without them an operation fails, and since a failed
-    /// step rewinds the generator, fails again on every resume; and a
-    /// rename into a directory filegen cannot list could replace entries
-    /// the walk never saw.
-    fn may_change(self, meta: &fs::Metadata, kind: NodeKind) -> bool {
-        let need = match kind {
-            NodeKind::File => 0o600,
-            NodeKind::Dir => 0o700,
-            _ => 0,
-        };
-        meta.uid() == self.euid && meta.mode() & need == need
-    }
-}
-
-/// Names in `dir`, sorted bytewise. Any failure, opening the directory or
-/// mid-iteration, is reported the same way.
-fn list_sorted(dir: &Path) -> io::Result<Vec<OsString>> {
-    let mut names: Vec<OsString> = fs::read_dir(dir)?
-        .map(|entry| entry.map(|e| e.file_name()))
         .collect::<io::Result<_>>()?;
-    names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    // By the bytes alone: no two names of a directory have the same.
+    names.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(names)
 }
 
@@ -175,6 +140,7 @@ fn tolerated(e: &io::Error) -> bool {
 mod tests {
     use super::*;
     use crate::model::NodeKind;
+    use crate::platform::testutil;
     use std::fs;
 
     fn child_names(m: &Model, dir: crate::model::NodeId) -> Vec<&[u8]> {
@@ -190,8 +156,8 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         fs::create_dir(t.path().join("b")).unwrap();
         fs::write(t.path().join("a.txt"), b"1234567").unwrap();
-        std::os::unix::fs::symlink("a.txt", t.path().join("b/sym")).unwrap();
-        nix::unistd::mkfifo(&t.path().join("b/fifo"), nix::sys::stat::Mode::S_IRWXU).unwrap();
+        testutil::symlink(Path::new("a.txt"), &t.path().join("b/sym")).unwrap();
+        platform::mkfifo(&t.path().join("b/fifo"), 0o700).unwrap();
         let m = from_disk(t.path()).unwrap();
         let r = m.root();
         assert_eq!(m.entries(), 4);
@@ -236,7 +202,7 @@ mod tests {
         fs::write(t.path().join(".fileset.sqlite"), b"x").unwrap();
         fs::create_dir_all(t.path().join("sub/.fileset.fjall")).unwrap();
         fs::write(t.path().join("sub/.fileset.fjall/inner"), b"y").unwrap();
-        let _sock = std::os::unix::net::UnixListener::bind(t.path().join("sock")).unwrap();
+        let _sock = testutil::bind_socket(&t.path().join("sock"));
         let m = from_disk(t.path()).unwrap();
         let r = m.root();
         for p in [&b".fileset.sqlite"[..], b"sub/.fileset.fjall", b"sock"] {
@@ -259,18 +225,17 @@ mod tests {
 
     #[test]
     fn walk_marks_unlistable_dir_off_limits() {
-        use std::os::unix::fs::PermissionsExt;
         let t = tempfile::tempdir().unwrap();
         let locked = t.path().join("locked");
         fs::create_dir(&locked).unwrap();
         fs::write(locked.join("hidden"), b"z").unwrap();
         fs::write(t.path().join("z"), b"after").unwrap();
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        testutil::set_mode(&locked, 0o000);
         let m = from_disk(t.path());
-        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        testutil::set_mode(&locked, 0o755);
         let m = m.unwrap();
         let id = m.resolve(b"locked").unwrap();
-        if nix::unistd::geteuid().is_root() {
+        if platform::is_root() {
             // Root lists it and may change anything: nothing is guarded.
             assert_eq!(m.node(id).kind, NodeKind::Dir);
             assert!(m.resolve(b"locked/hidden").is_some());
@@ -285,15 +250,12 @@ mod tests {
 
     #[test]
     fn walk_marks_entries_it_cannot_safely_change_off_limits() {
-        use std::os::unix::fs::PermissionsExt;
-        if nix::unistd::geteuid().is_root() {
+        if platform::is_root() {
             eprintln!("skipping walk_marks_entries_it_cannot_safely_change_off_limits: root");
             return;
         }
         let t = tempfile::tempdir().unwrap();
-        let mode = |rel: &str, m: u32| {
-            fs::set_permissions(t.path().join(rel), fs::Permissions::from_mode(m)).unwrap()
-        };
+        let mode = |rel: &str, m: u32| testutil::set_mode(&t.path().join(rel), m);
         let dir = |rel: &str| {
             fs::create_dir(t.path().join(rel)).unwrap();
             fs::write(t.path().join(rel).join("f"), b"f").unwrap();
@@ -339,10 +301,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn walk_non_utf8_name() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
         let t = tempfile::tempdir().unwrap();
-        if let Err(e) = fs::write(t.path().join(OsStr::from_bytes(b"\xff\xfe")), b"ab") {
+        let name = platform::bytes_to_os(b"\xff\xfe").unwrap();
+        if let Err(e) = fs::write(t.path().join(name), b"ab") {
             // ZFS with utf8only=on refuses such names (EILSEQ, 84 on Linux).
             // CI's filesystem takes them, so there a refusal must fail.
             assert_eq!(e.raw_os_error(), Some(84), "{e}");

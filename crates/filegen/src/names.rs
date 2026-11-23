@@ -7,6 +7,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::config::NamesConfig;
 use crate::model::{Model, NodeId};
+use crate::platform;
 
 /// Attempts per [`draw_name`] call before giving up.
 const MAX_ATTEMPTS: usize = 64;
@@ -84,11 +85,12 @@ pub fn draw_name(
 /// The structural rules, independent of siblings.
 fn acceptable(name: &str, limit: usize) -> bool {
     !name.is_empty()
-        && name.len() <= limit
+        && platform::name_units(name) <= limit
         && name != "."
         && name != ".."
         && !name.contains(['/', '\0'])
         && !name.as_bytes().starts_with(b".fileset")
+        && platform::name_ok(name)
 }
 
 /// Raw (pre-NFC) content for one class.

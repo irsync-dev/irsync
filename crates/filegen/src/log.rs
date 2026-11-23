@@ -3,6 +3,7 @@
 
 use crate::escape::{escape, unescape};
 use crate::kind::OpKind;
+use crate::platform::{self, FileKind, Stat};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
@@ -35,37 +36,28 @@ pub struct PostStat {
 }
 
 impl PostStat {
-    pub fn of(m: &std::fs::Metadata) -> PostStat {
-        use std::os::unix::fs::{FileTypeExt, MetadataExt};
-        let t = m.file_type();
-        let kind = if t.is_file() {
-            'f'
-        } else if t.is_dir() {
-            'd'
-        } else if t.is_symlink() {
-            'l'
-        } else if t.is_fifo() {
-            'p'
-        } else if t.is_char_device() {
-            'c'
-        } else if t.is_block_device() {
-            'b'
-        } else if t.is_socket() {
-            's'
-        } else {
-            '?'
+    pub fn of(m: &Stat) -> PostStat {
+        let kind = match m.kind {
+            FileKind::File => 'f',
+            FileKind::Dir => 'd',
+            FileKind::Symlink => 'l',
+            FileKind::Fifo => 'p',
+            FileKind::CharDev => 'c',
+            FileKind::BlockDev => 'b',
+            FileKind::Socket => 's',
+            FileKind::Other => '?',
         };
         PostStat {
             kind,
-            size: m.size(),
-            mode: m.mode() & 0o7777,
-            mtime_ns: i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()),
+            size: m.size,
+            mode: m.mode & 0o7777,
+            mtime_ns: m.mtime_ns,
         }
     }
 
     /// `lstat` of `p`; `None` if it is absent (or cannot be read).
     pub fn lstat(p: &Path) -> Option<PostStat> {
-        std::fs::symlink_metadata(p).ok().map(|m| PostStat::of(&m))
+        platform::lstat(p).ok().map(|m| PostStat::of(&m))
     }
 
     fn fmt(p: &Option<PostStat>) -> String {
@@ -213,8 +205,7 @@ fn quoted(bytes: &[u8]) -> String {
 }
 
 fn path_bytes(p: &Path) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt;
-    p.as_os_str().as_bytes().to_vec()
+    platform::path_to_bytes(p)
 }
 
 /// Bare when only `[A-Za-z0-9_.:+-/=]`, else quoted and escaped.
