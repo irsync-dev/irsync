@@ -20,6 +20,10 @@ WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
 PIN = re.compile(r"^\s*(- )?uses: [\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*$")
 USES = re.compile(r"^\s*(- )?uses:\s*(\S+)")
 
+# Jobs in ci.yml that report on a pull request but that "CI result" does not
+# wait for.
+NON_BLOCKING = {"windows"}
+
 # release.yml is written by dist, which pins from [dist.github-action-commits]
 # in dist-workspace.toml but cannot add the version comment. The version is
 # kept next to the SHA there instead.
@@ -152,7 +156,22 @@ class CiWorkflowTests(unittest.TestCase):
         res = j["ci-result"]
         self.assertEqual(res["name"], "CI result")
         self.assertEqual(res["if"], "always()")
-        self.assertEqual(set(res["needs"]), set(j) - {"ci-result"})
+        self.assertEqual(set(res["needs"]), set(j) - {"ci-result"} - NON_BLOCKING)
+
+    def test_windows_job_reports_but_does_not_block(self):
+        # filegen, fileset and irsync-glob on Windows, x86_64 and ARM64. It
+        # shows on every pull request that changes code, but a failure does
+        # not stop a merge: "CI result" does not need it.
+        j = jobs(self.ci)
+        self.assertIn("windows", j)
+        win = j["windows"]
+        self.assertEqual(win["strategy"]["matrix"]["os"], ["windows-latest", "windows-11-arm"])
+        self.assertIs(win["strategy"]["fail-fast"], False)
+        self.assertEqual(win["needs"], "changes")
+        self.assertEqual(win["if"], j["check"]["if"])
+        runs = [s.get("run", "").strip() for s in win["steps"]]
+        self.assertIn("tools/ci.sh check", runs)
+        self.assertNotIn("windows", j["ci-result"]["needs"])
 
     def test_pull_request_has_no_paths_ignore(self):
         on = triggers(self.ci)
@@ -296,6 +315,23 @@ class CiWorkflowTests(unittest.TestCase):
         # Every release target is one of the platforms deny.toml checks.
         released = set(dist_config()["dist"]["targets"])
         self.assertLessEqual(released, set(narrow["graph"]["targets"]))
+
+    def test_deny_covers_windows(self):
+        # filegen and fileset are built for Windows, so their dependencies
+        # there are checked like those of the other platforms.
+        with open(os.path.join(ROOT, "deny.toml"), "rb") as f:
+            targets = tomllib.load(f)["graph"]["targets"]
+        self.assertIn("x86_64-pc-windows-msvc", targets)
+        self.assertIn("aarch64-pc-windows-msvc", targets)
+
+    def test_deny_accepts_chrono_for_windows_only(self):
+        # chrono is unmaintained and comes in only on Windows, through
+        # netwatch (iroh). It is the one advisory accepted, and the reason
+        # points at the issue that tracks it.
+        with open(os.path.join(ROOT, "deny.toml"), "rb") as f:
+            ignore = tomllib.load(f)["advisories"]["ignore"]
+        self.assertEqual([e["id"] for e in ignore], ["RUSTSEC-2026-0543"])
+        self.assertIn("#174", ignore[0]["reason"])
 
     def test_fuzz_build_job(self):
         # Every fuzz target must build and pass its seeds on a pull request
