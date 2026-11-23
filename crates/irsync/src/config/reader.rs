@@ -361,7 +361,7 @@ fn immediate_problem(value: &toml::Value) -> Option<String> {
 fn client(r: RawClient) -> pb::Client {
     pb::Client {
         parallel: r.parallel,
-        reconnect: r.reconnect.map(duration),
+        reconnect: r.reconnect.map(duration::to_proto),
         dial_retries: r.dial_retries,
         dht: r.dht,
         ssh_install: r.ssh_install,
@@ -377,8 +377,8 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
     let (listen, listen_set) = addresses(r.listen);
     pb::Daemon {
         identity: r.identity.map(path_text),
-        idle_timeout: r.idle_timeout.map(duration),
-        dormant_session_timeout: r.dormant_session_timeout.map(duration),
+        idle_timeout: r.idle_timeout.map(duration::to_proto),
+        dormant_session_timeout: r.dormant_session_timeout.map(duration::to_proto),
         max_dormant_sessions_per_key: r.max_dormant_sessions_per_key,
         listen,
         listen_set,
@@ -452,7 +452,7 @@ fn hosts(
             address,
             address_set,
             parallel: r.parallel,
-            reconnect: r.reconnect.map(duration),
+            reconnect: r.reconnect.map(duration::to_proto),
             dial_retries: r.dial_retries,
             dht: r.dht,
             mdns: r.mdns,
@@ -541,13 +541,6 @@ fn addresses(values: Option<Vec<HostPort>>) -> (Vec<pb::Entry>, bool) {
 /// A path from a TOML string, which is always UTF-8.
 fn path_text(p: PathBuf) -> String {
     p.to_string_lossy().into_owned()
-}
-
-fn duration(d: Duration) -> prost_types::Duration {
-    prost_types::Duration {
-        seconds: i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
-        nanos: i32::try_from(d.subsec_nanos()).expect("under a second"),
-    }
 }
 
 fn relay_mode(m: RelayMode) -> i32 {

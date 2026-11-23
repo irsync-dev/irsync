@@ -786,7 +786,7 @@ fn assign(field: Field, value: Value) -> Result<(), String> {
                 Value::Text(s) => duration::parse(&s).map_err(|e| e.to_string())?,
                 _ => unreachable!("matched above"),
             };
-            *f = Some(prost_types::Duration::try_from(d).map_err(|e| e.to_string())?);
+            *f = Some(duration::to_proto(d));
         }
         (Field::Text(f), Value::Text(s)) => *f = Some(s),
         (Field::Url(f), Value::Text(s)) => {

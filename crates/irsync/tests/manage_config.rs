@@ -158,7 +158,6 @@ fn defaults_for_settings_keys() {
     assert!(kind_of(&p("hosts.home.congestion")).is_some());
     assert_eq!(default_of(&p("daemon.relay")), None);
     assert_eq!(default_of(&p("hosts.home.relay")), None);
-    let _ = id();
 }
 
 #[test]
@@ -426,7 +425,90 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("immediate.rw", &["nas"]),
 ];
 
-/// The id of `[5; 32]`, as `id()` prints it.
+/// A key path with the name of a host or an export as \`*\`.
+fn generic(mut path: Vec<String>) -> String {
+    if path.len() > 2 && (path[0] == "hosts" || path[0] == "exports") {
+        path[1] = "*".into();
+    }
+    path.join(".")
+}
+
+/// Every key the config message holds, from its descriptor: each field
+/// that is not a comment, a name, or a \`*_set\` flag.
+fn message_keys() -> Vec<String> {
+    fn walk(m: &prost_reflect::MessageDescriptor, path: &[String], out: &mut Vec<String>) {
+        const NOT_KEYS: &[&str] = &[
+            "comment",
+            "key_comments",
+            "tail",
+            "name",
+            "header",
+            "footer",
+        ];
+        for f in m.fields() {
+            let name = f.name();
+            if NOT_KEYS.contains(&name) || name.ends_with("_set") {
+                continue;
+            }
+            let mut p = path.to_vec();
+            p.push(name.to_owned());
+            match f.kind() {
+                prost_reflect::Kind::Message(t)
+                    if t.package_name() == "irsync.config" && t.name() != "Entry" =>
+                {
+                    if name == "hosts" || name == "exports" {
+                        p.push("*".into());
+                    }
+                    walk(&t, &p, out);
+                }
+                _ => out.push(p.join(".")),
+            }
+        }
+    }
+    let pool = prost_reflect::DescriptorPool::decode(irsync_proto::FILE_DESCRIPTOR_SET).unwrap();
+    let config = pool.get_message_by_name("irsync.config.Config").unwrap();
+    let mut out = Vec::new();
+    walk(&config, &[], &mut out);
+    // `[immediate]` shares `GrantTable` with `[all]` and has only `rw`.
+    out.retain(|k| k != "immediate.ro");
+    out
+}
+
+/// The keys of a TOML table, as dotted paths.
+fn file_keys(t: &toml::Table, path: &[String], out: &mut Vec<String>) {
+    for (k, v) in t {
+        let mut p = path.to_vec();
+        p.push(k.clone());
+        match v {
+            toml::Value::Table(t) => file_keys(t, &p, out),
+            _ => out.push(generic(p)),
+        }
+    }
+}
+
+#[test]
+fn every_key_of_the_message_is_in_full_toml_and_all_keys() {
+    let keys = message_keys();
+    assert!(keys.len() > 40, "{keys:?}");
+    let full: toml::Table = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config_corpus/full.toml"),
+    )
+    .unwrap()
+    .parse()
+    .unwrap();
+    let mut in_full = Vec::new();
+    file_keys(&full, &[], &mut in_full);
+    let all: Vec<String> = ALL_KEYS.iter().map(|(k, _)| generic(p(k))).collect();
+    for key in &keys {
+        assert!(in_full.contains(key), "{key} is not in full.toml");
+        let path: Vec<String> = key.split('.').map(|s| s.replace('*', "x")).collect();
+        if kind_of(&path).is_some_and(|k| !matches!(k, Kind::Table)) {
+            assert!(all.contains(key), "{key} is not in ALL_KEYS");
+        }
+    }
+}
+
+/// The id of \`[5; 32]\`, as \`id()\` prints it.
 const ID5: &str = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1";
 
 /// A message with a host `nas` and an export `p`.

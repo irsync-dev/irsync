@@ -52,10 +52,11 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_set_has_both_packages() {
+    fn descriptor_set_has_all_three_packages() {
         let fds = prost_types::FileDescriptorSet::decode(FILE_DESCRIPTOR_SET).unwrap();
         let pkgs: Vec<_> = fds.file.iter().filter_map(|f| f.package.clone()).collect();
         assert!(pkgs.iter().any(|p| p == "irsync.v1"));
         assert!(pkgs.iter().any(|p| p == "irsync.capture.v1"));
+        assert!(pkgs.iter().any(|p| p == "irsync.config"));
     }
 }

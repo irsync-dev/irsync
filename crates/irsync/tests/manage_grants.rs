@@ -546,7 +546,7 @@ fn removing_a_middle_entry_keeps_the_lines_above_it_on_the_next() {
 }
 
 #[test]
-fn removing_the_last_entry_keeps_the_lines_before_the_bracket() {
+fn removing_the_last_entry_moves_the_lines_before_the_bracket_above_the_one_before() {
     let text = after(
         "[all]\nrw = [\n    \"a\",\n    \"b\", # bee\n    # tail\n]\n",
         |m| {

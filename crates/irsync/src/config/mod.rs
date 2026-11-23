@@ -46,8 +46,6 @@ pub enum ConfigError {
     UnknownAlias { alias: String, hosts: PathBuf },
     #[error("bad peer {0:?}: expected a host alias or an EndpointId")]
     BadPeer(String),
-    #[error("daemon config: {0}")]
-    Toml(#[from] toml::de::Error),
 }
 
 /// Expand a leading `~` or `~/` using the user's home directory.

@@ -86,10 +86,7 @@ pub fn host_add(
         h.parallel = Some(p);
     }
     if let Some(r) = flags.reconnect {
-        h.reconnect = Some(prost_types::Duration {
-            seconds: i64::try_from(r.as_secs()).unwrap_or(i64::MAX),
-            nanos: i32::try_from(r.subsec_nanos()).unwrap_or(0),
-        });
+        h.reconnect = Some(crate::config::duration::to_proto(r));
     }
     if let Some(n) = flags.dial_retries {
         h.dial_retries = Some(n);
