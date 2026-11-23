@@ -375,7 +375,9 @@ What was checked before building, and what came of it:
   needs root. It was later (issue #206): a test runs `check`, `list` and
   `update` with the tree bound read-only in a mount namespace of its own,
   made with Bubblewrap, an unprivileged `unshare`, or `sudo` on a CI runner.
-  Linux only. FreeBSD, where redb locks the whole file instead of ranges, was not
+  On macOS a second test does the same on a disk image attached for
+  reading only (issue #246), which needs no root. FreeBSD has neither: a
+  mount needs root there, and its tests run as an ordinary user. FreeBSD, where redb locks the whole file instead of ranges, was not
   tried either.
 - **Readers beside the writer** are read transactions on the one open
   database. A second, read-only open is refused while it is open for

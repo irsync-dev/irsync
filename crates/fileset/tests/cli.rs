@@ -494,6 +494,124 @@ fn cli_redb_manifest_reads_on_a_read_only_mount() {
     assert_eq!(names, [".fileset.redb", "a.txt", "sub"]);
 }
 
+/// A disk image attached at `mount`, detached again when this is dropped.
+#[cfg(target_os = "macos")]
+struct Attached<'a> {
+    mount: &'a std::path::Path,
+}
+
+#[cfg(target_os = "macos")]
+impl<'a> Attached<'a> {
+    /// Attaches `image` at `mount`, for reading only if `read_only`. An error is what
+    /// `hdiutil` said.
+    fn new(
+        image: &std::path::Path,
+        mount: &'a std::path::Path,
+        read_only: bool,
+    ) -> Result<Self, String> {
+        let mut c = Command::new("hdiutil");
+        c.args(["attach", "-quiet", "-nobrowse"]);
+        if read_only {
+            c.arg("-readonly");
+        }
+        hdiutil(c.arg("-mountpoint").arg(mount).arg(image))?;
+        Ok(Attached { mount })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for Attached<'_> {
+    fn drop(&mut self) {
+        let mut c = Command::new("hdiutil");
+        let _ = hdiutil(c.args(["detach", "-quiet", "-force"]).arg(self.mount));
+    }
+}
+
+/// Runs an `hdiutil` command; an error is what it printed.
+#[cfg(target_os = "macos")]
+fn hdiutil(c: &mut Command) -> Result<(), String> {
+    let out = c.output().map_err(|e| e.to_string())?;
+    match out.status.success() {
+        true => Ok(()),
+        false => Err(format!(
+            "{c:?}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )),
+    }
+}
+
+/// The same on macOS, where a mount needs no root if it is a disk image: the tree and
+/// its manifest are made on an image attached for writing, which is then attached
+/// again for reading only.
+#[cfg(target_os = "macos")]
+#[test]
+fn cli_redb_manifest_reads_on_a_read_only_disk_image() {
+    let d = tempfile::tempdir().unwrap();
+    let image = d.path().join("tree.dmg");
+    let mount = d.path().join("mnt");
+    std::fs::create_dir(&mount).unwrap();
+    // The tree is a directory of the volume, not its root, which macOS keeps files
+    // of its own in.
+    let t = mount.join("tree");
+    let manifest = t.join(".fileset.redb");
+
+    let made = (|| {
+        let mut c = Command::new("hdiutil");
+        c.args(["create", "-quiet", "-size", "16m", "-fs", "HFS+"]);
+        hdiutil(c.args(["-volname", "fileset-test"]).arg(&image))?;
+        let _attached = Attached::new(&image, &mount, false)?;
+        std::fs::create_dir_all(t.join("sub")).map_err(|e| e.to_string())?;
+        std::fs::write(t.join("a.txt"), "hello").map_err(|e| e.to_string())?;
+        std::fs::write(t.join("sub/b.txt"), "world").map_err(|e| e.to_string())?;
+        let init = bin()
+            .args(["init", "-q", "--store", "redb"])
+            .arg(&t)
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "{init:?}");
+        Ok::<_, String>(std::fs::read(&manifest).unwrap())
+    })();
+    let attached = made.and_then(|before| Ok((before, Attached::new(&image, &mount, true)?)));
+    let (before, _attached) = match attached {
+        Ok(a) => a,
+        Err(e) => {
+            // CI must not pass by skipping this.
+            assert!(std::env::var_os("GITHUB_ACTIONS").is_none(), "{e}");
+            eprintln!("skipping: no read-only disk image: {e}");
+            return;
+        }
+    };
+    let probe = std::fs::write(t.join("probe"), b"").unwrap_err();
+    assert_eq!(probe.raw_os_error(), Some(30), "{probe}");
+
+    let run = |args: &[&str]| {
+        let out = bin().args(args).arg(&t).output().unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let check = run(&["check", "-q", "--relaxed"]);
+    assert_eq!((check.0, check.1.as_str()), (Some(0), ""), "{}", check.2);
+    let list = run(&["list"]);
+    assert_eq!(list.0, Some(0), "{}", list.2);
+    assert_eq!(list.1.lines().count(), 5, "{}", list.1);
+    // An update has to write, and says why it cannot.
+    let update = run(&["update", "-q"]);
+    assert_eq!(update.0, Some(2), "{}", update.2);
+    assert!(update.2.contains("Read-only file system"), "{}", update.2);
+
+    assert_eq!(std::fs::read(&manifest).unwrap(), before);
+    let mut names: Vec<_> = std::fs::read_dir(&t)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert_eq!(names, [".fileset.redb", "a.txt", "sub"]);
+}
+
 #[test]
 fn only_init_and_update_take_no_compaction() {
     for (verb, takes) in [
