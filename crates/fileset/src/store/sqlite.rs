@@ -301,7 +301,10 @@ fn refuse_linked_sidecars(path: &Path) -> Result<()> {
         let mut name = path.as_os_str().to_owned();
         name.push(suffix);
         let side = PathBuf::from(name);
-        if side.symlink_metadata().is_ok_and(|m| !m.is_file()) {
+        if side
+            .symlink_metadata()
+            .is_ok_and(|m| !m.is_file() || crate::platform::is_link(&m))
+        {
             bail!(
                 "{} is not a regular file; refusing to open the manifest beside it",
                 side.display()

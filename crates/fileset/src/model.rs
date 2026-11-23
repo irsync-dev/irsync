@@ -1,10 +1,9 @@
 //! Entry model and lstat/xattr capture.
 
-use std::ffi::{OsStr, OsString};
 use std::io;
-use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
+
+use crate::platform;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
@@ -129,29 +128,11 @@ impl Entry {
 
     /// [`Entry::from_path`] without the xattrs, which are left empty.
     pub fn stat(abs: &Path) -> io::Result<(Entry, Vec<Partial>)> {
-        let md = std::fs::symlink_metadata(abs)?;
-        let ft = md.file_type();
-        let kind = if ft.is_dir() {
-            Kind::Dir
-        } else if ft.is_file() {
-            Kind::File
-        } else if ft.is_symlink() {
-            Kind::Symlink
-        } else if ft.is_fifo() {
-            Kind::Fifo
-        } else if ft.is_socket() {
-            Kind::Socket
-        } else if ft.is_char_device() {
-            Kind::CharDev
-        } else if ft.is_block_device() {
-            Kind::BlockDev
-        } else {
-            Kind::Other
-        };
+        let st = platform::lstat(abs)?;
         let mut partial = Vec::new();
-        let target = if kind == Kind::Symlink {
-            match std::fs::read_link(abs) {
-                Ok(t) => Some(t.into_os_string().into_vec()),
+        let target = if st.kind == Kind::Symlink {
+            match platform::read_link(abs) {
+                Ok(t) => Some(t),
                 Err(e) => {
                     partial.push(Partial::Target(e));
                     None
@@ -161,23 +142,17 @@ impl Entry {
             None
         };
         let entry = Entry {
-            kind,
-            mode: md.mode() & 0o7777,
-            uid: md.uid(),
-            gid: md.gid(),
-            size: md.size(),
-            nlink: md.nlink(),
-            ino: md.ino(),
-            dev: md.dev(),
-            rdev: md.rdev(),
-            mtime: Timespec {
-                sec: md.mtime(),
-                nsec: md.mtime_nsec() as u32,
-            },
-            ctime: Timespec {
-                sec: md.ctime(),
-                nsec: md.ctime_nsec() as u32,
-            },
+            kind: st.kind,
+            mode: st.mode,
+            uid: st.uid,
+            gid: st.gid,
+            size: st.size,
+            nlink: st.nlink,
+            ino: st.ino,
+            dev: st.dev,
+            rdev: st.rdev,
+            mtime: st.mtime,
+            ctime: st.ctime,
             blake3: None,
             target,
             xattrs: Vec::new(),
@@ -190,7 +165,7 @@ impl Entry {
     /// Reads the xattrs of `abs` into the entry; a failure partway is added to `partial`
     /// and flags the entry `XATTRS_PARTIAL`.
     pub fn load_xattrs(&mut self, abs: &Path, partial: &mut Vec<Partial>) {
-        let (xattrs, err) = read_xattrs(abs);
+        let (xattrs, err) = platform::read_xattrs(abs);
         self.xattrs = xattrs;
         if let Some(e) = err {
             self.flags.insert(Flags::XATTRS_PARTIAL);
@@ -210,54 +185,10 @@ impl Entry {
     }
 }
 
-fn is_unsupported(e: &io::Error) -> bool {
-    // 95 = EOPNOTSUPP on Linux, 45 = ENOTSUP on macOS.
-    e.kind() == io::ErrorKind::Unsupported || matches!(e.raw_os_error(), Some(95) | Some(45))
-}
-
-type Xattrs = Vec<(Vec<u8>, Vec<u8>)>;
-
-/// Reads the extended attributes of `abs` (not following symlinks), sorted by name, with
-/// the first failure other than "not supported", if any.
-pub fn read_xattrs(abs: &Path) -> (Xattrs, Option<io::Error>) {
-    collect_xattrs(xattr::list(abs), |name| xattr::get(abs, name))
-}
-
-/// Gathers xattrs from a listing and a getter. "Not supported" ends the gathering silently;
-/// any other failure ends it and is returned. Either way the attributes read so far are kept.
-fn collect_xattrs<I>(
-    names: io::Result<I>,
-    mut get: impl FnMut(&OsStr) -> io::Result<Option<Vec<u8>>>,
-) -> (Xattrs, Option<io::Error>)
-where
-    I: IntoIterator<Item = OsString>,
-{
-    let names = match names {
-        Ok(n) => n,
-        Err(e) if is_unsupported(&e) => return (Vec::new(), None),
-        Err(e) => return (Vec::new(), Some(e)),
-    };
-    let mut out = Vec::new();
-    let mut err = None;
-    for name in names {
-        match get(&name) {
-            Ok(Some(v)) => out.push((name.into_vec(), v)),
-            Ok(None) => {}
-            Err(e) if is_unsupported(&e) => break,
-            Err(e) => {
-                err = Some(e);
-                break;
-            }
-        }
-    }
-    out.sort();
-    (out, err)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use crate::platform::testutil;
 
     const ALL_KINDS: [Kind; 8] = [
         Kind::Dir,
@@ -296,7 +227,10 @@ mod tests {
         let (e, partial) = Entry::from_path(&f).unwrap();
         assert!(partial.is_empty());
         assert!(!e.flags.contains(Flags::XATTRS_PARTIAL));
-        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let Some(_unreadable) = testutil::make_unreadable(&f) else {
+            eprintln!("skipping: running with privileges that bypass file permissions");
+            return;
+        };
         let (e, partial) = Entry::from_path(&f).unwrap();
         // Only some systems refuse the xattrs of an unreadable file (macOS does).
         if !partial.iter().any(|p| matches!(p, Partial::Xattrs(_))) {
@@ -322,7 +256,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("f");
         std::fs::write(&p, b"abc").unwrap();
-        std::fs::set_permissions(&p, PermissionsExt::from_mode(0o640)).unwrap();
+        testutil::set_mode(&p, 0o640);
         let e = Entry::from_path(&p).unwrap().0;
         assert_eq!(e.kind, Kind::File);
         assert_eq!(e.mode, 0o640);
@@ -339,13 +273,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("f");
         std::fs::write(&f, b"").unwrap();
-        std::fs::set_permissions(&f, PermissionsExt::from_mode(0o4755)).unwrap();
+        testutil::set_mode(&f, 0o4755);
         let sub = d.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
-        std::fs::set_permissions(&sub, PermissionsExt::from_mode(0o3755)).unwrap();
+        testutil::set_mode(&sub, 0o3755);
         for (p, want) in [(f, 0o4755), (sub, 0o3755)] {
-            let md = std::fs::symlink_metadata(&p).unwrap();
-            if md.mode() & 0o7777 != want {
+            if platform::lstat(&p).unwrap().mode != want {
                 eprintln!("skipping: this filesystem does not keep mode {want:o}");
                 return;
             }
@@ -353,31 +286,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn from_path_fifo_socket_and_char_device_kinds() {
-        let d = tempfile::tempdir().unwrap();
-        let fifo = d.path().join("p");
-        assert!(std::process::Command::new("mkfifo")
-            .arg(&fifo)
-            .status()
-            .unwrap()
-            .success());
-        assert_eq!(Entry::from_path(&fifo).unwrap().0.kind, Kind::Fifo);
-        let sock = d.path().join("s");
-        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-        assert_eq!(Entry::from_path(&sock).unwrap().0.kind, Kind::Socket);
-        let (null, _) = Entry::from_path(Path::new("/dev/null")).unwrap();
-        assert_eq!(null.kind, Kind::CharDev);
-        assert_ne!(null.rdev, 0, "a device records its device number");
-        assert!(null.target.is_none() && null.blake3.is_none());
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn from_path_non_utf8_name() {
-        use std::os::unix::ffi::OsStrExt;
         let d = tempfile::tempdir().unwrap();
-        let p = d.path().join(OsStr::from_bytes(b"bad\xff"));
+        let p = d.path().join(platform::bytes_to_os(b"bad\xff").unwrap());
         if let Err(e) = std::fs::write(&p, b"abc") {
             // ZFS with utf8only=on refuses such names (EILSEQ, 84 on Linux).
             // CI's filesystem takes them, so there a refusal must fail.
@@ -395,7 +308,7 @@ mod tests {
     fn from_path_symlink_records_target_not_dest() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("l");
-        std::os::unix::fs::symlink("missing", &p).unwrap();
+        testutil::symlink(Path::new("missing"), &p).unwrap();
         let e = Entry::from_path(&p).unwrap().0;
         assert_eq!(e.kind, Kind::Symlink);
         assert_eq!(e.target.as_deref(), Some(&b"missing"[..]));
@@ -407,33 +320,6 @@ mod tests {
         let e = Entry::from_path(d.path()).unwrap().0;
         assert_eq!(e.kind, Kind::Dir);
         assert!(e.target.is_none());
-    }
-
-    #[test]
-    fn xattrs_sorted_by_name() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("f");
-        std::fs::write(&p, b"x").unwrap();
-        if let Err(err) =
-            xattr::set(&p, "user.b", b"2").and_then(|_| xattr::set(&p, "user.a", b"1"))
-        {
-            eprintln!("skipped xattrs_sorted_by_name: xattr set failed: {err}");
-            return;
-        }
-        let (mut got, err) = read_xattrs(&p);
-        assert!(err.is_none(), "{err:?}");
-        // macOS adds its own attributes (com.apple.provenance) to new files.
-        got.retain(|(k, _)| k.starts_with(b"user."));
-        assert_eq!(
-            got,
-            vec![
-                (b"user.a".to_vec(), b"1".to_vec()),
-                (b"user.b".to_vec(), b"2".to_vec())
-            ]
-        );
-        let mut from_entry = Entry::from_path(&p).unwrap().0.xattrs;
-        from_entry.retain(|(k, _)| k.starts_with(b"user."));
-        assert_eq!(from_entry, got);
     }
 
     /// `/proc/1/cwd` is a symlink anyone can lstat but only root can readlink.
@@ -451,55 +337,5 @@ mod tests {
         assert_eq!(partial.len(), 1, "{partial:?}");
         let w = partial[0].warning("l");
         assert!(w.starts_with("cannot read link target of l: "), "{w}");
-    }
-
-    fn names(v: &[&str]) -> io::Result<Vec<OsString>> {
-        Ok(v.iter().map(OsString::from).collect())
-    }
-
-    fn val(name: &OsStr) -> io::Result<Option<Vec<u8>>> {
-        Ok(Some(name.as_encoded_bytes().to_vec()))
-    }
-
-    #[test]
-    fn xattr_list_failure_is_reported() {
-        let (got, err) = collect_xattrs(
-            Err::<Vec<OsString>, _>(io::Error::from_raw_os_error(5)),
-            val,
-        );
-        assert!(got.is_empty());
-        assert_eq!(err.unwrap().raw_os_error(), Some(5));
-    }
-
-    #[test]
-    fn xattr_get_failure_keeps_those_read_before() {
-        let (got, err) = collect_xattrs(names(&["user.b", "user.a", "user.c"]), |n| {
-            if n == "user.c" {
-                Err(io::Error::from_raw_os_error(13))
-            } else {
-                val(n)
-            }
-        });
-        assert_eq!(
-            got,
-            vec![
-                (b"user.a".to_vec(), b"user.a".to_vec()),
-                (b"user.b".to_vec(), b"user.b".to_vec())
-            ]
-        );
-        assert_eq!(err.unwrap().raw_os_error(), Some(13));
-    }
-
-    #[test]
-    fn xattr_unsupported_midway_keeps_those_read_before() {
-        let (got, err) = collect_xattrs(names(&["user.a", "user.b"]), |n| {
-            if n == "user.b" {
-                Err(io::Error::from_raw_os_error(95))
-            } else {
-                val(n)
-            }
-        });
-        assert_eq!(got, vec![(b"user.a".to_vec(), b"user.a".to_vec())]);
-        assert!(err.is_none());
     }
 }

@@ -1,8 +1,8 @@
 //! A manifest can come with a tree someone else made. Opening it must not
 //! reach outside the manifest, and must not run what its maker put in.
 
+use fileset::platform::testutil::symlink;
 use fileset::store::{self, Backend, OpenMode, SQLITE_NAME};
-use std::os::unix::fs::symlink;
 use std::path::Path;
 
 /// A fresh, empty manifest of `backend` in `root`.
@@ -64,7 +64,7 @@ fn a_fjall_manifest_with_a_link_inside_is_refused() {
         }
         let before = listing(mine.path());
         std::fs::rename(path.join("keyspaces"), tree.path().join("moved")).unwrap();
-        symlink(mine.path(), path.join("keyspaces")).unwrap();
+        symlink(mine.path(), &path.join("keyspaces")).unwrap();
         let err = open_err(&path, Backend::Fjall, mode);
         assert!(err.contains("neither a file nor a directory"), "{err}");
         assert_eq!(listing(mine.path()), before);
@@ -76,7 +76,7 @@ fn a_fjall_manifest_with_a_link_inside_is_refused() {
         // A link deeper inside.
         let tree = tempfile::tempdir().unwrap();
         let path = manifest(tree.path(), Backend::Fjall);
-        symlink(mine.path(), path.join("keyspaces").join("7")).unwrap();
+        symlink(mine.path(), &path.join("keyspaces").join("7")).unwrap();
         let err = open_err(&path, Backend::Fjall, mode);
         assert!(err.contains("neither a file nor a directory"), "{err}");
         assert_eq!(listing(mine.path()), before);

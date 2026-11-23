@@ -2,13 +2,13 @@
 
 mod common;
 
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use common::*;
 use fileset::compare::Tier;
 use fileset::engine::list::{list, ListOpts};
 use fileset::engine::Outcome;
+use fileset::platform::{self, testutil};
 use fileset::store::Backend;
 use tempfile::TempDir;
 
@@ -159,7 +159,8 @@ fn a_pattern_selects_by_whole_path() {
 #[test]
 fn verbose_adds_owner_links_and_attributes() {
     let d = files();
-    let with_attr = xattr::set(d.path().join("top.jpg"), "user.fileset.test", b"v").is_ok();
+    let with_attr =
+        testutil::set_xattr(&d.path().join("top.jpg"), "user.fileset.test", b"v").is_ok();
     run_update(d.path(), Backend::Sqlite, false, false);
     let out = run(&opts(d.path(), None, true));
     for line in out.lines() {
@@ -197,7 +198,7 @@ fn a_copied_manifest_lists_without_its_tree() {
 #[test]
 fn a_path_that_is_not_utf8_lists_escaped_and_matches_by_bytes() {
     let d = files();
-    let name = std::ffi::OsStr::from_bytes(b"x\xffy");
+    let name = platform::bytes_to_os(b"x\xffy").unwrap();
     if std::fs::write(d.path().join(name), "z").is_err() {
         eprintln!("skipped: this filesystem refuses names that are not UTF-8");
         return;

@@ -148,10 +148,11 @@ fn write_meta(db: &Database, ks: &Keyspace, m: &Meta) -> Result<()> {
 fn refuse_links_inside(dir: &Path) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
+        // Not followed: the metadata of a link is that of the link.
+        let md = entry.metadata()?;
+        if md.is_dir() && !crate::platform::is_link(&md) {
             refuse_links_inside(&entry.path())?;
-        } else if !kind.is_file() {
+        } else if !md.is_file() || crate::platform::is_link(&md) {
             bail!(
                 "{} is not a fileset manifest: {} is neither a file nor a directory",
                 dir.display(),

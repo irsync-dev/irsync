@@ -6,10 +6,10 @@ use fileset::engine::check::check;
 use fileset::engine::update::{update, Mode};
 use fileset::engine::Outcome;
 use fileset::model::{Flags, Kind};
+use fileset::platform::{self, testutil};
 use fileset::progress::NoProgress;
 use fileset::report::fmt_blake3;
 use fileset::store::{self, Backend, OpenMode};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Invokes each backend-generic test once per backend.
@@ -272,7 +272,7 @@ fn update_rewrites_a_row_whose_xattrs_changed(b: Backend) {
     let dir = tree(&[("f", "x")]);
     let f = dir.path().join("f");
     run_update(dir.path(), b, false, false);
-    if let Err(e) = xattr::set(&f, "user.fileset-test", b"v") {
+    if let Err(e) = testutil::set_xattr(&f, "user.fileset-test", b"v") {
         eprintln!("skipping: cannot set an xattr here: {e}");
         return;
     }
@@ -329,7 +329,7 @@ fn update_force_xattr_reads_reads_every_entry(b: Backend) {
     run_update_opts(&opts).unwrap();
     let st = open_ro(dir.path(), b);
     for rel in ["f", "d"] {
-        let on_disk = fileset::model::read_xattrs(&dir.path().join(rel)).0;
+        let on_disk = platform::read_xattrs(&dir.path().join(rel)).0;
         assert_eq!(
             st.get(rel.as_bytes()).unwrap().unwrap().xattrs,
             on_disk,
@@ -344,10 +344,7 @@ fn update_rereads_xattrs_it_could_not_read_in_full(b: Backend) {
     plant_xattrs(dir.path(), b, "f", Flags::XATTRS_PARTIAL);
     run_update(dir.path(), b, false, false);
     let e = open_ro(dir.path(), b).get(b"f").unwrap().unwrap();
-    assert_eq!(
-        e.xattrs,
-        fileset::model::read_xattrs(&dir.path().join("f")).0
-    );
+    assert_eq!(e.xattrs, platform::read_xattrs(&dir.path().join("f")).0);
     assert!(!e.flags.contains(Flags::XATTRS_PARTIAL));
 }
 
@@ -966,7 +963,7 @@ fn check_unopenable_manifest_suggests_manifest_flag(b: Backend) {
     let dir = tree(&[("f", "x")]);
     run_update(dir.path(), b, false, false);
     let m = dir.path().join(store_name(b));
-    let mode = std::fs::metadata(&m).unwrap().permissions().mode();
+    let mode = platform::lstat(&m).unwrap().mode;
     chmod(&m, 0o000);
     let readable = match b {
         Backend::Sqlite | Backend::Redb => std::fs::read(&m).is_ok(),
