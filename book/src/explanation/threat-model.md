@@ -220,9 +220,12 @@ is fine.
   symlinks inside. It opens a SQLite manifest with SQLite's settings for
   files that are not trusted, and refuses one with views, triggers or
   virtual tables. In a redb manifest every entry carries a checksum of its
-  path and content, the whole file is verified before `update` writes to
-  it, and a failure inside the database engine is reported as a damaged
-  manifest.
+  path and content, and the manifest carries one of all its entries
+  together, so an entry that is altered or gone is an error. The whole
+  file is verified before `update` writes to it, and a failure inside the
+  database engine is reported as a damaged manifest. These checksums catch
+  damage, not someone who rewrites the manifest and its checksums to
+  match.
 
 **What is left:**
 
