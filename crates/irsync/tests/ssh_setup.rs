@@ -1,4 +1,5 @@
 //! `irsync ssh-setup`: the server side of SSH onboarding.
+#![cfg(unix)]
 
 mod common;
 

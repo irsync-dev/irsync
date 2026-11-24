@@ -26,6 +26,32 @@ pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     }
 }
 
+/// Sets the access and the modification time of `path` to `sec` seconds
+/// and `nsec` nanoseconds since the epoch (in NTFS's steps of 100 ns); a
+/// final link is followed only when `follow`.
+pub fn set_times(path: &Path, sec: i64, nsec: i64, follow: bool) -> io::Result<()> {
+    let nsec = u32::try_from(nsec)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "nanoseconds out of range"))?;
+    let t = super::file_time((sec, nsec))?;
+    let flags = if follow {
+        FILE_FLAG_BACKUP_SEMANTICS
+    } else {
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+    };
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+        .custom_flags(flags)
+        .open(path)?;
+    super::native::set(
+        file.as_handle(),
+        &windows_sys::Wdk::Storage::FileSystem::FILE_BASIC_INFORMATION {
+            LastAccessTime: t,
+            LastWriteTime: t,
+            ..Default::default()
+        },
+    )
+}
+
 /// Whether this process may make symlinks (the privilege, or Developer
 /// Mode). A test that needs them returns early when not, and says so.
 /// With `CI` set, not being able to is a failure: CI must run them.

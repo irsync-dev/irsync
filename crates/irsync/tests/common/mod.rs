@@ -7,6 +7,7 @@
 /// `EILSEQ`. Panics on any other error, and on a Linux refusal when `CI` is
 /// set: the runners' filesystem takes such names, so a skip there would hide
 /// the tests.
+#[cfg(unix)]
 pub fn try_create_non_utf8(dir: &std::path::Path, name: &[u8]) -> Option<std::path::PathBuf> {
     use irsync::platform::testutil::{errno, name_from_bytes};
     let p = dir.join(name_from_bytes(name));
@@ -693,7 +694,13 @@ impl Harness {
         use irsync_proto::v1::path_info::Kind;
         let kind = self.probe(remote_path).await?;
         anyhow::ensure!(kind == Kind::File, "remote path is {kind:?}, not a file");
+        #[cfg(unix)]
         let remote = std::path::Path::new(irsync::platform::testutil::name_from_bytes(remote_path));
+        // Windows names are UTF-16: the stored bytes (WTF-8) as an owned name.
+        #[cfg(windows)]
+        let remote_os = irsync::platform::bytes_to_os(remote_path)?;
+        #[cfg(windows)]
+        let remote = std::path::Path::new(&remote_os);
         let (_, basename) = split_last(remote);
         let placed = place_file(dest, contents_only, &basename, true)?;
         let mut hello = Self::hello(Flow::Pull);
@@ -789,7 +796,12 @@ pub fn assert_trees_equal(
     b: &std::path::Path,
     preserve: &irsync::cli::Preserve,
 ) {
-    use irsync::platform::{mode_of, mtime_of, testutil::is_fifo};
+    #[cfg(unix)]
+    use irsync::platform::testutil::is_fifo;
+    use irsync::platform::{mode_of, mtime_of};
+    // Windows has no FIFOs.
+    #[cfg(windows)]
+    let is_fifo = |_: std::fs::FileType| false;
     let (ma, mb) = (
         std::fs::symlink_metadata(a).unwrap(),
         std::fs::symlink_metadata(b).unwrap(),

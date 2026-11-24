@@ -57,6 +57,7 @@ async fn within120<F: std::future::Future>(f: F) -> F::Output {
 
 /// For a test that syncs tens of thousands of files twice, which on a
 /// loaded macOS machine takes well over 120 s.
+#[cfg(unix)]
 async fn within240<F: std::future::Future>(f: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(240), f)
         .await
@@ -427,12 +428,14 @@ async fn a_late_planned_completion_never_loses_the_answer() {
 }
 
 /// The writer's budget for paced control frames (`OUT_BUDGET`).
+#[cfg(unix)]
 const OUT_BUDGET: usize = 4 * MIB;
 
 /// 12 000 one-byte files in 1 200 directories, all below fifteen nested
 /// directories with 240-byte names, so each path is about 3600 bytes long
 /// (on macOS three, a fifth as long: see [`SHORTER`] and
 /// [`long_path_harness`]). Returns the directory that holds the 1 200.
+#[cfg(unix)]
 fn wide_deep_tree(root: &Path) -> std::path::PathBuf {
     deep_tree(root, 1200)
 }
@@ -456,6 +459,7 @@ fn deep_tree(root: &Path, dirs: u32) -> std::path::PathBuf {
 }
 
 /// Sets the mode of every directory and file below `base`.
+#[cfg(unix)]
 fn chmod_all(base: &Path, dirs: u32, files: u32) {
     use irsync::platform::testutil::set_mode;
     for d in fs::read_dir(base).unwrap() {
@@ -480,6 +484,7 @@ fn chmod_all(base: &Path, dirs: u32, files: u32) {
 /// fills the budget with room to spare: on macOS, where the frames are a
 /// fifth as long, 400 directories no longer half-fill it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn itemize_over_a_slow_link_stays_within_the_out_budget() {
     within240(async {
         let flow = Flow::Push;
@@ -1295,6 +1300,7 @@ async fn an_empty_source_tree_syncs() {
 /// (~15 MB, ~17 s of reading): it must wait for the client to close, not
 /// close the connection after a fixed 10 to 15 s and fail the session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn the_daemon_waits_for_a_slow_client_to_finish_reading() {
     within120(async {
         let flow = Flow::Push;
@@ -1326,6 +1332,7 @@ async fn the_daemon_waits_for_a_slow_client_to_finish_reading() {
 /// ends once nothing has moved for its quiet time (2 s here), and its
 /// session ends although the client is still connected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn the_daemon_stops_waiting_for_a_client_that_stopped_reading() {
     within120(async {
         let flow = Flow::Push;
@@ -1371,6 +1378,7 @@ async fn the_daemon_stops_waiting_for_a_client_that_stopped_reading() {
 /// goes out behind 18 MB of `Itemized` frames): it waits for the writer
 /// only while the connection moves, then gives up on it and on the client.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn the_daemon_stops_waiting_for_a_writer_the_client_does_not_read() {
     within120(async {
         let flow = Flow::Push;
@@ -1555,6 +1563,7 @@ async fn a_sender_failing_before_its_listing_reports_its_own_error() {
 /// reads nothing more, so the rest wait on the receiver's side. Every link
 /// is still made.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn link_checks_wait_on_the_receiver_not_in_the_sender() {
     use irsync::platform::file_id;
     const LINKS: usize = 3000;

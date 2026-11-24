@@ -9,7 +9,9 @@ use std::time::Duration;
 use common::{Flow, Harness};
 use irsync::cli::{Args, SyncOptions};
 use irsync::fs::paths::RelPath;
-use irsync::platform::testutil::{set_mode, symlink};
+#[cfg(unix)]
+use irsync::platform::testutil::set_mode;
+use irsync::platform::testutil::symlink;
 use irsync::session::reconnect::ReconnectOpts;
 use irsync::session::{Event, Outcome, Party};
 
@@ -743,6 +745,7 @@ async fn delete_progress_events_both_directions() {
     }
 }
 
+#[cfg(unix)]
 fn failed(events: &[Event], path: &str) -> Vec<String> {
     events
         .iter()
@@ -754,6 +757,7 @@ fn failed(events: &[Event], path: &str) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn a_file_the_sender_cannot_read_is_reported_as_failed_on_the_bus() {
     if irsync::platform::is_root() {
         eprintln!("skipping: running as root, mode 0o000 does not stop reads");
@@ -782,6 +786,7 @@ async fn a_file_the_sender_cannot_read_is_reported_as_failed_on_the_bus() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn a_file_the_receiver_cannot_write_is_reported_as_failed_on_the_bus() {
     if irsync::platform::is_root() {
         eprintln!("skipping: running as root, a read-only directory does not stop writes");

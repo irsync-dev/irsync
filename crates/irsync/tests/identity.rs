@@ -3,7 +3,9 @@ use irsync::identity::{
     load_identity_interactive, load_or_generate, load_secret_key, parse_endpoint_id,
     public_key_line, read_passphrase_file, write_new, IdentityError, KeySource, PassphraseSource,
 };
-use irsync::platform::{mode_of, testutil::set_mode};
+use irsync::platform::mode_of;
+#[cfg(unix)]
+use irsync::platform::testutil::set_mode;
 use ssh_key::getrandom::SysRng;
 use ssh_key::rand_core::UnwrapErr;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
@@ -393,6 +395,7 @@ fn write_new_never_replaces_an_existing_file() {
 }
 
 #[test]
+#[cfg(unix)]
 fn load_or_generate_in_a_read_only_directory_names_the_path() {
     let d = tempfile::tempdir().unwrap();
     let dir = d.path().join("ro");
@@ -609,6 +612,7 @@ fn a_key_made_with_one_line_ending_unlocks_with_the_other() {
 
 /// A new key is for its owner only; one that was opened up is noticed.
 #[test]
+#[cfg(unix)]
 fn a_key_other_users_can_read_is_noticed() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("id");
@@ -625,6 +629,7 @@ fn a_key_other_users_can_read_is_noticed() {
 /// other users can read or change is refused, encrypted or not, unless the
 /// config allows it.
 #[test]
+#[cfg(unix)]
 fn a_key_or_passphrase_file_open_to_other_users_is_refused() {
     let d = tempfile::tempdir().unwrap();
     let chmod = |p: &std::path::Path, mode: u32| set_mode(p, mode).unwrap();

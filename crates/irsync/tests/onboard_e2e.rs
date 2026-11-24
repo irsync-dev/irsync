@@ -1,5 +1,6 @@
 //! The client's first run against an unknown host: it sets the server up
 //! over (fake) ssh, saves the alias, then syncs over iroh.
+#![cfg(unix)]
 
 mod common;
 #[path = "common/release.rs"]

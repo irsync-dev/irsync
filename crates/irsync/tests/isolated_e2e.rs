@@ -665,11 +665,13 @@ fn very_verbose_prints_a_summary_for_a_failed_session() {
 /// Pushes `src/` (a readable file and one with mode 000, which the sender
 /// must give up on) through a real daemon, with the file report on or off.
 /// Returns the client's output.
+#[cfg(unix)]
 fn push_unreadable(tmp: &Path, report: Option<&Path>) -> std::process::Output {
     push_unreadable_with(tmp, report, &[])
 }
 
 /// [`push_unreadable`] with extra flags before the operands.
+#[cfg(unix)]
 fn push_unreadable_with(tmp: &Path, report: Option<&Path>, flags: &[&str]) -> std::process::Output {
     for d in ["src", "dst", "home", "xdg"] {
         std::fs::create_dir_all(tmp.join(d)).unwrap();
@@ -700,12 +702,14 @@ fn push_unreadable_with(tmp: &Path, report: Option<&Path>, flags: &[&str]) -> st
     run_client_env(&args, tmp, &env)
 }
 
+#[cfg(unix)]
 fn running_as_root() -> bool {
     // Mode 000 does not stop root from reading.
     irsync::platform::is_root()
 }
 
 #[test]
+#[cfg(unix)]
 fn file_report_lists_a_given_up_file_when_the_variable_is_set() {
     if running_as_root() {
         return;
@@ -729,6 +733,7 @@ fn file_report_lists_a_given_up_file_when_the_variable_is_set() {
 }
 
 #[test]
+#[cfg(unix)]
 fn file_report_is_not_written_when_the_variable_is_unset() {
     if running_as_root() {
         return;
@@ -750,6 +755,7 @@ fn file_report_is_not_written_when_the_variable_is_unset() {
 }
 
 #[test]
+#[cfg(unix)]
 fn file_report_that_cannot_be_opened_is_said_on_stderr_and_the_sync_goes_on() {
     if running_as_root() {
         return;
@@ -764,11 +770,13 @@ fn file_report_that_cannot_be_opened_is_said_on_stderr_and_the_sync_goes_on() {
 }
 
 /// The lines of `err` that name `bad.bin`.
+#[cfg(unix)]
 fn bad_bin_lines(err: &str) -> usize {
     err.lines().filter(|l| l.contains("bad.bin")).count()
 }
 
 #[test]
+#[cfg(unix)]
 fn by_default_a_sync_prints_nothing_but_its_errors_each_once() {
     if running_as_root() {
         return;
@@ -785,6 +793,7 @@ fn by_default_a_sync_prints_nothing_but_its_errors_each_once() {
 }
 
 #[test]
+#[cfg(unix)]
 fn quiet_still_prints_errors() {
     if running_as_root() {
         return;
@@ -801,6 +810,7 @@ fn quiet_still_prints_errors() {
 }
 
 #[test]
+#[cfg(unix)]
 fn verbose_lists_files_and_the_trailer_but_no_session_summary() {
     if running_as_root() {
         return;

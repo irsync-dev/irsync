@@ -807,6 +807,7 @@ fn export_names_of_rights_are_reserved() {
 /// or change is refused before anything in it counts, unless the file
 /// itself sets `unsafe_config_allowed = true`.
 #[test]
+#[cfg(unix)]
 fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
     let d = tempfile::tempdir().unwrap();
     let paths = Paths::resolve(Some(&d.path().join("irsync.toml")));

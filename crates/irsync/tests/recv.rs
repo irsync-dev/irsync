@@ -1,8 +1,12 @@
 use irsync::fs::meta::ApplyOpts;
 use irsync::fs::paths::RelPath;
 use irsync::index::{Index, IndexHandle};
-use irsync::platform::testutil::{blocks_of, errno, mkfifo, set_mode, symlink};
-use irsync::platform::{file_id, mode_of, mtime_of};
+#[cfg(unix)]
+use irsync::platform::file_id;
+use irsync::platform::testutil::symlink;
+#[cfg(unix)]
+use irsync::platform::testutil::{blocks_of, errno, mkfifo, set_mode};
+use irsync::platform::{mode_of, mtime_of};
 use irsync::recv::{FileWriter, FinalizeError};
 use irsync_proto::chunk::{digest_bytes, ChunkRecord, FileDigest};
 use irsync_proto::v1::{self, file_entry::Kind, FileEntry};
@@ -333,6 +337,7 @@ async fn adopts_unrecorded_part_file_by_rechunking() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn write_error_keeps_partial_and_no_final_file() {
     let e = env();
     let data = content(29);
@@ -455,6 +460,7 @@ async fn missing_directory_is_created_at_the_first_write() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn read_only_mode_with_dir_dest_stays_resumable() {
     let e = env();
     let data = content(43);
@@ -587,6 +593,7 @@ fn with_zero_run() -> Vec<u8> {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn sparse_skips_zero_chunks_of_a_fresh_part() {
     let e = env();
     let data = with_zero_run();
@@ -622,6 +629,7 @@ async fn sparse_never_leaves_stale_bytes_of_an_old_part() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn part_symlink_is_refused() {
     let e = env();
     let data = content(71);
@@ -653,6 +661,7 @@ async fn part_symlink_is_refused() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn part_that_is_not_a_regular_file_is_refused() {
     let e = env();
     let data = content(73);
@@ -878,6 +887,7 @@ fn clone_source<'a>(file: &'a fs::File, digest: &'a FileDigest) -> irsync::recv:
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn clone_of_the_old_file_adopts_its_unchanged_chunks_without_writing_them() {
     let e = env_in_target();
     if !reflinks(&e.root) {
@@ -990,6 +1000,7 @@ async fn clone_that_the_filesystem_refuses_falls_back_to_an_empty_part() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     let e = env();
     let old = content(71);
@@ -1198,6 +1209,7 @@ async fn part_file_is_private_until_placed() {
 /// The index names every file of the tree and its hashes: its directory is
 /// for the owner only, also one that an older build left open.
 #[test]
+#[cfg(unix)]
 fn index_directory_is_private() {
     let tmp = tempfile::tempdir().unwrap();
     let (root, state) = (tmp.path().join("root"), tmp.path().join("state"));

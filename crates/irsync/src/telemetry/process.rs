@@ -67,11 +67,13 @@ mod tests {
 
     /// Counts the open descriptors the slow, sure way: asks about each
     /// number in turn.
+    #[cfg(unix)]
     fn direct_fd_count() -> u64 {
         crate::platform::testutil::open_descriptor_count()
     }
 
     #[test]
+    #[cfg(unix)]
     fn open_fds_matches_a_direct_count() {
         // Other tests in this process open and close descriptors too, even
         // in the middle of a sample. So take many samples, keep those where

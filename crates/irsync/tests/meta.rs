@@ -1,9 +1,18 @@
 mod common;
 
-use irsync::fs::meta::{apply_metadata, create_special, lstat_entry, ApplyOpts};
+#[cfg(unix)]
+use irsync::fs::meta::{apply_metadata, ApplyOpts};
+use irsync::fs::meta::{create_special, lstat_entry};
 use irsync::fs::paths::{is_contained, RelPath};
-use irsync::platform::testutil::{real_gid, real_uid, set_mode, set_times, symlink};
-use irsync::platform::{file_id, mode_of, mtime_of};
+#[cfg(unix)]
+use irsync::platform::file_id;
+#[cfg(unix)]
+use irsync::platform::testutil::set_times;
+use irsync::platform::testutil::symlink;
+#[cfg(unix)]
+use irsync::platform::testutil::{real_gid, real_uid, set_mode};
+#[cfg(unix)]
+use irsync::platform::{mode_of, mtime_of};
 use irsync_proto::v1::file_entry::Kind;
 use std::fs;
 use std::path::Path;
@@ -12,10 +21,12 @@ fn rp(b: &[u8]) -> RelPath {
     RelPath::new(b).unwrap()
 }
 
+#[cfg(unix)]
 fn set_mtime(path: &Path, sec: i64, nsec: i64, follow: bool) {
     set_times(path, sec, nsec, follow).unwrap();
 }
 
+#[cfg(unix)]
 const ALL: ApplyOpts = ApplyOpts {
     perms: true,
     times: true,
@@ -24,6 +35,7 @@ const ALL: ApplyOpts = ApplyOpts {
 };
 
 #[test]
+#[cfg(unix)]
 fn lstat_regular_file_fields() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("f");
@@ -120,6 +132,7 @@ fn lstat_symlink_has_target_and_kind() {
 }
 
 #[test]
+#[cfg(unix)]
 fn apply_metadata_sets_mode_and_mtime() {
     let d = tempfile::tempdir().unwrap();
     let src = d.path().join("src");
@@ -137,6 +150,7 @@ fn apply_metadata_sets_mode_and_mtime() {
 }
 
 #[test]
+#[cfg(unix)]
 fn apply_metadata_on_symlink_does_not_follow() {
     let d = tempfile::tempdir().unwrap();
     let target = d.path().join("target");
@@ -159,6 +173,7 @@ fn apply_metadata_on_symlink_does_not_follow() {
 }
 
 #[test]
+#[cfg(unix)]
 fn non_utf8_path_roundtrips() {
     let d = tempfile::tempdir().unwrap();
     let name = b"caf\xe9";
@@ -197,6 +212,7 @@ fn is_contained_rejects_dotdot() {
 }
 
 #[test]
+#[cfg(unix)]
 fn supplementary_groups_lists_every_group() {
     // `id -G` lists them all; old macOS getgroups stops at 16.
     let out = std::process::Command::new("id").arg("-G").output().unwrap();

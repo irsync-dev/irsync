@@ -396,6 +396,7 @@ fn sync_generates_the_client_identity_on_first_run() {
 }
 
 #[test]
+#[cfg(unix)]
 fn an_unreadable_daemon_key_is_named_in_the_error() {
     use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
@@ -464,6 +465,7 @@ fn id_list_prints_the_client_and_the_daemon_when_there_is_one() {
 /// A daemon key that exists but cannot be read is an error that names the
 /// file, not a daemon quietly left out.
 #[test]
+#[cfg(unix)]
 fn id_list_names_a_daemon_key_it_cannot_read() {
     use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
@@ -1511,6 +1513,7 @@ fn a_bare_noun_changes_nothing_and_takes_no_list_arguments() {
 /// identity": `id list` fails and names the path instead of leaving the
 /// daemon out.
 #[test]
+#[cfg(unix)]
 fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
     use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
@@ -2547,6 +2550,7 @@ fn client_add_sets_the_id_and_says_when_grants_move() {
 /// Every command reads the config file first and stops at once when other
 /// users can read or change it: nothing is made, changed or contacted.
 #[test]
+#[cfg(unix)]
 fn a_config_open_to_other_users_stops_every_command_at_once() {
     use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
@@ -2618,6 +2622,7 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
 /// A private key or a passphrase file that other users can read stops the
 /// command that needs it, unless the config allows it.
 #[test]
+#[cfg(unix)]
 fn a_key_or_passphrase_file_open_to_other_users_stops_the_command() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");

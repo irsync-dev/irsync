@@ -6,7 +6,9 @@ use irsync::daemon::gc;
 use irsync::fs::paths::RelPath;
 use irsync::identity::endpoint_id_of_public_key;
 use irsync::index::{Index, Partial, SessionRow};
-use irsync::platform::testutil::{set_mode, set_times, symlink};
+#[cfg(unix)]
+use irsync::platform::testutil::set_mode;
+use irsync::platform::testutil::{set_times, symlink};
 use irsync_proto::v1::{plan_item::Action, PlanEntry, RangeSet, SessionPlan};
 use prost::Message;
 
@@ -268,6 +270,7 @@ fn id_daemon_prints_the_key_line_and_the_id_of_the_configured_identity() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn gc_continues_after_one_removal_failure() {
     if irsync::platform::is_root() {
         return;
@@ -497,6 +500,7 @@ fn index_file(ix: &irsync::index::IndexHandle, root: &Path, path: &str) {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn gc_prunes_entries_of_files_gone_or_replaced() {
     let f = fixture();
     let r = f.root.path();

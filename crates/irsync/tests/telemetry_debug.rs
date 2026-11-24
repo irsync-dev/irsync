@@ -8,6 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use irsync::platform::testutil::{send_signal, Signal};
 
 /// Kills the child when the test ends, pass or fail.
@@ -146,6 +147,7 @@ fn client(tmp: &Path, d: &Daemon, extra: &[&str]) -> Command {
 }
 
 #[test]
+#[cfg(unix)]
 fn client_waits_until_sigint() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();

@@ -14,7 +14,9 @@ use common::{assert_trees_equal, Flow, Harness};
 use irsync::cli::{Args, SyncOptions};
 use irsync::filter::FilterSet;
 use irsync::fs::paths::RelPath;
-use irsync::platform::testutil::{set_mode, symlink};
+#[cfg(unix)]
+use irsync::platform::testutil::set_mode;
+use irsync::platform::testutil::symlink;
 use irsync::session::{LocalSide, Outcome};
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
@@ -31,6 +33,7 @@ fn opts(extra: &[&str]) -> SyncOptions {
     SyncOptions::from_args(&Args::try_parse_from(v).unwrap())
 }
 
+#[cfg(unix)]
 fn is_root() -> bool {
     irsync::platform::is_root()
 }
@@ -290,6 +293,7 @@ async fn delete_during_deletes_each_directory_as_the_merge_leaves_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn delete_during_stops_at_a_gap_in_the_source_listing() {
     if is_root() {
         eprintln!("skipped: permissions do not restrict root");
@@ -409,6 +413,7 @@ async fn max_delete_stops_and_exit_25() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn delete_refused_when_listing_incomplete() {
     if is_root() {
         eprintln!("skipped: permissions do not restrict root");

@@ -10,7 +10,9 @@ use std::time::{Duration, SystemTime};
 
 use common::{archive_opts, assert_trees_equal, sync_trees, Flow, Harness};
 use irsync::fs::paths::RelPath;
-use irsync::platform::testutil::{mkfifo, name_from_bytes, set_mode, symlink};
+use irsync::platform::testutil::symlink;
+#[cfg(unix)]
+use irsync::platform::testutil::{mkfifo, name_from_bytes, set_mode};
 use irsync::session::SideHooks;
 
 const KIB: usize = 1024;
@@ -43,6 +45,7 @@ fn set_mtime(p: &Path, secs: u64, nanos: u32) {
 
 /// A tree with most kinds of entry: nested dirs, empty dir and file, a
 /// multi-chunk file, an executable, a symlink and a FIFO.
+#[cfg(unix)]
 fn mixed_tree(root: &Path) {
     fs::create_dir_all(root.join("a/b/c")).unwrap();
     fs::create_dir(root.join("empty")).unwrap();
@@ -58,6 +61,7 @@ fn mixed_tree(root: &Path) {
     set_mtime(&root.join("small.txt"), 1_500_000_000, 123_456_789);
 }
 
+#[cfg(unix)]
 fn regular_files(root: &Path) -> u64 {
     let mut n = 0;
     for e in fs::read_dir(root).unwrap() {
@@ -72,6 +76,7 @@ fn regular_files(root: &Path) -> u64 {
     n
 }
 
+#[cfg(unix)]
 async fn fresh_tree_byte_exact(flow: Flow) {
     let opts = archive_opts();
     let (out, h) = sync_trees(mixed_tree, |_| {}, &opts, flow).await;
@@ -83,16 +88,19 @@ async fn fresh_tree_byte_exact(flow: Flow) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn push_fresh_tree_byte_exact() {
     within30(fresh_tree_byte_exact(Flow::Push)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn pull_fresh_tree_byte_exact() {
     within30(fresh_tree_byte_exact(Flow::Pull)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn second_run_transfers_nothing() {
     within30(async {
         let opts = archive_opts();
@@ -187,6 +195,7 @@ async fn renamed_file_is_local_copy() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn sync_non_utf8_filename() {
     within30(async {
         let opts = archive_opts();
@@ -339,6 +348,7 @@ async fn directory_mtimes_preserved() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn exit_code_23_on_partial_failure() {
     if irsync::platform::is_root() {
         eprintln!("skipping: root can read a mode-000 file");
@@ -366,11 +376,13 @@ async fn exit_code_23_on_partial_failure() {
     .await;
 }
 
+#[cfg(unix)]
 fn is_root() -> bool {
     irsync::platform::is_root()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn push_with_unwritable_dest_dir_exits_23() {
     if is_root() {
         eprintln!("skipping: root can write into a read-only directory");
@@ -405,6 +417,7 @@ async fn push_with_unwritable_dest_dir_exits_23() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn unreadable_source_subdir_exits_23() {
     if is_root() {
         eprintln!("skipping: root can read a mode-000 directory");
@@ -549,6 +562,7 @@ async fn rename_and_chunk_reuse_work_below_an_export_prefix() {
 
 /// Events are really emitted during a session: every placed file, its bytes,
 /// itemize codes on a pull, and the connection state.
+#[cfg(unix)]
 async fn events_during_sync(flow: Flow) {
     use irsync::session::reconnect::{ConnState, ReconnectOpts};
     use irsync::session::Event;
@@ -603,11 +617,13 @@ async fn events_during_sync(flow: Flow) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn push_emits_events() {
     within30(events_during_sync(Flow::Push)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn pull_emits_events() {
     within30(events_during_sync(Flow::Pull)).await;
 }
@@ -673,6 +689,7 @@ async fn a_source_rewritten_after_its_listing_arrives_as_it_is_now() {
 /// daemon adds an automatic export there, and a second, unchanged push
 /// finds the files in that export's index instead of hashing them again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn all_paths_push_then_resume_uses_index() {
     within30(async {
         let opts = archive_opts();
