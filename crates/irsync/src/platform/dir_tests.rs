@@ -267,6 +267,85 @@ fn a_name_with_a_separator_or_nul_is_refused() {
     assert_eq!(sorted(d.list().unwrap()), [&b"a"[..]]);
 }
 
+/// A rename onto a link replaces the link itself, as Unix `rename` does,
+/// and never touches what it leads to; making anything at a link's name is
+/// [`Cause::AlreadyThere`]. This is how the receiver places a file
+/// (`rename(tmp, name)`), so a link planted at `name` must not lead it
+/// outside.
+#[test]
+fn a_rename_onto_a_link_replaces_the_link_never_its_target() {
+    if !symlinks() {
+        return;
+    }
+    let (t, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::create_dir(outside.path().join("dir")).unwrap();
+    std::fs::write(outside.path().join("dir").join("inner"), b"inner").unwrap();
+    std::fs::write(outside.path().join("f"), b"outside").unwrap();
+    let link = |target: &str, name: &str| {
+        testutil::symlink(&outside.path().join(target), &t.path().join(name)).unwrap()
+    };
+    link("f", "file_link");
+    link("dir", "dir_link");
+    let before = snapshot(outside.path());
+    let d = Dir::open_root(t.path()).unwrap();
+    let write = |name: &[u8], bytes: &[u8]| {
+        let f = d.open_file(name, NEW).unwrap();
+        write_at(&f, bytes, 0).unwrap();
+    };
+    // A file over a file link and over a directory link: the link goes,
+    // the file takes its name.
+    for name in [&b"file_link"[..], b"dir_link"] {
+        write(b"new", name);
+        d.rename(b"new", &d, name).unwrap();
+        assert_eq!(d.stat(name).unwrap().kind, Kind::File);
+        let mut got = Vec::new();
+        d.open_file(name, READ)
+            .unwrap()
+            .read_to_end(&mut got)
+            .unwrap();
+        assert_eq!(got, name);
+    }
+    assert_eq!(snapshot(outside.path()), before);
+    // A directory over a file link or a directory link: not a directory.
+    link("f", "file_link2");
+    link("dir", "dir_link2");
+    d.create_dir(b"dir", 0o755).unwrap();
+    for name in [&b"file_link2"[..], b"dir_link2"] {
+        let e = d.rename(b"dir", &d, name).unwrap_err();
+        assert_eq!(cause(&e), Cause::NotADirectory, "{e}");
+        assert_eq!(d.stat(name).unwrap().kind, Kind::Symlink);
+    }
+    // A link moves over a file, which it replaces...
+    write(b"plain", b"plain");
+    d.rename(b"dir_link2", &d, b"plain").unwrap();
+    assert_eq!(d.stat(b"plain").unwrap().kind, Kind::Symlink);
+    // ...but a file link never over a directory.
+    d.create_dir(b"empty", 0o755).unwrap();
+    let e = d.rename(b"file_link2", &d, b"empty").unwrap_err();
+    assert_eq!(cause(&e), Cause::IsADirectory, "{e}");
+    // Nothing is made at a link's name.
+    write(b"src", b"src");
+    let already = |r: io::Result<()>| cause(&r.unwrap_err());
+    assert_eq!(
+        already(d.create_dir(b"file_link2", 0o755)),
+        Cause::AlreadyThere
+    );
+    assert_eq!(
+        already(d.symlink(b"file_link2", b"x", LinkKind::File)),
+        Cause::AlreadyThere
+    );
+    assert_eq!(
+        already(d.hard_link(b"file_link2", &d, b"src")),
+        Cause::AlreadyThere
+    );
+    assert_eq!(
+        already(d.open_file(b"file_link2", NEW).map(drop)),
+        Cause::AlreadyThere
+    );
+    assert_eq!(d.stat(b"file_link2").unwrap().kind, Kind::Symlink);
+    assert_eq!(snapshot(outside.path()), before);
+}
+
 /// Every file and directory below `dir`, with each file's bytes and each
 /// link's target; links are not followed.
 fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
@@ -301,6 +380,15 @@ fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
 fn a_directory_swapped_for_a_link_is_never_left_through() {
     const MIN_TRIES: usize = 500;
     const LIMIT: Duration = Duration::from_secs(20);
+    // How much of the attack must be met: on Windows (where the swap is a
+    // junction made beside the directory and renamed into place) a real
+    // number of each; elsewhere at least one, as the attack tests in
+    // `tests/containment.rs` require.
+    #[cfg(windows)]
+    const MIN_SWAPS_OK_REFUSED: (usize, usize, usize) = (100, 100, 20);
+    #[cfg(not(windows))]
+    const MIN_SWAPS_OK_REFUSED: (usize, usize, usize) = (1, 1, 1);
+    let (min_swaps, min_ok, min_refused) = MIN_SWAPS_OK_REFUSED;
     let (t, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     std::fs::create_dir_all(t.path().join("a/b")).unwrap();
     std::fs::write(t.path().join("a/b/f"), b"inside").unwrap();
@@ -318,7 +406,7 @@ fn a_directory_swapped_for_a_link_is_never_left_through() {
         // unwinds: its thread stops with `a/b` back in place.
         let swap = testutil::swap_for_link(&t.path().join("a").join("b"), outside.path());
         let mut i = 0;
-        while i < MIN_TRIES || ok == 0 || link == 0 || swap.swaps() == 0 {
+        while i < MIN_TRIES || ok < min_ok || link < min_refused || swap.swaps() < min_swaps {
             assert!(
                 start.elapsed() < LIMIT,
                 "the attack was not met within {LIMIT:?}: {i} tries, {} swaps, \
@@ -341,7 +429,20 @@ fn a_directory_swapped_for_a_link_is_never_left_through() {
                         let _ = b.remove_file(&new);
                     }
                     if b.rename(b"victim", &b, b"victim2").is_ok() {
-                        b.rename(b"victim2", &b, b"victim").unwrap();
+                        // Back, in the directory `b` holds; a scanner may
+                        // hold `victim2` for a moment without delete
+                        // sharing, so "in use" is waited out, briefly.
+                        let mut back = b.rename(b"victim2", &b, b"victim");
+                        for _ in 0..100 {
+                            match &back {
+                                Err(e) if cause(e) == Cause::InUse => {
+                                    std::thread::sleep(Duration::from_millis(10));
+                                    back = b.rename(b"victim2", &b, b"victim");
+                                }
+                                _ => break,
+                            }
+                        }
+                        back.unwrap();
                     }
                     if let Ok(st) = b.stat(b"f") {
                         assert_eq!(st.size, 6, "stat through the link");

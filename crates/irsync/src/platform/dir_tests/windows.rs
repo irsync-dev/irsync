@@ -282,10 +282,25 @@ fn file_identity_and_times() {
     let st = d.stat(b"dir").unwrap();
     assert_eq!((st.kind, st.size), (Kind::Dir, 0));
     assert_eq!(d.stat_self().unwrap().dev, one.dev);
-    let ctime = d.stat(b"one").unwrap().ctime;
-    std::thread::sleep(Duration::from_millis(20));
+    // The change time moves when the file gains or loses a name, and when
+    // it is renamed; its modification time does not. (The sleeps outlast
+    // the system clock's tick, which NTFS stamps with.)
+    let changes: [(&str, &dyn Fn() -> io::Result<()>); 4] = [
+        ("link added", &|| d.hard_link(b"four", &d, b"one")),
+        ("link removed", &|| d.remove_file(b"four")),
+        ("renamed", &|| d.rename(b"one", &d, b"one again")),
+        ("renamed back", &|| d.rename(b"one again", &d, b"one")),
+    ];
+    for (what, change) in changes {
+        let before = d.stat(b"one").or_else(|_| d.stat(b"one again")).unwrap();
+        std::thread::sleep(Duration::from_millis(40));
+        change().unwrap();
+        let after = d.stat(b"one").or_else(|_| d.stat(b"one again")).unwrap();
+        assert!(after.ctime > before.ctime, "{what}: {before:?} {after:?}");
+        assert_eq!(after.mtime, before.mtime, "{what}");
+        assert_eq!(after.ino, before.ino, "{what}");
+    }
     d.rename(b"three", &d, b"two").unwrap();
-    assert!(d.stat(b"one").unwrap().ctime > ctime || d.stat(b"one").unwrap().nlink == 1);
     assert_eq!(d.stat(b"one").unwrap().nlink, 1);
     // fstat of an open file is what stat says of its name.
     let f = d.open_file(b"one", READ).unwrap();
@@ -475,44 +490,55 @@ fn bad_names_are_refused_and_long_ones_end_at_255_units() {
 }
 
 #[test]
-fn a_colon_names_a_stream_of_a_file_in_this_directory() {
-    if !testutil::symlinks_available() {
-        return;
-    }
+fn a_name_with_a_colon_is_refused() {
     let t = Tree::new();
     let before = t.outside_snapshot();
     let d = t.dir();
-    // `a:s` is the stream `s` of the file `a`, here.
-    let f = d.open_file(b"a:s", NEW).unwrap();
-    write_all_at(&f, b"stream", 0).unwrap();
+    let f = d.open_file(b"f", NEW).unwrap();
+    write_all_at(&f, b"file", 0).unwrap();
     drop(f);
-    assert_eq!(d.list().unwrap(), [b("a")]);
-    assert_eq!(d.stat(b"a").unwrap().size, 0);
-    let mut buf = [0; 6];
-    read_exact_at(&d.open_file(b"a:s", READ).unwrap(), &mut buf, 0).unwrap();
-    assert_eq!(&buf, b"stream");
-    // On a link, a stream is the link's own, never its target's: the open
-    // is refused as for the link, and outside nothing changes.
-    testutil::symlink(&t.outside.join("keep"), &t.root.join("fl")).unwrap();
-    testutil::symlink(&t.outside.join("sub"), &t.root.join("dl")).unwrap();
+    d.create_dir(b"d", 0).unwrap();
     testutil::junction(&t.outside.join("sub"), &t.root.join("j")).unwrap();
-    for link in ["fl", "dl", "j"] {
-        for (name, how) in [(format!("{link}:s"), NEW), (format!("{link}::$DATA"), READ)] {
-            assert!(d.open_file(name.as_bytes(), how).is_err(), "{name}");
+    // A stream of a new or an existing file, of a link, and the aliases
+    // of `f` and `d` themselves: each would reach a file by a second name.
+    for bad in [
+        &b"a:s"[..],
+        b"f:s",
+        b"f::$DATA",
+        b"d::$INDEX_ALLOCATION",
+        b"d:$I30:$INDEX_ALLOCATION",
+        b"j:s",
+        b":",
+    ] {
+        let invalid = |r: io::Result<()>| r.unwrap_err().kind() == io::ErrorKind::InvalidInput;
+        let ops: [(&str, io::Result<()>); 15] = [
+            ("open_dir", d.open_dir(bad).map(drop)),
+            ("create_dir", d.create_dir(bad, 0)),
+            ("open_file", d.open_file(bad, READ).map(drop)),
+            ("open_file new", d.open_file(bad, NEW).map(drop)),
+            ("stat", d.stat(bad).map(drop)),
+            ("read_link", d.read_link(bad).map(drop)),
+            ("remove_file", d.remove_file(bad)),
+            ("remove_dir", d.remove_dir(bad)),
+            ("rename from", d.rename(bad, &d, b"x")),
+            ("rename to", d.rename(b"f", &d, bad)),
+            ("hard_link name", d.hard_link(bad, &d, b"f")),
+            ("hard_link from", d.hard_link(b"x", &d, bad)),
+            ("symlink", d.symlink(bad, b"f", LinkKind::File)),
+            ("set_mtime", d.set_mtime(bad, (1_000_000_000, 0))),
+            ("set_mode", d.set_mode(bad, 0o644)),
+        ];
+        for (op, r) in ops {
+            assert!(invalid(r), "{op} with {:?}", String::from_utf8_lossy(bad));
         }
-        assert!(d
-            .open_dir(format!("{link}:$I30:$INDEX_ALLOCATION").as_bytes())
-            .is_err());
     }
+    // Nothing was made or changed, here or outside.
+    assert_eq!(sorted(d.list().unwrap()), [b("d"), b("f"), b("j")]);
+    assert_eq!(std::fs::read(t.root.join("f")).unwrap(), b"file");
+    let mut stream = t.root.join("f").into_os_string();
+    stream.push(":s");
+    assert!(std::fs::metadata(&stream).is_err());
     assert_eq!(t.outside_snapshot(), before);
-    let mut streams = Vec::new();
-    for p in [t.outside.join("keep"), t.outside.join("sub")] {
-        // A stream the open would have made on the target.
-        let mut s = p.into_os_string();
-        s.push(":s");
-        streams.push(std::fs::metadata(&s).is_ok());
-    }
-    assert_eq!(streams, [false, false]);
 }
 
 #[test]
@@ -717,4 +743,160 @@ fn list_restarts_and_sees_many_names() {
     .unwrap();
     assert_eq!(first, again);
     assert_eq!(d.list().unwrap().len(), 3000);
+}
+
+/// The reparse point an attacker sets on a directory a `Dir` holds.
+#[derive(Clone, Copy, Debug)]
+enum Turned {
+    Junction,
+    DirSymlink,
+}
+
+/// An empty directory `D` held open through `Dir` is turned into a link
+/// to the outside through a second handle. The handle check of `open_dir`
+/// is past; what keeps every later operation inside is the kernel, which
+/// refuses relative opens through a directory that has become a reparse
+/// point. Every method through the held `D` must fail (`list` gives no
+/// names), and nothing outside may change.
+fn a_held_directory_turned_into_a_link(kind: Turned) {
+    let t = Tree::new();
+    let before = t.outside_snapshot();
+    let root = t.dir();
+    root.create_dir(b"D", 0).unwrap();
+    root.create_dir(b"sibling", 0).unwrap();
+    let sibling = root.open_dir(b"sibling").unwrap();
+    drop(sibling.open_file(b"s", NEW).unwrap());
+    let d = root.open_dir(b"D").unwrap();
+    let path = t.root.join("D");
+    match kind {
+        Turned::Junction => testutil::make_junction(&t.outside, &path),
+        Turned::DirSymlink => testutil::make_dir_symlink(&t.outside, &path),
+    }
+    .unwrap();
+    // A fresh open from the root sees the link and refuses it.
+    assert_eq!(
+        cause_of(root.open_dir(b"D")),
+        Cause::LinkRefused,
+        "{kind:?}"
+    );
+    // Through the held handle: never the target's names.
+    assert!(d.list().unwrap().is_empty(), "{kind:?}");
+    let write_if_missing = Open {
+        write: true,
+        create: Create::IfMissing,
+        truncate: true,
+        ..READ
+    };
+    let ops: [(&str, io::Result<()>); 14] = [
+        ("stat", d.stat(b"keep").map(drop)),
+        ("open_file read", d.open_file(b"keep", READ).map(drop)),
+        ("open_file new", d.open_file(b"new", NEW).map(drop)),
+        (
+            "open_file if missing",
+            d.open_file(b"keep", write_if_missing).map(drop),
+        ),
+        ("open_dir", d.open_dir(b"sub").map(drop)),
+        ("create_dir", d.create_dir(b"made", 0)),
+        ("symlink", d.symlink(b"l", b"keep", LinkKind::File)),
+        ("read_link", d.read_link(b"keep").map(drop)),
+        ("remove_file", d.remove_file(b"keep")),
+        ("remove_dir", d.remove_dir(b"sub")),
+        ("set_mtime", d.set_mtime(b"keep", (1_000_000_000, 0))),
+        ("rename out", d.rename(b"keep", &sibling, b"taken")),
+        ("rename in", sibling.rename(b"s", &d, b"s")),
+        ("hard_link in", d.hard_link(b"s", &sibling, b"s")),
+    ];
+    for (op, r) in ops {
+        assert_eq!(cause_of(r), Cause::LinkRefused, "{kind:?} {op}");
+    }
+    assert!(d.list().unwrap().is_empty(), "{kind:?}");
+    assert_eq!(t.outside_snapshot(), before, "{kind:?}");
+    assert_eq!(sorted(sibling.list().unwrap()), [b("s")]);
+}
+
+#[test]
+fn a_held_directory_turned_into_a_junction_is_never_left_through() {
+    a_held_directory_turned_into_a_link(Turned::Junction);
+}
+
+#[test]
+fn a_held_directory_turned_into_a_dir_symlink_is_never_left_through() {
+    if !testutil::symlinks_available() {
+        return;
+    }
+    a_held_directory_turned_into_a_link(Turned::DirSymlink);
+}
+
+/// [`a_rename_onto_a_link_replaces_the_link_never_its_target`] for a
+/// junction, which only Windows has.
+#[test]
+fn a_rename_onto_a_junction_replaces_the_junction_never_its_target() {
+    let t = Tree::new();
+    let before = t.outside_snapshot();
+    let d = t.dir();
+    testutil::junction(&t.outside, &t.root.join("j")).unwrap();
+    // A file over it: the junction goes, the file takes its name.
+    let f = d.open_file(b"new", NEW).unwrap();
+    write_all_at(&f, b"new", 0).unwrap();
+    drop(f);
+    d.rename(b"new", &d, b"j").unwrap();
+    assert_eq!(d.stat(b"j").unwrap().kind, Kind::File);
+    assert_eq!(std::fs::read(t.root.join("j")).unwrap(), b"new");
+    assert_eq!(t.outside_snapshot(), before);
+    // A directory over one: not a directory.
+    testutil::junction(&t.outside, &t.root.join("j2")).unwrap();
+    d.create_dir(b"dir", 0).unwrap();
+    assert_eq!(cause_of(d.rename(b"dir", &d, b"j2")), Cause::NotADirectory);
+    // Nothing is made at its name.
+    drop(d.open_file(b"src", NEW).unwrap());
+    assert_eq!(cause_of(d.create_dir(b"j2", 0)), Cause::AlreadyThere);
+    assert_eq!(
+        cause_of(d.symlink(b"j2", b"x", LinkKind::Dir)),
+        Cause::AlreadyThere
+    );
+    assert_eq!(
+        cause_of(d.hard_link(b"j2", &d, b"src")),
+        Cause::AlreadyThere
+    );
+    assert_eq!(cause_of(d.open_file(b"j2", NEW)), Cause::AlreadyThere);
+    assert_eq!(d.stat(b"j2").unwrap().kind, Kind::Other);
+    assert_eq!(t.outside_snapshot(), before);
+}
+
+/// `truncate` without `write` truncates, as Linux does for
+/// `O_RDONLY | O_TRUNC`.
+#[test]
+fn truncate_without_write_truncates() {
+    let t = Tree::new();
+    let d = t.dir();
+    let f = d.open_file(b"f", NEW).unwrap();
+    write_all_at(&f, b"0123456789", 0).unwrap();
+    drop(f);
+    let read_truncate = Open {
+        truncate: true,
+        ..READ
+    };
+    let f = d.open_file(b"f", read_truncate).unwrap();
+    assert_eq!(fstat(&f).unwrap().size, 0);
+}
+
+/// What another handle sees of a name held with no sharing, as `symlink`
+/// holds its new file or directory until the reparse point is set: a
+/// `stat` still works (reading attributes is not shared access) and sees
+/// the plain file; an open of its data is in use.
+#[test]
+fn a_name_held_without_sharing_can_be_stat_but_not_opened() {
+    let t = Tree::new();
+    let d = t.dir();
+    drop(d.open_file(b"f", NEW).unwrap());
+    let held = OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(t.root.join("f"))
+        .unwrap();
+    assert_eq!(d.stat(b"f").unwrap().kind, Kind::File);
+    assert_eq!(cause_of(d.open_file(b"f", READ)), Cause::InUse);
+    assert_eq!(cause_of(d.remove_file(b"f")), Cause::InUse);
+    drop(held);
+    d.remove_file(b"f").unwrap();
 }

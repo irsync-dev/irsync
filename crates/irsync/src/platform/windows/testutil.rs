@@ -52,21 +52,46 @@ pub fn symlinks_available() -> bool {
 /// Makes `link` a junction to the directory `target`: a new directory
 /// carrying a mount-point reparse point. Needs no privilege.
 pub fn junction(target: &Path, link: &Path) -> io::Result<()> {
-    let target: Vec<u16> = std::path::absolute(target)?
-        .as_os_str()
-        .encode_wide()
-        .collect();
-    let data = super::junction_reparse(&target)?;
     std::fs::create_dir(link)?;
-    let made = std::fs::OpenOptions::new()
-        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | FILE_WRITE_DATA)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(link)
-        .and_then(|dir| super::native::set_reparse(dir.as_handle(), &data));
+    let made = make_junction(target, link);
     if made.is_err() {
         let _ = std::fs::remove_dir(link);
     }
     made
+}
+
+/// Turns the existing empty directory `dir` into a junction to `target`,
+/// through a handle of its own: what an attacker can do to a directory
+/// that someone else holds open.
+pub fn make_junction(target: &Path, dir: &Path) -> io::Result<()> {
+    let data = super::junction_reparse(&absolute_units(target)?)?;
+    set_reparse_at(dir, &data)
+}
+
+/// Turns the existing empty directory `dir` into a directory symlink to
+/// `target` (absolute), as [`make_junction`] does. Needs the symlink
+/// privilege or Developer Mode, see [`symlinks_available`].
+pub fn make_dir_symlink(target: &Path, dir: &Path) -> io::Result<()> {
+    let data = super::symlink_reparse(&absolute_units(target)?)?;
+    set_reparse_at(dir, &data)
+}
+
+/// `path` made absolute, as UTF-16 units.
+fn absolute_units(path: &Path) -> io::Result<Vec<u16>> {
+    Ok(std::path::absolute(path)?
+        .as_os_str()
+        .encode_wide()
+        .collect())
+}
+
+/// Sets the reparse point `data` on the directory `dir`, opened by path
+/// without following it.
+fn set_reparse_at(dir: &Path, data: &[u8]) -> io::Result<()> {
+    let handle = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | FILE_WRITE_DATA)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(dir)?;
+    super::native::set_reparse(handle.as_handle(), data)
 }
 
 /// How long the swapping thread leaves each state (the link, then the

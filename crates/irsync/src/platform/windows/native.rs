@@ -114,11 +114,14 @@ fn pending_status_block() -> IO_STATUS_BLOCK {
 /// The final status of a call that was given `iosb`, and the number its
 /// `Information` holds. A call on a handle opened for asynchronous I/O may
 /// return before the kernel is done (`STATUS_PENDING`); then this waits
-/// for the handle, which is signalled when the I/O ends. If the status
-/// block still says pending after that, the process aborts: the buffers
-/// the kernel would write are about to go away. (The standard library does
-/// the same for its reads.) Every handle irsync opens is synchronous, so
-/// the wait never happens for them.
+/// for the handle. A file handle is signalled when an I/O on it ends, so
+/// the wait ends with this call's I/O only if no other I/O runs on the
+/// handle at the same time, and only if the handle has `SYNCHRONIZE`
+/// access (without it the wait fails at once). In every other case the
+/// status block may still say pending after the wait, and then the
+/// process aborts: the buffers the kernel would write are about to go
+/// away. (The standard library does the same for its reads.) Every handle
+/// irsync opens is synchronous, so the wait never happens for them.
 ///
 /// # Safety
 ///

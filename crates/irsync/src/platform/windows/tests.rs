@@ -10,6 +10,8 @@ fn causes_from_win32_codes() {
     };
     let cases = [
         (ERROR_STOPPED_ON_SYMLINK, Cause::LinkRefused),
+        (ERROR_CANT_RESOLVE_FILENAME, Cause::LinkRefused),
+        (ERROR_REPARSE_POINT_ENCOUNTERED, Cause::LinkRefused),
         (ERROR_FILE_NOT_FOUND, Cause::NotThere),
         (ERROR_PATH_NOT_FOUND, Cause::NotThere),
         (ERROR_ALREADY_EXISTS, Cause::AlreadyThere),
@@ -106,6 +108,9 @@ fn one_name_refuses_all_but_one_component() {
         b"a/b",
         b"a\\b",
         b"\\",
+        b"a:b",
+        b"f::$DATA",
+        b":",
         b"a\0",
         b"\xff",
         b"\xed\xa0\xbd\xed\xb8\x80", // a pair as two three-byte forms
@@ -114,7 +119,6 @@ fn one_name_refuses_all_but_one_component() {
         assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
     }
     assert_eq!(one_name(b"...").unwrap(), units("..."));
-    assert_eq!(one_name(b"a:b").unwrap(), units("a:b"));
     assert_eq!(one_name(b"\xed\xa0\x80").unwrap(), [0xD800]);
     let longest = vec![b'x'; native::MAX_NAME_UNITS];
     assert_eq!(one_name(&longest).unwrap().len(), native::MAX_NAME_UNITS);

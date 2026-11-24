@@ -9,6 +9,19 @@
 //! delete by handle. Between the check and the act there is no name to
 //! swap.
 //!
+//! One race the check on the handle cannot cover: a directory that a
+//! `Dir` already holds can be turned into a reparse point (a junction, a
+//! directory symlink) through another handle, if it is empty. The held
+//! handle still names that directory, not the link's target. What then
+//! happens to every relative open, rename and link through it was
+//! observed on Windows 11, not found specified: the kernel refuses each
+//! with `STATUS_REPARSE_POINT_NOT_RESOLVED` (`ERROR_CANT_RESOLVE_FILENAME`,
+//! read here as [`Cause::LinkRefused`]), with or without
+//! `FILE_OPEN_REPARSE_POINT`, and listing gives the directory's own (no)
+//! names. So an attacker who can write the directory can make operations
+//! in an empty directory fail, which they could do anyway by removing it;
+//! they cannot redirect one. `dir_tests` holds the kernel to this.
+//!
 //! Names are WTF-8 bytes ([`crate::wtf8`]) on the irsync side and UTF-16
 //! units here; bytes that are not WTF-8 are refused, never repaired.
 
@@ -33,11 +46,12 @@ use windows_sys::Wdk::Storage::FileSystem::{
 };
 use windows_sys::Wdk::System::SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION;
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DELETE_PENDING, ERROR_DIRECTORY,
-    ERROR_DIRECTORY_NOT_SUPPORTED, ERROR_DIR_NOT_EMPTY, ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND,
-    ERROR_INVALID_FUNCTION, ERROR_LOCK_VIOLATION, ERROR_NOT_A_REPARSE_POINT, ERROR_NOT_SAME_DEVICE,
-    ERROR_NOT_SUPPORTED, ERROR_NO_SYSTEM_RESOURCES, ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION,
-    ERROR_STOPPED_ON_SYMLINK, ERROR_TOO_MANY_OPEN_FILES,
+    ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_CANT_RESOLVE_FILENAME, ERROR_DELETE_PENDING,
+    ERROR_DIRECTORY, ERROR_DIRECTORY_NOT_SUPPORTED, ERROR_DIR_NOT_EMPTY, ERROR_FILE_EXISTS,
+    ERROR_FILE_NOT_FOUND, ERROR_INVALID_FUNCTION, ERROR_LOCK_VIOLATION, ERROR_NOT_A_REPARSE_POINT,
+    ERROR_NOT_SAME_DEVICE, ERROR_NOT_SUPPORTED, ERROR_NO_SYSTEM_RESOURCES, ERROR_PATH_NOT_FOUND,
+    ERROR_REPARSE_POINT_ENCOUNTERED, ERROR_SHARING_VIOLATION, ERROR_STOPPED_ON_SYMLINK,
+    ERROR_TOO_MANY_OPEN_FILES,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -77,7 +91,14 @@ pub fn cause(e: &io::Error) -> Cause {
         };
     };
     match n as u32 {
-        ERROR_STOPPED_ON_SYMLINK => Cause::LinkRefused,
+        // A relative open through a held directory that has become a
+        // reparse point (see the module doc). `ERROR_REPARSE_POINT_ENCOUNTERED`
+        // is what `OBJ_DONT_REPARSE` gives for a reparse point met on the
+        // way to a name; with one-component names it is not expected, but
+        // if it comes it means exactly a link where none may be followed.
+        ERROR_STOPPED_ON_SYMLINK
+        | ERROR_CANT_RESOLVE_FILENAME
+        | ERROR_REPARSE_POINT_ENCOUNTERED => Cause::LinkRefused,
         ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => Cause::NotThere,
         ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => Cause::AlreadyThere,
         ERROR_DIRECTORY => Cause::NotADirectory,
@@ -147,20 +168,23 @@ fn units_of(bytes: &[u8]) -> io::Result<Vec<u16>> {
 }
 
 /// The units of `name` if it is one component: not empty, `.` or `..`,
-/// without `/`, `\` or NUL, valid WTF-8, and no longer than a native name
-/// can be. Checked before any call, so no operation of [`Dir`] can reach
-/// past the directory it holds. Every refusal is `InvalidInput`.
+/// without `/`, `\`, `:` or NUL, valid WTF-8, and no longer than a native
+/// name can be. Checked before any call, so no operation of [`Dir`] can
+/// reach past the directory it holds. Every refusal is `InvalidInput`.
 ///
-/// A `:` is let through: relative to a directory handle, `a:b` names the
-/// stream `b` of the file `a` in that same directory, which is still
-/// inside it. The rules for names Windows cannot hold come later, above
-/// this module.
+/// A `:` is refused because a native open reads it as a stream: `f:s` is
+/// the stream `s` of `f`, and `f::$DATA` or `d::$INDEX_ALLOCATION` are `f`
+/// and `d` themselves, so two different names would reach one file past
+/// any rule made on names above this layer. That is the least this layer
+/// needs; the full NTFS name rules, with their own messages, come later,
+/// above it.
 fn one_name(name: &[u8]) -> io::Result<Vec<u16>> {
     if name.is_empty()
         || name == b"."
         || name == b".."
         || name.contains(&b'/')
         || name.contains(&b'\\')
+        || name.contains(&b':')
         || name.contains(&0)
     {
         return Err(io::Error::new(
@@ -247,11 +271,24 @@ impl Dir {
         options: u32,
         attributes: u32,
     ) -> io::Result<OwnedHandle> {
+        self.open_shared(name, access, SHARE_ALL, disposition, options, attributes)
+    }
+
+    /// [`Dir::open`] with the share mode `share`.
+    fn open_shared(
+        &self,
+        name: &[u16],
+        access: u32,
+        share: u32,
+        disposition: u32,
+        options: u32,
+        attributes: u32,
+    ) -> io::Result<OwnedHandle> {
         native::open_relative(
             self.0.as_handle(),
             name,
             access | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-            SHARE_ALL,
+            share,
             disposition,
             options | NOFOLLOW,
             attributes,
@@ -347,7 +384,9 @@ impl Dir {
     /// [`Cause::LinkRefused`] and never changed (a truncate happens only
     /// after the check), a directory [`Cause::IsADirectory`]. `nonblock`
     /// and `mode` mean nothing on Windows. The file is shared for read,
-    /// write and delete.
+    /// write and delete. `truncate` without `write` truncates all the same,
+    /// as Linux does for `O_RDONLY | O_TRUNC`: the handle gets the data
+    /// write access that needs.
     pub fn open_file(&self, name: &[u8], how: Open) -> io::Result<File> {
         let name = one_name(name)?;
         let mut access = 0;
@@ -356,6 +395,9 @@ impl Dir {
         }
         if how.write {
             access |= FILE_GENERIC_WRITE;
+        }
+        if how.truncate {
+            access |= FILE_WRITE_DATA;
         }
         let disposition = match how.create {
             Create::No => FILE_OPEN,
@@ -509,6 +551,14 @@ impl Dir {
     /// the name [`Dir::read_link`] returns. Needs the symlink privilege or
     /// Developer Mode; without either the error is
     /// `ERROR_PRIVILEGE_NOT_HELD` and nothing is left at `name`.
+    ///
+    /// Until the reparse point is set, the new file or directory is held
+    /// with no sharing, so no other handle can open it (a `stat` of the
+    /// name still works: reading attributes is not shared access, and it
+    /// sees a plain empty file or directory for that moment). Sharing does
+    /// not stop another program from making an entry inside a new
+    /// directory, though; then the link cannot be set, the directory
+    /// cannot be removed, and the error says that a directory was left.
     pub fn symlink(&self, name: &[u8], target: &[u8], kind: LinkKind) -> io::Result<()> {
         let name = one_name(name)?;
         let target = units_of(target)?;
@@ -523,17 +573,27 @@ impl Dir {
             LinkKind::File => FILE_NON_DIRECTORY_FILE,
             LinkKind::Dir => FILE_DIRECTORY_FILE,
         };
-        let h = self.open(
+        let h = self.open_shared(
             &name,
             FILE_WRITE_ATTRIBUTES | FILE_WRITE_DATA | DELETE,
+            0,
             FILE_CREATE,
             options,
             FILE_ATTRIBUTE_NORMAL,
         )?;
         if let Err(e) = native::set_reparse(h.as_handle(), &data) {
             // Not a link after all: what was made goes again.
-            let _ = delete(h.as_handle());
-            return Err(e);
+            return match delete(h.as_handle()) {
+                Ok(()) => Err(e),
+                Err(left) => Err(io::Error::new(
+                    e.kind(),
+                    format!(
+                        "making the symlink {:?} failed ({e}), and what was made in its \
+                         place could not be removed ({left})",
+                        String::from_utf8_lossy(&wtf8::encode(&name))
+                    ),
+                )),
+            };
         }
         Ok(())
     }
