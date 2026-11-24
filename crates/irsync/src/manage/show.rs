@@ -1,8 +1,8 @@
 //! The report printed by `irsync show`.
 
+use crate::config::clients::Clients;
 use crate::config::exports::Exports;
 use crate::config::file::Config;
-use crate::config::hosts::Hosts;
 use crate::config::paths::Paths;
 use iroh::EndpointId;
 use std::fmt::Write;
@@ -13,25 +13,25 @@ fn file_line(label: &str, path: &Path) -> String {
     format!("{label}: {}{missing}\n", path.display())
 }
 
-/// An entry of an `rw`/`ro` list: a raw id as is, a known alias with its id,
-/// anything else flagged as an unknown alias.
-fn entry_text(entry: &str, hosts: &Hosts) -> String {
+/// An entry of an `rw`/`ro` list: a raw id as is, a known client name
+/// with its id, anything else flagged as unknown.
+fn entry_text(entry: &str, clients: &Clients) -> String {
     if crate::identity::parse_endpoint_id(entry).is_ok() {
         entry.to_string()
-    } else if let Some(h) = hosts.get(entry) {
-        format!("{entry} ({})", h.peer_id())
+    } else if let Some(c) = clients.get(entry) {
+        format!("{entry} ({})", c.client_id)
     } else {
-        format!("{entry} (unknown alias)")
+        format!("{entry} (unknown client)")
     }
 }
 
 /// The `    rw: ...` and `    ro: ...` lines of one grant table, each only
 /// when its list is non-empty. The one spelling of a grant line, shared by
 /// `show`, `export list` and `grant list`.
-pub fn grant_lines(out: &mut String, rw: &[String], ro: &[String], hosts: &Hosts) {
+pub fn grant_lines(out: &mut String, rw: &[String], ro: &[String], clients: &Clients) {
     for (label, list) in [("rw", rw), ("ro", ro)] {
         if !list.is_empty() {
-            let items: Vec<String> = list.iter().map(|e| entry_text(e, hosts)).collect();
+            let items: Vec<String> = list.iter().map(|e| entry_text(e, clients)).collect();
             let _ = writeln!(out, "    {label}: {}", items.join(", "));
         }
     }
@@ -39,7 +39,7 @@ pub fn grant_lines(out: &mut String, rw: &[String], ro: &[String], hosts: &Hosts
 
 /// One block per export: `name: path`, then `    read_only`,
 /// `    warm_index` and `    fsync` when set, then its grant lines.
-pub fn export_blocks(exports: &Exports, hosts: &Hosts) -> String {
+pub fn export_blocks(exports: &Exports, clients: &Clients) -> String {
     let mut out = String::new();
     for (name, e) in &exports.exports {
         let _ = writeln!(out, "{name}: {}", e.path.display());
@@ -52,42 +52,47 @@ pub fn export_blocks(exports: &Exports, hosts: &Hosts) -> String {
         if e.fsync {
             out.push_str("    fsync\n");
         }
-        grant_lines(&mut out, &e.rw, &e.ro, hosts);
+        grant_lines(&mut out, &e.rw, &e.ro, clients);
     }
     out
 }
 
 /// `all:` and its grant lines, or nothing when `[all]` grants nobody.
-pub fn all_block(exports: &Exports, hosts: &Hosts) -> String {
+pub fn all_block(exports: &Exports, clients: &Clients) -> String {
     let mut out = String::new();
     if !exports.rw.is_empty() || !exports.ro.is_empty() {
         out.push_str("all:\n");
-        grant_lines(&mut out, &exports.rw, &exports.ro, hosts);
+        grant_lines(&mut out, &exports.rw, &exports.ro, clients);
     }
     out
 }
 
 /// The report: the config file, identities (`client` is the id and the
-/// public key line), hosts (`host_lines`, what `host list` prints) and
+/// public key line), servers and clients (`server_lines` and
+/// `client_lines`, what `server list` and `client list` print) and
 /// exports, each section under its name.
 pub fn report(
     paths: &Paths,
     config: &Config,
-    host_lines: &[String],
+    server_lines: &[String],
+    client_lines: &[String],
     client: (&EndpointId, &str),
     daemon: &EndpointId,
 ) -> String {
-    let hosts = &config.hosts;
+    let clients = &config.clients;
     let exports = &config.exports;
     let mut out = file_line("config", &paths.config);
     let _ = writeln!(out, "client identity: {}\n{}", client.0, client.1);
-    out.push_str("hosts:\n");
-    for line in host_lines {
-        let _ = writeln!(out, "{line}");
+    for (title, lines) in [("servers:", server_lines), ("clients:", client_lines)] {
+        out.push_str(title);
+        out.push('\n');
+        for line in lines {
+            let _ = writeln!(out, "{line}");
+        }
     }
     out.push_str("exports:\n");
     let _ = writeln!(out, "daemon identity: {daemon}");
-    out.push_str(&export_blocks(exports, hosts));
-    out.push_str(&all_block(exports, hosts));
+    out.push_str(&export_blocks(exports, clients));
+    out.push_str(&all_block(exports, clients));
     out
 }

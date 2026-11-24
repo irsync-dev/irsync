@@ -1,4 +1,4 @@
-use irsync::config::reader::read;
+use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::{load_message, lock_config, save_config, ManageError, PeerSpec};
 use irsync_proto::config as pb;
@@ -9,7 +9,7 @@ fn id(n: u8) -> iroh::EndpointId {
 }
 
 fn msg(text: &str) -> pb::Config {
-    read(text, Path::new("irsync.toml")).unwrap()
+    reader::read(text, Path::new("irsync.toml")).unwrap().config
 }
 
 fn export(name: &str, path: &str) -> pb::Export {
@@ -20,9 +20,9 @@ fn export(name: &str, path: &str) -> pb::Export {
     }
 }
 
-/// A host with neither id: the message holds it, the config refuses it.
-fn host_without_ids(name: &str) -> pb::Host {
-    pb::Host {
+/// A server without its id: the message holds it, the config refuses it.
+fn server_without_id(name: &str) -> pb::ServerEntry {
+    pb::ServerEntry {
         name: name.into(),
         ..Default::default()
     }
@@ -38,7 +38,7 @@ fn load_missing_is_empty_and_save_creates_parent_atomically() {
     save_config(&p, &mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
-        "[exports.x]\npath = \"/x\"\n"
+        "config_version = 2\n\n[exports.x]\npath = \"/x\"\n"
     );
     assert!(
         std::fs::read_dir(p.parent().unwrap()).unwrap().count() == 1,
@@ -60,7 +60,7 @@ fn save_preserves_comments_and_order() {
     save_config(&p, &mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
-        "# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\nread_only = true\n"
+        "config_version = 2\n\n# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\nread_only = true\n"
     );
 }
 
@@ -73,12 +73,12 @@ fn a_save_keeps_comments_and_writes_the_writers_form() {
         "[all]\nrw=[]   # nobody yet\n\n\n# the daemon\n[daemon]\nportmap=false\n",
     )
     .unwrap();
-    let lock = lock_config(&path).unwrap();
+    let mut lock = lock_config(&path).unwrap();
     let mut m = lock.load().unwrap();
     lock.save(&mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "# the daemon\n[daemon]\nportmap = false\n\n[all]\nrw = [] # nobody yet\n"
+        "config_version = 2\n\n# the daemon\n[daemon]\nportmap = false\n\n[all]\nrw = [] # nobody yet\n"
     );
 }
 
@@ -87,7 +87,7 @@ fn a_save_that_would_not_load_leaves_the_file_and_frees_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("irsync.toml");
     irsync::fs::private::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
-    let lock = lock_config(&path).unwrap();
+    let mut lock = lock_config(&path).unwrap();
     let mut m = lock.load().unwrap();
     m.exports[0].path = "rel".into();
     assert!(matches!(
@@ -112,16 +112,21 @@ fn a_file_that_does_not_load_cannot_be_edited() {
 
 #[test]
 fn peer_spec_forms() {
-    let hosts = parse_hosts(
-        &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
+    let c = irsync::config::file::Config::parse(
+        &format!(
+            "[clients.laptop]\nclient_id = \"{}\"\n[servers.nas]\nendpoint_id = \"{}\"\n",
+            id(1),
+            id(3)
+        ),
         Path::new("h"),
     )
     .unwrap();
+    let hosts = (&c.clients, &c.servers);
     assert!(
-        matches!(PeerSpec::parse("laptop", &hosts).unwrap(), PeerSpec::Alias(ref a) if a == "laptop")
+        matches!(PeerSpec::parse("laptop", hosts.0, hosts.1).unwrap(), PeerSpec::Alias(ref a) if a == "laptop")
     );
     assert!(
-        matches!(PeerSpec::parse(&id(2).to_string(), &hosts).unwrap(), PeerSpec::Id { id: got, .. } if got == id(2))
+        matches!(PeerSpec::parse(&id(2).to_string(), hosts.0, hosts.1).unwrap(), PeerSpec::Id { id: got, .. } if got == id(2))
     );
     let mut rng = ssh_key::rand_core::UnwrapErr(ssh_key::getrandom::SysRng);
     let key = ssh_key::PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519).unwrap();
@@ -130,29 +135,41 @@ fn peer_spec_forms() {
     let line = pk.to_openssh().unwrap();
     let want = irsync::identity::endpoint_id_of_public_key(&pk).unwrap();
     assert!(
-        matches!(PeerSpec::parse(&line, &hosts).unwrap(), PeerSpec::Id { id, comment: Some(ref c) } if id == want && c == "mike@laptop")
+        matches!(PeerSpec::parse(&line, hosts.0, hosts.1).unwrap(), PeerSpec::Id { id, comment: Some(ref c) } if id == want && c == "mike@laptop")
     );
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("k.pub"), &line).unwrap();
     assert!(matches!(
-        PeerSpec::parse(d.path().join("k.pub").to_str().unwrap(), &hosts).unwrap(),
+        PeerSpec::parse(d.path().join("k.pub").to_str().unwrap(), hosts.0, hosts.1).unwrap(),
         PeerSpec::Id {
             comment: Some(_),
             ..
         }
     ));
     assert!(matches!(
-        PeerSpec::parse("all", &hosts),
+        PeerSpec::parse("all", hosts.0, hosts.1),
         Err(ManageError::NoOpenAccess)
     ));
     assert!(matches!(
-        PeerSpec::parse("*", &hosts),
+        PeerSpec::parse("*", hosts.0, hosts.1),
         Err(ManageError::NoOpenAccess)
     ));
-    assert!(PeerSpec::parse("nobody", &hosts).is_err());
-    assert_eq!(PeerSpec::parse("laptop", &hosts).unwrap().entry(), "laptop");
+    assert!(PeerSpec::parse("nobody", hosts.0, hosts.1).is_err());
+    // Grants name clients: a server's name is refused, with what to do.
+    let e = PeerSpec::parse("nas", hosts.0, hosts.1).unwrap_err();
+    assert!(matches!(e, ManageError::NotAClient(_)), "{e:?}");
     assert_eq!(
-        PeerSpec::parse(&id(2).to_string(), &hosts).unwrap().entry(),
+        e.to_string(),
+        "\"nas\" is a server here, not a client; to grant that machine, add it as a client: irsync client add nas ID"
+    );
+    assert_eq!(
+        PeerSpec::parse("laptop", hosts.0, hosts.1).unwrap().entry(),
+        "laptop"
+    );
+    assert_eq!(
+        PeerSpec::parse(&id(2).to_string(), hosts.0, hosts.1)
+            .unwrap()
+            .entry(),
         id(2).to_string()
     );
 }
@@ -162,7 +179,7 @@ fn save_config_refuses_a_message_that_does_not_load() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
     let mut m = pb::Config {
-        hosts: vec![host_without_ids("x")],
+        servers: vec![server_without_id("x")],
         ..Default::default()
     };
     let e = save_config(&path, &mut m).unwrap_err();
@@ -181,7 +198,7 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     irsync::fs::private::write(&p, "# keep\n[client]\nparallel = 4\n").unwrap();
     let lock_file = d.path().join("sub/irsync.toml.lock");
 
-    let lock = lock_config(&p).unwrap();
+    let mut lock = lock_config(&p).unwrap();
     assert!(lock_file.exists());
     let e = lock_config(&p).unwrap_err();
     assert!(matches!(e, ManageError::Locked { .. }), "{e}");
@@ -195,7 +212,7 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     assert!(!lock_file.exists(), "save releases the lock");
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
-        "# keep\n[client]\nparallel = 8\n"
+        "config_version = 2\n\n# keep\n[client]\nparallel = 8\n"
     );
 
     // Dropped without saving: the lock goes and the file is untouched.
@@ -204,13 +221,13 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     assert!(!lock_file.exists());
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
-        "# keep\n[client]\nparallel = 8\n"
+        "config_version = 2\n\n# keep\n[client]\nparallel = 8\n"
     );
 
     // An invalid message is refused and the lock released.
-    let lock = lock_config(&p).unwrap();
+    let mut lock = lock_config(&p).unwrap();
     let mut m = lock.load().unwrap();
-    m.hosts.push(host_without_ids("x"));
+    m.servers.push(server_without_id("x"));
     assert!(matches!(
         lock.save(&mut m),
         Err(ManageError::Invalid { .. })
@@ -218,11 +235,11 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     assert!(!lock_file.exists());
 }
 
-fn parse_hosts(
+fn parse_clients(
     text: &str,
     path: &std::path::Path,
-) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
-    irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
+) -> Result<irsync::config::clients::Clients, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.clients)
 }
 
 #[test]
@@ -230,12 +247,12 @@ fn save_writes_aliases_for_ids() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
     let mut m = msg(&format!(
-        "[hosts.box]\nendpoint_id = \"{0}\"\n[all]\nrw = [\"{0}\"]\n",
+        "[clients.box]\nclient_id = \"{0}\"\n[all]\nrw = [\"{0}\"]\n",
         id(1)
     ));
     lock_config(&path).unwrap().save(&mut m).unwrap();
     let want = format!(
-        "[hosts.box]\nendpoint_id = \"{}\"\n\n[all]\nrw = [\"box\"]\n",
+        "config_version = 2\n\n[clients.box]\nclient_id = \"{}\"\n\n[all]\nrw = [\"box\"]\n",
         id(1)
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
@@ -244,18 +261,18 @@ fn save_writes_aliases_for_ids() {
 }
 
 #[test]
-fn canonicalize_doc_uses_the_hosts_of_the_message() {
+fn canonicalize_doc_uses_the_clients_of_the_message() {
     use irsync::manage::canonicalize_doc;
     let path = Path::new("irsync.toml");
     let mut m = msg(&format!(
-        "[hosts.box]\nendpoint_id = \"{0}\"\n[immediate]\nrw = [\"{0}\"]\n",
+        "[clients.box]\nclient_id = \"{0}\"\n[immediate]\nrw = [\"{0}\"]\n",
         id(1)
     ));
     assert!(canonicalize_doc(&mut m, path).unwrap());
     assert_eq!(m.immediate.as_ref().unwrap().rw[0].value, "box");
     assert!(!canonicalize_doc(&mut m, path).unwrap());
     let mut bad = pb::Config {
-        hosts: vec![host_without_ids("box")],
+        servers: vec![server_without_id("box")],
         ..Default::default()
     };
     assert!(matches!(
@@ -266,9 +283,9 @@ fn canonicalize_doc_uses_the_hosts_of_the_message() {
 
 #[test]
 fn written_is_the_alias_of_an_id_that_has_one() {
-    let hosts = parse_hosts(
+    let hosts = parse_clients(
         &format!(
-            "[hosts.zed]\nendpoint_id = \"{0}\"\n[hosts.amy]\nendpoint_id = \"{0}\"\n",
+            "[clients.zed]\nclient_id = \"{0}\"\n[clients.amy]\nclient_id = \"{0}\"\n",
             id(1)
         ),
         Path::new("h"),
@@ -298,23 +315,66 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     assert_eq!(mode(&fresh), 0o600);
 
     let locked = d.path().join("locked.toml");
-    let lock = lock_config(&locked).unwrap();
+    let mut lock = lock_config(&locked).unwrap();
     let mut m = lock.load().unwrap();
     m.client = Some(Default::default());
     lock.save(&mut m).unwrap();
     assert_eq!(mode(&locked), 0o600);
 
-    // A file open to other users loads only when it says so itself.
+    // A file open to other users loads only when it says so itself;
+    // save_config reads the file first too.
     m.unsafe_config_allowed = Some(true);
+    save_config(&fresh, &mut m).unwrap();
     for kept in [0o640, 0o644, 0o600] {
         set_mode(&fresh, kept).unwrap();
         m.client.as_mut().unwrap().parallel = Some(kept);
         save_config(&fresh, &mut m).unwrap();
         assert_eq!(mode(&fresh), kept, "save_config");
-        let lock = lock_config(&fresh).unwrap();
+        let mut lock = lock_config(&fresh).unwrap();
         let mut m = lock.load().unwrap();
         m.client.as_mut().unwrap().parallel = Some(1);
         lock.save(&mut m).unwrap();
         assert_eq!(mode(&fresh), kept, "lock.save");
     }
+}
+
+/// A file of layout 1 is converted when it is loaded for an edit and saved
+/// in the current layout, with the same comments; a file of the current
+/// layout gets `config_version` on its first save.
+#[test]
+fn a_save_writes_the_current_layout() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("irsync.toml");
+    irsync::fs::private::write(
+        &path,
+        format!(
+            "# the nas\n[hosts.nas]\nendpoint_id = \"{0}\"\nclient_id = \"{1}\" # its client\n\n[all]\nrw = [\"nas\"]\n",
+            id(1),
+            id(2)
+        ),
+    )
+    .unwrap();
+    let mut lock = lock_config(&path).unwrap();
+    let mut m = lock.load().unwrap();
+    assert_eq!(m.config_version, Some(2));
+    lock.save(&mut m).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        format!(
+            "config_version = 2\n\n# the nas\n[servers.nas]\nendpoint_id = \"{0}\"\n\n[clients.nas]\nclient_id = \"{1}\" # its client\n\n[all]\nrw = [\"nas\"]\n",
+            id(1),
+            id(2)
+        )
+    );
+
+    irsync::fs::private::write(&path, "[client]\nparallel = 2\n").unwrap();
+    let mut lock = lock_config(&path).unwrap();
+    let mut m = lock.load().unwrap();
+    assert_eq!(m.config_version, None);
+    lock.save(&mut m).unwrap();
+    assert_eq!(m.config_version, Some(2));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "config_version = 2\n\n[client]\nparallel = 2\n"
+    );
 }

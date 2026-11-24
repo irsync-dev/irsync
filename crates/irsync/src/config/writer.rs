@@ -18,6 +18,7 @@ use toml_edit::{Key, Value};
 /// footer.
 pub fn write(msg: &pb::Config) -> String {
     let mut top = Keys::new(&msg.key_comments);
+    top.int("config_version", msg.config_version);
     top.bool("unsafe_config_allowed", msg.unsafe_config_allowed);
     top.string("identity", msg.identity.as_deref());
     top.string("state_dir", msg.state_dir.as_deref());
@@ -26,7 +27,7 @@ pub fn write(msg: &pb::Config) -> String {
 
     let mut sections = vec![msg.header.clone(), top];
     if let Some(c) = &msg.client {
-        sections.push(table(&["client"], &c.comment, &c.tail, client(c)));
+        sections.push(table(&["client"], &c.comment, &c.tail, client_table(c)));
     }
     if let Some(d) = &msg.daemon {
         sections.push(table(&["daemon"], &d.comment, &d.tail, daemon(d)));
@@ -42,8 +43,16 @@ pub fn write(msg: &pb::Config) -> String {
     if let Some(t) = &msg.telemetry {
         sections.push(table(&["telemetry"], &t.comment, &t.tail, telemetry(t)));
     }
-    for h in &msg.hosts {
-        sections.push(table(&["hosts", &h.name], &h.comment, &h.tail, host(h)));
+    for s in &msg.servers {
+        sections.push(table(&["servers", &s.name], &s.comment, &s.tail, server(s)));
+    }
+    for c in &msg.clients {
+        sections.push(table(
+            &["clients", &c.name],
+            &c.comment,
+            &c.tail,
+            client_entry(c),
+        ));
     }
     for e in &msg.exports {
         sections.push(table(&["exports", &e.name], &e.comment, &e.tail, export(e)));
@@ -96,7 +105,7 @@ fn table(path: &[&str], comment: &Option<pb::Comment>, tail: &[String], keys: Ke
     lines
 }
 
-fn client(c: &pb::Client) -> Keys<'_> {
+fn client_table(c: &pb::Client) -> Keys<'_> {
     let mut k = Keys::new(&c.key_comments);
     k.int("parallel", c.parallel);
     k.duration("reconnect", c.reconnect.as_ref());
@@ -156,26 +165,36 @@ fn telemetry(t: &pb::Telemetry) -> Keys<'_> {
     k
 }
 
-fn host(h: &pb::Host) -> Keys<'_> {
-    let mut k = Keys::new(&h.key_comments);
-    k.string("endpoint_id", h.endpoint_id.as_deref().map(id).as_deref());
-    k.string("client_id", h.client_id.as_deref().map(id).as_deref());
-    k.string("relay", h.relay.as_deref());
-    k.string("relay_mode", h.relay_mode.and_then(relay_mode));
-    k.string("congestion", h.congestion.and_then(congestion));
+fn server(s: &pb::ServerEntry) -> Keys<'_> {
+    let mut k = Keys::new(&s.key_comments);
+    k.string("endpoint_id", non_empty(&s.endpoint_id).map(id).as_deref());
+    k.string("relay", s.relay.as_deref());
+    k.string("relay_mode", s.relay_mode.and_then(relay_mode));
+    k.string("congestion", s.congestion.and_then(congestion));
     k.string(
         "pq_key_exchange",
-        h.pq_key_exchange.and_then(pq_key_exchange),
+        s.pq_key_exchange.and_then(pq_key_exchange),
     );
-    k.array("address", &h.address, h.address_set);
-    k.int("parallel", h.parallel);
-    k.duration("reconnect", h.reconnect.as_ref());
-    k.int("dial_retries", h.dial_retries);
-    k.bool("dht", h.dht);
-    k.bool("mdns", h.mdns);
-    k.string("ssh", h.ssh.as_deref());
-    k.array("ssh_aliases", &h.ssh_aliases, h.ssh_aliases_set);
+    k.array("address", &s.address, s.address_set);
+    k.int("parallel", s.parallel);
+    k.duration("reconnect", s.reconnect.as_ref());
+    k.int("dial_retries", s.dial_retries);
+    k.bool("dht", s.dht);
+    k.bool("mdns", s.mdns);
+    k.string("ssh", s.ssh.as_deref());
+    k.array("ssh_aliases", &s.ssh_aliases, s.ssh_aliases_set);
     k
+}
+
+fn client_entry(c: &pb::ClientEntry) -> Keys<'_> {
+    let mut k = Keys::new(&c.key_comments);
+    k.string("client_id", non_empty(&c.client_id).map(id).as_deref());
+    k
+}
+
+/// An id of the message: empty means missing.
+fn non_empty(bytes: &[u8]) -> Option<&[u8]> {
+    (!bytes.is_empty()).then_some(bytes)
 }
 
 fn export(e: &pb::Export) -> Keys<'_> {

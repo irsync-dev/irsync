@@ -1,12 +1,12 @@
 # Management commands
 
 These commands read and edit the config file, `~/.config/irsync/irsync.toml`
-(see [Configuration](configuration.md)). There are three nouns, `host`,
-`export` and `grant`, each with `add`, `remove` and `list`, plus
-`export update`; `id` for the identities; `config` for any key by its dotted
+(see [Configuration](configuration.md)). There are four nouns, `server`,
+`client`, `export` and `grant`, each with `add`, `remove` and `list` (`server`
+and `client` also `rename`), plus `export update`; `id` for the identities; `config` for any key by its dotted
 path; and `show` for an overview.
 
-A noun on its own runs its `list`: `irsync host`, `irsync export`,
+A noun on its own runs its `list`: `irsync server`, `irsync client`, `irsync export`,
 `irsync grant`, `irsync id` and `irsync config` print what is there and
 leave the config file alone (`irsync id` creates the client's key when
 there is none). Arguments of `list`, such as a grant target, need `list`
@@ -22,7 +22,7 @@ noun the flag may stand before the noun, or before or after the verb:
 
 ## Editing rules
 
-- The commands keep the file's comments and the order of its hosts and
+- The commands keep the file's comments and the order of its servers, clients and
   exports. They write the tables in a fixed order and each value in one
   spelling: a duration `"90"` becomes `"90s"`. Blank lines and inline tables
   are not kept. URLs and paths stay as you wrote them. The first edit of a
@@ -34,28 +34,38 @@ noun the flag may stand before the noun, or before or after the verb:
   running.
 - The edited file is checked before it is written. An edit that would leave a
   file `irsync` cannot load is refused, and the file stays as it was.
-- An export name may not be empty, contain `/`, or be `all`. An alias may not
+- An export name may not be empty, contain `/`, or be `all`. A server or client name may not
   be empty, contain `:` or `/`, be `all` or `*`, or be an `EndpointId`.
 
-A running daemon picks up `host`, `export` and `grant` changes on its next
+A running daemon picks up `client`, `export` and `grant` changes on its next
 connection; nothing needs a restart.
 
-## host
+## server
 
 | Command | Effect |
 | --- | --- |
-| `irsync host add ALIAS ID [--client-id ID] [--relay URL] [--relay-mode default\|disabled] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dial-retries N] [--dht yes\|no] [--mdns yes\|no]` | Add an alias for an `EndpointId`, or change the id and the keys given for an existing alias. Keys not given stay as they are. Prints `ALIAS: ID`, or `ALIAS: OLD -> NEW` when the id changed. The id is the daemon's (`endpoint_id`). Grants that name the alias then apply to the new id, and a note on stderr says where they are; when the host has a `client_id`, its grants stay with that, and the note says so. `--client-id` sets the `client_id`, the id the machine has as a client; it prints `ALIAS: client_id ID`, and a note when that moved the grants that name the alias. |
-| `irsync host remove ALIAS [-f]` | Remove an alias. Refused while a grant names it, and the error lists where: without the alias those grants would match nobody. A grant written as the `EndpointId` counts as naming the alias, unless another alias has the same `EndpointId`. `-f`/`--force` removes those grants, then the alias. |
-| `irsync host rename OLD NEW` | Rename an alias, and every grant that names it: in `[all]`, `[immediate]` and every export. A grant written as the `EndpointId` counts as naming the alias. The alias keeps its place, keys and comments. Refused, with nothing changed, when `OLD` is no alias, `NEW` is not a valid alias or `NEW` is an alias already. Only the config file changes: scripts and commands that use `OLD` keep using it. |
-| `irsync host list` | One `ALIAS: ID` line per alias, with the daemon's id, then one indented `key = value` line per other key. A host saved as a client only shows `(client only)` for the id and its `client_id` below. |
+| `irsync server add NAME ID [--relay URL] [--relay-mode default\|disabled] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dial-retries N] [--dht yes\|no] [--mdns yes\|no]` | Add a server: a name for the `EndpointId` of a daemon you connect to. For an existing name, change the id and the keys given. Keys not given stay as they are. Prints `NAME: ID`, or `NAME: OLD -> NEW` when the id changed. |
+| `irsync server remove NAME` | Remove a server. Grants never name servers, so none can stop it. |
+| `irsync server rename OLD NEW` | Rename a server. It keeps its place, keys and comments. Refused, with nothing changed, when `OLD` is no server, `NEW` is not a valid name or `NEW` is a server already. Only the config file changes: scripts and commands that use `OLD` keep using it. |
+| `irsync server list` | One `NAME: ID` line per server, then one indented `key = value` line per other key. |
 
-The flags of `host add` set the keys of the alias's table; see
-[Configuration](configuration.md#hosts) for what each does. `--address`
+The flags of `server add` set the keys of the server's table; see
+[Configuration](configuration.md#servers) for what each does. `--address`
 replaces the stored list and may be repeated. `--dht` and `--mdns` take `yes`
 or `no` (also `true` or `false`).
 
-On a daemon's machine the same aliases name the clients that exports are
-granted to.
+## client
+
+| Command | Effect |
+| --- | --- |
+| `irsync client add NAME ID` | Add a client: a name for the `EndpointId` a machine has as a client (what `irsync id show` prints on that machine). For an existing name, change the id; grants that name it then apply to the new id, and a note on stderr says so. Prints `NAME: ID`. |
+| `irsync client remove NAME [-f]` | Remove a client. Refused while a grant names it, and the error lists where: without the client those grants would match nobody. A grant written as the `EndpointId` counts as naming the client, unless another client has the same id. `-f`/`--force` removes those grants, then the client. |
+| `irsync client rename OLD NEW` | Rename a client, and every grant that names it: in `[all]`, `[immediate]` and every export. A grant written as the `EndpointId` counts as naming the client. The client keeps its place and comments. Refused, with nothing changed, when `OLD` is no client, `NEW` is not a valid name or `NEW` is a client already. Only the config file changes. |
+| `irsync client list` | One `NAME: ID` line per client. |
+
+The old `host` noun is gone: it prints a pointer to `server` and `client`. A server and
+a client may have the same name; the two commands do not touch each other's
+entries.
 
 ## export
 
@@ -86,13 +96,13 @@ everyone; `--warm-index` sets `warm_index`.
 | `irsync grant list WHO` | What one peer may reach: `immediate: rw` first when it is in `[immediate]`, then one `NAME: rw` or `NAME: ro` line per export, marked `(all)` when the grant comes from `[all]` and `(read_only export)` when a read-write grant is capped by `read_only`. |
 
 A client set up over ssh is listed by its host name, which the setup saved
-in `[hosts]`.
+in `[clients]`.
 
-`WHO` is an alias, an `EndpointId`, a pasted `ssh-ed25519 AAAA...` public key
+`WHO` is a client name, an `EndpointId`, a pasted `ssh-ed25519 AAAA...` public key
 line, or the path of a `.pub` file holding one. A key's comment is kept as a
 TOML comment at the end of the entry's line. Removing the grant removes that
-comment; comment lines above it stay. A peer that `[hosts]` has an alias for is stored
-by that alias, however it was named. There is no open access: `all` and `*` are
+comment; comment lines above it stay. A peer that `[clients]` has a name for is stored
+by that name, however it was named. A server name is not a `WHO`. There is no open access: `all` and `*` are
 refused as `WHO` in `grant add`.
 
 ## id
@@ -124,10 +134,10 @@ for the old key stops working.
 | --- | --- |
 | `irsync config get KEY` | Print a key: a bare scalar, one array element per line, or a table's keys as `key = value` lines, all as the file holds them (a path's `~` is not expanded). An unset setting prints its default; a key with no value and no default exits 1. |
 | `irsync config set KEY VALUE...` | Set a key in its type: `true` or `false`, an integer, a duration such as `30m`, a path, a URL, an `EndpointId`. An array key takes one `VALUE` per element, and none for an empty array. Tables are created as needed. |
-| `irsync config unset KEY` | Remove a key, or a whole table (`irsync config unset hosts.myserver`). A table left empty goes with it. Removing a host this way is refused while a grant names it, as with `host remove`. |
+| `irsync config unset KEY` | Remove a key, or a whole table (`irsync config unset servers.myserver`). A table left empty goes with it. Removing a client this way is refused while a grant names it, as with `client remove`. |
 | `irsync config list` | Every key the files set, as `dotted.key = value`, in the order the file is written in: the tables in a fixed order, and each table's keys in a fixed order. |
 
-`KEY` is a dotted path such as `daemon.listen` or `hosts.myserver.relay`.
+`KEY` is a dotted path such as `daemon.listen` or `servers.myserver.relay`. A client has one key, `clients.NAME.client_id`. `config_version` can be read but not set.
 Quote a segment that holds a dot: `exports."www.example.com".path`. An unknown
 key is an error.
 
@@ -145,7 +155,7 @@ irsync show [--passphrase-file PATH]
 ```
 
 Prints the config file's path, the client's `EndpointId` and public key line,
-the aliases as `host list` prints them under `hosts:`, and under `exports:` the
+the servers as `server list` prints them under `servers:`, the clients as `client list` prints them under `clients:`, and under `exports:` the
 daemon's `EndpointId` and the exports as `export list` prints them, followed by
 the `[all]` grants. `show` generates
 either key if it does not exist yet.

@@ -27,18 +27,18 @@ client is enough:
 irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
-`myserver` is not a saved alias yet, so irsync takes it as an ssh destination
+`myserver` is not a saved server yet, so irsync takes it as an ssh destination
 and sets the server up first. The account you log in to must not be root:
 irsync refuses to set up a daemon as root. It says what it did:
 
 ```text
-irsync: myserver is not a saved alias; setting it up over ssh
+irsync: myserver is not a saved server; setting it up over ssh
 irsync: set up myserver over ssh:
 irsync:   installed irsync 0.1.0 (1a2b3c4) in ~/.local/bin, with fileset and the manual pages
 irsync:   generated the daemon identity
 irsync:   granted this client (myclient, a3e4753e5e) access to any path
 irsync:   started the daemon (log: ~/.local/state/irsync/daemon.log)
-irsync:   saved host alias myserver -> 4a29f16a4f
+irsync:   saved server myserver -> 4a29f16a4f
 ```
 
 In steps, it:
@@ -62,11 +62,11 @@ In steps, it:
   setup;
 - lets this client reach any path your account on the server can, read-write
   (an [immediate grant](../reference/configuration.md#immediate-grants)). The
-  server saves the client under its host name, here `myclient`, so its
-  grants show that name instead of a long id. The first push to
+  server saves the client under its host name, here `myclient`, as a
+  `[clients.myclient]` entry, so its grants show that name instead of a long id. The first push to
   `/srv/photos` makes it an export, granted to this client only;
 - starts the daemon, which keeps running in the background;
-- saves `myserver` as a host alias on the client, with the daemon's
+- saves `myserver` as a server on the client, with the daemon's
   `EndpointId` and `ssh = "myserver"`. For `mike@myserver` or an IP
   address, see
   [which names the setup saves](../how-to/ssh-setup.md#the-names-the-setup-saves).
@@ -80,7 +80,7 @@ file. The trailing `/` on `~/Photos/` copies the directory's contents, as in
 rsync. Add `-P` to see a live block at the bottom of the screen that shows
 the transfer as it runs.
 
-Later runs use the alias and do not touch ssh. If the daemon has stopped,
+Later runs use the saved server and do not touch ssh. If the daemon has stopped,
 for example after a reboot, a sync waits about 15 seconds for an answer, then
 says `myserver did not answer; checking it over ssh`, starts the daemon again
 and carries on.
@@ -139,7 +139,7 @@ be installed on both machines.
 This part is an alternative to the quick way, not a next step. Follow it on a
 server that was not set up over ssh: on one that was, a daemon is already
 running, so step 4 would start a second one, and step 5 would replace the
-`myserver` alias that the quick way saved.
+`myserver` server that the quick way saved.
 
 ### 1. Find the client's EndpointId
 
@@ -187,11 +187,11 @@ that one waits, then gives up with a message that points at
 
 ### 3. Grant the client access
 
-Still on the server, give the client's `EndpointId` a readable name and grant
+Still on the server, give the client's `EndpointId` a readable name, as a client, and grant
 it both exports. Replace `<client-id>` with the line you copied in step 1:
 
 ```sh
-irsync host add myclient <client-id>
+irsync client add myclient <client-id>
 irsync grant add photos myclient
 irsync grant add backup myclient
 ```
@@ -227,7 +227,7 @@ On the client, give the server's `EndpointId` the name `myserver`. Replace
 `<server-id>` with the line you copied in step 2:
 
 ```sh
-irsync host add myserver <server-id>
+irsync server add myserver <server-id>
 ```
 
 The client now pins this `EndpointId` for `myserver`. If anything else
@@ -274,7 +274,7 @@ whether it exists or not.
 
 ## What you did
 
-- The quick way set the server up over ssh and saved an alias; every sync
+- The quick way set the server up over ssh and saved a server; every sync
   after that went over iroh.
 - By hand, you copied two `EndpointId`s, one in each direction: the client's
   to the server, the daemon's to the client. That exchange is the whole of the
@@ -282,9 +282,9 @@ whether it exists or not.
 - You pushed, resumed, listed and pulled with rsync's flags and its
   trailing-slash rule.
 
-The alias is optional: the raw `EndpointId` works in its place, as in
+The name is optional: the raw `EndpointId` works in its place, as in
 `irsync -av ~/Photos/ <server-id>:photos/`, and `irsync grant add photos
-<client-id>` works without `host add`.
+<client-id>` works without `client add`.
 
 ## Next steps
 
@@ -295,8 +295,8 @@ The alias is optional: the raw `EndpointId` works in its place, as in
 - [Command line](../reference/command-line.md): every flag.
 - [Remote addresses](../reference/remote-addresses.md): how the daemon
   resolves `myserver:photos`, `myserver:Pictures` and `myserver:/backup`.
-- [Management commands](../reference/management.md): `host`, `export`,
-  `grant`, `id` and `config`.
+- [Management commands](../reference/management.md): `server`, `client`,
+  `export`, `grant`, `id` and `config`.
 - [Seed the index](../how-to/seed-the-index.md): when the server already
   holds a copy that `irsync` did not make.
 - [Run the daemon](../how-to/run-the-daemon.md): under systemd or launchd,

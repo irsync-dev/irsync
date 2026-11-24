@@ -2,14 +2,15 @@
 
 A remote operand is `HOST:PATH`.
 
-- `HOST` is an alias from a `[hosts.ALIAS]` table (see
-  [Configuration](configuration.md#hosts)) or an `EndpointId`, in hex or
-  z-base-32 as iroh prints it. Aliases match exactly; there are no patterns.
+- `HOST` is a name from a `[servers.NAME]` table (see
+  [Configuration](configuration.md#servers)) or an `EndpointId`, in hex or
+  z-base-32 as iroh prints it. Names match exactly; there are no patterns.
+  Only servers count here: a client's name is not looked up.
   The client pins the `EndpointId` it dials: a daemon with another key fails
   the connection.
-- A `HOST` that is neither is looked up among the saved hosts by their `ssh`
-  value: the address a host was first set up by finds that host again. When
-  hosts with different `EndpointId`s share that `ssh` value, irsync stops
+- A `HOST` that is neither is looked up among the saved servers by their `ssh`
+  value: the address a server was first set up by finds that server again. When
+  servers with different `EndpointId`s share that `ssh` value, irsync stops
   and names them. A `HOST` that matches nothing is an ssh destination, and
   irsync sets it up over ssh.
 - An IPv6 address goes in brackets: `[fe80::1]:PATH`, or

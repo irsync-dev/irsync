@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 
-use crate::config::hosts::HostEntry;
+use crate::config::servers::ServerEntry;
 use crate::config::settings::{
     ClientSettings, Congestion, DaemonSettings, RelayMode as DaemonRelayMode,
 };
@@ -227,7 +227,7 @@ pub fn client_endpoint_opts(
     no_relay: bool,
     no_dht: bool,
     client: &ClientSettings,
-    host: Option<&HostEntry>,
+    host: Option<&ServerEntry>,
     addresses: &[HostPort],
 ) -> anyhow::Result<EndpointOpts> {
     let host_relay = host.and_then(|h| h.relay.as_ref());

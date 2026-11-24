@@ -481,7 +481,7 @@ fn unknown_alias_error_names_hosts_file() {
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("\"home\" is not an alias in")
+        err.contains("\"home\" is not a server in")
             && err.contains("irsync.toml")
             && err.contains("over ssh failed"),
         "{err}"

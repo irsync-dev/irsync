@@ -1145,7 +1145,7 @@ async fn endpoint_from_settings(settings: &Settings, pass: &PassphraseSource) ->
     Ok(build_endpoint(opts).await?)
 }
 
-/// Runs the daemon: hosts, exports and grants are re-read from the config
+/// Runs the daemon: clients, exports and grants are re-read from the config
 /// file on every connection; the `[daemon]` settings are re-read and
 /// applied when `reload` is signalled (`SIGHUP`).
 /// `listen` is the command line's override of the file's `listen`; `debug`

@@ -107,7 +107,7 @@ irsync -av ~/Photos/ myserver:/srv/photos/
 
 The first run sets the server up over ssh: it installs irsync there, grants
 this client access to any path (*immediate mode*), starts the daemon and saves
-`myserver` as a host alias. Later runs connect over iroh without ssh.
+`myserver` as a server. Later runs connect over iroh without ssh.
 
 To share only named directories instead, set the server up by hand: export a
 directory, grant the client access to it and start the daemon.

@@ -56,7 +56,7 @@ gets `--config` explicitly.
    ```sh
    sudo -u irsync irsync export add photos:/srv/photos --config /etc/irsync/irsync.toml
    sudo -u irsync irsync grant add photos myclient --config /etc/irsync/irsync.toml
-   sudo -u irsync irsync host add myclient <id> --config /etc/irsync/irsync.toml
+   sudo -u irsync irsync client add myclient <id> --config /etc/irsync/irsync.toml
    sudo -u irsync irsync config set daemon.listen 0.0.0.0:4433 --config /etc/irsync/irsync.toml
    sudo -u irsync irsync id show --daemon --config /etc/irsync/irsync.toml
    sudo -u irsync irsync show --config /etc/irsync/irsync.toml

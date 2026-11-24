@@ -20,8 +20,8 @@
 //!   `footer`. In a file of comments only, all of it is the footer.
 //!
 //! A comment is the whole line from `#` on. The comments of a bare
-//! `[hosts]` or `[exports]` header, or of a top-level `hosts = { … }`
-//! key, go to its first entry, without blank lines. A comment with
+//! `[servers]`, `[clients]` or `[exports]` header, or of a top-level
+//! `servers = { … }` key, go to its first entry, without blank lines. A comment with
 //! no place in the message goes to the footer: none is dropped.
 
 use super::{line_of, ConfigError};
@@ -37,26 +37,53 @@ use toml_edit::{DocumentMut, Item, RawString, TableLike, Value};
 /// is an error rather than a message without comments, which the next
 /// save would write without them.
 pub(crate) fn attach(text: &str, path: &Path, msg: &mut pb::Config) -> Result<(), ConfigError> {
-    let doc = text.parse::<DocumentMut>().map_err(|e| ConfigError::File {
+    attach_with(text, path, msg, &|_, place| place)
+}
+
+/// Like [`attach`], but runs `map` on each place before it is resolved,
+/// so a caller can move the comments of one table to another (those of
+/// `[hosts.N]` to a server or a client).
+pub(crate) fn attach_with(
+    text: &str,
+    path: &Path,
+    msg: &mut pb::Config,
+    map: &dyn Fn(&pb::Config, Place) -> Place,
+) -> Result<(), ConfigError> {
+    attach_doc_with(&document(text, path)?, msg, map);
+    Ok(())
+}
+
+/// The text of a config file as `toml_edit` reads it, with its comments;
+/// an error at its line when it does not take the text (see [`attach`]).
+pub(crate) fn document(text: &str, path: &Path) -> Result<DocumentMut, ConfigError> {
+    text.parse::<DocumentMut>().map_err(|e| ConfigError::File {
         path: path.to_path_buf(),
         line: e.span().map(|s| line_of(text, s.start)),
         message: e.message().to_string(),
-    })?;
+    })
+}
+
+/// [`attach_with`] for a file already read by [`document`].
+pub(crate) fn attach_doc_with(
+    doc: &DocumentMut,
+    msg: &mut pb::Config,
+    map: &dyn Fn(&pb::Config, Place) -> Place,
+) {
     let mut walk = Walk {
         lines: Vec::new(),
         at_start: true,
     };
-    walk.document(&doc);
+    walk.document(doc);
     for (place, line) in walk.lines {
+        let place = map(msg, place);
         put(msg, place, line);
     }
-    Ok(())
 }
 
 /// What a comment belongs to: a table by its path, a key in a table, or
 /// an element of the array under a key.
 #[derive(Clone)]
-enum Spot {
+pub(crate) enum Spot {
     Table(Vec<String>),
     Key(Vec<String>, String),
     Entry(Vec<String>, String, usize),
@@ -64,7 +91,7 @@ enum Spot {
 
 /// Where a line goes in the message.
 #[derive(Clone)]
-enum Place {
+pub(crate) enum Place {
     Header,
     Footer,
     Tail(Vec<String>),
@@ -380,11 +407,12 @@ fn table<'a>(c: &'a mut pb::Config, path: &[String]) -> Option<Parts<'a>> {
         ["telemetry"] => parts!(c.telemetry.as_mut()?),
         ["all"] => parts!(c.all.as_mut()?, "rw" => rw, "ro" => ro),
         ["immediate"] => parts!(c.immediate.as_mut()?, "rw" => rw, "ro" => ro),
-        ["hosts", name] => parts!(
-            c.hosts.iter_mut().find(|h| h.name == name)?,
+        ["servers", name] => parts!(
+            c.servers.iter_mut().find(|s| s.name == name)?,
             "address" => address,
             "ssh_aliases" => ssh_aliases
         ),
+        ["clients", name] => parts!(c.clients.iter_mut().find(|e| e.name == name)?),
         ["exports", name] => parts!(
             c.exports.iter_mut().find(|e| e.name == name)?,
             "rw" => rw,
@@ -395,11 +423,11 @@ fn table<'a>(c: &'a mut pb::Config, path: &[String]) -> Option<Parts<'a>> {
 }
 
 /// A key whose value is a table, inline or dotted, has the comments of
-/// that table. A bare `[hosts]` or `[exports]` gives its comments to its
-/// first entry.
+/// that table. A bare `[servers]`, `[clients]` or `[exports]` gives its
+/// comments to its first entry.
 fn redirect(c: &mut pb::Config, place: Place) -> Place {
     let place = match place {
-        // `hosts = { … }` at the top level is the group's header.
+        // `servers = { … }` at the top level is the group's header.
         Place::Above(Spot::Key(p, k)) if p.is_empty() && is_group(&k) => {
             Place::Above(Spot::Table(vec![k]))
         }
@@ -419,7 +447,8 @@ fn redirect(c: &mut pb::Config, place: Place) -> Place {
         _ => return place,
     };
     let first = match group.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["hosts"] => c.hosts.first().map(|h| h.name.clone()),
+        ["servers"] => c.servers.first().map(|s| s.name.clone()),
+        ["clients"] => c.clients.first().map(|e| e.name.clone()),
         ["exports"] => c.exports.first().map(|e| e.name.clone()),
         _ => return place,
     };
@@ -430,7 +459,7 @@ fn redirect(c: &mut pb::Config, place: Place) -> Place {
 }
 
 fn is_group(name: &str) -> bool {
-    name == "hosts" || name == "exports"
+    matches!(name, "servers" | "clients" | "exports")
 }
 
 enum Slot<'a> {
@@ -504,5 +533,80 @@ mod tests {
         assert_eq!(*line, Some(2));
         assert!(!message.is_empty());
         assert!(e.to_string().starts_with("irsync.toml:2: "), "{e}");
+    }
+
+    /// The comments of a hand-written text of version 2 land where the
+    /// writer puts them back.
+    #[test]
+    fn comments_of_new_tables_round_trip() {
+        let id = |n: u8| iroh::SecretKey::from_bytes(&[n; 32]).public();
+        let text = format!(
+            "config_version = 2\n\n# the nas\n[servers.nas]\nendpoint_id = \"{}\"\naddress = [\"nas.lan:4433\"]\nssh = \"me@nas\"\n\n[clients.laptop]\nclient_id = \"{}\" # my laptop\n",
+            id(1),
+            id(2)
+        );
+        let comment = |above: &[&str], trailing: &str| pb::Comment {
+            above: above.iter().map(|s| s.to_string()).collect(),
+            trailing: trailing.into(),
+        };
+        let bare = pb::Config {
+            config_version: Some(2),
+            servers: vec![pb::ServerEntry {
+                name: "nas".into(),
+                endpoint_id: id(1).as_bytes().to_vec(),
+                address: vec![pb::Entry {
+                    value: "nas.lan:4433".into(),
+                    ..Default::default()
+                }],
+                address_set: true,
+                ssh: Some("me@nas".into()),
+                ..Default::default()
+            }],
+            clients: vec![pb::ClientEntry {
+                name: "laptop".into(),
+                client_id: id(2).as_bytes().to_vec(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut want = bare.clone();
+        want.servers[0].comment = Some(comment(&["# the nas"], ""));
+        want.clients[0].key_comments =
+            [("client_id".to_string(), comment(&[], "# my laptop"))].into();
+
+        let mut got = bare;
+        attach(&text, Path::new("irsync.toml"), &mut got).unwrap();
+        assert_eq!(got, want);
+        assert_eq!(crate::config::writer::write(&got), text);
+    }
+
+    /// `attach_with` runs the map on each place before it is resolved.
+    #[test]
+    fn attach_with_maps_places_first() {
+        let mut msg = pb::Config {
+            clients: vec![pb::ClientEntry {
+                name: "lap".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        attach_with(
+            "# above\n[hosts.lap] # same line\n",
+            Path::new("irsync.toml"),
+            &mut msg,
+            &|_, place| match place {
+                Place::Above(Spot::Table(p)) if p[0] == "hosts" => {
+                    Place::Above(Spot::Table(vec!["clients".into(), p[1].clone()]))
+                }
+                Place::Trailing(Spot::Table(p)) if p[0] == "hosts" => {
+                    Place::Trailing(Spot::Table(vec!["clients".into(), p[1].clone()]))
+                }
+                other => other,
+            },
+        )
+        .unwrap();
+        let c = msg.clients[0].comment.as_ref().unwrap();
+        assert_eq!(c.trailing, "# same line");
+        assert!(msg.header.is_empty() && msg.footer.is_empty());
     }
 }

@@ -1,7 +1,9 @@
+use irsync::config::clients::Clients;
 use irsync::config::exports::Exports;
 use irsync::config::file::{first_sighting, ignored_split_files, Config};
-use irsync::config::hosts::{short_host_name, valid_alias, Hosts};
+use irsync::config::names::{short_host_name, valid_alias};
 use irsync::config::paths::Paths;
+use irsync::config::servers::Servers;
 use irsync::config::settings::{RelayMode, Settings};
 use irsync::config::ConfigError;
 use std::path::{Path, PathBuf};
@@ -10,8 +12,11 @@ use std::time::Duration;
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
-fn parse_hosts(text: &str, path: &Path) -> Result<Hosts, ConfigError> {
-    Config::parse(text, path).map(|c| c.hosts)
+fn parse_servers(text: &str, path: &Path) -> Result<Servers, ConfigError> {
+    Config::parse(text, path).map(|c| c.servers)
+}
+fn parse_clients(text: &str, path: &Path) -> Result<Clients, ConfigError> {
+    Config::parse(text, path).map(|c| c.clients)
 }
 fn parse_exports(text: &str, path: &Path) -> Result<Exports, ConfigError> {
     Config::parse(text, path).map(|c| c.exports)
@@ -97,10 +102,10 @@ fn pq_key_exchange_is_prefer_unless_set_to_require() {
 }
 
 #[test]
-fn pq_key_exchange_of_a_host_entry() {
+fn pq_key_exchange_of_a_server() {
     use irsync::config::settings::PqKeyExchange;
     let t = format!(
-        "[client]\npq_key_exchange = \"require\"\n[hosts.nas]\nendpoint_id = \"{}\"\npq_key_exchange = \"prefer\"\n[hosts.home]\nendpoint_id = \"{}\"\n",
+        "[client]\npq_key_exchange = \"require\"\n[servers.nas]\nendpoint_id = \"{}\"\npq_key_exchange = \"prefer\"\n[servers.home]\nendpoint_id = \"{}\"\n",
         id(1),
         id(2)
     );
@@ -110,13 +115,13 @@ fn pq_key_exchange_of_a_host_entry() {
         Some(PqKeyExchange::Require)
     );
     assert_eq!(
-        c.hosts.get("nas").unwrap().pq_key_exchange,
+        c.servers.get("nas").unwrap().pq_key_exchange,
         Some(PqKeyExchange::Prefer)
     );
-    assert_eq!(c.hosts.get("home").unwrap().pq_key_exchange, None);
-    let e = parse_hosts(
+    assert_eq!(c.servers.get("home").unwrap().pq_key_exchange, None);
+    let e = parse_servers(
         &format!(
-            "[hosts.nas]\nendpoint_id = \"{}\"\npq_key_exchange = \"only\"\n",
+            "[servers.nas]\nendpoint_id = \"{}\"\npq_key_exchange = \"only\"\n",
             id(1)
         ),
         p(),
@@ -141,26 +146,30 @@ fn settings_missing_file_is_default() {
 }
 
 #[test]
-fn hosts_parse_and_resolve_alias_before_id() {
-    let t = format!("[hosts.home]\nendpoint_id = \"{}\"\nparallel = 4\naddress = [\"192.168.1.10:4000\"]\n[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1), id(2));
-    let h = parse_hosts(&t, p()).unwrap();
-    assert_eq!(h.get("home").unwrap().endpoint_id, Some(id(1)));
+fn servers_parse_and_clients_resolve_a_name_before_an_id() {
+    let t = format!("[servers.home]\nendpoint_id = \"{}\"\nparallel = 4\naddress = [\"192.168.1.10:4000\"]\n[clients.laptop]\nclient_id = \"{}\"\n", id(1), id(2));
+    let c = Config::parse(&t, p()).unwrap();
+    let h = &c.servers;
+    assert_eq!(h.get("home").unwrap().endpoint_id, id(1));
     assert_eq!(h.get("home").unwrap().parallel, Some(4));
     assert_eq!(h.get("home").unwrap().address.len(), 1);
-    assert_eq!(h.resolve_peer("laptop").unwrap(), id(2));
-    assert_eq!(h.resolve_peer(&id(3).to_string()).unwrap(), id(3));
-    match h.resolve_peer("nope") {
-        Err(ConfigError::UnknownAlias { alias, hosts }) => {
-            assert_eq!(alias, "nope");
-            assert_eq!(hosts, p());
+    assert_eq!(c.clients.resolve_peer("laptop").unwrap(), id(2));
+    assert_eq!(c.clients.resolve_peer(&id(3).to_string()).unwrap(), id(3));
+    // Grants name clients: a server's name is nobody.
+    for nobody in ["nope", "home"] {
+        match c.clients.resolve_peer(nobody) {
+            Err(ConfigError::UnknownClient { name, path }) => {
+                assert_eq!(name, nobody);
+                assert_eq!(path, p());
+            }
+            other => panic!("{other:?}"),
         }
-        other => panic!("{other:?}"),
     }
 }
 
 #[test]
 fn hosts_entry_without_endpoint_id_is_error_with_line() {
-    let e = parse_hosts("[hosts.home]\nparallel = 4\n", p())
+    let e = parse_servers("[hosts.home]\nparallel = 4\n", p())
         .unwrap_err()
         .to_string();
     assert!(
@@ -205,10 +214,10 @@ fn short_host_names() {
 }
 
 #[test]
-fn host_by_ssh_destination() {
+fn server_by_ssh_destination() {
     let host = |alias: &str, n: u8, ssh: &str| {
         format!(
-            "[hosts.\"{alias}\"]\nendpoint_id = \"{}\"\nssh = \"{ssh}\"\n",
+            "[servers.\"{alias}\"]\nendpoint_id = \"{}\"\nssh = \"{ssh}\"\n",
             id(n)
         )
     };
@@ -218,10 +227,10 @@ fn host_by_ssh_destination() {
         host("other", 2, "u@other"),
         host("a", 3, "10.0.0.1"),
         host("b", 4, "10.0.0.1"),
-        format!("[hosts.plain]\nendpoint_id = \"{}\"\n", id(5)),
+        format!("[servers.plain]\nendpoint_id = \"{}\"\n", id(5)),
     ]
     .concat();
-    let hosts = parse_hosts(&text, p()).unwrap();
+    let hosts = parse_servers(&text, p()).unwrap();
     assert_eq!(hosts.by_ssh("192.168.1.5"), Ok(Some("myserver")));
     assert_eq!(hosts.by_ssh("192.168.1.50"), Ok(None));
     assert_eq!(hosts.by_ssh("plain"), Ok(None));
@@ -234,10 +243,10 @@ fn host_by_ssh_destination() {
     );
 }
 
-/// Hosts saved as clients only have no daemon id to compare: two of them
-/// with one `ssh` value are two machines, not one daemon under two names.
+/// Hosts saved as clients only had no daemon to reach over ssh: in an old
+/// file their `ssh` value is dropped, and no destination finds them.
 #[test]
-fn client_only_hosts_with_one_ssh_destination_are_told_apart() {
+fn client_only_hosts_are_no_ssh_destination() {
     let text = format!(
         "[hosts.a]\nclient_id = \"{}\"\nssh = \"box\"\n\
          [hosts.b]\nclient_id = \"{}\"\nssh = \"box\"\n\
@@ -246,26 +255,24 @@ fn client_only_hosts_with_one_ssh_destination_are_told_apart() {
         id(2),
         id(3)
     );
-    let hosts = parse_hosts(&text, p()).unwrap();
-    assert_eq!(
-        hosts.by_ssh("box"),
-        Err(vec!["a".to_string(), "b".to_string()])
-    );
-    assert_eq!(hosts.by_ssh("alone"), Ok(Some("c")));
+    let c = Config::parse(&text, p()).unwrap();
+    assert_eq!(c.servers.by_ssh("box"), Ok(None));
+    assert_eq!(c.servers.by_ssh("alone"), Ok(None));
+    assert_eq!(c.clients.entries.len(), 3);
 }
 
 /// `ssh_aliases` lists other destinations typed for a host: they find it the
 /// way its `ssh` value does.
 #[test]
-fn host_by_another_ssh_destination() {
+fn server_by_another_ssh_destination() {
     let text = format!(
-        "[hosts.myserver]\nendpoint_id = \"{}\"\nssh = \"mike@myserver\"\n\
+        "[servers.myserver]\nendpoint_id = \"{}\"\nssh = \"mike@myserver\"\n\
          ssh_aliases = [\"192.168.1.5\", \"u@192.168.1.5\"]\n\
-         [hosts.other]\nendpoint_id = \"{}\"\nssh = \"u@192.168.1.5\"\n",
+         [servers.other]\nendpoint_id = \"{}\"\nssh = \"u@192.168.1.5\"\n",
         id(1),
         id(2)
     );
-    let hosts = parse_hosts(&text, p()).unwrap();
+    let hosts = parse_servers(&text, p()).unwrap();
     assert_eq!(
         hosts.get("myserver").unwrap().ssh_aliases,
         ["192.168.1.5", "u@192.168.1.5"]
@@ -279,40 +286,38 @@ fn host_by_another_ssh_destination() {
     );
 }
 
-/// One entry stands for one machine: `endpoint_id` is its daemon, the id
-/// to dial; `client_id` is the machine as a client, the id grants are for.
+/// A machine can be both: a server, by the id of its daemon, and a
+/// client, by the id grants naming it are for. Each table keeps its own.
 #[test]
-fn host_entry_with_a_client_id() {
+fn a_machine_as_a_server_and_a_client() {
     let text = format!(
-        "[hosts.laptop]\nendpoint_id = \"{d}\"\nclient_id = \"{c}\"\n\
-         [hosts.phone]\nclient_id = \"{p}\"\n\
-         [hosts.nas]\nendpoint_id = \"{n}\"\n",
+        "[servers.laptop]\nendpoint_id = \"{d}\"\n\
+         [servers.nas]\nendpoint_id = \"{n}\"\n\
+         [clients.laptop]\nclient_id = \"{c}\"\n\
+         [clients.phone]\nclient_id = \"{p}\"\n",
         d = id(1),
         c = id(2),
         p = id(3),
         n = id(4)
     );
-    let hosts = parse_hosts(&text, p()).unwrap();
-    let laptop = hosts.get("laptop").unwrap();
-    assert_eq!(laptop.endpoint_id, Some(id(1)));
-    assert_eq!(laptop.client_id, Some(id(2)));
-    assert_eq!(laptop.peer_id(), id(2));
-    let phone = hosts.get("phone").unwrap();
-    assert_eq!((phone.endpoint_id, phone.peer_id()), (None, id(3)));
-    // Without a client id, the one id is the peer, as it always was.
-    assert_eq!(hosts.get("nas").unwrap().peer_id(), id(4));
-    // Grants go by the peer id: the daemon of a machine is not its client.
-    assert_eq!(hosts.resolve_peer("laptop").unwrap(), id(2));
-    assert_eq!(hosts.alias_of(&id(2)), Some("laptop"));
-    assert_eq!(hosts.alias_of(&id(1)), None);
-    assert_eq!(hosts.alias_of(&id(3)), Some("phone"));
-    assert_eq!(hosts.alias_of(&id(4)), Some("nas"));
-    // An entry needs one of the two; a bad client id names its line.
-    let e = parse_hosts("[hosts.x]\nssh = \"x\"\n", p())
+    let Config {
+        servers, clients, ..
+    } = Config::parse(&text, p()).unwrap();
+    assert_eq!(servers.get("laptop").unwrap().endpoint_id, id(1));
+    assert_eq!(clients.get("laptop").unwrap().client_id, id(2));
+    // Grants go by the client id: the daemon of a machine is not its client.
+    assert_eq!(clients.resolve_peer("laptop").unwrap(), id(2));
+    assert_eq!(clients.alias_of(&id(2)), Some("laptop"));
+    assert_eq!(clients.alias_of(&id(1)), None);
+    assert_eq!(clients.alias_of(&id(3)), Some("phone"));
+    assert_eq!(clients.alias_of(&id(4)), None);
+    assert!(servers.get("phone").is_none());
+    // An old entry needs one of the two ids; a bad client id names its line.
+    let e = parse_servers("[hosts.x]\nssh = \"x\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(e.contains("endpoint_id") && e.contains("client_id"), "{e}");
-    let e = parse_hosts("[hosts.x]\nclient_id = \"nope\"\n", p())
+    let e = parse_servers("[hosts.x]\nclient_id = \"nope\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(e.contains(":2:") && e.contains("\"x\""), "{e}");
@@ -320,18 +325,20 @@ fn host_entry_with_a_client_id() {
 
 #[test]
 fn hosts_old_layout_names_the_new_location() {
-    let e = parse_hosts("\n[home]\nendpoint_id = \"x\"\n", p())
+    let e = parse_servers("\n[home]\nendpoint_id = \"x\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(
-        e.contains("unknown table \"home\"; hosts live under [hosts.home]") && e.contains(":2:"),
+        e.contains("unknown table \"home\"; servers live under [servers.home], clients under [clients.home]")
+            && e.contains(":2:"),
         "{e}"
     );
-    let e = parse_hosts("x = 1\n", p()).unwrap_err().to_string();
+    let e = parse_servers("x = 1\n", p()).unwrap_err().to_string();
     assert!(e.contains("unknown key \"x\""), "{e}");
-    assert!(parse_hosts("[hosts]\n", p()).unwrap().entries.is_empty());
+    assert!(parse_servers("[hosts]\n", p()).unwrap().entries.is_empty());
+    assert!(parse_clients("[hosts]\n", p()).unwrap().entries.is_empty());
     // The first offender in the file is reported, not the first by name.
-    let e = parse_hosts(
+    let e = parse_servers(
         "[zzz]\nendpoint_id = \"x\"\n[aaa]\nendpoint_id = \"x\"\n",
         p(),
     )
@@ -454,7 +461,7 @@ fn exports_missing_file_is_empty() {
 
 #[test]
 fn syntax_error_carries_its_line() {
-    let e = parse_hosts("[hosts.a]\nendpoint_id = \n", p())
+    let e = parse_servers("[hosts.a]\nendpoint_id = \n", p())
         .unwrap_err()
         .to_string();
     assert!(e.starts_with("/x/f.toml:2:"), "{e}");
@@ -467,10 +474,10 @@ fn hosts_invalid_alias_in_file_is_error_with_line() {
         id(1),
         id(2)
     );
-    let e = parse_hosts(&t, p()).unwrap_err().to_string();
+    let e = parse_servers(&t, p()).unwrap_err().to_string();
     assert!(e.contains("/x/f.toml:3:") && e.contains("a:b"), "{e}");
     let t = format!("[hosts.{}]\nendpoint_id = \"{}\"\n", id(1), id(1));
-    assert!(parse_hosts(&t, p())
+    assert!(parse_servers(&t, p())
         .unwrap_err()
         .to_string()
         .contains("invalid host alias"));
@@ -478,7 +485,7 @@ fn hosts_invalid_alias_in_file_is_error_with_line() {
 
 #[test]
 fn hosts_bad_endpoint_id_has_line() {
-    let e = parse_hosts("[hosts.a]\nendpoint_id = \"zzz\"\n", p())
+    let e = parse_servers("[hosts.a]\nendpoint_id = \"zzz\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(e.contains("/x/f.toml:2:"), "{e}");
@@ -516,18 +523,19 @@ fn merged_file_holds_every_table() {
         d.path(),
         &format!(
             "state_dir = \"/var/lib/irsync\"\n[client]\nparallel = 4\n[daemon]\nlisten = [\"127.0.0.1:0\"]\n\
-             [hosts.home]\nendpoint_id = \"{}\"\n[all]\nro = [\"home\"]\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"home\"]\n",
+             [servers.home]\nendpoint_id = \"{0}\"\n[clients.home]\nclient_id = \"{0}\"\n[all]\nro = [\"home\"]\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"home\"]\n",
             id(1)
         ),
     )
     .unwrap();
     assert_eq!(c.settings.state_dir, PathBuf::from("/var/lib/irsync"));
     assert_eq!(c.settings.client.parallel, Some(4));
-    assert_eq!(c.hosts.get("home").unwrap().endpoint_id, Some(id(1)));
+    assert_eq!(c.servers.get("home").unwrap().endpoint_id, id(1));
+    assert_eq!(c.clients.get("home").unwrap().client_id, id(1));
     assert_eq!(c.exports.ro, ["home"]);
     assert_eq!(c.exports.exports["photos"].rw, ["home"]);
     assert_eq!(
-        (c.hosts.path.clone(), c.exports.path.clone()),
+        (c.servers.path.clone(), c.exports.path.clone()),
         (d.path().join("irsync.toml"), d.path().join("irsync.toml"))
     );
 }
@@ -538,7 +546,7 @@ fn merged_shape_errors_keep_the_old_layout_hints() {
     for (text, needle) in [
         (
             "[home]\nendpoint_id = \"x\"\n",
-            "unknown table \"home\"; hosts live under [hosts.home]",
+            "unknown table \"home\"; servers live under [servers.home], clients under [clients.home]",
         ),
         (
             "[photos]\npath = \"/x\"\n",
@@ -550,7 +558,7 @@ fn merged_shape_errors_keep_the_old_layout_hints() {
         ),
         (
             "[nothing]\nx = 1\n",
-            "hosts live under [hosts.nothing], exports under [exports.nothing]",
+            "servers live under [servers.nothing], clients under [clients.nothing], exports under [exports.nothing]",
         ),
         ("[daemon]\nnope = 1\n", "nope"),
         ("[exports.all]\npath = \"/x\"\n", "\"all\" is reserved"),
@@ -583,7 +591,7 @@ fn split_files_are_ignored() {
     )
     .unwrap();
     let c = Config::load(&Paths::resolve(Some(&config))).unwrap();
-    assert!(c.hosts.entries.is_empty());
+    assert!(c.servers.entries.is_empty());
     assert!(c.exports.exports.is_empty());
     assert_eq!(
         ignored_split_files(&config),
@@ -618,7 +626,8 @@ fn missing_everything_is_the_defaults() {
     let d = tempfile::tempdir().unwrap();
     let c = Config::load(&Paths::resolve(Some(&d.path().join("irsync.toml")))).unwrap();
     assert_eq!(c.settings, Settings::default());
-    assert!(c.hosts.entries.is_empty() && c.exports.exports.is_empty());
+    assert!(c.servers.entries.is_empty() && c.clients.entries.is_empty());
+    assert!(c.exports.exports.is_empty());
 }
 
 #[test]
@@ -786,6 +795,49 @@ fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
     set("[client]\nparallel = 4\n", 0o644).unwrap_err();
     let e = irsync::manage::load_message(&paths.config).unwrap_err();
     assert!(e.to_string().contains("has mode 0644"), "{e}");
-    let lock = irsync::manage::lock_config(&paths.config).unwrap();
+    let mut lock = irsync::manage::lock_config(&paths.config).unwrap();
     assert!(lock.load().is_err());
+}
+
+/// `Config::parse` reads the values only, of either layout, and gives the
+/// typed view the full read gives, and the same errors.
+#[test]
+fn parse_reads_values_only_with_the_same_view_and_errors() {
+    use irsync::config::reader::{read, read_values_any};
+    let v1 = format!(
+        "# top\n[hosts.nas] # the nas\nendpoint_id = \"{}\"\n[hosts.lap]\nclient_id = \"{}\"\nmdns = false\n",
+        id(1),
+        id(2)
+    );
+    let v2 = format!(
+        "config_version = 2\n# top\n[servers.nas] # the nas\nendpoint_id = \"{}\"\n",
+        id(1)
+    );
+    for text in [v1.as_str(), v2.as_str(), "# only a comment\n"] {
+        let full = read(text, p()).unwrap().config;
+        let values = read_values_any(text, p()).unwrap();
+        assert_ne!(values, full, "{text}");
+        assert!(values.header.is_empty(), "{text}");
+        assert_eq!(
+            Config::from_message(&values, p()).unwrap(),
+            Config::from_message(&full, p()).unwrap(),
+            "{text}"
+        );
+        assert_eq!(
+            Config::parse(text, p()).unwrap(),
+            Config::from_message(&full, p()).unwrap()
+        );
+    }
+    for bad in [
+        "[hosts.a]\nendpoint_id = \"x\"\n",
+        "config_version = 3\n",
+        "[hosts.a]\n[servers.b]\n",
+        "x = [\n",
+    ] {
+        assert_eq!(
+            read_values_any(bad, p()).unwrap_err().to_string(),
+            read(bad, p()).unwrap_err().to_string(),
+            "{bad}"
+        );
+    }
 }

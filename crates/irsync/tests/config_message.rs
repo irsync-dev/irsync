@@ -1,7 +1,7 @@
 //! The config message as `config::reader` reads it from irsync.toml.
 
 use irsync::config::file::Config;
-use irsync::config::reader::{read, read_values};
+use irsync::config::reader::{self, read_values};
 use irsync::config::settings::DaemonSettings;
 use irsync::config::writer::write;
 use irsync_proto::config as pb;
@@ -9,6 +9,10 @@ use std::path::Path;
 
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
+}
+/// The message `reader::read` reads, whatever the layout of `text`.
+fn read(text: &str, path: &Path) -> Result<pb::Config, irsync::config::ConfigError> {
+    reader::read(text, path).map(|r| r.config)
 }
 fn values(text: &str) -> pb::Config {
     read_values(text, Path::new("irsync.toml")).unwrap()
@@ -27,7 +31,7 @@ fn unset_and_set_to_the_default_differ() {
 #[test]
 fn values_not_spellings() {
     let c = values(&format!(
-        "identity = \"~/k\"\n[client]\nreconnect = \"90\"\n[hosts.nas]\nendpoint_id = \"{}\"\nrelay_mode = \"disabled\"\nreconnect = 3600\n",
+        "identity = \"~/k\"\n[client]\nreconnect = \"90\"\n[servers.nas]\nendpoint_id = \"{}\"\nrelay_mode = \"disabled\"\nreconnect = 3600\n",
         id(1)
     ));
     assert_eq!(c.identity.as_deref(), Some("~/k")); // as written
@@ -41,8 +45,8 @@ fn values_not_spellings() {
             .seconds,
         90
     );
-    let h = &c.hosts[0];
-    assert_eq!(h.endpoint_id.as_deref(), Some(id(1).as_bytes().as_slice()));
+    let h = &c.servers[0];
+    assert_eq!(h.endpoint_id, id(1).as_bytes());
     assert_eq!(h.relay_mode, Some(pb::RelayMode::Disabled as i32));
     assert_eq!(h.reconnect.as_ref().unwrap().seconds, 3600);
 }
@@ -51,7 +55,7 @@ fn values_not_spellings() {
 fn urls_are_kept_as_written() {
     let text = format!(
         "[client]\nrelay = \"https://r.example\"\n\n[daemon]\nrelay = \"https://d.example\"\n\n\
-         [telemetry]\notlp_endpoint = \"http://c:4318\"\n\n[hosts.nas]\nendpoint_id = \"{}\"\nrelay = \"https://h.example\"\n",
+         [telemetry]\notlp_endpoint = \"http://c:4318\"\n\n[servers.nas]\nendpoint_id = \"{}\"\nrelay = \"https://h.example\"\n",
         id(1)
     );
     let c = values(&text);
@@ -67,18 +71,28 @@ fn urls_are_kept_as_written() {
         c.telemetry.as_ref().unwrap().otlp_endpoint.as_deref(),
         Some("http://c:4318")
     );
-    assert_eq!(c.hosts[0].relay.as_deref(), Some("https://h.example"));
+    assert_eq!(c.servers[0].relay.as_deref(), Some("https://h.example"));
     assert_eq!(write(&c), text);
 }
 
 #[test]
 fn entries_keep_file_order() {
     let c = values(&format!(
-        "[hosts.zed]\nendpoint_id = \"{0}\"\n[exports.b]\npath = \"/b\"\n[hosts.abe]\nendpoint_id = \"{0}\"\n[exports.a]\npath = \"/a\"\n",
+        "[servers.zed]\nendpoint_id = \"{0}\"\n[exports.b]\npath = \"/b\"\n[clients.zed]\nclient_id = \"{0}\"\n[servers.abe]\nendpoint_id = \"{0}\"\n[exports.a]\npath = \"/a\"\n[clients.abe]\nclient_id = \"{0}\"\n",
         id(1)
     ));
     assert_eq!(
-        c.hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+        c.servers
+            .iter()
+            .map(|h| h.name.as_str())
+            .collect::<Vec<_>>(),
+        ["zed", "abe"]
+    );
+    assert_eq!(
+        c.clients
+            .iter()
+            .map(|h| h.name.as_str())
+            .collect::<Vec<_>>(),
         ["zed", "abe"]
     );
     assert_eq!(
@@ -120,13 +134,13 @@ fn addresses_are_kept_as_written_or_as_printed() {
 
 #[test]
 fn ssh_aliases_set_says_whether_the_key_is_there() {
-    let text = |aliases: &str| format!("[hosts.nas]\nendpoint_id = \"{}\"\n{aliases}", id(1));
-    let h = values(&text("")).hosts.remove(0);
+    let text = |aliases: &str| format!("[servers.nas]\nendpoint_id = \"{}\"\n{aliases}", id(1));
+    let h = values(&text("")).servers.remove(0);
     assert!(h.ssh_aliases.is_empty() && !h.ssh_aliases_set);
-    let h = values(&text("ssh_aliases = []\n")).hosts.remove(0);
+    let h = values(&text("ssh_aliases = []\n")).servers.remove(0);
     assert!(h.ssh_aliases.is_empty() && h.ssh_aliases_set);
     let h = values(&text("ssh_aliases = [\"10.0.0.2\"]\n"))
-        .hosts
+        .servers
         .remove(0);
     assert_eq!(h.ssh_aliases[0].value, "10.0.0.2");
     assert!(h.ssh_aliases_set);
@@ -134,11 +148,9 @@ fn ssh_aliases_set_says_whether_the_key_is_there() {
 
 #[test]
 fn a_client_id_is_32_bytes() {
-    let h = values(&format!("[hosts.lap]\nclient_id = \"{}\"\n", id(2)))
-        .hosts
-        .remove(0);
-    assert_eq!(h.client_id.as_deref(), Some(id(2).as_bytes().as_slice()));
-    assert_eq!(h.endpoint_id, None);
+    let c = values(&format!("[clients.lap]\nclient_id = \"{}\"\n", id(2)));
+    assert_eq!(c.clients[0].client_id, id(2).as_bytes());
+    assert!(c.servers.is_empty());
 }
 
 #[test]
@@ -159,7 +171,8 @@ fn from_message_applies_defaults_and_expands_tilde() {
     assert_eq!(c.settings.identity, dirs::home_dir().unwrap().join("k"));
     assert_eq!(c.settings.ssh_identity, None); // the file names an identity
     assert_eq!(c.settings.daemon, DaemonSettings::default());
-    assert_eq!(c.hosts.path, Path::new("f"));
+    assert_eq!(c.servers.path, Path::new("f"));
+    assert_eq!(c.clients.path, Path::new("f"));
 }
 
 #[test]
@@ -172,9 +185,9 @@ fn from_message_refuses_what_a_command_can_break() {
         "f: [exports.p]: path \"rel\" must be absolute"
     );
     let mut m = values("");
-    m.hosts.push(pb::Host {
+    m.servers.push(pb::ServerEntry {
         name: "nas".into(),
-        endpoint_id: Some(vec![1, 2, 3]),
+        endpoint_id: vec![1, 2, 3],
         ..Default::default()
     });
     assert!(Config::from_message(&m, Path::new("f")).is_err());
@@ -182,9 +195,9 @@ fn from_message_refuses_what_a_command_can_break() {
 
 #[test]
 fn from_message_checks_each_edit_again() {
-    let host = |name: &str, n: u8| pb::Host {
+    let server = |name: &str, n: u8| pb::ServerEntry {
         name: name.into(),
-        endpoint_id: Some(id(n).as_bytes().to_vec()),
+        endpoint_id: id(n).as_bytes().to_vec(),
         ..Default::default()
     };
     let export = |name: &str| pb::Export {
@@ -204,19 +217,19 @@ fn from_message_checks_each_edit_again() {
             .to_string()
     };
     assert_eq!(
-        refusal(&|m| m.hosts.push(host("a:b", 1))),
-        "f: invalid host alias \"a:b\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
+        refusal(&|m| m.servers.push(server("a:b", 1))),
+        "f: invalid name \"a:b\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
     );
     assert_eq!(
-        refusal(&|m| m.hosts.push(pb::Host {
+        refusal(&|m| m.servers.push(pb::ServerEntry {
             name: "nas".into(),
             ..Default::default()
         })),
-        "f: host \"nas\": needs an endpoint_id (its daemon), a client_id, or both"
+        "f: server \"nas\": needs an endpoint_id"
     );
     assert_eq!(
-        refusal(&|m| m.hosts.extend([host("nas", 1), host("nas", 2)])),
-        "f: duplicate host alias \"nas\""
+        refusal(&|m| m.servers.extend([server("nas", 1), server("nas", 2)])),
+        "f: duplicate server name \"nas\""
     );
     assert_eq!(
         refusal(&|m| m.exports.push(export("all"))),
@@ -262,6 +275,7 @@ fn from_message_checks_each_edit_again() {
 #[test]
 fn errors_are_those_of_config_parse() {
     // The messages `Config::parse` gave before it read through the message.
+    // A file with `[hosts]` is of layout 1 and fails as it always did.
     for (text, message) in [
         (
             "[hosts.nas]\nendpoint_id = \"nope\"\n",
@@ -273,7 +287,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[nas]\nendpoint_id = \"x\"\n",
-            "f:1: unknown table \"nas\"; hosts live under [hosts.nas]",
+            "f:1: unknown table \"nas\"; servers live under [servers.nas], clients under [clients.nas]",
         ),
         (
             "rw = [\"x\"]\n",
@@ -492,7 +506,7 @@ fn errors_are_those_of_config_parse() {
             "f:1: key with no value, expected `=`",
         ),
     ] {
-        let e = read_values(text, Path::new("f")).unwrap_err();
+        let e = read(text, Path::new("f")).unwrap_err();
         assert_eq!(e.to_string(), message, "{text}");
     }
 }
@@ -562,14 +576,14 @@ fn the_footer_starts_at_the_first_blank_line_after_the_last_key() {
 fn hash_in_a_string_is_not_a_comment() {
     let c = read(
         &format!(
-            "[hosts.nas]\nendpoint_id = \"{}\"\nssh = \"me@host#1\"\n",
+            "[servers.nas]\nendpoint_id = \"{}\"\nssh = \"me@host#1\"\n",
             id(1)
         ),
         Path::new("f"),
     )
     .unwrap();
-    assert_eq!(c.hosts[0].ssh.as_deref(), Some("me@host#1"));
-    assert!(c.hosts[0].key_comments.is_empty());
+    assert_eq!(c.servers[0].ssh.as_deref(), Some("me@host#1"));
+    assert!(c.servers[0].key_comments.is_empty());
 }
 
 #[test]
@@ -616,7 +630,7 @@ fn a_bare_group_header_gives_its_comments_to_the_first_entry() {
 
 #[test]
 fn a_comment_without_a_place_goes_to_the_footer() {
-    let c = commented("[hosts] # none yet\n[daemon]\n# end");
+    let c = commented("[servers] # none yet\n[daemon]\n# end");
     assert_eq!(c.footer, ["# none yet"]);
     assert_eq!(c.daemon.unwrap().tail, ["# end"]);
 }
@@ -638,13 +652,13 @@ fn comments_in_arrays() {
 #[test]
 fn comments_on_dotted_keys_and_inline_tables() {
     let c = commented(&format!(
-        "[daemon]\n# on dht\ndiscovery.dht = false # off\n[hosts]\n# the nas\nnas = {{ endpoint_id = \"{}\" }} # inline\n",
+        "[daemon]\n# on dht\ndiscovery.dht = false # off\n[servers]\n# the nas\nnas = {{ endpoint_id = \"{}\" }} # inline\n",
         id(1)
     ));
     let disc = c.daemon.unwrap().discovery.unwrap();
     assert_eq!(disc.key_comments["dht"].above, ["# on dht"]);
     assert_eq!(disc.key_comments["dht"].trailing, "# off");
-    let h = c.hosts[0].comment.as_ref().unwrap();
+    let h = c.servers[0].comment.as_ref().unwrap();
     assert_eq!(h.above, ["# the nas"]);
     assert_eq!(h.trailing, "# inline");
 }
@@ -779,8 +793,8 @@ fn quoted_names_round_trip() {
     let m = read(&text, Path::new("f")).unwrap();
     let out = write(&m);
     for header in [
-        "[hosts.\"my nas\"]",
-        "[hosts.\"käse\"]",
+        "[servers.\"my nas\"]",
+        "[clients.\"käse\"]",
         "[exports.\"www.example.com\"]",
     ] {
         assert!(out.contains(header), "{header} in\n{out}");
@@ -820,11 +834,11 @@ fn inline_and_dotted_forms_become_tables() {
     let inline_twin = format!(
         "\
 # the nas
-[hosts.nas] # inline host
+[servers.nas] # inline host
 endpoint_id = \"{a}\"
 address = [\"10.0.0.2:4433\"]
 
-[hosts.lap]
+[clients.lap]
 client_id = \"{b}\"
 
 # the photos
@@ -847,13 +861,13 @@ portmap = false # off
 [daemon.discovery]
 dht = false # dht off
 
-[hosts.nas]
+[servers.nas]
 endpoint_id = \"{a}\" # the id
 ",
         a = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191",
     );
     for (name, twin, header) in [
-        ("inline.toml", inline_twin, "[hosts.nas]"),
+        ("inline.toml", inline_twin, "[servers.nas]"),
         ("dotted.toml", dotted_twin, "[daemon]"),
     ] {
         let m = read(&fixture(name), Path::new("f")).unwrap();
@@ -878,4 +892,291 @@ fn a_top_level_group_key_gives_its_comments_to_the_first_entry() {
 fn a_bare_group_tail_gives_no_blank_lines_to_the_first_entry() {
     let c = commented("[exports]\n# a\n\n# b\n\n[exports.p]\npath = \"/p\"\n");
     assert_eq!(c.exports[0].comment.as_ref().unwrap().above, ["# a", "# b"]);
+}
+
+#[test]
+fn servers_and_clients_build_the_typed_view() {
+    let msg = pb::Config {
+        servers: vec![pb::ServerEntry {
+            name: "nas".into(),
+            endpoint_id: id(1).as_bytes().to_vec(),
+            ..Default::default()
+        }],
+        clients: vec![pb::ClientEntry {
+            name: "nas".into(),
+            client_id: id(2).as_bytes().to_vec(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let c = Config::from_message(&msg, Path::new("irsync.toml")).unwrap();
+    assert_eq!(c.servers.get("nas").unwrap().endpoint_id, id(1));
+    assert_eq!(c.clients.get("nas").unwrap().client_id, id(2));
+    assert_eq!(c.clients.alias_of(&id(2)), Some("nas"));
+    assert_eq!(c.clients.alias_of(&id(1)), None);
+    assert_eq!(c.clients.resolve_peer("nas").unwrap(), id(2));
+    assert_eq!(c.clients.resolve_peer(&id(3).to_string()).unwrap(), id(3));
+    assert_eq!(
+        c.clients.resolve_peer("zed").unwrap_err().to_string(),
+        "unknown client \"zed\" (and not an EndpointId); clients are defined in irsync.toml"
+    );
+}
+
+#[test]
+fn a_server_needs_an_endpoint_id_and_a_client_a_client_id() {
+    let p = Path::new("irsync.toml");
+    let s = pb::Config {
+        servers: vec![pb::ServerEntry {
+            name: "nas".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        Config::from_message(&s, p).unwrap_err().to_string(),
+        "irsync.toml: server \"nas\": needs an endpoint_id"
+    );
+    let c = pb::Config {
+        clients: vec![pb::ClientEntry {
+            name: "lap".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        Config::from_message(&c, p).unwrap_err().to_string(),
+        "irsync.toml: client \"lap\": needs a client_id"
+    );
+}
+
+#[test]
+fn names_are_checked_and_unique_per_table() {
+    let p = Path::new("irsync.toml");
+    let server = |n: &str| pb::ServerEntry {
+        name: n.into(),
+        endpoint_id: id(1).as_bytes().to_vec(),
+        ..Default::default()
+    };
+    let client = |n: &str| pb::ClientEntry {
+        name: n.into(),
+        client_id: id(2).as_bytes().to_vec(),
+        ..Default::default()
+    };
+    let bad = [
+        String::new(),
+        "all".into(),
+        "*".into(),
+        "a:b".into(),
+        "a/b".into(),
+        id(5).to_string(),
+    ];
+    for name in &bad {
+        let want = format!(
+            "irsync.toml: invalid name {name:?}: must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
+        );
+        let s = pb::Config {
+            servers: vec![server(name)],
+            ..Default::default()
+        };
+        assert_eq!(Config::from_message(&s, p).unwrap_err().to_string(), want);
+        let c = pb::Config {
+            clients: vec![client(name)],
+            ..Default::default()
+        };
+        assert_eq!(Config::from_message(&c, p).unwrap_err().to_string(), want);
+    }
+    let s = pb::Config {
+        servers: vec![server("x"), server("x")],
+        ..Default::default()
+    };
+    assert_eq!(
+        Config::from_message(&s, p).unwrap_err().to_string(),
+        "irsync.toml: duplicate server name \"x\""
+    );
+    let c = pb::Config {
+        clients: vec![client("x"), client("x")],
+        ..Default::default()
+    };
+    assert_eq!(
+        Config::from_message(&c, p).unwrap_err().to_string(),
+        "irsync.toml: duplicate client name \"x\""
+    );
+}
+
+#[test]
+fn server_keys_are_read_like_host_keys() {
+    let msg = pb::Config {
+        servers: vec![pb::ServerEntry {
+            name: "nas".into(),
+            endpoint_id: id(1).as_bytes().to_vec(),
+            ssh: Some("me@nas".into()),
+            ssh_aliases: vec![pb::Entry {
+                value: "10.0.0.2".into(),
+                ..Default::default()
+            }],
+            parallel: Some(4),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let c = Config::from_message(&msg, Path::new("irsync.toml")).unwrap();
+    assert_eq!(c.servers.by_ssh("me@nas"), Ok(Some("nas")));
+    assert_eq!(c.servers.by_ssh("10.0.0.2"), Ok(Some("nas")));
+    assert_eq!(c.servers.by_ssh("other"), Ok(None));
+    assert_eq!(c.servers.get("nas").unwrap().parallel, Some(4));
+}
+
+/// A message with one server and one client, each with comments, as
+/// `irsync.toml` of version 2 holds them.
+fn split_message() -> pb::Config {
+    let comment = |above: &[&str], trailing: &str| pb::Comment {
+        above: above.iter().map(|s| s.to_string()).collect(),
+        trailing: trailing.into(),
+    };
+    pb::Config {
+        config_version: Some(2),
+        servers: vec![pb::ServerEntry {
+            comment: Some(comment(&["# the nas"], "")),
+            name: "nas".into(),
+            endpoint_id: id(1).as_bytes().to_vec(),
+            address: vec![pb::Entry {
+                value: "nas.lan:4433".into(),
+                ..Default::default()
+            }],
+            address_set: true,
+            ssh: Some("me@nas".into()),
+            ..Default::default()
+        }],
+        clients: vec![pb::ClientEntry {
+            name: "laptop".into(),
+            client_id: id(2).as_bytes().to_vec(),
+            key_comments: [("client_id".to_string(), comment(&[], "# my laptop"))].into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn writer_writes_servers_then_clients() {
+    assert_eq!(
+        write(&split_message()),
+        format!(
+            "config_version = 2\n\n# the nas\n[servers.nas]\nendpoint_id = \"{}\"\naddress = [\"nas.lan:4433\"]\nssh = \"me@nas\"\n\n[clients.laptop]\nclient_id = \"{}\" # my laptop\n",
+            id(1),
+            id(2)
+        )
+    );
+}
+
+#[test]
+fn the_new_tables_sit_between_telemetry_and_exports() {
+    let mut msg = split_message();
+    msg.telemetry = Some(pb::Telemetry {
+        otlp_endpoint: Some("http://c:4318".into()),
+        ..Default::default()
+    });
+    msg.exports = vec![pb::Export {
+        name: "data".into(),
+        path: "/data".into(),
+        ..Default::default()
+    }];
+    let text = write(&msg);
+    let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s} in {text}"));
+    assert!(at("[telemetry]") < at("[servers.nas]"));
+    assert!(at("[servers.nas]") < at("[clients.laptop]"));
+    assert!(at("[clients.laptop]") < at("[exports.data]"));
+}
+
+/// The current reader reads `[servers]` and `[clients]` with their
+/// comments, and `config_version`.
+#[test]
+fn servers_and_clients_are_read_with_their_comments() {
+    let text = format!(
+        "config_version = 2 # the layout\n\n# the nas\n[servers.nas] # mine\nendpoint_id = \"{}\"\n# how to reach it\naddress = [\"nas.lan:4433\"]\nssh = \"me@nas\"\n# nas tail\n\n[clients.nas]\nclient_id = \"{}\" # the nas as a client\n\n[clients.lap]\nclient_id = \"{}\"\n",
+        id(1),
+        id(2),
+        id(3)
+    );
+    let c = commented(&text);
+    assert_eq!(c.config_version, Some(2));
+    assert_eq!(c.key_comments["config_version"].trailing, "# the layout");
+    let s = &c.servers[0];
+    assert_eq!(s.name, "nas");
+    assert_eq!(s.endpoint_id, id(1).as_bytes().to_vec());
+    assert_eq!(s.comment.as_ref().unwrap().above, ["# the nas"]);
+    assert_eq!(s.comment.as_ref().unwrap().trailing, "# mine");
+    assert_eq!(s.key_comments["address"].above, ["# how to reach it"]);
+    assert_eq!(s.tail, ["# nas tail"]);
+    assert_eq!(s.ssh.as_deref(), Some("me@nas"));
+    let names: Vec<_> = c.clients.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["nas", "lap"]);
+    assert_eq!(c.clients[0].client_id, id(2).as_bytes().to_vec());
+    assert_eq!(
+        c.clients[0].key_comments["client_id"].trailing,
+        "# the nas as a client"
+    );
+    assert_eq!(write(&c), text);
+    let typed = Config::parse(&text, Path::new("f")).unwrap();
+    assert_eq!(typed.servers.get("nas").unwrap().endpoint_id, id(1));
+    assert_eq!(typed.clients.get("nas").unwrap().client_id, id(2));
+}
+
+#[test]
+fn a_file_without_config_version_reads_as_unset() {
+    assert_eq!(values("").config_version, None);
+    assert_eq!(values("config_version = 2\n").config_version, Some(2));
+}
+
+/// A server without `endpoint_id` and a client without `client_id` are
+/// errors at their line, as are bad ids and unknown keys.
+#[test]
+fn the_current_reader_checks_servers_and_clients_at_their_line() {
+    let error = |text: &str| read_values(text, Path::new("f")).unwrap_err().to_string();
+    assert_eq!(
+        error("[daemon]\n\n[servers.nas]\nssh = \"me@nas\"\n"),
+        "f:3: server \"nas\": needs an endpoint_id"
+    );
+    assert_eq!(
+        error("\n[clients.lap]\n"),
+        "f:2: client \"lap\": needs a client_id"
+    );
+    assert_eq!(
+        error("[servers.nas]\n\nendpoint_id = \"nope\"\n"),
+        "f:3: server \"nas\": invalid endpoint id: nope"
+    );
+    assert_eq!(
+        error("[clients.lap]\nclient_id = \"nope\"\n"),
+        "f:2: client \"lap\": invalid endpoint id: nope"
+    );
+    assert_eq!(
+        error(&format!(
+            "[clients.lap]\nclient_id = \"{}\"\nendpoint_id = \"x\"\n",
+            id(1)
+        )),
+        "f:3: unknown field `endpoint_id`, expected `client_id`"
+    );
+    assert_eq!(
+        error(&format!("[servers.nas]\nendpoint_id = \"{}\"\nclient_id = \"x\"\n", id(1))),
+        "f:3: unknown field `client_id`, expected one of `endpoint_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`"
+    );
+    assert_eq!(
+        error(&format!("[servers.all]\nendpoint_id = \"{}\"\n", id(1))),
+        "f:1: invalid name \"all\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId"
+    );
+    assert_eq!(
+        error(&format!("\n[nas]\nendpoint_id = \"{}\"\n", id(1))),
+        "f:2: unknown table \"nas\"; servers live under [servers.nas], clients under [clients.nas]"
+    );
+    assert_eq!(
+        error("[nothing]\nx = 1\n"),
+        "f:1: unknown table \"nothing\"; servers live under [servers.nothing], clients under [clients.nothing], exports under [exports.nothing]"
+    );
+    // A server and a client may have the same name.
+    let both = format!(
+        "[servers.nas]\nendpoint_id = \"{}\"\n[clients.nas]\nclient_id = \"{}\"\n",
+        id(1),
+        id(2)
+    );
+    assert_eq!(values(&both).servers[0].name, values(&both).clients[0].name);
 }

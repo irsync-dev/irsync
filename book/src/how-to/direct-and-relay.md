@@ -34,10 +34,10 @@ relay.
   irsync -a --no-relay ~/Photos/ myserver:photos/
   ```
 
-- For every sync to one host, or to every host:
+- For every sync to one server, or to every server:
 
   ```sh
-  irsync host add myserver <id> --relay-mode disabled
+  irsync server add myserver <id> --relay-mode disabled
   irsync config set client.relay_mode disabled
   ```
 
@@ -67,10 +67,10 @@ than the shared public relays. iroh ships one as `iroh-relay`.
    irsync config set daemon.relay https://relay.example.net
    ```
 
-3. Point the client at it, for one host or for all:
+3. Point the client at it, for one server or for all:
 
    ```sh
-   irsync host add myserver <id> --relay https://relay.example.net
+   irsync server add myserver <id> --relay https://relay.example.net
    irsync config set client.relay https://relay.example.net
    ```
 
@@ -78,11 +78,11 @@ than the shared public relays. iroh ships one as `iroh-relay`.
 
 ## Turn the lookups off
 
-- On the client, `--no-dht` skips the mainline DHT for one sync. A host's
+- On the client, `--no-dht` skips the mainline DHT for one sync. A server's
   `dht` and `mdns` keys, or `[client]`'s, turn either lookup off for good:
 
   ```sh
-  irsync host add myserver <id> --dht no --mdns no
+  irsync server add myserver <id> --dht no --mdns no
   ```
 
 - On the daemon, `[daemon.discovery]` says where it publishes its addresses:
@@ -129,13 +129,13 @@ sockets; it does not isolate the daemon. Turn everything off explicitly.
 
    ```sh
    irsync -a --address localhost:43210 ./src <id>:data/
-   irsync host add local <id> --address 127.0.0.1:43210
+   irsync server add local <id> --address 127.0.0.1:43210
    ```
 
    The second command writes this table:
 
    ```toml
-   [hosts.local]
+   [servers.local]
    endpoint_id = "<id>"
    address = ["127.0.0.1:43210"]
    ```
@@ -170,7 +170,7 @@ With both, the connection keeps to the path you dialled.
 
 ## See also
 
-- [Configuration](../reference/configuration.md#hosts): the `relay`,
+- [Configuration](../reference/configuration.md#servers): the `relay`,
   `relay_mode`, `address`, `dht` and `mdns` keys.
 - [Command line](../reference/command-line.md#irsync-flags): `--relay`,
   `--no-relay`, `--no-dht`, `--address`.

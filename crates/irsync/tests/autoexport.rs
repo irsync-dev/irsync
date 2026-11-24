@@ -137,7 +137,7 @@ fn auto_export_names_the_peer_by_its_alias() {
     irsync::fs::private::write(
         &config,
         format!(
-            "[hosts.laptop]\nendpoint_id = \"{}\"\n[immediate]\nrw = [\"laptop\"]\n",
+            "[clients.laptop]\nclient_id = \"{}\"\n[immediate]\nrw = [\"laptop\"]\n",
             id(1)
         ),
     )

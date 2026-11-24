@@ -1,7 +1,7 @@
+use irsync::config::clients::Clients;
 use irsync::config::exports::Exports;
 use irsync::config::file::Config;
-use irsync::config::hosts::Hosts;
-use irsync::config::reader::read;
+use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::grants::{
     canonicalize, grant_add, grant_immediate, grant_remove, grant_remove_immediate, list_all,
@@ -21,7 +21,7 @@ fn peer(n: u8) -> PeerSpec {
     }
 }
 fn msg(text: &str) -> pb::Config {
-    read(text, Path::new("f")).unwrap()
+    reader::read(text, Path::new("f")).unwrap().config
 }
 /// The typed config the message builds; panics when it does not load.
 fn typed(m: &pb::Config) -> Config {
@@ -290,7 +290,7 @@ fn grant_immediate_knows_the_other_spelling() {
     assert_eq!(grant_remove_immediate(&mut m, None, &resolve).unwrap(), 1);
 }
 
-/// `[hosts.box]` and grants that name it in three tables.
+/// Grants that name `box` in three tables.
 fn named_everywhere() -> pb::Config {
     msg(
         "[all]\nrw = [\"box\", \"x\"]\n[immediate]\nrw = [\"box\"]\n\
@@ -315,24 +315,24 @@ fn lists_naming_remove_named_and_rename_named_walk_every_table() {
     assert_eq!(values(&r.all.as_ref().unwrap().rw), ["x"]);
 }
 
-/// `[hosts.NAME]` tables for `(alias, id number)` pairs.
+/// `[clients.NAME]` tables for `(name, id number)` pairs.
 fn host_tables(hosts: &[(&str, u8)]) -> String {
     hosts
         .iter()
-        .map(|(a, n)| format!("[hosts.{a}]\nendpoint_id = \"{}\"\n", id(*n)))
+        .map(|(a, n)| format!("[clients.{a}]\nclient_id = \"{}\"\n", id(*n)))
         .collect()
 }
 
-fn known(hosts: &[(&str, u8)]) -> Hosts {
-    typed(&msg(&host_tables(hosts))).hosts
+fn known(hosts: &[(&str, u8)]) -> Clients {
+    typed(&msg(&host_tables(hosts))).clients
 }
 
-/// Runs `canonicalize` on the hosts tables followed by `body`; the file
-/// written afterwards without the hosts, and whether anything changed.
+/// Runs `canonicalize` on the clients tables followed by `body`; the file
+/// written afterwards without the clients, and whether anything changed.
 fn canon(hosts: &[(&str, u8)], body: &str) -> (String, bool) {
     let mut m = msg(&format!("{}{body}", host_tables(hosts)));
     let changed = canonicalize(&mut m, &known(hosts));
-    m.hosts.clear();
+    m.clients.clear();
     (write(&m), changed)
 }
 
@@ -370,13 +370,13 @@ fn every_grant_list_is_visited() {
         )
     );
     // Inline tables count, as for the other editors; top-level keys come
-    // before the hosts tables.
+    // before the clients tables.
     let mut m = msg(&format!(
         "exports = {{ p = {{ path = \"/p\", rw = [\"{i}\"] }} }}\nall = {{ ro = [\"{i}\"] }}\n{}",
         host_tables(BOX)
     ));
     assert!(canonicalize(&mut m, &known(BOX)));
-    m.hosts.clear();
+    m.clients.clear();
     assert_eq!(
         write(&m),
         written("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n[all]\nro = [\"box\"]\n")
@@ -469,8 +469,8 @@ fn comments_are_kept() {
 #[test]
 fn canonicalize_keeps_the_comment_of_the_entry_that_stays() {
     // rw holds the id (with a comment) and its alias: the first stays, renamed to the alias, with its comment.
-    let mut m = read(&format!("[hosts.laptop]\nclient_id = \"{0}\"\n[all]\nrw = [\n    \"{0}\", # mine\n    \"laptop\",\n]\n", id(1)), Path::new("f")).unwrap();
-    let hosts = Config::from_message(&m, Path::new("f")).unwrap().hosts;
+    let mut m = msg(&format!("[clients.laptop]\nclient_id = \"{0}\"\n[all]\nrw = [\n    \"{0}\", # mine\n    \"laptop\",\n]\n", id(1)));
+    let hosts = Config::from_message(&m, Path::new("f")).unwrap().clients;
     assert!(canonicalize(&mut m, &hosts));
     let rw = &m.all.as_ref().unwrap().rw;
     assert_eq!(rw.len(), 1);
@@ -572,7 +572,7 @@ fn a_duplicate_dropped_by_canonicalize_leaves_its_lines_above() {
         id(1)
     ));
     assert!(canonicalize(&mut m, &known(BOX)));
-    m.hosts.clear();
+    m.clients.clear();
     assert_eq!(
         write(&m),
         "[all]\nrw = [\n    \"box\", # mine\n    # the id\n    \"x\",\n]\n"
@@ -605,9 +605,9 @@ fn grant_add_moves_an_entry_with_its_comment_and_replaces_another_spelling() {
     );
 }
 
-fn fixture() -> (Hosts, Exports) {
-    let h = parse_hosts(
-        &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
+fn fixture() -> (Clients, Exports) {
+    let h = parse_clients(
+        &format!("[clients.laptop]\nclient_id = \"{}\"\n", id(1)),
         Path::new("h"),
     )
     .unwrap();
@@ -647,8 +647,8 @@ fn list_all_names_every_export_and_the_all_table() {
 
 #[test]
 fn grant_list_shows_immediate_grants() {
-    let h = parse_hosts(
-        &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
+    let h = parse_clients(
+        &format!("[clients.laptop]\nclient_id = \"{}\"\n", id(1)),
         Path::new("h"),
     )
     .unwrap();
@@ -698,11 +698,11 @@ fn list_peer_marks_inherited_and_capped_grants() {
     assert_eq!(list_peer(&e, &h, "x", &id(3)), "x:\n");
 }
 
-fn parse_hosts(
+fn parse_clients(
     text: &str,
     path: &std::path::Path,
-) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
-    irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
+) -> Result<Clients, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.clients)
 }
 
 fn parse_exports(
@@ -714,7 +714,7 @@ fn parse_exports(
 
 #[test]
 fn alias_of_is_the_first_alias_in_order() {
-    let h = parse_hosts(
+    let h = parse_clients(
         &host_tables(&[("zed", 1), ("amy", 1), ("bob", 2)]),
         Path::new("h"),
     )
@@ -763,6 +763,6 @@ fn odd_shapes_are_refused_by_the_reader() {
         "immediate = []\n".to_string(),
         "[[all]]\nrw = []\n".to_string(),
     ] {
-        assert!(read(&body, Path::new("f")).is_err(), "{body:?}");
+        assert!(reader::read(&body, Path::new("f")).is_err(), "{body:?}");
     }
 }

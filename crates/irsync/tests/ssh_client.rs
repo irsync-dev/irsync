@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use irsync::build::LONG_VERSION;
-use irsync::config::hosts::short_host_name;
+use irsync::config::names::short_host_name;
 use irsync::platform::testutil::{set_mode, symlink};
 use irsync::platform::{is_root, mode_of};
 use irsync::ssh::client::{

@@ -161,14 +161,13 @@ async fn isolated_opts_have_no_relay_and_no_lookup() {
 
 #[test]
 fn client_opts_are_isolated_whenever_addresses_are_given() {
-    use irsync::config::hosts::HostEntry;
+    use irsync::config::servers::ServerEntry as HostEntry;
     use irsync::config::settings::ClientSettings;
     use irsync::net::{client_endpoint_opts, RelayChoice};
     let cs = ClientSettings::default();
     // Addresses from the host entry, with relay/dht/mdns set beside them: isolated wins.
     let he = HostEntry {
-        endpoint_id: Some(SecretKey::generate().public()),
-        client_id: None,
+        endpoint_id: SecretKey::generate().public(),
         relay: Some("https://r.example".parse().unwrap()),
         relay_mode: None,
         congestion: None,
@@ -275,7 +274,7 @@ fn daemon_opts_follow_the_isolated_config() {
 /// else BBR, with or without direct addresses; the daemon's from its own.
 #[test]
 fn opts_carry_the_congestion_controller() {
-    use irsync::config::hosts::HostEntry;
+    use irsync::config::servers::ServerEntry as HostEntry;
     use irsync::config::settings::{ClientSettings, Congestion, DaemonSettings};
     use irsync::net::{client_endpoint_opts, daemon_endpoint_opts};
     let addr: Vec<irsync::net::addr::HostPort> = vec!["127.0.0.1:1".parse().unwrap()];
@@ -286,8 +285,7 @@ fn opts_carry_the_congestion_controller() {
         ..ClientSettings::default()
     };
     let mut he = HostEntry {
-        endpoint_id: Some(SecretKey::generate().public()),
-        client_id: None,
+        endpoint_id: SecretKey::generate().public(),
         relay: None,
         relay_mode: None,
         congestion: None,
@@ -361,7 +359,7 @@ async fn endpoints_on_cubic_carry_data() {
 
 #[test]
 fn client_opts_disable_the_relay_but_keep_the_lookups() {
-    use irsync::config::hosts::HostEntry;
+    use irsync::config::servers::ServerEntry as HostEntry;
     use irsync::config::settings::{ClientSettings, RelayMode};
     use irsync::net::{client_endpoint_opts, RelayChoice};
     let cs = ClientSettings::default();
@@ -380,8 +378,7 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
     assert_eq!(o.relay, RelayChoice::Disabled);
     // The host entry decides over the client settings, either way round.
     let mut he = HostEntry {
-        endpoint_id: Some(SecretKey::generate().public()),
-        client_id: None,
+        endpoint_id: SecretKey::generate().public(),
         relay: None,
         relay_mode: Some(RelayMode::Default),
         congestion: None,

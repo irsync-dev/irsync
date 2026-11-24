@@ -3,20 +3,72 @@
 //! writer's form, comments kept), and the interpretation of a command-line
 //! "who" argument.
 
+pub mod clients;
 pub mod config;
 pub mod exports;
 pub mod grants;
-pub mod hosts;
+pub mod servers;
 pub mod show;
 
+use crate::config::clients::Clients;
 use crate::config::file::Config;
-use crate::config::hosts::Hosts;
-use crate::config::{reader, writer, ConfigError};
+use crate::config::reader::{self, CONFIG_VERSION};
+use crate::config::servers::Servers;
+use crate::config::{writer, ConfigError};
 use crate::identity::{endpoint_id_of_public_key, parse_endpoint_id};
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// The first irsync release that reads `config_version` 2. If stage 2 of
+/// the server/client split ships in a later release, the release bump
+/// changes this to that release's version.
+pub const READS_CONFIG_V2: &str = "0.1.0-beta.7";
+
+/// Whether a daemon whose lock record says `version` (its long version,
+/// whose first word is its package version) reads layout 2.
+fn reads_config_v2(version: &str) -> bool {
+    let Some(word) = version.split_whitespace().next() else {
+        return false;
+    };
+    if word == env!("CARGO_PKG_VERSION") {
+        return true;
+    }
+    match (
+        semver::Version::parse(word),
+        semver::Version::parse(READS_CONFIG_V2),
+    ) {
+        (Ok(have), Ok(need)) => have >= need,
+        _ => false,
+    }
+}
+
+/// Refuses to write a file of layout 2 over one that does not say so
+/// (a file of layout 1, one without `config_version`, or none at all)
+/// while a daemon holds the lock of the state dir of `config` and cannot
+/// read layout 2: it would find a file it cannot read at its next reload.
+/// `restarting`: the pid of a daemon the caller stops and starts again
+/// with this irsync right after the save; it is let pass.
+fn check_daemon(config: &Config, restarting: Option<u32>) -> Result<(), ManageError> {
+    let state_dir = &config.settings.state_dir;
+    let Some(info) = crate::daemon_lock::probe(state_dir) else {
+        return Ok(());
+    };
+    if info.pid != 0 && (reads_config_v2(&info.version) || restarting == Some(info.pid)) {
+        return Ok(());
+    }
+    let version = if info.version.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        info.version
+    };
+    Err(ManageError::OldDaemon {
+        state_dir: state_dir.clone(),
+        pid: info.pid,
+        version,
+    })
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManageError {
@@ -31,12 +83,23 @@ pub enum ManageError {
     Config(#[from] ConfigError),
     #[error("export {0:?} already exists")]
     Exists(String),
+    #[error(
+        "the irsync daemon running for {} (pid {pid}, version {version}) cannot read the file this would write (config_version 2, read from irsync {READS_CONFIG_V2} on); restart the daemon with this irsync, then run the command again",
+        state_dir.display()
+    )]
+    OldDaemon {
+        state_dir: PathBuf,
+        pid: u32,
+        version: String,
+    },
     #[error("no such entry {0:?}")]
     NotFound(String),
-    #[error("host {0:?} already exists")]
-    HostExists(String),
-    #[error("host {alias:?} is named by grants in {}: remove those grants first, or pass --force", lists.join(", "))]
-    HostInUse { alias: String, lists: Vec<String> },
+    #[error("server {0:?} already exists")]
+    ServerExists(String),
+    #[error("client {0:?} already exists")]
+    ClientExists(String),
+    #[error("client {name:?} is named by grants in {}: remove those grants first, or pass --force", lists.join(", "))]
+    ClientInUse { name: String, lists: Vec<String> },
     #[error("{0:?} is not a valid export name")]
     BadName(String),
     #[error("{}", crate::config::exports::reserved(.0))]
@@ -47,6 +110,9 @@ pub enum ManageError {
     BadAlias(String),
     #[error("no open access: a peer must be named (an alias, an EndpointId, a public key line or a .pub file)")]
     NoOpenAccess,
+    /// Grants name clients: a name that is only a server's names nobody.
+    #[error("{0:?} is a server here, not a client; to grant that machine, add it as a client: irsync client add {0} ID")]
+    NotAClient(String),
     #[error("{}: not a directory", .0.display())]
     NotADirectory(PathBuf),
     #[error("nothing to remove for {0:?}")]
@@ -61,10 +127,21 @@ pub enum ManageError {
     Locked { path: PathBuf, lock: PathBuf },
     #[error("invalid key {0:?}")]
     BadKey(String),
-    #[error("unknown key {0:?}")]
+    #[error("{}", unknown_key_text(.0))]
     UnknownKey(String),
     #[error("{0}")]
     BadValue(String),
+}
+
+/// The message for a key `config` does not know, with a pointer for the
+/// keys of the old `[hosts]` table.
+fn unknown_key_text(key: &str) -> String {
+    match reader::dotted_key(key) {
+        Some(path) if path.first().is_some_and(|p| p == "hosts") => {
+            format!("unknown key {key:?}; hosts are now servers.NAME and clients.NAME")
+        }
+        _ => format!("unknown key {key:?}"),
+    }
 }
 
 /// A comment kept in a config file must be one line of printable text.
@@ -89,8 +166,21 @@ pub fn id_of(bytes: &[u8]) -> Option<EndpointId> {
 /// Load the config file for editing; a missing file is the empty message.
 /// A file open to other users is refused as it is for use (see
 /// [`Config::load`]), and a file the reader refuses is that error, with
-/// its line.
+/// its line. A file of an older layout is converted (see [`reader::read`]).
 pub fn load_message(path: &Path) -> Result<pb::Config, ManageError> {
+    let read = read_file(path)?;
+    let mut config = read.config;
+    // An old file does not say `config_version`: the reader fills in the
+    // new one when it converts. Report the layout the file has.
+    if read.version == 1 {
+        config.config_version = Some(1);
+    }
+    Ok(config)
+}
+
+/// The config file at `path` as [`reader::read`] reads it; see
+/// [`load_message`].
+fn read_file(path: &Path) -> Result<reader::Read, ManageError> {
     let text = match crate::config::read_optional(path) {
         Ok(t) => t.unwrap_or_default(),
         Err(ConfigError::Io { path, source }) => return Err(ManageError::Io { path, source }),
@@ -109,8 +199,12 @@ fn saved_mode(path: &Path) -> std::fs::Permissions {
 /// Save the config file, refusing a message that would not load; takes
 /// and releases the file's lock (see [`lock_config`]). Like
 /// [`ConfigLock::save`], it first writes peers by their aliases.
+/// The file is read under the lock first, so the save makes the same
+/// check of a running daemon as one after [`ConfigLock::load`].
 pub fn save_config(path: &Path, msg: &mut pb::Config) -> Result<(), ManageError> {
-    lock_config(path)?.save(msg)
+    let mut lock = lock_config(path)?;
+    lock.load()?;
+    lock.save(msg)
 }
 
 /// The typed config of `msg`; one that would not load is an error naming
@@ -123,35 +217,35 @@ fn typed(msg: &pb::Config, path: &Path) -> Result<Config, ManageError> {
 }
 
 /// Puts the grants of `msg` into their canonical form (see
-/// [`grants::canonicalize`]) with the hosts of `msg` itself, so an alias
+/// [`grants::canonicalize`]) with the clients of `msg` itself, so a name
 /// added in the same edit already counts. True when `msg` changed. A
 /// message that would not load is an error naming `path`.
 pub fn canonicalize_doc(msg: &mut pb::Config, path: &Path) -> Result<bool, ManageError> {
     let config = typed(msg, path)?;
-    Ok(grants::canonicalize(msg, &config.hosts))
+    Ok(grants::canonicalize(msg, &config.clients))
 }
 
-/// As [`canonicalize_doc`], for a message that the host `alias` is about
-/// to leave. When another alias has the same EndpointId, `alias` is not
-/// counted: an id written in a grant is then written as that other alias
-/// and so does not stand in the way of the removal. An id that only
-/// `alias` names is written as `alias`, and is found as a grant naming it.
+/// As [`canonicalize_doc`], for a message that the client `name` is
+/// about to leave. When another client has the same EndpointId, `name` is
+/// not counted: an id written in a grant is then written as that other
+/// name and so does not stand in the way of the removal. An id that only
+/// `name` names is written as `name`, and is found as a grant naming it.
 pub fn canonicalize_without(
     msg: &mut pb::Config,
     path: &Path,
-    alias: &str,
+    name: &str,
 ) -> Result<bool, ManageError> {
-    let mut hosts = typed(msg, path)?.hosts;
-    let shared = hosts.get(alias).map(|e| e.peer_id()).is_some_and(|id| {
-        hosts
+    let mut clients = typed(msg, path)?.clients;
+    let shared = clients.get(name).map(|e| e.client_id).is_some_and(|id| {
+        clients
             .entries
             .iter()
-            .any(|(other, e)| other != alias && e.peer_id() == id)
+            .any(|(other, e)| other != name && e.client_id == id)
     });
     if shared {
-        hosts.entries.remove(alias);
+        clients.entries.remove(name);
     }
-    Ok(grants::canonicalize(msg, &hosts))
+    Ok(grants::canonicalize(msg, &clients))
 }
 
 /// Exclusive right to edit a config file, held from [`ConfigLock::load`] to
@@ -165,6 +259,17 @@ pub struct ConfigLock {
     path: PathBuf,
     lock: PathBuf,
     file: Option<std::fs::File>,
+    /// The layout of the file as [`ConfigLock::load`] read it; `None`
+    /// before a load.
+    version: Option<u32>,
+    /// Whether the file itself says `config_version` 2, so any irsync
+    /// that reads it reads what a save writes. False before a load.
+    says_v2: bool,
+    /// What converting the file left out (see [`reader::Read::dropped`]).
+    dropped: Vec<String>,
+    /// A daemon the caller restarts after the save (see
+    /// [`ConfigLock::restarting`]).
+    restarting: Option<u32>,
 }
 
 /// Takes the lock of `path`, creating its directory if needed.
@@ -189,6 +294,10 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
             path: path.to_path_buf(),
             lock,
             file: Some(file),
+            version: None,
+            says_v2: false,
+            dropped: Vec::new(),
+            restarting: None,
         }),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(ManageError::Locked {
             path: path.to_path_buf(),
@@ -199,22 +308,47 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
 }
 
 impl ConfigLock {
-    /// The file as it is now (empty when missing); see [`load_message`].
-    pub fn load(&self) -> Result<pb::Config, ManageError> {
-        // An edit must not pass a split file by in silence either.
-        crate::config::file::warn_ignored_split_files(&self.path);
-        load_message(&self.path)
+    /// Lets [`ConfigLock::save`] write a file that the running daemon
+    /// `pid` cannot read: the caller stops that daemon and starts this
+    /// irsync's right after the save, as `ssh-setup` does with an older
+    /// daemon of its own.
+    pub fn restarting(&mut self, pid: Option<u32>) {
+        self.restarting = pid;
     }
 
-    /// Writes `msg` over the file, in the writer's form, and releases the
-    /// lock. Peers that the hosts have an alias for are written by it
+    /// The file as it is now (empty when missing); see [`load_message`].
+    /// Records the layout it was in, and what a conversion left out, for
+    /// [`ConfigLock::save`].
+    pub fn load(&mut self) -> Result<pb::Config, ManageError> {
+        // An edit must not pass a split file by in silence either.
+        crate::config::file::warn_ignored_split_files(&self.path);
+        let read = read_file(&self.path)?;
+        self.version = Some(read.version);
+        // A file of layout 2 without the key reads as layout 2 too; only
+        // the key keeps an older irsync from reading it.
+        self.says_v2 =
+            read.version == CONFIG_VERSION && read.config.config_version == Some(CONFIG_VERSION);
+        self.dropped = read.dropped;
+        Ok(read.config)
+    }
+
+    /// Writes `msg` over the file, in the writer's form and the current
+    /// layout (`config_version` [`CONFIG_VERSION`]), and releases the
+    /// lock. Peers that the clients have a name for are written by it
     /// first (see [`canonicalize_doc`]), so every save leaves the file in
     /// one form. A message that would not load is refused and the file
-    /// left as it was.
+    /// left as it was, and so is one that a running older daemon could
+    /// not read when the file did not say `config_version` 2 (see
+    /// [`check_daemon`]). When the file loaded was of layout 1, each thing
+    /// its conversion left out is noted on stderr once the file is saved.
     pub fn save(mut self, msg: &mut pb::Config) -> Result<(), ManageError> {
+        msg.config_version = Some(CONFIG_VERSION);
         if canonicalize_doc(msg, &self.path)? {
             // The rewrite only renames and drops entries; checked all the same.
             typed(msg, &self.path)?;
+        }
+        if !self.says_v2 {
+            check_daemon(&typed(msg, &self.path)?, self.restarting)?;
         }
         let io = |source| ManageError::Io {
             path: self.lock.clone(),
@@ -227,6 +361,11 @@ impl ConfigLock {
         std::fs::rename(&self.lock, &self.path).map_err(io)?;
         // Renamed away: nothing to remove on drop.
         self.file = None;
+        if self.version == Some(1) {
+            for note in &self.dropped {
+                eprintln!("irsync: note: {note}");
+            }
+        }
         Ok(())
     }
 }
@@ -250,12 +389,18 @@ pub enum PeerSpec {
 }
 
 impl PeerSpec {
-    pub fn parse(who: &str, hosts: &Hosts) -> Result<PeerSpec, ManageError> {
+    /// `who` as a client name of `clients`, a public key (a line or a
+    /// `.pub` file) or an EndpointId. A name that only `servers` has is
+    /// refused: grants name clients.
+    pub fn parse(who: &str, clients: &Clients, servers: &Servers) -> Result<PeerSpec, ManageError> {
         if who == "all" || who == "*" {
             return Err(ManageError::NoOpenAccess);
         }
-        if hosts.get(who).is_some() {
+        if clients.get(who).is_some() {
             return Ok(PeerSpec::Alias(who.to_string()));
+        }
+        if servers.get(who).is_some() {
+            return Err(ManageError::NotAClient(who.to_string()));
         }
         let bad = || ManageError::Config(ConfigError::BadPeer(who.to_string()));
         if let Ok(text) = std::fs::read_to_string(who) {
@@ -297,11 +442,11 @@ impl PeerSpec {
         Ok(Some(PeerSpec::Id { id, comment }))
     }
 
-    /// What a save writes for this peer: the alias, also for an id that
-    /// `hosts` has an alias for; else the id in hex.
-    pub fn written(&self, hosts: &Hosts) -> String {
+    /// What a save writes for this peer: the name, also for an id that
+    /// `clients` has a name for; else the id in hex.
+    pub fn written(&self, clients: &Clients) -> String {
         match self {
-            PeerSpec::Id { id, .. } => hosts
+            PeerSpec::Id { id, .. } => clients
                 .alias_of(id)
                 .map_or_else(|| id.to_string(), str::to_string),
             PeerSpec::Alias(a) => a.clone(),
@@ -314,5 +459,17 @@ impl PeerSpec {
             PeerSpec::Alias(a) => a.clone(),
             PeerSpec::Id { id, .. } => id.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A typo here would make every daemon count as too old.
+    #[test]
+    fn reads_config_v2_is_a_semver_version() {
+        semver::Version::parse(READS_CONFIG_V2).unwrap();
+        assert!(reads_config_v2(&format!("{READS_CONFIG_V2} (abc)")));
     }
 }

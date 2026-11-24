@@ -7,8 +7,8 @@
 use super::show::grant_lines;
 use super::{check_comment, ManageError, PeerSpec};
 use crate::authz::{Access, Snapshot};
+use crate::config::clients::Clients;
 use crate::config::exports::Exports;
-use crate::config::hosts::Hosts;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
@@ -209,7 +209,7 @@ fn grant_entry(who: &PeerSpec) -> Result<pb::Entry, ManageError> {
 }
 
 /// Writes every grant entry in its canonical form: an EndpointId that
-/// `hosts` has an alias for becomes that alias (the first in
+/// `clients` has a name for becomes that name (the first in
 /// lexicographic order when there are several). An entry that is already
 /// an alias, an id without an alias and text that names nobody are left
 /// alone. Then, per table, an entry named twice in one list keeps its
@@ -219,7 +219,7 @@ fn grant_entry(who: &PeerSpec) -> Result<pb::Entry, ManageError> {
 /// Covers `[all]`, `[immediate]` and every export. An entry keeps its
 /// comments; a removed one takes only the rest of its line along. True when the message
 /// changed; a second run changes nothing.
-pub fn canonicalize(msg: &mut pb::Config, hosts: &Hosts) -> bool {
+pub fn canonicalize(msg: &mut pb::Config, clients: &Clients) -> bool {
     let mut changed = false;
     for mut lists in grant_lists_mut(msg) {
         // What this table already names, `rw` before `ro`.
@@ -230,7 +230,7 @@ pub fn canonicalize(msg: &mut pb::Config, hosts: &Hosts) -> bool {
                 let text = &lists.list(ro)[i].value;
                 let alias = parse_endpoint_id(text)
                     .ok()
-                    .and_then(|id| hosts.alias_of(&id));
+                    .and_then(|id| clients.alias_of(&id));
                 let name = alias.unwrap_or(text).to_string();
                 if seen.contains(&name) {
                     lists.drop_at(ro, i);
@@ -410,33 +410,33 @@ pub fn grant_remove(
 }
 
 /// `NAME:` and the grant lines of one table; the header always.
-fn block(name: &str, rw: &[String], ro: &[String], hosts: &Hosts) -> String {
+fn block(name: &str, rw: &[String], ro: &[String], clients: &Clients) -> String {
     let mut out = format!("{name}:\n");
-    grant_lines(&mut out, rw, ro, hosts);
+    grant_lines(&mut out, rw, ro, clients);
     out
 }
 
 /// Every grant: the `all:` block, the `immediate:` block, then one block
 /// per export in name order.
-pub fn list_all(exports: &Exports, hosts: &Hosts) -> String {
-    let mut out = block("all", &exports.rw, &exports.ro, hosts);
-    out.push_str(&block("immediate", &exports.immediate_rw, &[], hosts));
+pub fn list_all(exports: &Exports, clients: &Clients) -> String {
+    let mut out = block("all", &exports.rw, &exports.ro, clients);
+    out.push_str(&block("immediate", &exports.immediate_rw, &[], clients));
     for (name, e) in &exports.exports {
-        out.push_str(&block(name, &e.rw, &e.ro, hosts));
+        out.push_str(&block(name, &e.rw, &e.ro, clients));
     }
     out
 }
 
 /// The block of one export, of `all` or of `immediate`; `None` when no
 /// such export.
-pub fn list_export(exports: &Exports, hosts: &Hosts, name: &str) -> Option<String> {
+pub fn list_export(exports: &Exports, clients: &Clients, name: &str) -> Option<String> {
     match name {
-        "all" => return Some(block("all", &exports.rw, &exports.ro, hosts)),
-        "immediate" => return Some(block("immediate", &exports.immediate_rw, &[], hosts)),
+        "all" => return Some(block("all", &exports.rw, &exports.ro, clients)),
+        "immediate" => return Some(block("immediate", &exports.immediate_rw, &[], clients)),
         _ => {}
     }
     let e = exports.exports.get(name)?;
-    Some(block(name, &e.rw, &e.ro, hosts))
+    Some(block(name, &e.rw, &e.ro, clients))
 }
 
 /// `{label}:`, `    immediate: rw` when `id` is in `[immediate]`, then
@@ -444,8 +444,8 @@ pub fn list_export(exports: &Exports, hosts: &Hosts, name: &str) -> Option<Strin
 /// access comes from `[all]` rather than the export's own entry,
 /// ` (read_only export)` when a read-write grant is capped by the export's
 /// `read_only` flag.
-pub fn list_peer(exports: &Exports, hosts: &Hosts, label: &str, id: &EndpointId) -> String {
-    let grants = Snapshot::from_files(hosts, exports, true).grants(id);
+pub fn list_peer(exports: &Exports, clients: &Clients, label: &str, id: &EndpointId) -> String {
+    let grants = Snapshot::from_files(clients, exports, true).grants(id);
     let mut out = format!("{label}:\n");
     if grants.immediate {
         out.push_str("    immediate: rw\n");

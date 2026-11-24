@@ -1,0 +1,25 @@
+config_version = 2
+
+[servers.nas]
+endpoint_id = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"
+
+[servers.desk]
+endpoint_id = "92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"
+
+[clients.laptop]
+client_id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"
+
+[clients.desk]
+client_id = "a35d848a3af131007b97b09bb866adce34f244db7816b4eb3f7a332ccf544b7c"
+
+[exports.photos]
+path = "/photos"
+rw = ["laptop", "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"]
+ro = ["desk"]
+
+[exports.music]
+path = "/music"
+ro = ["a35d848a3af131007b97b09bb866adce34f244db7816b4eb3f7a332ccf544b7c", "92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"]
+
+[all]
+ro = ["laptop"]

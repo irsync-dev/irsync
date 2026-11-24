@@ -58,7 +58,7 @@ once.
 ## When the process dies
 
 The client stores the session under a key derived from what the command means,
-not how it was typed: the daemon's `EndpointId` (so an alias and the raw id
+not how it was typed: the daemon's `EndpointId` (so a server name and the raw id
 are the same), both locations (a local one by its canonical path, a remote one
 as typed, each with its trailing-slash rule),
 the preserve flags, `-c`, `-u`, `--inplace`, `--append` or `--append-verify`,

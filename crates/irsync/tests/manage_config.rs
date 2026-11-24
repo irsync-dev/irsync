@@ -8,7 +8,7 @@ use irsync_proto::config as pb;
 use std::path::Path;
 
 fn msg(s: &str) -> pb::Config {
-    read(s, Path::new("f")).unwrap()
+    read(s, Path::new("f")).unwrap().config
 }
 fn p(s: &str) -> Vec<String> {
     parse_key(s).unwrap()
@@ -39,24 +39,101 @@ fn keys_parse_with_toml_grammar() {
 #[test]
 fn kinds_of_known_keys() {
     assert_eq!(kind_of(&p("daemon.listen")), Some(Kind::AddrArray));
-    assert_eq!(kind_of(&p("hosts.home.reconnect")), Some(Kind::Duration));
-    assert_eq!(kind_of(&p("hosts.home.dial_retries")), Some(Kind::Int));
+    assert_eq!(kind_of(&p("servers.home.reconnect")), Some(Kind::Duration));
+    assert_eq!(kind_of(&p("servers.home.dial_retries")), Some(Kind::Int));
+    assert_eq!(kind_of(&p("servers.home.endpoint_id")), Some(Kind::Id));
+    assert_eq!(kind_of(&p("clients.home.client_id")), Some(Kind::Id));
+    assert_eq!(kind_of(&p("config_version")), Some(Kind::Int));
     assert_eq!(kind_of(&p("client.dial_retries")), Some(Kind::Int));
     assert_eq!(kind_of(&p("exports.photos.read_only")), Some(Kind::Bool));
     assert_eq!(kind_of(&p("exports.photos.fsync")), Some(Kind::Bool));
-    assert_eq!(kind_of(&p("hosts.home")), Some(Kind::Table));
+    assert_eq!(kind_of(&p("servers.home")), Some(Kind::Table));
+    assert_eq!(kind_of(&p("clients.home")), Some(Kind::Table));
     assert_eq!(kind_of(&p("daemon.discovery")), Some(Kind::Table));
     assert_eq!(kind_of(&p("all.rw")), Some(Kind::StrArray));
     assert_eq!(kind_of(&p("identity")), Some(Kind::Path));
     assert!(kind_of(&p("daemon.nope")).is_none() && kind_of(&p("nope")).is_none());
-    assert!(kind_of(&p("hosts.home.nope")).is_none());
+    assert!(kind_of(&p("servers.home.nope")).is_none());
+    // A dialled identity and a granted one are never in one table.
+    assert!(kind_of(&p("servers.home.client_id")).is_none());
+    assert!(kind_of(&p("clients.home.endpoint_id")).is_none());
+    assert!(kind_of(&p("clients.home.relay")).is_none());
+    for key in [
+        "hosts",
+        "hosts.home",
+        "hosts.home.endpoint_id",
+        "hosts.home.client_id",
+    ] {
+        assert!(kind_of(&p(key)).is_none(), "{key}");
+    }
+}
+
+/// The keys of the old `[hosts]` table are unknown, with a pointer to
+/// where they went.
+#[test]
+fn hosts_keys_point_to_servers_and_clients() {
+    let mut m = pb::Config::default();
+    for key in ["hosts", "hosts.home", "hosts.home.endpoint_id"] {
+        let e = get(&m, &p(key)).unwrap_err();
+        assert!(matches!(e, ManageError::UnknownKey(_)), "{key}");
+        assert_eq!(
+            e.to_string(),
+            format!("unknown key {key:?}; hosts are now servers.NAME and clients.NAME")
+        );
+        let e = set(&mut m, &p(key), Value::Text(id())).unwrap_err();
+        assert!(e
+            .to_string()
+            .ends_with("hosts are now servers.NAME and clients.NAME"));
+        let e = unset(&mut m, &p(key)).unwrap_err();
+        assert!(e
+            .to_string()
+            .ends_with("hosts are now servers.NAME and clients.NAME"));
+    }
+    assert_eq!(
+        get(&m, &p("daemon.nope")).unwrap_err().to_string(),
+        "unknown key \"daemon.nope\""
+    );
+}
+
+/// `config_version` is read like any key, and only irsync sets it.
+#[test]
+fn config_version_is_read_only() {
+    let mut m = msg("config_version = 2\n[client]\nparallel = 4\n");
+    assert_eq!(get(&m, &p("config_version")).unwrap(), lines(&["2"]));
+    assert_eq!(list(&m), ["config_version = 2", "client.parallel = 4"]);
+    for e in [
+        set(&mut m, &p("config_version"), Value::Int(3)).unwrap_err(),
+        unset(&mut m, &p("config_version")).unwrap_err(),
+    ] {
+        assert!(matches!(e, ManageError::BadValue(_)), "{e:?}");
+        assert_eq!(e.to_string(), "config_version is set by irsync");
+    }
+    assert_eq!(m.config_version, Some(2));
+    assert_eq!(get(&msg(""), &p("config_version")).unwrap(), Got::Unset);
+}
+
+/// A client is its name and `client_id`; unsetting the id removes it.
+#[test]
+fn clients_are_set_and_unset_by_their_id() {
+    let mut m = pb::Config::default();
+    set(&mut m, &p("clients.lap.client_id"), Value::Text(id())).unwrap();
+    assert_eq!(
+        write(&m),
+        format!("[clients.lap]\nclient_id = \"{}\"\n", id())
+    );
+    assert_eq!(
+        get(&m, &p("clients")).unwrap(),
+        Got::Lines(vec![format!("lap.client_id = \"{}\"", id())])
+    );
+    unset(&mut m, &p("clients.lap.client_id")).unwrap();
+    assert!(m.clients.is_empty());
 }
 
 #[test]
 fn get_prints_scalars_arrays_and_tables() {
     let m = msg(&format!(
         "[client]\nparallel = 4\n[daemon]\nlisten = [\"0.0.0.0:0\", \"[::]:0\"]\n\
-         [hosts.home]\nendpoint_id = \"{}\"\nrelay = \"https://r/\"\n[daemon.discovery]\nmdns = false\n",
+         [servers.home]\nendpoint_id = \"{}\"\nrelay = \"https://r/\"\n[daemon.discovery]\nmdns = false\n",
         id()
     ));
     assert_eq!(get(&m, &p("client.parallel")).unwrap(), lines(&["4"]));
@@ -65,7 +142,7 @@ fn get_prints_scalars_arrays_and_tables() {
         lines(&["0.0.0.0:0", "[::]:0"])
     );
     assert_eq!(
-        get(&m, &p("hosts.home")).unwrap(),
+        get(&m, &p("servers.home")).unwrap(),
         Got::Lines(vec![
             format!("endpoint_id = \"{}\"", id()),
             "relay = \"https://r/\"".to_string()
@@ -79,14 +156,15 @@ fn get_prints_scalars_arrays_and_tables() {
         ])
     );
     assert_eq!(
-        get(&m, &p("hosts")).unwrap(),
+        get(&m, &p("servers")).unwrap(),
         Got::Lines(vec![
             format!("home.endpoint_id = \"{}\"", id()),
             "home.relay = \"https://r/\"".to_string()
         ])
     );
     assert_eq!(get(&m, &p("client.reconnect")).unwrap(), Got::Unset);
-    assert_eq!(get(&m, &p("hosts.nope")).unwrap(), Got::Unset);
+    assert_eq!(get(&m, &p("servers.nope")).unwrap(), Got::Unset);
+    assert_eq!(get(&m, &p("clients")).unwrap(), Got::Unset);
     assert_eq!(get(&m, &p("telemetry")).unwrap(), Got::Unset);
     assert_eq!(get(&m, &p("exports")).unwrap(), Got::Unset);
     assert!(matches!(
@@ -146,7 +224,7 @@ fn defaults_for_settings_keys() {
         default_of(&p("client.relay_mode")),
         Some(vec!["default".to_string()])
     );
-    assert!(kind_of(&p("hosts.home.relay_mode")).is_some());
+    assert!(kind_of(&p("servers.home.relay_mode")).is_some());
     assert_eq!(
         default_of(&p("client.congestion")),
         Some(vec!["bbr".into()])
@@ -155,7 +233,7 @@ fn defaults_for_settings_keys() {
         default_of(&p("daemon.congestion")),
         Some(vec!["bbr".into()])
     );
-    assert!(kind_of(&p("hosts.home.congestion")).is_some());
+    assert!(kind_of(&p("servers.home.congestion")).is_some());
     assert_eq!(
         default_of(&p("client.pq_key_exchange")),
         Some(vec!["prefer".into()])
@@ -164,9 +242,9 @@ fn defaults_for_settings_keys() {
         default_of(&p("daemon.pq_key_exchange")),
         Some(vec!["prefer".into()])
     );
-    assert!(kind_of(&p("hosts.home.pq_key_exchange")).is_some());
+    assert!(kind_of(&p("servers.home.pq_key_exchange")).is_some());
     assert_eq!(default_of(&p("daemon.relay")), None);
-    assert_eq!(default_of(&p("hosts.home.relay")), None);
+    assert_eq!(default_of(&p("servers.home.relay")), None);
 }
 
 #[test]
@@ -256,7 +334,7 @@ fn set_and_unset_edit_the_message_and_keep_the_rest() {
     let mut m = msg("# keep me\n[client]\nparallel = 4   # inline\n");
     let val = |k, s: &str| parse_value(k, &[s.to_string()]).unwrap();
     set(&mut m, &p("client.parallel"), val(Kind::Int, "8")).unwrap();
-    set(&mut m, &p("hosts.home.endpoint_id"), val(Kind::Id, &id())).unwrap();
+    set(&mut m, &p("servers.home.endpoint_id"), val(Kind::Id, &id())).unwrap();
     set(
         &mut m,
         &p("daemon.discovery.mdns"),
@@ -266,15 +344,15 @@ fn set_and_unset_edit_the_message_and_keep_the_rest() {
     assert_eq!(
         write(&m),
         format!(
-            "# keep me\n[client]\nparallel = 8 # inline\n\n[daemon.discovery]\nmdns = false\n\n[hosts.home]\nendpoint_id = \"{}\"\n",
+            "# keep me\n[client]\nparallel = 8 # inline\n\n[daemon.discovery]\nmdns = false\n\n[servers.home]\nendpoint_id = \"{}\"\n",
             id()
         )
     );
     unset(&mut m, &p("client.parallel")).unwrap();
-    unset(&mut m, &p("hosts.home")).unwrap();
+    unset(&mut m, &p("servers.home")).unwrap();
     let text = write(&m);
     assert!(
-        !text.contains("parallel") && !text.contains("hosts"),
+        !text.contains("parallel") && !text.contains("servers"),
         "{text}"
     );
     assert!(matches!(
@@ -282,10 +360,10 @@ fn set_and_unset_edit_the_message_and_keep_the_rest() {
         Err(ManageError::NothingToRemove(_))
     ));
     assert!(matches!(
-        unset(&mut m, &p("hosts.home")),
+        unset(&mut m, &p("servers.home")),
         Err(ManageError::NothingToRemove(_))
     ));
-    assert!(set(&mut m, &p("hosts.home"), Value::Int(1)).is_err());
+    assert!(set(&mut m, &p("servers.home"), Value::Int(1)).is_err());
     assert!(matches!(
         set(&mut m, &p("daemon.nope"), Value::Int(1)),
         Err(ManageError::UnknownKey(_))
@@ -350,14 +428,16 @@ fn bare_seconds_set_a_duration_as_an_integer() {
 #[test]
 fn unset_removes_tables_it_leaves_empty() {
     let mut m = msg(&format!(
-        "[client]\nparallel = 4\nrelay = \"https://r/\"\n\n[hosts.home]\nendpoint_id = \"{}\"\n\n[daemon.discovery]\nmdns = false\n",
-        id()
+        "[client]\nparallel = 4\nrelay = \"https://r/\"\n\n[servers.home]\nendpoint_id = \"{}\"\n\n[clients.home]\nclient_id = \"{}\"\n\n[daemon.discovery]\nmdns = false\n",
+        id(),
+        id2()
     ));
     unset(&mut m, &p("client.parallel")).unwrap();
-    unset(&mut m, &p("hosts.home.endpoint_id")).unwrap();
+    unset(&mut m, &p("servers.home.endpoint_id")).unwrap();
+    unset(&mut m, &p("clients.home.client_id")).unwrap();
     unset(&mut m, &p("daemon.discovery.mdns")).unwrap();
     assert_eq!(write(&m), "[client]\nrelay = \"https://r/\"\n");
-    assert!(m.daemon.is_none() && m.hosts.is_empty());
+    assert!(m.daemon.is_none() && m.servers.is_empty() && m.clients.is_empty());
 }
 
 #[test]
@@ -411,20 +491,20 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("daemon.discovery.mdns", &["false"]),
     ("telemetry.otlp_endpoint", &["http://c:4318/"]),
     ("telemetry.otlp_protocol", &["http"]),
-    ("hosts.nas.endpoint_id", &[ID5]),
-    ("hosts.nas.client_id", &[ID5]),
-    ("hosts.nas.relay", &["https://r/"]),
-    ("hosts.nas.relay_mode", &["disabled"]),
-    ("hosts.nas.congestion", &["cubic"]),
-    ("hosts.nas.pq_key_exchange", &["require"]),
-    ("hosts.nas.address", &["10.0.0.1:4000"]),
-    ("hosts.nas.parallel", &["4"]),
-    ("hosts.nas.reconnect", &["1h"]),
-    ("hosts.nas.dial_retries", &["2"]),
-    ("hosts.nas.dht", &["false"]),
-    ("hosts.nas.mdns", &["false"]),
-    ("hosts.nas.ssh", &["me@nas"]),
-    ("hosts.nas.ssh_aliases", &["box"]),
+    ("servers.nas.endpoint_id", &[ID5]),
+    ("servers.nas.relay", &["https://r/"]),
+    ("servers.nas.relay_mode", &["disabled"]),
+    ("servers.nas.congestion", &["cubic"]),
+    ("servers.nas.pq_key_exchange", &["require"]),
+    ("servers.nas.address", &["10.0.0.1:4000"]),
+    ("servers.nas.parallel", &["4"]),
+    ("servers.nas.reconnect", &["1h"]),
+    ("servers.nas.dial_retries", &["2"]),
+    ("servers.nas.dht", &["false"]),
+    ("servers.nas.mdns", &["false"]),
+    ("servers.nas.ssh", &["me@nas"]),
+    ("servers.nas.ssh_aliases", &["box"]),
+    ("clients.nas.client_id", &[ID5]),
     ("exports.p.path", &["/srv/q"]),
     ("exports.p.read_only", &["true"]),
     ("exports.p.warm_index", &["true"]),
@@ -437,12 +517,16 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("immediate.rw", &["nas"]),
 ];
 
-/// A key path with the name of a host or an export as \`*\`.
+/// A key path with the name of a server, a client or an export as `*`.
 fn generic(mut path: Vec<String>) -> String {
-    if path.len() > 2 && (path[0] == "hosts" || path[0] == "exports") {
+    if path.len() > 2 && is_group(&path[0]) {
         path[1] = "*".into();
     }
     path.join(".")
+}
+
+fn is_group(name: &str) -> bool {
+    matches!(name, "servers" | "clients" | "exports")
 }
 
 /// Every key the config message holds, from its descriptor: each field
@@ -468,7 +552,7 @@ fn message_keys() -> Vec<String> {
                 prost_reflect::Kind::Message(t)
                     if t.package_name() == "irsync.config" && t.name() != "Entry" =>
                 {
-                    if name == "hosts" || name == "exports" {
+                    if is_group(name) {
                         p.push("*".into());
                     }
                     walk(&t, &p, out);
@@ -514,7 +598,8 @@ fn every_key_of_the_message_is_in_full_toml_and_all_keys() {
     for key in &keys {
         assert!(in_full.contains(key), "{key} is not in full.toml");
         let path: Vec<String> = key.split('.').map(|s| s.replace('*', "x")).collect();
-        if kind_of(&path).is_some_and(|k| !matches!(k, Kind::Table)) {
+        // `config_version` is read-only: it cannot be set.
+        if kind_of(&path).is_some_and(|k| !matches!(k, Kind::Table)) && key != "config_version" {
             assert!(all.contains(key), "{key} is not in ALL_KEYS");
         }
     }
@@ -523,10 +608,10 @@ fn every_key_of_the_message_is_in_full_toml_and_all_keys() {
 /// The id of \`[5; 32]\`, as \`id()\` prints it.
 const ID5: &str = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1";
 
-/// A message with a host `nas` and an export `p`.
+/// A message with a server `nas`, a client `nas` and an export `p`.
 fn base() -> pb::Config {
     msg(&format!(
-        "[hosts.nas]\nendpoint_id = \"{}\"\n\n[exports.p]\npath = \"/srv/p\"\n",
+        "[servers.nas]\nendpoint_id = \"{0}\"\n\n[clients.nas]\nclient_id = \"{0}\"\n\n[exports.p]\npath = \"/srv/p\"\n",
         id2()
     ))
 }
@@ -556,7 +641,7 @@ fn every_known_key_can_be_set_read_and_unset() {
 
 #[test]
 fn unset_takes_the_keys_comment_and_set_keeps_it() {
-    let mut m = read("[daemon]\n# why\nportmap = false\n", Path::new("f")).unwrap();
+    let mut m = msg("[daemon]\n# why\nportmap = false\n");
     let p = parse_key("daemon.portmap").unwrap();
     set(&mut m, &p, Value::Bool(true)).unwrap();
     assert_eq!(write(&m), "[daemon]\n# why\nportmap = true\n");
@@ -567,26 +652,27 @@ fn unset_takes_the_keys_comment_and_set_keeps_it() {
 #[test]
 fn unset_of_a_table_takes_its_comments() {
     let mut m = msg(&format!(
-        "# the nas\n[hosts.nas]\nendpoint_id = \"{}\"\n\n# the tv\n[hosts.tv]\nendpoint_id = \"{}\"\n\n\
+        "# the nas\n[servers.nas]\nendpoint_id = \"{}\"\n\n# the tv\n[servers.tv]\nendpoint_id = \"{}\"\n\n\
          # client side\n[client]\nparallel = 2\n\n[daemon]\nportmap = false\n\n# found how\n[daemon.discovery]\ndns = false\n",
         id(),
         id2()
     ));
-    unset(&mut m, &p("hosts.nas")).unwrap();
+    unset(&mut m, &p("servers.nas")).unwrap();
     unset(&mut m, &p("client")).unwrap();
     unset(&mut m, &p("daemon.discovery")).unwrap();
     assert_eq!(
         write(&m),
         format!(
-            "[daemon]\nportmap = false\n\n# the tv\n[hosts.tv]\nendpoint_id = \"{}\"\n",
+            "[daemon]\nportmap = false\n\n# the tv\n[servers.tv]\nendpoint_id = \"{}\"\n",
             id2()
         )
     );
-    unset(&mut m, &p("hosts")).unwrap();
+    unset(&mut m, &p("servers")).unwrap();
     unset(&mut m, &p("daemon")).unwrap();
     assert_eq!(write(&m), "");
     for key in [
-        "hosts",
+        "servers",
+        "clients",
         "daemon",
         "client",
         "exports",
@@ -605,7 +691,7 @@ fn unset_of_a_table_takes_its_comments() {
 fn set_refuses_what_the_message_cannot_hold_and_changes_nothing() {
     let mut m = pb::Config::default();
     for (key, value) in [
-        ("hosts.nas.relay_mode", Value::Text("bogus".into())),
+        ("servers.nas.relay_mode", Value::Text("bogus".into())),
         ("client.congestion", Value::Text("reno".into())),
         ("telemetry.otlp_protocol", Value::Text("udp".into())),
         ("client.parallel", Value::Int(-1)),
@@ -626,12 +712,12 @@ fn set_refuses_what_the_message_cannot_hold_and_changes_nothing() {
 }
 
 #[test]
-fn unsetting_the_only_id_of_a_host_with_other_keys_does_not_load() {
+fn unsetting_the_id_of_a_server_with_other_keys_does_not_load() {
     let mut m = msg(&format!(
-        "[hosts.nas]\nendpoint_id = \"{}\"\nrelay = \"https://r/\"\n",
+        "[servers.nas]\nendpoint_id = \"{}\"\nrelay = \"https://r/\"\n",
         id()
     ));
-    unset(&mut m, &p("hosts.nas.endpoint_id")).unwrap();
-    assert_eq!(m.hosts.len(), 1);
+    unset(&mut m, &p("servers.nas.endpoint_id")).unwrap();
+    assert_eq!(m.servers.len(), 1);
     assert!(Config::from_message(&m, Path::new("f")).is_err());
 }

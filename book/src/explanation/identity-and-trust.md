@@ -35,7 +35,7 @@ Only file-based keys work; see
 
 ## The client pins the daemon
 
-A remote is named by its `EndpointId`, or by an alias that stores one. The
+A remote is named by its `EndpointId`, or by a server name that stores one. The
 client dials that key and nothing else. A daemon with another key fails the
 connection; it is not a warning to confirm.
 
@@ -44,7 +44,7 @@ the network, has no `known_hosts` file to add to, and never asks whether to
 trust a key it has not seen. Both ids are copied by hand once, each in its own
 direction, as in [Your first sync](../tutorial/first-sync.md): the client's id
 to the daemon's machine, for the grant, and the daemon's id to the client, for
-the alias. In exchange, nothing on the way can redirect a client: a DNS or DHT
+the server entry. In exchange, nothing on the way can redirect a client: a DNS or DHT
 record, a relay or an address given by hand only says where to knock, and a
 wrong one leads to a failed connection, never to the wrong daemon (see
 [Connections](connections.md#finding-the-daemon)).
@@ -53,10 +53,10 @@ wrong one leads to a failed connection, never to the wrong daemon (see
 
 A grant names a key and an export, read-write or read-only. Grants live in the
 daemon's configuration, under each `[exports.NAME]` or under `[all]` for every
-export, as aliases or raw `EndpointId`s. `irsync grant add` also takes a pasted
+export, as client names or raw `EndpointId`s. `irsync grant add` also takes a pasted
 `ssh-ed25519` line or a `.pub` file and writes the id it holds. A grant that
-names an alias follows the alias: pointing `myclient` at a new id with
-`irsync host add` moves every grant that names `myclient`.
+names a client follows the client: pointing `myclient` at a new id with
+`irsync client add` moves every grant that names `myclient`.
 
 The daemon reads its configuration afresh for every connection, once the
 handshake has proved the client's key, and checks the key against it before it
@@ -68,7 +68,7 @@ accepts any stream:
   not fall back to an earlier copy.
 - A change to the grants applies from the next connection; a session in
   progress keeps running. See
-  [Change exports and settings](../how-to/change-exports.md#exports-grants-and-aliases).
+  [Change exports and settings](../how-to/change-exports.md#exports-grants-and-clients).
 
 Access combines in a fixed way. A key's entry in an export's own table decides
 its access there; without one, its `[all]` entry does, so an export's `ro`

@@ -1,5 +1,5 @@
 use irsync::config::file::Config;
-use irsync::config::reader::read;
+use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::exports::parse_add_target;
 use irsync::manage::exports::{add_auto_export, add_export, remove_export};
@@ -11,7 +11,7 @@ fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
 fn msg(text: &str) -> pb::Config {
-    read(text, Path::new("f")).unwrap()
+    reader::read(text, Path::new("f")).unwrap().config
 }
 fn typed(m: &pb::Config) -> Config {
     Config::from_message(m, Path::new("f")).unwrap()
@@ -204,12 +204,10 @@ const INJECTED: &str = "laptop\n]\n[etc]\npath = \"/etc\"\nrw = [\"x\"";
 
 #[test]
 fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
-    let hosts = irsync::config::file::Config::parse("", Path::new("h"))
-        .unwrap()
-        .hosts;
+    let c = irsync::config::file::Config::parse("", Path::new("h")).unwrap();
     let line = irsync::identity::public_key_line(&iroh::SecretKey::from_bytes(&[7; 32]), "x");
     let key = line.rsplit_once(' ').unwrap().0;
-    let r = PeerSpec::parse(&format!("{key} {INJECTED}"), &hosts);
+    let r = PeerSpec::parse(&format!("{key} {INJECTED}"), &c.clients, &c.servers);
     assert!(matches!(r, Err(ManageError::BadComment(_))), "{r:?}");
     let msg = r.unwrap_err().to_string();
     assert!(msg.contains("control characters"), "{msg}");
@@ -218,7 +216,7 @@ fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
     let f = d.path().join("k.pub");
     std::fs::write(&f, format!("{key} a\x07b\n")).unwrap();
     assert!(matches!(
-        PeerSpec::parse(f.to_str().unwrap(), &hosts),
+        PeerSpec::parse(f.to_str().unwrap(), &c.clients, &c.servers),
         Err(ManageError::BadComment(_))
     ));
 }
@@ -259,6 +257,8 @@ fn save_config_refuses_an_export_message_that_does_not_load() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
     std::fs::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
+    // save_config reads the file first, and refuses one open to others.
+    irsync::platform::testutil::set_mode(&path, 0o600).unwrap();
     let mut bad = msg("[exports.p]\npath = \"/p\"\n");
     bad.exports[0].path = "rel/p".into();
     let e = irsync::manage::save_config(&path, &mut bad).unwrap_err();
@@ -271,6 +271,6 @@ fn save_config_refuses_an_export_message_that_does_not_load() {
     irsync::manage::save_config(&path, &mut ok).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "[exports.q]\npath = \"/q\"\n"
+        "config_version = 2\n\n[exports.q]\npath = \"/q\"\n"
     );
 }
