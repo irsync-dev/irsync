@@ -108,7 +108,7 @@ irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
 `irsync pair` sets the server up over ssh: it installs irsync there, grants
-this client access to any path (*immediate mode*), starts the daemon as a user
+this client access to any path (`all_paths = "rw"`), starts the daemon as a user
 service and saves `myserver` as a server. It is the only command that uses
 ssh. Syncs connect over iroh.
 

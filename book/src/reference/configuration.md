@@ -57,7 +57,7 @@ relay_mode = "default"       # or "disabled"
 congestion = "bbr"           # or "cubic", for pulls
 pq_key_exchange = "prefer"   # or "require"
 debug_addr = "127.0.0.1:9464"            # no default: off
-immediate = true             # false: ignore [immediate]
+allow_all_paths = true      # false: ignore all_paths
 allow_root = false           # true: let the daemon run as root
 
 [daemon.discovery]
@@ -87,13 +87,11 @@ ssh = "myserver"             # set by irsync pair
 # One [clients.NAME] table per machine this one's daemon lets in.
 [clients.myclient]
 client_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
+all_exports = "ro"           # every hand-made export
+all_paths = "rw"             # any path this account can
 
 # What the daemon shares and with whom. Entries in rw and ro are
 # names from [clients.*] or EndpointIds.
-[all]                        # grants for every export
-rw = []
-ro = []
-
 [exports.photos]
 path = "/srv/photos"
 rw = ["myclient"]
@@ -105,12 +103,7 @@ path = "/srv/docs"
 read_only = true
 ro = ["myclient"]
 
-# Peers that may reach any path this account can, read-write.
-# irsync pair adds the client here, under its host name.
-[immediate]
-rw = ["myclient"]
-
-# Made by the daemon when an [immediate] peer first used it.
+# Made by the daemon when a client with all_paths first used it.
 [exports.auto-srv-music]
 path = "/srv/music"
 auto = true
@@ -234,7 +227,7 @@ an `EndpointId`.
 | `dial_retries` | `[client]`'s | How often to retry this server before it has answered. Not used when the server has `ssh`: see `--dial-retries`. |
 | `dht` | `[client]`'s | Look this server up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this server up with mDNS. |
-| `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. It is what `irsync pair` logs in to. A sync never uses it, except to find the server when you type that address. `irsync pair` for a saved server checks it again, and never adds back an immediate grant that was removed on the server. |
+| `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. It is what `irsync pair` logs in to. A sync never uses it, except to find the server when you type that address. `irsync pair` for a saved server checks it again, and never adds back `all_paths` that was removed on the server. |
 | `ssh_aliases` | none | Other ssh destinations that were typed for this server, such as its address: `["192.168.1.5"]`. Typing one of them finds this server, as typing its `ssh` value does. `irsync pair` adds to it; nothing is ever dialled through it. These are not server names: they do not work with `irsync server`. |
 
 `--address` on the command line replaces the server's `address` list.
@@ -242,13 +235,17 @@ an `EndpointId`.
 ## Clients
 
 `[clients.NAME]` names a machine that this machine's daemon lets in. Grants
-(`rw` and `ro` in an export, `[all]` and `[immediate]`) name clients, never
-servers. The name has the same rules as a server's.
+(`rw` and `ro` in an export) name clients, never servers. The name has the same rules as a server's.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `client_id` | required | The machine's `EndpointId` as a client: the key it signs in with. A grant that names `NAME` is for this id. |
+| `all_exports` | none | `"rw"` or `"ro"`: this client reaches every export you made by hand, read-write or read-only. See [Rights on a client](#rights-on-a-client). |
+| `all_paths` | none | `"rw"` or `"ro"`: this client reaches any path the daemon's account can, with automatic exports. `"ro"` reads any path and writes none. |
 
+Only a named client holds `all_exports` or `all_paths`. A key you did not
+name as a client cannot have them. A value left out means no right.
+`irsync client set` sets them; see [Management commands](management.md#client).
 A server and a client may have the same name. They are two entries, for the
 two ids a machine has: its daemon's, which you dial, and its own as a client,
 which grants are for. `irsync pair` writes both sides: the server's name on the
@@ -301,7 +298,7 @@ take effect at the next start.
 | `congestion` | `bbr` | The congestion controller when the daemon sends, that is for a pull. |
 | `pq_key_exchange` | `prefer` | `require`: close the connection of a client that does not offer the post-quantum key exchange, for every export. The client is told to upgrade. See [Post-quantum key exchange](#post-quantum-key-exchange). |
 | `debug_addr` | off | Serve metrics and span timings over HTTP at `IP:PORT`; a bare port means `127.0.0.1`. |
-| `immediate` | `true` | Honour the `[immediate]` grants. `false`: the daemon ignores `[immediate]` and makes no automatic exports, so peers reach only the exports granted to them. |
+| `allow_all_paths` | `true` | Honour every client's `all_paths`. `false`: the daemon ignores `all_paths` and makes no automatic exports, so clients reach only the exports granted to them. |
 | `allow_root` | `false` | Let the daemon run as root. Without it, or the flag `--run-as-root-i-know-what-i-am-doing`, a daemon started as root exits at once. See [Do not run it as root](../how-to/run-the-daemon.md#do-not-run-it-as-root). |
 
 `[daemon.discovery]` says how clients may find the daemon:
@@ -326,7 +323,7 @@ The `OTEL_EXPORTER_OTLP_*` environment variables take precedence.
 
 `[exports.NAME]` shares a directory under `NAME`. The name is the first
 segment of a `HOST:PATH`, so it may not be empty or contain `/`, and it may not
-be `all`.
+be `all`, `immediate`, `all_exports` or `all_paths`. Those words are reserved.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -336,44 +333,47 @@ be `all`.
 | `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. |
 | `rw` | `[]` | Peers with read-write access: client names or `EndpointId`s. |
 | `ro` | `[]` | Peers with read-only access. |
-| `auto` | `false` | Marks an automatic export, one the daemon made for an `[immediate]` peer; see [Immediate grants](#immediate-grants). |
+| `auto` | `false` | Marks an automatic export, one the daemon made for a client with `all_paths`; see [Rights on a client](#rights-on-a-client). |
 
-`[all]` has `rw` and `ro` too; its grants apply to every export except
-automatic ones (`auto = true`).
+### Rights on a client
 
-### Immediate grants
+Two keys of `[clients.NAME]` reach more than one export. Each is `"rw"` or
+`"ro"`. Left out, the client has no such right.
 
-`[immediate]` has one key, `rw`: peers that may reach any path the daemon's
-account can, read-write. There is no read-only form. `irsync grant add
-immediate WHO` adds a peer, `irsync grant remove immediate WHO` takes it out,
-and `irsync pair` adds its client here, by the host name it saved the client
-under in `[clients]`.
+- `all_exports` reaches every export you made by hand, now and later. An
+  export's own `rw` or `ro` entry for the client wins over it. It never
+  reaches an automatic export (`auto = true`).
+- `all_paths` reaches any path the daemon's account can. `"rw"` reads and
+  writes; `"ro"` reads any path and writes none. `irsync client set NAME
+  all_paths=rw` sets it, and `irsync pair` sets `all_paths = "rw"` on its
+  client.
 
-When such a peer uses a path that no export covers, the daemon adds an
-automatic export for it, `auto = true`, named `auto-` and the path with `-`
-between its parts (`/srv/music` becomes `auto-srv-music`), granted read-write
-to that peer only. The export is the directory itself, or the directory that
+When a client with `all_paths` uses a path that no export covers, the daemon
+adds an automatic export for it, `auto = true`, named `auto-` and the path
+with `-` between its parts (`/srv/music` becomes `auto-srv-music`), listing
+that client only. The export is the directory itself, or the directory that
 holds a file. A push to a directory that does not exist yet creates it, when
-its parent exists. A push to the home itself (`myserver:`) exports the whole
+its parent exists; a client with `all_paths = "ro"` cannot push, so it
+creates nothing. A push to the home itself (`myserver:`) exports the whole
 home. `/` is never exported automatically; add that by hand. Remove an
 automatic export with `irsync export remove`.
 
-An automatic export belongs to the `[immediate]` peers: `[all]` never reaches
-it, and a grant on it counts only while that peer's immediate grant is in
-effect. Removing a peer from `[immediate]`, or setting `daemon.immediate =
-false`, therefore also ends its access through the automatic exports made
-for it; the exports themselves stay in the file. To share such a directory
-with other peers, delete its `auto = true` line: it is then an ordinary
-export.
+Access through an automatic export is always the client's current
+`all_paths` level, whatever the export file says. Lowering `all_paths`, or
+removing it, or setting `daemon.allow_all_paths = false`, applies at once,
+also to the automatic exports already made. The exports themselves stay in
+the file. To share such a directory with other peers, delete its `auto = true`
+line: it is then an ordinary export.
 
 How grants combine:
 
 - A key that no entry names is rejected before any protocol message is read.
   There is no open access.
 - A peer's entry in an export's own table decides its access to that export;
-  without one, its `[all]` entry does. An export's `ro` entry therefore limits
-  a peer that `[all]` grants `rw`.
-- Within one table, `rw` wins over `ro`.
+  without one, its `all_exports` does. An export's `ro` entry therefore limits
+  a client whose `all_exports` is `"rw"`.
+- Within one table, `rw` wins over `ro`. A client written under two names
+  with one id gets the higher level of each right.
 - `read_only` caps everyone at read-only.
 - An entry that names no client and is no `EndpointId` matches nobody; the
   daemon logs a warning for it. A server's name is no client name.

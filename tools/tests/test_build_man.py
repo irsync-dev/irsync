@@ -191,7 +191,7 @@ class BuildManTests(unittest.TestCase):
     def test_description_introduces_the_terms(self):
         text = section(render(self.irsync), "DESCRIPTION")
         for term in ("iroh", "EndpointId", "relay", "export", "grant",
-                     "immediate grant", "daemon"):
+                     "all_paths", "daemon"):
             self.assertIn(term, text)
 
     def test_examples(self):

@@ -52,8 +52,7 @@ wrong one leads to a failed connection, never to the wrong daemon (see
 ## The daemon checks grants
 
 A grant names a key and an export, read-write or read-only. Grants live in the
-daemon's configuration, under each `[exports.NAME]` or under `[all]` for every
-export, as client names or raw `EndpointId`s. `irsync grant add` also takes a pasted
+daemon's configuration, under each `[exports.NAME]`, as client names or raw `EndpointId`s. A client entry can also hold `all_exports` for every hand-made export and `all_paths` for any path; `irsync client set` writes them. `irsync grant add` also takes a pasted
 `ssh-ed25519` line or a `.pub` file and writes the id it holds. A grant that
 names a client follows the client: pointing `myclient` at a new id with
 `irsync client add` moves every grant that names `myclient`.
@@ -71,8 +70,8 @@ accepts any stream:
   [Change exports and settings](../how-to/change-exports.md#exports-grants-and-clients).
 
 Access combines in a fixed way. A key's entry in an export's own table decides
-its access there; without one, its `[all]` entry does, so an export's `ro`
-entry limits a key that `[all]` grants `rw`. Within one table, `rw` wins over
+its access there; without one, its client's `all_exports` does, so an export's `ro`
+entry limits a key whose `all_exports` is `"rw"`. Within one table, `rw` wins over
 `ro`. An export marked `read_only`, which `irsync export add --ro` sets,
 refuses pushes from everyone, whatever they are granted. The rules are listed
 in [Configuration](../reference/configuration.md#exports).
