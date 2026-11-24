@@ -1,5 +1,6 @@
 //! The release download, against a fake release in a local directory.
 //! Nothing here touches the network.
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

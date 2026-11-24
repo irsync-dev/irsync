@@ -198,13 +198,6 @@ fn read_file(path: &Path) -> Result<reader::Read, ManageError> {
     Ok(reader::read(&text, path)?)
 }
 
-/// The mode a saved config gets: the mode the file at `path` has, so a
-/// save never opens up a file its owner closed; 0600 for a new file, since
-/// it names exports, peers and grants.
-fn saved_mode(path: &Path) -> std::fs::Permissions {
-    crate::platform::saved_file_permissions(path)
-}
-
 /// Save the config file, refusing a message that would not load; takes
 /// and releases the file's lock (see [`lock_config`]). Like
 /// [`ConfigLock::save`], it first writes peers by their aliases.
@@ -366,7 +359,10 @@ impl ConfigLock {
         let file = self.file.as_mut().expect("held until saved");
         file.write_all(writer::write(msg).as_bytes()).map_err(io)?;
         file.sync_all().map_err(io)?;
-        std::fs::set_permissions(&self.lock, saved_mode(&self.path)).map_err(io)?;
+        // The mode the config has, so a save never opens up a file its
+        // owner closed; 0600 for a new one, since it names exports, peers
+        // and grants.
+        crate::platform::set_saved_permissions(&self.lock, &self.path).map_err(io)?;
         std::fs::rename(&self.lock, &self.path).map_err(io)?;
         // Renamed away: nothing to remove on drop.
         self.file = None;

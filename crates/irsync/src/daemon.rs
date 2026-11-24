@@ -163,7 +163,7 @@ impl Daemon {
         authz: Arc<dyn Authorizer>,
         endpoint: Endpoint,
     ) -> Result<Daemon> {
-        Self::with_home(settings, authz, endpoint, dirs::home_dir())
+        Self::with_home(settings, authz, endpoint, crate::config::paths::home_dir())
     }
 
     /// As [`Daemon::new`], with `home` as the directory relative remote
@@ -1610,10 +1610,10 @@ fn prune_entries(
         {
             continue;
         }
-        let here = std::fs::symlink_metadata(root.join(path.to_os()))
+        let here = crate::platform::symlink_metadata(&root.join(path.to_os()))
             .ok()
-            .filter(|m| m.is_file())
-            .map(|m| (crate::platform::file_id(&m).1, m.len()));
+            .filter(|m| m.kind == crate::platform::Kind::File)
+            .map(|m| (m.ino, m.size));
         if here == Some((inode, size)) {
             continue;
         }

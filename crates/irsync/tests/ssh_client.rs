@@ -1,4 +1,5 @@
 //! The client's SSH driver, run against the fake-ssh fixture.
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

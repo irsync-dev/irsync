@@ -74,6 +74,7 @@ fn auto_root_is_never_the_filesystem_root() {
 }
 
 #[test]
+#[cfg(unix)]
 fn auto_root_refuses_non_utf8_before_creating() {
     let tmp = tempfile::tempdir().unwrap();
     let bad = tmp

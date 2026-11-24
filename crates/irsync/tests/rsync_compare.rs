@@ -5,6 +5,7 @@
 //! ownership), sparse-ness (rsync without `-S` writes the zeros out) and
 //! directory nlink (filesystem-dependent; only regular files' nlink is compared).
 //! Modification times are compared to the nanosecond (rsync >= 3.1 keeps them).
+#![cfg(unix)]
 
 mod common;
 

@@ -1,22 +1,33 @@
 //! Bounded retry of transient OS errors (`EMFILE` and friends) around file
 //! opens, and a writer that really runs out of descriptors.
 
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+#[cfg(unix)]
 use irsync::fs::paths::RelPath;
-use irsync::fs::transient::{is_transient, retry_with, waits, RETRIES};
+#[cfg(unix)]
+use irsync::fs::transient::{is_transient, retry_with};
+use irsync::fs::transient::{waits, RETRIES};
+#[cfg(unix)]
 use irsync::index::Index;
+#[cfg(unix)]
 use irsync::platform::testutil::errno;
+#[cfg(unix)]
 use irsync::recv::FileWriter;
+#[cfg(unix)]
 use irsync_proto::chunk::digest_bytes;
 
+#[cfg(unix)]
 fn os(code: i32) -> io::Error {
     io::Error::from_raw_os_error(code)
 }
 
 #[test]
+#[cfg(unix)]
 fn resource_exhaustion_is_transient_but_permission_and_space_are_not() {
     for code in [
         errno::EMFILE,
@@ -43,6 +54,7 @@ fn resource_exhaustion_is_transient_but_permission_and_space_are_not() {
 }
 
 #[test]
+#[cfg(unix)]
 fn retry_returns_the_first_success() {
     let calls = AtomicUsize::new(0);
     let r = retry_with(
@@ -61,6 +73,7 @@ fn retry_returns_the_first_success() {
 }
 
 #[test]
+#[cfg(unix)]
 fn retry_gives_up_with_the_last_error_when_the_schedule_runs_out() {
     let calls = AtomicUsize::new(0);
     let r: io::Result<()> = retry_with(
@@ -79,6 +92,7 @@ fn retry_gives_up_with_the_last_error_when_the_schedule_runs_out() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_permanent_error_is_not_retried() {
     let calls = AtomicUsize::new(0);
     let r: io::Result<()> = retry_with(
@@ -106,6 +120,7 @@ fn the_default_schedule_is_bounded_to_about_a_second() {
 
 /// Fills the descriptor table (under a soft limit lowered to at most 256)
 /// and returns the files holding it full.
+#[cfg(unix)]
 fn exhaust_descriptors() -> Vec<std::fs::File> {
     use irsync::platform::testutil::{open_file_limits, set_open_file_limits};
     let (soft, hard) = open_file_limits().unwrap();
@@ -124,6 +139,7 @@ fn exhaust_descriptors() -> Vec<std::fs::File> {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn a_writer_opens_its_part_once_descriptors_free_up() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("root");

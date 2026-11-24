@@ -291,7 +291,20 @@ differ, the code is what shipped.
     differ. `filegen` reads a reparse
     point's tag the same way, and punches holes with `DeviceIoControl`
     (`FSCTL_SET_SPARSE`, `FSCTL_SET_ZERO_DATA`), one `unsafe` block each in
-    `crates/filegen/src/platform/windows.rs`. Why this crate: it is
+    `crates/filegen/src/platform/windows.rs`. Since 2026-11-24 `irsync`
+    uses it too, with features `Wdk_Foundation`, `Wdk_Storage_FileSystem`,
+    `Wdk_System_SystemServices`, `Win32_Foundation`, `Win32_Security`,
+    `Win32_Storage_FileSystem`, `Win32_System_IO`, `Win32_System_Ioctl`,
+    `Win32_System_SystemServices` and `Win32_System_Threading`: its open
+    directory works on handles, through the native calls (`Wdk`) the
+    standard library also uses in `remove_dir_all` on Windows: `NtCreateFile`
+    relative to a directory handle, `NtQueryInformationFile`,
+    `NtSetInformationFile` (rename, hard link and delete by handle),
+    `NtQueryDirectoryFile` and `NtFsControlFile` (reading and setting a
+    reparse point), plus `RtlNtStatusToDosError` and `WaitForSingleObject`.
+    Every `unsafe` block of it is in
+    `crates/irsync/src/platform/windows/native.rs`, one per call. Why this
+    crate: it is
     Microsoft's own generated binding to the Win32 API (the `windows-rs`
     project), with no code beyond the declarations, and 0.61.2 is the newest
     version already in `Cargo.lock`, so no new copy comes in. Built only for

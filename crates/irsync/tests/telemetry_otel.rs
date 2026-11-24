@@ -4,6 +4,7 @@
 
 mod common;
 
+use common::{irsync_command, StateHome};
 use irsync::telemetry::otel_bridge::OtelRecorder;
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
@@ -11,7 +12,7 @@ use opentelemetry_sdk::metrics::{InMemoryMetricExporter, PeriodicReader, SdkMete
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -163,10 +164,9 @@ struct Setup {
 }
 
 fn run(home: &Path, args: &[&str]) -> Output {
-    let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let o = irsync_command(home)
         .args(args)
-        .env("HOME", home)
-        .env("XDG_STATE_HOME", home.join("xdg"))
+        .state_home(home.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .stdin(Stdio::null())
         .output()
@@ -218,9 +218,8 @@ fn setup() -> Setup {
 
 /// Pushes `src/` into export `m` with `env` set; returns the output and how long it took.
 fn push(s: &Setup, m: &str, env: &[(&str, &str)]) -> (Output, Duration) {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_irsync"));
-    c.env("HOME", &s.client)
-        .env("XDG_STATE_HOME", s.client.join("xdg"))
+    let mut c = irsync_command(&s.client);
+    c.state_home(s.client.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .env_remove("RUST_LOG")
         .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")

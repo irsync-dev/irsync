@@ -1,13 +1,14 @@
 mod common;
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use common::{irsync_command, StateHome};
 
 fn irsync(home: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_irsync"))
+    irsync_command(home)
         .args(args)
-        .env("HOME", home)
-        .env("XDG_STATE_HOME", home.join("xdg"))
+        .state_home(home.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .env_remove("RUST_LOG")
         .stdin(Stdio::null())
@@ -396,6 +397,7 @@ fn sync_generates_the_client_identity_on_first_run() {
 }
 
 #[test]
+#[cfg(unix)]
 fn an_unreadable_daemon_key_is_named_in_the_error() {
     use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
@@ -464,6 +466,7 @@ fn id_list_prints_the_client_and_the_daemon_when_there_is_one() {
 /// A daemon key that exists but cannot be read is an error that names the
 /// file, not a daemon quietly left out.
 #[test]
+#[cfg(unix)]
 fn id_list_names_a_daemon_key_it_cannot_read() {
     use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
@@ -1511,6 +1514,7 @@ fn a_bare_noun_changes_nothing_and_takes_no_list_arguments() {
 /// identity": `id list` fails and names the path instead of leaving the
 /// daemon out.
 #[test]
+#[cfg(unix)]
 fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
     use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
@@ -2148,10 +2152,9 @@ fn rust_log_overrides_the_level_the_flags_give() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let run = |rust_log: &str, args: &[&str]| {
-        let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        let o = irsync_command(&home)
             .args(args)
-            .env("HOME", &home)
-            .env("XDG_STATE_HOME", home.join("xdg"))
+            .state_home(home.join("xdg"))
             .env("RUST_LOG", rust_log)
             .stdin(Stdio::null())
             .output()
@@ -2170,10 +2173,9 @@ fn only_id_generate_with_the_file_encrypts() {
     let key = home.join(".config/irsync/id_ed25519");
     // IRSYNC_PASSPHRASE alone never encrypts a new key (the helper removes
     // the variable, so build this Command by hand).
-    let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let o = irsync_command(&home)
         .args(["id", "generate"])
-        .env("HOME", &home)
-        .env("XDG_STATE_HOME", home.join("xdg"))
+        .state_home(home.join("xdg"))
         .env("IRSYNC_PASSPHRASE", "hunter2")
         .env_remove("RUST_LOG")
         .stdin(Stdio::null())
@@ -2547,6 +2549,7 @@ fn client_add_sets_the_id_and_says_when_grants_move() {
 /// Every command reads the config file first and stops at once when other
 /// users can read or change it: nothing is made, changed or contacted.
 #[test]
+#[cfg(unix)]
 fn a_config_open_to_other_users_stops_every_command_at_once() {
     use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
@@ -2618,6 +2621,7 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
 /// A private key or a passphrase file that other users can read stops the
 /// command that needs it, unless the config allows it.
 #[test]
+#[cfg(unix)]
 fn a_key_or_passphrase_file_open_to_other_users_stops_the_command() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");

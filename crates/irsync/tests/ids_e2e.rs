@@ -1,6 +1,7 @@
 //! Owner and group names cross the wire (`FileEntry.user/group`): a receiver
 //! maps them to its own ids, so a peer's different numbering is no change;
 //! `--numeric-ids` keeps the numbers as sent.
+#![cfg(unix)]
 
 mod common;
 

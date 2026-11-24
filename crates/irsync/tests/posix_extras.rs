@@ -1,5 +1,6 @@
 //! POSIX extras end to end: hard links (`-H`), sparse files (`-S`), FIFOs
 //! (`-D`) and ownership (`-o`/`-g`) without privilege.
+#![cfg(unix)]
 
 mod common;
 

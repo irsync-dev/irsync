@@ -228,6 +228,7 @@ async fn a_file_resent_in_the_same_session_is_not_counted_as_matched() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn links_and_specials_are_timed_as_place() {
     irsync::telemetry::set_enabled(true);
     let opts = archive_opts();

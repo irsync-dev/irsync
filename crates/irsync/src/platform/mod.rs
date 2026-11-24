@@ -6,11 +6,24 @@
 //! The interface is plain functions and [`Dir`], a directory held open
 //! that every operation below a root goes through by a single name; one
 //! implementation exists per build.
+//!
+//! Positional reads and writes (`read_at`, `write_at`, `read_exact_at`,
+//! `write_all_at`) take their offset and never rely on the file's
+//! position. On Unix they leave it as it was; on Windows they move it.
 
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
 pub use unix::*;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::*;
+
+/// The tests of [`Dir`], on every platform.
+#[cfg(test)]
+mod dir_tests;
 
 /// The kind of system a build runs on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +88,47 @@ pub enum Kind {
     BlockDev,
     Socket,
     Other,
+}
+
+/// The `st_mode` kind bits of `kind` (`S_IFREG` and the rest); none for
+/// [`Kind::Other`]. With [`Stat::mode`] they make the whole `st_mode` a
+/// listing carries, so they are part of the wire format: the same on every
+/// system, Windows included. They are POSIX's traditional values, which
+/// Linux, macOS and FreeBSD all use (a Unix test holds them to `libc`'s).
+pub fn mode_of_kind(kind: Kind) -> u32 {
+    match kind {
+        Kind::File => 0o100000,
+        Kind::Dir => 0o040000,
+        Kind::Symlink => 0o120000,
+        Kind::Fifo => 0o010000,
+        Kind::CharDev => 0o020000,
+        Kind::BlockDev => 0o060000,
+        Kind::Socket => 0o140000,
+        Kind::Other => 0,
+    }
+}
+
+/// Where irsync keeps its files by default (see `default_locations`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Locations {
+    /// The config file, `irsync.toml`; the default keys sit beside it.
+    pub config: std::path::PathBuf,
+    /// The state directory (indexes, locks, the daemon's log).
+    pub state: std::path::PathBuf,
+    /// The key tried when the config's own client key does not exist yet
+    /// (never generated); `None` without a home.
+    pub key: Option<std::path::PathBuf>,
+}
+
+/// This process's resource usage so far.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// CPU time in user mode.
+    pub cpu_user: std::time::Duration,
+    /// CPU time in the kernel.
+    pub cpu_sys: std::time::Duration,
+    /// The peak resident memory, in bytes.
+    pub max_rss: u64,
 }
 
 /// What [`Dir::stat`] and [`fstat`] say about a file.

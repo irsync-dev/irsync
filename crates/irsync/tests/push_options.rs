@@ -211,6 +211,7 @@ async fn push_with_a_relative_partial_dir_keeps_parts_under_the_destination_root
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn push_without_perms_or_times_leaves_them_to_the_daemon() {
     use irsync::platform::{mode_of, mtime_of, testutil::set_mode};
     within30(async {
@@ -238,6 +239,7 @@ async fn push_without_perms_or_times_leaves_them_to_the_daemon() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn push_without_links_or_specials_skips_them() {
     use irsync::platform::testutil::{is_fifo, mkfifo, symlink};
     within30(async {
@@ -275,6 +277,7 @@ async fn push_without_links_or_specials_skips_them() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn push_hard_links_only_with_h() {
     use irsync::platform::file_id;
     within30(async {

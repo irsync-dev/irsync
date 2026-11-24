@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, Flow, Harness};
+#[cfg(unix)]
 use irsync::platform::{nlink_of, testutil::symlink};
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
@@ -97,6 +98,7 @@ async fn peer_listing_temp_name_is_rejected() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn hardlink_target_outside_root_rejected() {
     let h = Harness::new().await;
     let outside = tempfile::tempdir().unwrap();

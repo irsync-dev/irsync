@@ -4,6 +4,7 @@ mod common;
 
 use common::{irsync_bin, spawn_daemon_binary};
 use irsync::daemon_lock::probe;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 #[test]
@@ -36,6 +37,7 @@ fn second_daemon_refuses() {
 }
 
 #[test]
+#[cfg(unix)]
 fn probe_none_after_sigterm() {
     let home = tempfile::tempdir().unwrap();
     let mut d = spawn_daemon_binary(home.path());

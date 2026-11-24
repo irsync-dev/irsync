@@ -1,6 +1,7 @@
 //! Converting a file of layout 1 is refused while a daemon runs that
 //! cannot read layout 2. (This build is itself 0.1.0-beta.6, below
 //! `READS_CONFIG_V2`, so the old daemons here are beta.5.)
+#![cfg(unix)]
 
 use irsync::manage::{load_message, lock_config, save_config, ManageError};
 use std::fs::OpenOptions;

@@ -1004,6 +1004,7 @@ fn frame_counter(count: fn(&Msg) -> bool, n: Arc<AtomicU32>) -> FrameHook {
 /// rewritten in place (both names): the re-check sends `m.txt` again, as a
 /// new inode at the destination, and `n.txt` must be linked to it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn paranoid_recheck_relinks_hard_links() {
     use irsync::platform::file_id;
     within30(async {
@@ -1182,6 +1183,7 @@ async fn paranoid_delete_runs_after_the_replanned_files() {
 
 /// How a hook changes `x.bin` between the walk and the hash pass.
 #[derive(Clone, Copy)]
+#[cfg(unix)]
 enum ModeChange {
     /// A new file with mode 600 renamed over it (a save-by-rename).
     RenameOver,
@@ -1193,6 +1195,7 @@ enum ModeChange {
 /// the first pass only). The file is placed with the mode it had when it
 /// was hashed, not the walk's: the source never held its new content (or
 /// its current state) with the old mode.
+#[cfg(unix)]
 async fn hashed_mode_is_placed_for(flow: Flow, change: ModeChange) {
     use irsync::platform::{mode_of, testutil::set_mode};
     let h = Harness::new().await;
@@ -1242,6 +1245,7 @@ async fn hashed_mode_is_placed_for(flow: Flow, change: ModeChange) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn rename_over_before_hash_places_the_new_mode() {
     within30(hashed_mode_is_placed_for(
         Flow::Push,
@@ -1251,6 +1255,7 @@ async fn rename_over_before_hash_places_the_new_mode() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn rename_over_before_hash_places_the_new_mode_on_pull() {
     within30(hashed_mode_is_placed_for(
         Flow::Pull,
@@ -1260,17 +1265,20 @@ async fn rename_over_before_hash_places_the_new_mode_on_pull() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn chmod_before_hash_places_the_new_mode() {
     within30(hashed_mode_is_placed_for(Flow::Push, ModeChange::Chmod)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn chmod_before_hash_places_the_new_mode_on_pull() {
     within30(hashed_mode_is_placed_for(Flow::Pull, ModeChange::Chmod)).await;
 }
 
 /// A group of ours other than the effective one, if any: an owner may move
 /// a file to it without root.
+#[cfg(unix)]
 fn other_group() -> Option<u32> {
     let egid = irsync::platform::egid();
     irsync::fs::meta::supplementary_groups()
@@ -1280,6 +1288,7 @@ fn other_group() -> Option<u32> {
 
 /// The source's group changes after the walk and before the hash pass:
 /// the file is placed with the group it had when it was hashed.
+#[cfg(unix)]
 async fn hashed_group_is_placed_for(flow: Flow) {
     use irsync::platform::{owner_of, testutil::chown};
     let Some(g2) = other_group() else {
@@ -1316,11 +1325,13 @@ async fn hashed_group_is_placed_for(flow: Flow) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn chgrp_before_hash_places_the_new_group() {
     within30(hashed_group_is_placed_for(Flow::Push)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn chgrp_before_hash_places_the_new_group_on_pull() {
     within30(hashed_group_is_placed_for(Flow::Pull)).await;
 }
@@ -1329,6 +1340,7 @@ async fn chgrp_before_hash_places_the_new_group_on_pull() {
 /// `a.bin` is hashed (then `a.bin` is rewritten in place, which `b.bin`
 /// no longer sees).
 #[derive(Clone, Copy, Debug)]
+#[cfg(unix)]
 enum LinkChange {
     /// Replaced by a file of its own.
     Replaced,
@@ -1340,6 +1352,7 @@ enum LinkChange {
 /// linked to the copy of it. Replaced, it is sent as the file it now is,
 /// in the same run; gone, it fails (exit 23). Either way the next run
 /// leaves an exact copy.
+#[cfg(unix)]
 async fn changed_link_is_not_linked_for(flow: Flow, change: LinkChange) {
     use irsync::platform::file_id;
     let h = Harness::new().await;
@@ -1411,6 +1424,7 @@ async fn changed_link_is_not_linked_for(flow: Flow, change: LinkChange) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn replaced_link_is_sent_as_its_own_file() {
     within30(changed_link_is_not_linked_for(
         Flow::Push,
@@ -1420,6 +1434,7 @@ async fn replaced_link_is_sent_as_its_own_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn replaced_link_is_sent_as_its_own_file_on_pull() {
     within30(changed_link_is_not_linked_for(
         Flow::Pull,
@@ -1429,11 +1444,13 @@ async fn replaced_link_is_sent_as_its_own_file_on_pull() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn link_renamed_away_is_not_linked() {
     within30(changed_link_is_not_linked_for(Flow::Push, LinkChange::Gone)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn link_renamed_away_is_not_linked_on_pull() {
     within30(changed_link_is_not_linked_for(Flow::Pull, LinkChange::Gone)).await;
 }
@@ -1441,6 +1458,7 @@ async fn link_renamed_away_is_not_linked_on_pull() {
 /// `-H` on a tree nothing writes to: every link is checked once (one
 /// `CheckLink` each) and made.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn unchanged_links_are_checked_and_made() {
     use irsync::platform::file_id;
     within30(async {

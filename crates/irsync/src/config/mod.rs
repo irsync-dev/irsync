@@ -67,7 +67,7 @@ pub(crate) fn endpoint_id_from(
 
 /// Expand a leading `~` or `~/` using the user's home directory.
 pub(crate) fn expand_tilde(p: &str) -> PathBuf {
-    let home = || dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = || paths::home_dir().unwrap_or_else(|| PathBuf::from("."));
     if p == "~" {
         home()
     } else if let Some(rest) = p.strip_prefix("~/") {

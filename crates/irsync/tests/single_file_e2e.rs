@@ -7,10 +7,13 @@ mod common;
 
 use common::{irsync_bin as irsync, irsync_bin_in, spawn_daemon_binary};
 use irsync::authz::Access;
+#[cfg(unix)]
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+#[cfg(unix)]
+use std::process::Command;
+use std::process::Output;
 
 fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
@@ -282,6 +285,7 @@ fn names_with_spaces_and_unicode() {
 }
 
 /// True for GNU rsync >= 3.1, as in `rsync_compare.rs`.
+#[cfg(unix)]
 fn rsync_present() -> bool {
     let Ok(out) = Command::new("rsync").arg("--version").output() else {
         return false;
@@ -296,6 +300,7 @@ fn rsync_present() -> bool {
 }
 
 /// Called when rsync is unusable: under CI the comparison must not be skipped.
+#[cfg(unix)]
 fn skip_allowed(ci: bool) {
     assert!(
         !ci,
@@ -304,11 +309,13 @@ fn skip_allowed(ci: bool) {
 }
 
 /// Kind, mode, mtime (files only) and contents, by path.
+#[cfg(unix)]
 type Tree = BTreeMap<PathBuf, (&'static str, u32, Option<(i64, i64)>, Vec<u8>)>;
 
 /// What `-a` keeps, per path under `root`. Directory mtimes are left out:
 /// placing a file in a directory moves its mtime (the kernel does that, for
 /// both tools, at different moments).
+#[cfg(unix)]
 fn snapshot(root: &Path) -> Tree {
     fn walk(root: &Path, dir: &Path, out: &mut Tree) {
         for e in fs::read_dir(dir).unwrap() {
@@ -344,10 +351,12 @@ fn snapshot(root: &Path) -> Tree {
 /// One row of the placement table: a label, what the destination
 /// directory holds first, the destination (`T` or `T/`) and whether the
 /// copy succeeds.
+#[cfg(unix)]
 type Row = (&'static str, fn(&Path), &'static str, bool);
 
 /// The placement table, for both directions: `T` a directory, missing, a
 /// file, or a directory in the way, with and without a trailing slash.
+#[cfg(unix)]
 fn placement_rows() -> [Row; 7] {
     [
         (
@@ -388,6 +397,7 @@ fn placement_rows() -> [Row; 7] {
 }
 
 /// `f.iso` at `src` with fixed contents, mode and mtime.
+#[cfg(unix)]
 fn placement_source(src: &Path) {
     fs::write(src, b"new image").unwrap();
     irsync::platform::testutil::set_mode(src, 0o640).unwrap();
@@ -397,6 +407,7 @@ fn placement_source(src: &Path) {
 /// For each row: prepares `rsync_root/LABEL` and `irsync_root/LABEL` the
 /// same way, copies `src` there with `rsync -a` and with `irsync` (run by
 /// `irsync(label, dest)`), and compares the two trees and outcomes.
+#[cfg(unix)]
 fn compare_placement(
     src: &Path,
     rsync_root: &Path,
@@ -439,6 +450,7 @@ fn compare_placement(
 /// irsync to the daemon from the same starting tree, gives the same tree
 /// (or fails in both).
 #[test]
+#[cfg(unix)]
 fn matches_rsync_placement() {
     if !rsync_present() {
         skip_allowed(std::env::var_os("CI").is_some());
@@ -459,6 +471,7 @@ fn matches_rsync_placement() {
 /// The same table pulled: `rsync -a` copies the daemon's file locally, and
 /// irsync pulls it from the daemon, into the same starting trees.
 #[test]
+#[cfg(unix)]
 fn matches_rsync_placement_on_pull() {
     if !rsync_present() {
         skip_allowed(std::env::var_os("CI").is_some());
@@ -477,6 +490,7 @@ fn matches_rsync_placement_on_pull() {
 }
 
 /// Sets `p`'s mtime to `secs` (both tools must copy it).
+#[cfg(unix)]
 fn set_mtime(p: &Path, secs: u64) {
     let f = fs::File::options().write(true).open(p).unwrap();
     f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))

@@ -130,7 +130,7 @@ pub fn parse_add_target(arg: &str, cwd: &Path) -> Result<(String, PathBuf), Mana
         _ => (None, arg),
     };
     let joined = match raw.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => dirs::home_dir()
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => crate::config::paths::home_dir()
             .ok_or(ManageError::NoHome)?
             .join(rest.trim_start_matches('/')),
         _ => cwd.join(raw),

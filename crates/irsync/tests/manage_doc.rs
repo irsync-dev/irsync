@@ -335,6 +335,7 @@ fn written_is_the_alias_of_an_id_that_has_one() {
 /// A save keeps the mode the file has, so it never opens up a config its
 /// owner closed. A new config is for the owner only.
 #[test]
+#[cfg(unix)]
 fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     use irsync::platform::{mode_of, testutil::set_mode};
     let d = tempfile::tempdir().unwrap();

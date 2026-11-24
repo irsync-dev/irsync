@@ -229,6 +229,7 @@ async fn an_ungranted_name_is_no_export_even_with_a_granted_twin_on_the_same_pat
 /// inner export included: the reply is the same as for any other path
 /// under the outer one, so a key cannot map where other exports sit.
 #[tokio::test]
+#[cfg(unix)]
 async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
     use irsync::platform::testutil::name_bytes;
     let tmp = tempfile::tempdir().unwrap();
@@ -861,6 +862,7 @@ async fn immediate_relative_path_does_not_take_another_clients_export() {
 /// A push to a new directory whose parent this account may not write
 /// says why it failed, as the OS put it, not "no such file".
 #[tokio::test]
+#[cfg(unix)]
 async fn immediate_push_under_unwritable_parent_says_why() {
     use irsync::authz::Authorizer;
     use irsync::platform::testutil::set_mode;

@@ -10,7 +10,7 @@ use crate::fs::meta::{apply_metadata_fd_owned, fstat_entry_with_ctime, ApplyOpts
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{require_regular, Beneath};
 use crate::index::{IndexHandle, Partial};
-use crate::platform::{cause, Cause, Create, Open};
+use crate::platform::{cause, Cause, Create, Open, Stat};
 use crate::telemetry::meter::{Activity, Counter, Meter};
 use crate::tree_hash::TreeHash;
 use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
@@ -392,9 +392,11 @@ struct FileId {
 }
 
 impl FileId {
-    fn of(m: &std::fs::Metadata) -> FileId {
-        let (dev, ino) = crate::platform::file_id(m);
-        FileId { dev, ino }
+    fn of(st: &Stat) -> FileId {
+        FileId {
+            dev: st.dev,
+            ino: st.ino,
+        }
     }
 
     /// The regular file `st` describes; `None` for anything else.
@@ -456,7 +458,7 @@ fn names_file(held: FileId, part: &Beneath) -> io::Result<bool> {
 /// (a finalize renames its `.part` away; then a fresh one is opened).
 /// Returns the file's metadata too, read once the lock is held: until then
 /// another writer may still have been growing it.
-fn open_locked_part(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
+fn open_locked_part(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, Stat)> {
     let start = Instant::now();
     loop {
         // A momentary descriptor shortage is waited out rather than failing
@@ -464,8 +466,8 @@ fn open_locked_part(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, s
         let file = crate::fs::transient::retry(|| open_part(part))?;
         match file.try_lock() {
             Ok(()) => {
-                let meta = file.metadata()?;
-                if !meta.file_type().is_file() {
+                let meta = crate::platform::file_metadata(&file)?;
+                if meta.kind != crate::platform::Kind::File {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!("{} is not a regular file", part.path().display()),
@@ -497,7 +499,7 @@ fn open_locked_part(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, s
 /// open finds it missing: the planner has nearly always made it, and
 /// `create_dir_all` on an existing directory costs a failing mkdir and a
 /// stat per file.
-fn open_part_in_dir(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, std::fs::Metadata)> {
+fn open_part_in_dir(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, Stat)> {
     match open_locked_part(part, activity) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             part.make_parent()?;
@@ -603,7 +605,7 @@ impl FileWriter {
         // destination) could otherwise interleave unverified bytes with ours
         // between our re-hash and rename. Held until the file is closed.
         let (file, meta) = open_part_in_dir(&part, &activity)?;
-        let mut hole_from = meta.len();
+        let mut hole_from = meta.size;
         let mut cloned = false;
         if let Some(c) = &clone {
             if hole_from == 0 && reflink(c.file, &file).is_ok() {
@@ -624,7 +626,7 @@ impl FileWriter {
         );
         w.hole_from = hole_from;
         w.held_id = FileId::of(&meta);
-        w.held_owner = crate::platform::owner_of(&meta);
+        w.held_owner = (meta.uid, meta.gid);
         w.cloned = cloned;
         let adopted_from_record = w.adopt_recorded()?;
         if cloned {
@@ -660,11 +662,11 @@ impl FileWriter {
         let chunks = native_chunks(expected)?;
         let (dest, _) = paths(root, rel, None)?;
         let (file, now) = open_locked_part(&dest, &activity)?;
-        let hashed = old.file.metadata()?;
-        if crate::platform::file_id(&now) != crate::platform::file_id(&hashed) {
+        let hashed = crate::platform::file_metadata(old.file)?;
+        if FileId::of(&now) != FileId::of(&hashed) {
             return Err(invalid("destination is no longer the file that was hashed"));
         }
-        let hole_from = now.len();
+        let hole_from = now.size;
         let mut w = Self::new(
             rel,
             dest.clone(),
@@ -678,7 +680,7 @@ impl FileWriter {
         );
         w.hole_from = hole_from;
         w.held_id = FileId::of(&now);
-        w.held_owner = crate::platform::owner_of(&now);
+        w.held_owner = (now.uid, now.gid);
         w.inplace = true;
         let adopted_from_record = w.adopt_recorded()?;
         w.adopt_from(old.digest)?;
@@ -772,10 +774,10 @@ impl FileWriter {
     }
 
     /// Holds the `.part` [`open_sized_part`] opened, `meta` as it was then.
-    fn opened(&mut self, file: File, meta: &std::fs::Metadata) -> Arc<File> {
-        self.hole_from = meta.len();
+    fn opened(&mut self, file: File, meta: &Stat) -> Arc<File> {
+        self.hole_from = meta.size;
         self.held_id = FileId::of(meta);
-        self.held_owner = crate::platform::owner_of(meta);
+        self.held_owner = (meta.uid, meta.gid);
         let file = Arc::new(file);
         self.file = Some(file.clone());
         file
@@ -1026,7 +1028,7 @@ impl FileWriter {
             };
             let (file, hole_from) = match (&held, &opened) {
                 (Some(f), _) => (&**f, hole_from),
-                (None, Some((f, meta))) => (f, meta.len()),
+                (None, Some((f, meta))) => (f, meta.size),
                 (None, None) => unreachable!("opened above"),
             };
             // A hole (`set_len` past the opened length) already reads as
@@ -1537,11 +1539,7 @@ fn verify(meter: Option<&Meter>, c: &ChunkRecord, data: &[u8]) -> bool {
 /// length then (another writer may have left bytes there meanwhile, and
 /// below that length nothing is known to be a hole), which file it is and
 /// its owner.
-fn open_sized_part(
-    part: &Beneath,
-    size: u64,
-    activity: &AtomicU64,
-) -> io::Result<(File, std::fs::Metadata)> {
+fn open_sized_part(part: &Beneath, size: u64, activity: &AtomicU64) -> io::Result<(File, Stat)> {
     let (file, meta) = open_part_in_dir(part, activity)?;
     file.set_len(size)?;
     Ok((file, meta))

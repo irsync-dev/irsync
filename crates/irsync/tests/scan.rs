@@ -3,7 +3,9 @@ mod common;
 use irsync::cli::FilterRule;
 use irsync::filter::FilterSet;
 use irsync::fs::paths::RelPath;
-use irsync::platform::testutil::{name_from_bytes, set_mode, symlink};
+use irsync::platform::testutil::symlink;
+#[cfg(unix)]
+use irsync::platform::testutil::{name_from_bytes, set_mode};
 use irsync::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts};
 use std::path::Path;
 use std::sync::Arc;
@@ -35,6 +37,7 @@ fn names(items: &[ScanItem]) -> Vec<Vec<u8>> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(unix)]
 async fn walk_emits_sorted_relpaths() {
     let d = tempfile::tempdir().unwrap();
     let mut x: u64 = 12345;
@@ -87,6 +90,7 @@ async fn walk_excludes_subtree_without_descending() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn walk_reports_unreadable_dir_as_incomplete() {
     if irsync::platform::is_root() {
         eprintln!("skipping: running as root");

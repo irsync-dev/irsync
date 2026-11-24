@@ -9,7 +9,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 use super::{installer, release};
-use crate::platform::{nlink_of, symlink_path};
+use crate::platform::{symlink_path, Kind};
 
 /// The three man pages, relative to a man directory.
 const PAGES: [&str; 3] = ["man1/irsync.1", "man1/fileset.1", "man5/irsync.toml.5"];
@@ -206,21 +206,21 @@ fn release_member(base: &Path, rel: &str) -> Result<bool> {
     let mut path = base.to_path_buf();
     for (i, part) in parts.iter().enumerate() {
         path.push(part);
-        let meta = match std::fs::symlink_metadata(&path) {
+        let meta = match crate::platform::symlink_metadata(&path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
         };
         let ok = if i + 1 == parts.len() {
-            meta.is_file()
+            meta.kind == Kind::File
         } else {
-            meta.is_dir()
+            meta.kind == Kind::Dir
         };
         if !ok {
             let what = parts[..=i].join("/");
             bail!("the release holds {what} as something other than a regular file or directory (a symlink?)");
         }
-        if i + 1 == parts.len() && nlink_of(&meta) != 1 {
+        if i + 1 == parts.len() && meta.nlink != 1 {
             bail!("the release holds {rel} as a file with more than one name (a hard link)");
         }
     }

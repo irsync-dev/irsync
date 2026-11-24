@@ -2260,6 +2260,7 @@ dependencies = [
  "irsync",
  "irsync-glob",
  "irsync-proto",
+ "jiff",
  "jwalk",
  "metrics",
  "metrics-exporter-prometheus",
@@ -2300,6 +2301,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "vergen-gitcl",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

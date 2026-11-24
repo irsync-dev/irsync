@@ -391,24 +391,6 @@ fn kind_of_mode(mode: u32) -> Kind {
     }
 }
 
-/// The `st_mode` bits of a kind; none for [`Kind::Other`]. With
-/// [`Stat::mode`] they make the whole `st_mode` a listing carries.
-// `mode_t` is narrower on macOS and FreeBSD.
-#[allow(clippy::unnecessary_cast)]
-pub fn mode_of_kind(kind: Kind) -> u32 {
-    let fmt = match kind {
-        Kind::File => SFlag::S_IFREG,
-        Kind::Dir => SFlag::S_IFDIR,
-        Kind::Symlink => SFlag::S_IFLNK,
-        Kind::Fifo => SFlag::S_IFIFO,
-        Kind::CharDev => SFlag::S_IFCHR,
-        Kind::BlockDev => SFlag::S_IFBLK,
-        Kind::Socket => SFlag::S_IFSOCK,
-        Kind::Other => SFlag::empty(),
-    };
-    fmt.bits() as u32
-}
-
 // The `stat` field types differ by platform; some casts are no-ops here.
 #[allow(clippy::unnecessary_cast)]
 fn stat_of(st: &FileStat) -> Stat {
@@ -445,6 +427,44 @@ pub fn lstat(path: &Path) -> io::Result<Stat> {
         .map_err(errno_of)
 }
 
+/// [`Stat`] of what `m` describes, field for field as [`stat_of`] reads
+/// a `stat` (`MetadataExt` gives the same `stat` fields).
+// `MetadataExt` gives every field as the widest type; the nanoseconds are
+// below a second, so they fit.
+fn stat_of_metadata(m: &std::fs::Metadata) -> Stat {
+    use std::os::unix::fs::MetadataExt;
+    let kind = kind_of_mode(m.mode());
+    Stat {
+        kind,
+        mode: m.mode() & 0o7777,
+        uid: m.uid(),
+        gid: m.gid(),
+        size: m.size(),
+        nlink: m.nlink(),
+        ino: m.ino(),
+        dev: m.dev(),
+        rdev: m.rdev(),
+        mtime: (m.mtime(), m.mtime_nsec() as u32),
+        ctime: (m.ctime(), m.ctime_nsec() as u32),
+        // As `stat_of` computes it.
+        sparse: kind == Kind::File && (m.blocks() as i64) * 512 < m.size() as i64,
+    }
+}
+
+/// What the open `file` is, read as the standard library reads it
+/// (`file.metadata()`: `statx` on Linux, `fstat` elsewhere).
+pub fn file_metadata(file: &File) -> io::Result<Stat> {
+    file.metadata().map(|m| stat_of_metadata(&m))
+}
+
+/// What is at `path`, a final link described, not followed, read as the
+/// standard library reads it (`std::fs::symlink_metadata`: `statx` on
+/// Linux, `lstat` elsewhere). Links before it are followed: the caller
+/// trusts them.
+pub fn symlink_metadata(path: &Path) -> io::Result<Stat> {
+    std::fs::symlink_metadata(path).map(|m| stat_of_metadata(&m))
+}
+
 /// Which file `m` describes: its device and inode numbers.
 pub fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;
@@ -457,14 +477,6 @@ pub fn mtime_of(m: &std::fs::Metadata) -> (i64, u32) {
     use std::os::unix::fs::MetadataExt;
     // Below a second, so it fits, as in `stat_of`.
     (m.mtime(), m.mtime_nsec() as u32)
-}
-
-/// The inode change time of the file `m` describes, `(seconds,
-/// nanoseconds)`, as [`Stat::ctime`] gives it.
-pub fn ctime_of(m: &std::fs::Metadata) -> (i64, u32) {
-    use std::os::unix::fs::MetadataExt;
-    // Below a second, so it fits, as in `stat_of`.
-    (m.ctime(), m.ctime_nsec() as u32)
 }
 
 /// The owner and group (`(uid, gid)`) of the file `m` describes.
@@ -803,6 +815,44 @@ pub fn group_id(name: &str) -> Option<u32> {
 }
 
 // ---------------------------------------------------------------------------
+// Default locations.
+
+/// The home directory: `HOME` from `env` when set and not empty, else the
+/// password database (through `dirs::home_dir`, which reads `HOME` itself
+/// first: given the process's own environment, as irsync always does, it
+/// then finds it unset too). Exactly what `dirs::home_dir()` gives.
+pub fn home_dir(env: &dyn Fn(&str) -> Option<OsString>) -> Option<std::path::PathBuf> {
+    env("HOME")
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(dirs::home_dir)
+}
+
+/// `~/.config/irsync/irsync.toml`; `$XDG_STATE_HOME/irsync` when that is
+/// an absolute path, else `~/.local/state/irsync` (on every Unix:
+/// `dirs::state_dir()` honours the variable only on Linux); the key ssh
+/// tries first, `~/.ssh/id_ed25519`. Without a home, `.` stands for it in
+/// the config path and the state (`./irsync`), and there is no key. Never
+/// `None` on Unix.
+pub fn default_locations(env: &dyn Fn(&str) -> Option<OsString>) -> Option<super::Locations> {
+    let home = home_dir(env);
+    let base = home
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let state = env("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.as_ref().map(|h| h.join(".local/state")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("irsync");
+    Some(super::Locations {
+        config: base.join(".config/irsync").join("irsync.toml"),
+        state,
+        key: home.map(|h| h.join(".ssh/id_ed25519")),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Time.
 
 /// `secs` since the epoch as local time, `YYYY-MM-DD HH:MM:SS`; `@secs`
@@ -904,228 +954,33 @@ mod tests {
         assert!(!is_transient_extra(&io::Error::other("x")));
     }
 
+    /// `mode_of_kind` (platform-neutral, part of the wire format) gives
+    /// this system's own `S_IF*` bits.
+    // `mode_t` is narrower on macOS and FreeBSD.
+    #[allow(clippy::unnecessary_cast)]
+    #[test]
+    fn kind_bits_are_the_systems_own() {
+        let cases = [
+            (Kind::File, libc::S_IFREG),
+            (Kind::Dir, libc::S_IFDIR),
+            (Kind::Symlink, libc::S_IFLNK),
+            (Kind::Fifo, libc::S_IFIFO),
+            (Kind::CharDev, libc::S_IFCHR),
+            (Kind::BlockDev, libc::S_IFBLK),
+            (Kind::Socket, libc::S_IFSOCK),
+        ];
+        for (kind, bits) in cases {
+            assert_eq!(crate::platform::mode_of_kind(kind), bits as u32, "{kind:?}");
+            assert_eq!(kind_of_mode(bits as u32), kind, "{kind:?}");
+        }
+        assert_eq!(crate::platform::mode_of_kind(Kind::Other), 0);
+    }
+
     #[test]
     fn names_and_bytes_round_trip() {
         for b in [&b"plain"[..], b"caf\xe9", b"\xff\xfe", b""] {
             let os = bytes_to_os(b).unwrap();
             assert_eq!(os_to_bytes(&os), b);
         }
-    }
-
-    const READ: Open = Open {
-        read: true,
-        write: false,
-        create: Create::No,
-        truncate: false,
-        nonblock: false,
-        mode: 0,
-    };
-
-    fn sorted(mut names: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
-        names.sort();
-        names
-    }
-
-    #[test]
-    fn every_operation_takes_one_name_and_follows_no_link() {
-        let (t, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let root = t.path().join("d");
-        std::fs::create_dir_all(root.join("sub")).unwrap();
-        std::fs::write(root.join("f"), b"f").unwrap();
-        std::fs::write(root.join("sub/g"), b"g").unwrap();
-        std::fs::create_dir(outside.path().join("dir")).unwrap();
-        std::fs::write(outside.path().join("f"), b"outside").unwrap();
-        testutil::symlink(&outside.path().join("dir"), &root.join("link_to_dir")).unwrap();
-        testutil::symlink(&outside.path().join("f"), &root.join("link_to_file")).unwrap();
-
-        let d = Dir::open_root(&root).unwrap();
-        assert_eq!(
-            sorted(d.list().unwrap()),
-            [&b"f"[..], b"link_to_dir", b"link_to_file", b"sub"]
-        );
-        let e = d.open_dir(b"link_to_dir").unwrap_err();
-        assert_eq!(cause(&e), Cause::LinkRefused, "{e}");
-        let e = d.open_file(b"link_to_file", READ).unwrap_err();
-        assert_eq!(cause(&e), Cause::LinkRefused, "{e}");
-        assert_eq!(d.stat(b"link_to_file").unwrap().kind, Kind::Symlink);
-        assert_eq!(d.stat(b"f").unwrap().kind, Kind::File);
-        assert_eq!(d.stat(b"sub").unwrap().kind, Kind::Dir);
-        assert_eq!(d.stat_self().unwrap().kind, Kind::Dir);
-        assert_eq!(
-            d.read_link(b"link_to_file").unwrap(),
-            outside.path().join("f").as_os_str().as_bytes()
-        );
-
-        // The link goes, what it leads to stays.
-        d.remove_file(b"link_to_file").unwrap();
-        assert!(std::fs::symlink_metadata(root.join("link_to_file")).is_err());
-        assert_eq!(std::fs::read(outside.path().join("f")).unwrap(), b"outside");
-
-        // A rename replaces what is at the new name.
-        let sub = d.open_dir(b"sub").unwrap();
-        d.rename(b"f", &sub, b"g").unwrap();
-        assert!(!root.join("f").exists());
-        assert_eq!(std::fs::read(root.join("sub/g")).unwrap(), b"f");
-        assert_eq!(sorted(sub.list().unwrap()), [&b"g"[..]]);
-
-        // A second name of the same file.
-        d.hard_link(b"h", &sub, b"g").unwrap();
-        let (h, g) = (d.stat(b"h").unwrap(), sub.stat(b"g").unwrap());
-        assert_eq!((h.nlink, g.nlink), (2, 2));
-        assert_eq!((h.ino, h.dev), (g.ino, g.dev));
-
-        // A link's own time changes, not its target's.
-        let before = std::fs::metadata(outside.path().join("dir"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        d.set_mtime(b"link_to_dir", (1_000_000_000, 5)).unwrap();
-        assert_eq!(d.stat(b"link_to_dir").unwrap().mtime.0, 1_000_000_000);
-        let after = std::fs::metadata(outside.path().join("dir"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        assert_eq!(before, after);
-
-        // The rest of the operations, on names inside.
-        d.create_dir(b"new", 0o755).unwrap();
-        d.open_dir(b"new").unwrap();
-        d.remove_dir(b"new").unwrap();
-        d.symlink(b"l", b"sub/g", LinkKind::File).unwrap();
-        assert_eq!(d.read_link(b"l").unwrap(), b"sub/g");
-        d.set_mode(b"h", 0o640).unwrap();
-        assert_eq!(d.stat(b"h").unwrap().mode, 0o640);
-        let st = d.stat(b"h").unwrap();
-        d.set_owner(b"h", Some(st.uid), Some(st.gid)).unwrap();
-        d.make_fifo(b"p", 0o600).unwrap();
-        assert_eq!(d.stat(b"p").unwrap().kind, Kind::Fifo);
-        let write = Open {
-            read: true,
-            write: true,
-            create: Create::New,
-            truncate: false,
-            nonblock: false,
-            mode: 0o600,
-        };
-        let file = d.open_file(b"w", write).unwrap();
-        assert_eq!(write_at(&file, b"abc", 2).unwrap(), 3);
-        let mut buf = [0u8; 5];
-        assert_eq!(read_at(&file, &mut buf, 0).unwrap(), 5);
-        assert_eq!(&buf, b"\0\0abc");
-        let st = fstat(&file).unwrap();
-        assert_eq!((st.kind, st.size), (Kind::File, 5));
-        assert_eq!(st, d.stat(b"w").unwrap());
-    }
-
-    #[test]
-    fn list_while_stops_when_told() {
-        let t = tempfile::tempdir().unwrap();
-        for n in ["a", "b", "c"] {
-            std::fs::write(t.path().join(n), n).unwrap();
-        }
-        let d = Dir::open_root(t.path()).unwrap();
-        // Told to stop at the first name: called once.
-        let mut calls = 0;
-        d.list_while(|_| {
-            calls += 1;
-            false
-        })
-        .unwrap();
-        assert_eq!(calls, 1);
-        // Never told to stop: every name, without `.` and `..`.
-        let mut names = Vec::new();
-        d.list_while(|n| {
-            names.push(n.to_vec());
-            true
-        })
-        .unwrap();
-        assert_eq!(sorted(names), [&b"a"[..], b"b", b"c"]);
-        // Stopped after the second name: called twice, and a later listing
-        // starts from the first name again.
-        let mut calls = 0;
-        d.list_while(|_| {
-            calls += 1;
-            calls < 2
-        })
-        .unwrap();
-        assert_eq!(calls, 2);
-        assert_eq!(sorted(d.list().unwrap()), [&b"a"[..], b"b", b"c"]);
-    }
-
-    #[test]
-    fn error_meanings() {
-        let t = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(t.path().join("sub")).unwrap();
-        std::fs::write(t.path().join("sub/g"), b"g").unwrap();
-        std::fs::write(t.path().join("f"), b"f").unwrap();
-        let d = Dir::open_root(t.path()).unwrap();
-        let cause_of = |r: io::Result<()>| cause(&r.unwrap_err());
-        assert_eq!(cause_of(d.open_dir(b"missing").map(drop)), Cause::NotThere);
-        assert_eq!(cause_of(d.open_dir(b"f").map(drop)), Cause::NotADirectory);
-        assert_eq!(cause_of(d.create_dir(b"sub", 0o755)), Cause::AlreadyThere);
-        let new = Open {
-            write: true,
-            create: Create::New,
-            mode: 0o600,
-            ..READ
-        };
-        assert_eq!(
-            cause_of(d.open_file(b"f", new).map(drop)),
-            Cause::AlreadyThere
-        );
-        assert_eq!(cause_of(d.remove_dir(b"sub")), Cause::NotEmpty);
-        let write = Open {
-            read: false,
-            write: true,
-            ..READ
-        };
-        assert_eq!(
-            cause_of(d.open_file(b"sub", write).map(drop)),
-            Cause::IsADirectory
-        );
-    }
-
-    #[test]
-    fn a_name_with_a_separator_or_nul_is_refused() {
-        let t = tempfile::tempdir().unwrap();
-        std::fs::create_dir(t.path().join("a")).unwrap();
-        std::fs::write(t.path().join("a/b"), b"b").unwrap();
-        let d = Dir::open_root(t.path()).unwrap();
-        let invalid = |r: io::Result<()>| r.unwrap_err().kind() == io::ErrorKind::InvalidInput;
-        for bad in [&b"a/b"[..], b"", b".", b"..", b"a\0"] {
-            let ops: [(&str, io::Result<()>); 19] = [
-                ("open_dir", d.open_dir(bad).map(drop)),
-                ("create_dir", d.create_dir(bad, 0o755)),
-                ("open_file", d.open_file(bad, READ).map(drop)),
-                ("stat", d.stat(bad).map(drop)),
-                ("read_link", d.read_link(bad).map(drop)),
-                ("remove_file", d.remove_file(bad)),
-                ("remove_dir", d.remove_dir(bad)),
-                ("rename from", d.rename(bad, &d, b"x")),
-                ("rename to", d.rename(b"a", &d, bad)),
-                ("hard_link name", d.hard_link(bad, &d, b"a")),
-                ("hard_link from", d.hard_link(b"x", &d, bad)),
-                ("symlink", d.symlink(bad, b"a", LinkKind::File)),
-                ("set_mtime", d.set_mtime(bad, (0, 0))),
-                ("set_mode", d.set_mode(bad, 0o644)),
-                ("set_owner", d.set_owner(bad, None, None)),
-                ("make_fifo", d.make_fifo(bad, 0o644)),
-                ("make_device", d.make_device(bad, Kind::Fifo, 0o644, 0)),
-                (
-                    "make_device socket",
-                    d.make_device(bad, Kind::Socket, 0o644, 0),
-                ),
-                (
-                    "make_device char",
-                    d.make_device(bad, Kind::CharDev, 0o644, 0),
-                ),
-            ];
-            for (op, r) in ops {
-                assert!(invalid(r), "{op} with {:?}", String::from_utf8_lossy(bad));
-            }
-        }
-        // Nothing was touched: `a` is still the directory with `b` in it.
-        assert_eq!(std::fs::read(t.path().join("a/b")).unwrap(), b"b");
-        assert_eq!(sorted(d.list().unwrap()), [&b"a"[..]]);
     }
 }

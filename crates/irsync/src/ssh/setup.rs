@@ -469,7 +469,7 @@ pub fn run(
 
     // A daemon running from the old install path is ours too, unless a
     // service file starts it: stopping it would fight systemd or launchd.
-    let home = usable_home(dirs::home_dir());
+    let home = usable_home(crate::config::paths::home_dir());
     let stale = home
         .as_deref()
         .map(legacy::stale_services)
