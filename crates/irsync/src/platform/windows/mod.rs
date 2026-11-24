@@ -1251,9 +1251,11 @@ pub fn group_id(_name: &str) -> Option<u32> {
 }
 
 // ---------------------------------------------------------------------------
-// Default locations, from the environment variables only (not the Known
-// Folder API), so a process started with them redirected is redirected
-// wholly.
+// Default locations: each from its environment variable when that is set
+// and not empty, so a process started with them redirected is redirected
+// wholly; else from the system (the Known Folder API, through `dirs`), as
+// on Unix a missing `HOME` falls back to the password database. Never the
+// current directory, unless the system has no answer either.
 
 /// `name` from `env` as a path, when set and not empty.
 fn env_path(env: &dyn Fn(&str) -> Option<OsString>, name: &str) -> Option<std::path::PathBuf> {
@@ -1262,19 +1264,32 @@ fn env_path(env: &dyn Fn(&str) -> Option<OsString>, name: &str) -> Option<std::p
         .map(std::path::PathBuf::from)
 }
 
-/// The home directory: `%USERPROFILE%`.
+/// `name` from `env`, else what `system` says.
+fn env_or_system(
+    env: &dyn Fn(&str) -> Option<OsString>,
+    name: &str,
+    system: fn() -> Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    env_path(env, name).or_else(system)
+}
+
+/// The home directory: `%USERPROFILE%`, else the profile folder.
 pub fn home_dir(env: &dyn Fn(&str) -> Option<OsString>) -> Option<std::path::PathBuf> {
-    env_path(env, "USERPROFILE")
+    env_or_system(env, "USERPROFILE", dirs::home_dir)
 }
 
 /// `%APPDATA%\irsync\irsync.toml`, `%LOCALAPPDATA%\irsync` and
-/// `%USERPROFILE%\.irsync\id_ed25519` (`.ssh` is never looked in); `None`
-/// when one of the three variables is unset or empty.
+/// `%USERPROFILE%\.irsync\id_ed25519` (`.ssh` is never looked in); a
+/// variable that is unset or empty is replaced by the system's folder
+/// (roaming app data, local app data, the profile). `None` only when the
+/// system has no config or state folder either; no key without a home.
 pub fn default_locations(env: &dyn Fn(&str) -> Option<OsString>) -> Option<super::Locations> {
     Some(super::Locations {
-        config: env_path(env, "APPDATA")?.join("irsync").join("irsync.toml"),
-        state: env_path(env, "LOCALAPPDATA")?.join("irsync"),
-        key: Some(home_dir(env)?.join(".irsync").join("id_ed25519")),
+        config: env_or_system(env, "APPDATA", dirs::config_dir)?
+            .join("irsync")
+            .join("irsync.toml"),
+        state: env_or_system(env, "LOCALAPPDATA", dirs::data_local_dir)?.join("irsync"),
+        key: home_dir(env).map(|h| h.join(".irsync").join("id_ed25519")),
     })
 }
 

@@ -12,7 +12,8 @@ fn process_env(name: &str) -> Option<OsString> {
 }
 
 /// The default locations for this process's environment. `None` only on
-/// Windows, when `APPDATA`, `LOCALAPPDATA` or `USERPROFILE` is unset.
+/// Windows, when neither the environment nor the system names the config
+/// or state folder.
 fn locations() -> Option<Locations> {
     crate::platform::default_locations(&process_env)
 }
@@ -95,23 +96,60 @@ mod tests {
             crate::platform::home_dir(&env_of(&all)),
             Some(PathBuf::from(r"C:\t\me"))
         );
+        // A missing or empty variable: that one location is the system's
+        // folder (its path is read, nothing touched), never `.`; the other
+        // two still come from the environment.
+        let config = dirs::config_dir().unwrap().join(r"irsync\irsync.toml");
+        let state = dirs::data_local_dir().unwrap().join("irsync");
+        let key = dirs::home_dir().unwrap().join(r".irsync\id_ed25519");
         for missing in ["APPDATA", "LOCALAPPDATA", "USERPROFILE"] {
             let some: Vec<_> = all.iter().copied().filter(|(k, _)| *k != missing).collect();
-            assert_eq!(
-                crate::platform::default_locations(&env_of(&some)),
-                None,
-                "{missing}"
-            );
             let empty: Vec<_> = all
                 .iter()
                 .map(|&(k, v)| (k, if k == missing { "" } else { v }))
                 .collect();
-            assert_eq!(
-                crate::platform::default_locations(&env_of(&empty)),
-                None,
-                "{missing} empty"
-            );
+            for (vars, how) in [(some, "missing"), (empty, "empty")] {
+                let l = crate::platform::default_locations(&env_of(&vars)).unwrap();
+                let want = |var: &str, from_env: PathBuf, system: &PathBuf| {
+                    if var == missing {
+                        system.clone()
+                    } else {
+                        from_env
+                    }
+                };
+                assert_eq!(
+                    l.config,
+                    want(
+                        "APPDATA",
+                        PathBuf::from(r"C:\t\roaming\irsync\irsync.toml"),
+                        &config
+                    ),
+                    "{missing} {how}"
+                );
+                assert_eq!(
+                    l.state,
+                    want("LOCALAPPDATA", PathBuf::from(r"C:\t\local\irsync"), &state),
+                    "{missing} {how}"
+                );
+                assert_eq!(
+                    l.key,
+                    Some(want(
+                        "USERPROFILE",
+                        PathBuf::from(r"C:\t\me\.irsync\id_ed25519"),
+                        &key
+                    )),
+                    "{missing} {how}"
+                );
+                for p in [&l.config, &l.state] {
+                    assert!(p.is_absolute(), "{missing} {how}: {}", p.display());
+                }
+            }
         }
+        assert_eq!(
+            crate::platform::home_dir(&env_of(&[])),
+            dirs::home_dir(),
+            "the profile without USERPROFILE"
+        );
     }
 
     #[cfg(unix)]
