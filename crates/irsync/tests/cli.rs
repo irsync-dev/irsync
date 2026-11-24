@@ -776,6 +776,8 @@ fn nouns_share_add_remove_list() {
         "no",
         "--mdns",
         "yes",
+        "--pq-key-exchange",
+        "require",
     ]);
     let Some(Command::Server(h)) = a.cmd else {
         panic!()
@@ -789,10 +791,21 @@ fn nouns_share_add_remove_list() {
             && h.address.len() == 2
             && h.dht == Some(false)
             && h.mdns == Some(true)
+            && h.pq_key_exchange == Some(irsync::config::settings::PqKeyExchange::Require)
     );
     assert!(
         Args::try_parse_from(["irsync", "server", "add", "home", "abc", "--dht", "maybe"]).is_err()
     );
+    assert!(Args::try_parse_from([
+        "irsync",
+        "server",
+        "add",
+        "home",
+        "abc",
+        "--pq-key-exchange",
+        "sometimes"
+    ])
+    .is_err());
 }
 
 #[test]
