@@ -12,6 +12,13 @@ and what must not be made up) and [`docs/DESIGN.md`](docs/DESIGN.md) (the
 colours, type, components and rules of the site and the book). The tokens
 themselves live in `site/tokens.json`; `DESIGN.md` describes them.
 
+## Issues
+
+#24 ("File transfers still break when the network does") is the
+project's foundational issue: the goal the rest of the work serves. It
+stays open and has no status block on purpose. Do not suggest it, or flag
+it, when looking for the next thing to work on.
+
 ## Pull requests
 
 All work goes through a pull request. Work on a branch, push the branch,
