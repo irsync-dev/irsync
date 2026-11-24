@@ -298,6 +298,16 @@ pub fn read(text: &str, path: &Path) -> Result<Read, ConfigError> {
     })
 }
 
+/// Reads the text of the config file into the message, of any layout,
+/// as [`read`] does but without the comments: for a typed view, which
+/// needs none. The same layout is chosen, with the same errors.
+pub fn read_values_any(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
+    if layout(text, path)? == 1 {
+        return super::legacy_v1::read_values(text, path);
+    }
+    read_values(text, path)
+}
+
 /// The message for `[hosts]` in a file of the current layout.
 const HOSTS_NOT_READ: &str = "[hosts] is not read since config_version 2: hosts are now [servers.NAME] (to connect to) and [clients.NAME] (to let in)";
 

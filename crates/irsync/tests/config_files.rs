@@ -798,3 +798,46 @@ fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
     let mut lock = irsync::manage::lock_config(&paths.config).unwrap();
     assert!(lock.load().is_err());
 }
+
+/// `Config::parse` reads the values only, of either layout, and gives the
+/// typed view the full read gives, and the same errors.
+#[test]
+fn parse_reads_values_only_with_the_same_view_and_errors() {
+    use irsync::config::reader::{read, read_values_any};
+    let v1 = format!(
+        "# top\n[hosts.nas] # the nas\nendpoint_id = \"{}\"\n[hosts.lap]\nclient_id = \"{}\"\nmdns = false\n",
+        id(1),
+        id(2)
+    );
+    let v2 = format!(
+        "config_version = 2\n# top\n[servers.nas] # the nas\nendpoint_id = \"{}\"\n",
+        id(1)
+    );
+    for text in [v1.as_str(), v2.as_str(), "# only a comment\n"] {
+        let full = read(text, p()).unwrap().config;
+        let values = read_values_any(text, p()).unwrap();
+        assert_ne!(values, full, "{text}");
+        assert!(values.header.is_empty(), "{text}");
+        assert_eq!(
+            Config::from_message(&values, p()).unwrap(),
+            Config::from_message(&full, p()).unwrap(),
+            "{text}"
+        );
+        assert_eq!(
+            Config::parse(text, p()).unwrap(),
+            Config::from_message(&full, p()).unwrap()
+        );
+    }
+    for bad in [
+        "[hosts.a]\nendpoint_id = \"x\"\n",
+        "config_version = 3\n",
+        "[hosts.a]\n[servers.b]\n",
+        "x = [\n",
+    ] {
+        assert_eq!(
+            read_values_any(bad, p()).unwrap_err().to_string(),
+            read(bad, p()).unwrap_err().to_string(),
+            "{bad}"
+        );
+    }
+}

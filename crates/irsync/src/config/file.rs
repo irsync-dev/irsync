@@ -6,7 +6,7 @@
 use super::clients::Clients;
 use super::exports::Exports;
 use super::paths::Paths;
-use super::reader::read;
+use super::reader::read_values_any;
 use super::servers::Servers;
 use super::settings::Settings;
 use super::{read_optional, ConfigError};
@@ -62,9 +62,12 @@ pub fn first_sighting(path: &Path) -> bool {
 }
 
 impl Config {
-    /// Parses the text of the config file, of any layout (see [`read`]).
+    /// Parses the text of the config file, of any layout (see
+    /// [`super::reader::read`]). Without its comments, which the typed
+    /// view has no use for: the daemon parses the file for every
+    /// connection.
     pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
-        Self::from_message(&read(text, path)?.config, path)
+        Self::from_message(&read_values_any(text, path)?, path)
     }
 
     /// The typed view of the message: the defaults for what it leaves
