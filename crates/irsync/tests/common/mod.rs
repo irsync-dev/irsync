@@ -517,7 +517,7 @@ impl Harness {
         let export = tmp();
         seed(export.path());
         let grants = Grants {
-            all: Some(Access::ReadWrite),
+            all_exports: Some(Access::ReadWrite),
             ..Grants::default()
         };
         let authz = MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants);

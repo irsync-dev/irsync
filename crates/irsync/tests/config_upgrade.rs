@@ -121,11 +121,13 @@ fn grants_lines(snap: &Snapshot, ids: &BTreeSet<EndpointId>) -> Vec<String> {
             for (export, a) in &g.exports {
                 line += &format!(" {export}={}", access(*a));
             }
-            if let Some(a) = g.all {
+            if let Some(a) = g.all_exports {
                 line += &format!(" all={}", access(a));
             }
-            if g.immediate {
-                line += " immediate";
+            match g.all_paths {
+                Some(Access::ReadWrite) => line += " immediate",
+                Some(Access::ReadOnly) => line += " immediate=ro",
+                None => {}
             }
             line
         })
@@ -522,7 +524,7 @@ async fn a_daemon_on_a_v1_file_converts_it_and_still_lets_clients_in() {
             .snapshot()
             .unwrap();
         assert!(
-            before.grants(&client.id()).immediate,
+            before.grants(&client.id()).all_paths == Some(Access::ReadWrite),
             "the old file grants the client immediate access"
         );
 
@@ -579,8 +581,8 @@ async fn a_daemon_on_a_v1_file_converts_it_and_still_lets_clients_in() {
         for who in [h.client.id(), other] {
             let (b, a) = (before.grants(&who), after.grants(&who));
             assert_eq!(b.exports.get("shared"), a.exports.get("shared"));
-            assert_eq!(b.all, a.all);
-            assert_eq!(b.immediate, a.immediate);
+            assert_eq!(b.all_exports, a.all_exports);
+            assert_eq!(b.all_paths, a.all_paths);
         }
         assert_eq!(
             after.grants(&other).access("shared"),

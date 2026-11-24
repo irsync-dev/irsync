@@ -573,17 +573,19 @@ async fn handle(
     let fresh: Snapshot;
     let validated = match validate(&snap, &grants, shared.home.as_deref(), &hello) {
         Ok(Some(v)) => Ok(v),
-        Ok(None) if grants.immediate => match serve_immediate(&shared, &snap, id, &hello).await {
-            Ok((s, abs)) => {
-                fresh = s;
-                let grants = fresh.grants(&id);
-                match containing(&abs, &fresh.exports, &grants, None) {
-                    Some(resolved) => admit(resolved, &hello),
-                    None => Err(no_access(&hello)),
+        Ok(None) if grants.all_paths.is_some() => {
+            match serve_immediate(&shared, &snap, id, &hello).await {
+                Ok((s, abs)) => {
+                    fresh = s;
+                    let grants = fresh.grants(&id);
+                    match containing(&abs, &fresh.exports, &grants, None) {
+                        Some(resolved) => admit(resolved, &hello),
+                        None => Err(no_access(&hello)),
+                    }
                 }
+                Err(e) => Err(e),
             }
-            Err(e) => Err(e),
-        },
+        }
         Ok(None) => Err(no_access(&hello)),
         Err(e) => Err(e),
     };
@@ -734,7 +736,7 @@ fn no_access(hello: &Hello) -> (Code, String) {
 }
 
 /// `Ok(None)` when no export the key may use contains the path: the caller
-/// replies [`no_access`], or, for a key with the immediate grant, adds an
+/// replies [`no_access`], or, for a key with `all_paths`, adds an
 /// automatic export ([`serve_immediate`]).
 fn validate<'a>(
     snap: &'a Snapshot,
@@ -754,12 +756,14 @@ fn validate<'a>(
     }
 }
 
-/// For a key with the immediate grant, whose path no export it may use
-/// contains: adds an automatic export for the path ([`auto_root`]) and
-/// returns a snapshot that has it, with the path made canonical to resolve
-/// against it. Such a key can reach the server over SSH anyway, so a
-/// missing path is reported as such. The filesystem and config work runs
-/// off the async runtime: it may wait for the config lock.
+/// For a key with `all_paths`, whose path no export it may use contains:
+/// adds an automatic export for the path ([`auto_root`]) that lists the
+/// key with its `all_paths` level, and returns a snapshot that has it,
+/// with the path made canonical to resolve against it. A push by a key
+/// whose `all_paths` is `ro` is refused first, so nothing is created for
+/// it. Such a key can reach the server over SSH anyway, so a missing path
+/// is reported as such. The filesystem and config work runs off the async
+/// runtime: it may wait for the config lock.
 async fn serve_immediate(
     shared: &Arc<Shared>,
     snap: &Snapshot,
@@ -775,6 +779,9 @@ async fn serve_immediate(
     // use that export; any other name is a directory under the home, so
     // the peer cannot reach (and auto-export) another client's export.
     let grants = snap.grants(&id);
+    let Some(level) = grants.all_paths else {
+        return Err(no_access(hello));
+    };
     let usable: BTreeMap<String, Export> = snap
         .exports
         .iter()
@@ -786,22 +793,31 @@ async fn serve_immediate(
         Ok(None) => return Err(no_access(hello)),
         Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),
     };
+    // Before `auto_root`, which makes a missing push target. The reply is
+    // the one for a push into a read-only export.
+    if push && !level.permits(true) {
+        return Err(read_only());
+    }
     // A single file pushed to a name, not into a directory.
     let file_dest = hello.single_file && push && !hello.contents_only;
     let (shared, path) = (shared.clone(), hello.path.clone());
-    tokio::task::spawn_blocking(move || add_immediate(&shared, abs, push, file_dest, id, &path))
-        .await
-        .unwrap_or_else(|e| Err((Code::Internal, format!("adding the export failed: {e}"))))
+    tokio::task::spawn_blocking(move || {
+        add_immediate(&shared, abs, push, file_dest, id, level, &path)
+    })
+    .await
+    .unwrap_or_else(|e| Err((Code::Internal, format!("adding the export failed: {e}"))))
 }
 
 /// The blocking part of [`serve_immediate`] for `abs`, the resolved form
-/// of `path` (as typed, for messages). `file_dest`: see [`auto_root`].
+/// of `path` (as typed, for messages); the export lists `id` with
+/// `level`. `file_dest`: see [`auto_root`].
 fn add_immediate(
     shared: &Shared,
     abs: PathBuf,
     push: bool,
     file_dest: bool,
     id: iroh::EndpointId,
+    level: Access,
     path: &[u8],
 ) -> Result<(Snapshot, PathBuf), (Code, String)> {
     let refuse = |e: AutoRootError| match e {
@@ -825,10 +841,15 @@ fn add_immediate(
     };
     shared
         .authz
-        .add_auto_export(&canonical, id)
+        .add_auto_export(&canonical, id, level)
         .map_err(internal)?;
     let fresh = shared.authz.snapshot().map_err(internal)?;
     Ok((fresh, abs))
+}
+
+/// The reply for a push this key may not make.
+fn read_only() -> (Code, String) {
+    (Code::ReadOnly, "export is read-only for this key".into())
 }
 
 /// The session `resolved` stands for, when `hello` may have it: the name
@@ -854,7 +875,7 @@ fn admit<'a>(
     match Direction::try_from(hello.direction) {
         Ok(Direction::ClientSends) => {
             if resolved.export.read_only || !resolved.access.permits(true) {
-                return Err((Code::ReadOnly, "export is read-only for this key".into()));
+                return Err(read_only());
             }
         }
         // A probe is resolved and checked as a pull of its path.
@@ -1161,6 +1182,7 @@ pub async fn run_from_settings(
     let Config {
         mut settings,
         exports,
+        clients,
         ..
     } = Config::load(paths)?;
     if !listen.is_empty() {
@@ -1179,8 +1201,11 @@ pub async fn run_from_settings(
     // dir fails here, before it binds anything.
     let _lock = crate::daemon_lock::acquire(&settings.state_dir)?;
     let authz = Arc::new(FileAuthorizer::new(paths.clone()));
-    // `[immediate]` keys get their exports added as they connect.
-    if exports.exports.is_empty() && exports.immediate_rw.is_empty() {
+    // Clients with `all_paths` get their exports added as they connect.
+    let all_paths = settings.daemon.allow_all_paths
+        && (!exports.immediate_rw.is_empty()
+            || clients.entries.values().any(|c| c.all_paths.is_some()));
+    if exports.exports.is_empty() && !all_paths {
         tracing::warn!(
             "no exports defined in {}; run irsync export add",
             exports.path.display()

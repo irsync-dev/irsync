@@ -1,3 +1,4 @@
+use irsync::authz::Access;
 use irsync::config::file::Config;
 use irsync::config::reader;
 use irsync::config::writer::write;
@@ -107,7 +108,7 @@ fn remove_only_removes_an_export() {
 #[test]
 fn auto_export_names() {
     let mut m = pb::Config::default();
-    let mut n = |p: &str| add_auto_export(&mut m, Path::new(p), id(1)).unwrap();
+    let mut n = |p: &str| add_auto_export(&mut m, Path::new(p), id(1), Access::ReadWrite).unwrap();
     assert_eq!(n("/srv/photos"), "auto-srv-photos");
     assert_eq!(n("/"), "auto-root");
     assert_eq!(n("/a b/\u{e7}"), "auto-a_b-__");
@@ -120,6 +121,18 @@ fn auto_export_names() {
     let text = write(&m);
     let want = format!(
         "[exports.auto-srv-photos]\npath = \"/srv/photos\"\nauto = true\nrw = [\"{}\"]\n",
+        id(1)
+    );
+    assert!(text.contains(&want), "{text}");
+}
+
+#[test]
+fn auto_export_for_read_only_lists_the_peer_under_ro() {
+    let mut m = pb::Config::default();
+    add_auto_export(&mut m, Path::new("/srv/photos"), id(1), Access::ReadOnly).unwrap();
+    let text = write(&m);
+    let want = format!(
+        "[exports.auto-srv-photos]\npath = \"/srv/photos\"\nauto = true\nro = [\"{}\"]\n",
         id(1)
     );
     assert!(text.contains(&want), "{text}");

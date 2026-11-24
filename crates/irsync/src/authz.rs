@@ -62,34 +62,35 @@ impl From<Access> for irsync_proto::config::Access {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grants {
     pub exports: BTreeMap<String, Access>,
-    /// Access granted by the `[all]` table, to every export.
-    pub all: Option<Access>,
-    /// Read-write access to any path: in `[immediate].rw` and the daemon
-    /// has `immediate` on.
-    pub immediate: bool,
+    /// The client's right over every export that is not automatic
+    /// (`all_exports`).
+    pub all_exports: Option<Access>,
+    /// The client's right over any path (`all_paths`), when the daemon
+    /// allows it (`allow_all_paths`).
+    pub all_paths: Option<Access>,
 }
 
 impl Grants {
-    /// True when the grants cover nothing at all (no entries, no `[all]`,
-    /// no immediate grant).
+    /// True when the grants cover nothing at all (no entries, no
+    /// `all_exports`, no `all_paths`).
     pub fn is_empty(&self) -> bool {
-        self.exports.is_empty() && self.all.is_none() && !self.immediate
+        self.exports.is_empty() && self.all_exports.is_none() && self.all_paths.is_none()
     }
 
-    /// The access this key has to `export`: its own entry, else what
-    /// `[all]` grants it, else none.
+    /// The access this key has to `export`: its own entry, else its
+    /// `all_exports`, else none.
     pub fn access(&self, export: &str) -> Option<Access> {
-        self.exports.get(export).copied().or(self.all)
+        self.exports.get(export).copied().or(self.all_exports)
     }
 
     /// The access this key has to `export`, named `name`: as
-    /// [`Grants::access`], except that `[all]` never reaches an automatic
-    /// export; those belong to the peer they were made for.
+    /// [`Grants::access`], except that `all_exports` never reaches an
+    /// automatic export; those belong to the peer they were made for.
     pub fn access_to(&self, name: &str, export: &Export) -> Option<Access> {
         match self.exports.get(name) {
             Some(a) => Some(*a),
             None if export.auto => None,
-            None => self.all,
+            None => self.all_exports,
         }
     }
 
@@ -125,13 +126,30 @@ pub struct Snapshot {
     grants: HashMap<EndpointId, Grants>,
 }
 
+/// Raises `slot` to `access`: `rw` beats `ro`, and nothing lowers it.
+fn raise(slot: &mut Option<Access>, access: Option<Access>) {
+    if access.is_some() && *slot != Some(Access::ReadWrite) {
+        *slot = access;
+    }
+}
+
 impl Snapshot {
-    /// Resolves every grant entry against `clients` (a client name first,
-    /// then a raw EndpointId).
-    /// An entry that resolves to nobody is skipped with a warning. Within one
-    /// list `rw` is applied before `ro`, so `ro` never downgrades a key.
-    pub fn from_files(clients: &Clients, exports: &Exports, immediate_enabled: bool) -> Snapshot {
+    /// The rights of each client entry (`all_paths` only when
+    /// `allow_all_paths`), and every grant entry resolved against
+    /// `clients` (a client name first, then a raw EndpointId). Wherever two
+    /// sources give one id a right, `rw` beats `ro`. An entry that
+    /// resolves to nobody is skipped with a warning.
+    pub fn from_files(clients: &Clients, exports: &Exports, allow_all_paths: bool) -> Snapshot {
         let mut grants: HashMap<EndpointId, Grants> = HashMap::new();
+        for c in clients.entries.values() {
+            let all_paths = c.all_paths.filter(|_| allow_all_paths);
+            if c.all_exports.is_none() && all_paths.is_none() {
+                continue;
+            }
+            let g = grants.entry(c.client_id).or_default();
+            raise(&mut g.all_exports, c.all_exports);
+            raise(&mut g.all_paths, all_paths);
+        }
         let mut apply = |export: Option<&str>, rw: &[String], ro: &[String]| {
             let lists = [(rw, Access::ReadWrite), (ro, Access::ReadOnly)];
             for (list, access) in lists {
@@ -145,12 +163,15 @@ impl Snapshot {
                         continue;
                     };
                     let g = grants.entry(id).or_default();
-                    let slot = match export {
-                        Some(name) => g.exports.entry(name.to_string()).or_insert(access),
-                        None => g.all.get_or_insert(access),
-                    };
-                    if access == Access::ReadWrite {
-                        *slot = Access::ReadWrite;
+                    match export {
+                        Some(name) => {
+                            let slot = g.exports.entry(name.to_string()).or_insert(access);
+                            if access == Access::ReadWrite {
+                                *slot = Access::ReadWrite;
+                            }
+                        }
+                        // The old `[all]` table, as `all_exports`.
+                        None => raise(&mut g.all_exports, Some(access)),
                     }
                 }
             }
@@ -159,25 +180,39 @@ impl Snapshot {
         for (name, e) in &exports.exports {
             apply(Some(name), &e.rw, &e.ro);
         }
-        if immediate_enabled {
+        // The old `[immediate]` table, as `all_paths = "rw"`.
+        if allow_all_paths {
             for entry in &exports.immediate_rw {
                 match clients.resolve_peer(entry) {
-                    Ok(id) => grants.entry(id).or_default().immediate = true,
+                    Ok(id) => raise(
+                        &mut grants.entry(id).or_default().all_paths,
+                        Some(Access::ReadWrite),
+                    ),
                     Err(_) => {
                         tracing::warn!(entry = %entry, "immediate grant entry matches nobody")
                     }
                 }
             }
         }
-        // An automatic export was made for a peer with the immediate grant
-        // and carries its own `rw` entry: it counts only while that grant
-        // is in effect, so removing the grant or turning `immediate` off
-        // ends access through it too.
+        // An automatic export was made for a client with `all_paths` and
+        // names it in its own list. The level written there does not count:
+        // the client gets its `all_paths` level now, so lowering or raising
+        // it takes effect at once, and removing it (or turning
+        // `allow_all_paths` off) ends access through the export.
         for g in grants.values_mut() {
-            if !g.immediate {
-                g.exports
-                    .retain(|name, _| exports.exports.get(name).is_none_or(|e| !e.auto));
-            }
+            let level = g.all_paths;
+            g.exports.retain(|name, access| {
+                if exports.exports.get(name).is_none_or(|e| !e.auto) {
+                    return true;
+                }
+                match level {
+                    Some(l) => {
+                        *access = l;
+                        true
+                    }
+                    None => false,
+                }
+            });
         }
         Snapshot {
             exports: exports.exports.clone(),
@@ -197,9 +232,14 @@ pub trait Authorizer: Send + Sync {
 
     /// Makes sure an export `peer` may use contains `root` (a canonical
     /// absolute directory): when none does, adds an automatic export of
-    /// `root`, read-write for `peer`, seen by the next
+    /// `root` that lists `peer` with `access`, seen by the next
     /// [`Authorizer::snapshot`].
-    fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError>;
+    fn add_auto_export(
+        &self,
+        root: &Path,
+        peer: EndpointId,
+        access: Access,
+    ) -> Result<(), AuthzError>;
 }
 
 /// How long [`FileAuthorizer::add_auto_export`] waits for a config lock
@@ -239,7 +279,12 @@ impl Authorizer for FileAuthorizer {
     /// check for an export that already covers `root` is made under the
     /// same lock. A lock held by someone else is waited for, up to
     /// [`LOCK_WAIT`]. Blocks: call it off the async runtime.
-    fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError> {
+    fn add_auto_export(
+        &self,
+        root: &Path,
+        peer: EndpointId,
+        access: Access,
+    ) -> Result<(), AuthzError> {
         use crate::manage::{exports, lock_config};
         let deadline = std::time::Instant::now() + LOCK_WAIT;
         let mut lock = loop {
@@ -254,7 +299,7 @@ impl Authorizer for FileAuthorizer {
             return Ok(());
         }
         let mut msg = lock.load()?;
-        let name = exports::add_auto_export(&mut msg, root, peer)?;
+        let name = exports::add_auto_export(&mut msg, root, peer, access)?;
         lock.save(&mut msg)?;
         tracing::info!(
             export = %name,
@@ -311,24 +356,34 @@ impl Authorizer for MemoryAuthorizer {
     }
 
     /// Named as the config file would name it.
-    fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError> {
+    fn add_auto_export(
+        &self,
+        root: &Path,
+        peer: EndpointId,
+        access: Access,
+    ) -> Result<(), AuthzError> {
         let mut snap = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         if covered(&snap, root, &peer) {
             return Ok(());
         }
         let name = crate::manage::exports::unique_auto_name(root, |n| snap.exports.contains_key(n));
+        let listed = vec![peer.to_string()];
+        let (rw, ro) = match access {
+            Access::ReadWrite => (listed, Vec::new()),
+            Access::ReadOnly => (Vec::new(), listed),
+        };
         let export = Export {
             path: root.to_path_buf(),
             read_only: false,
             warm_index: false,
             fsync: false,
             auto: true,
-            rw: vec![peer.to_string()],
-            ro: Vec::new(),
+            rw,
+            ro,
         };
         snap.exports.insert(name.clone(), export);
         let grants = snap.grants.entry(peer).or_default();
-        grants.exports.insert(name, Access::ReadWrite);
+        grants.exports.insert(name, access);
         Ok(())
     }
 }

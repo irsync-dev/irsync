@@ -96,7 +96,7 @@ fn immediate_grant_reaches() {
         .unwrap(),
         true,
     );
-    assert!(s.grants(&id(1)).immediate);
+    assert_eq!(s.grants(&id(1)).all_paths, Some(Access::ReadWrite));
     assert!(!s.grants(&id(1)).is_empty());
 }
 
@@ -111,7 +111,7 @@ fn immediate_off_ignores_grant() {
         .unwrap(),
         false,
     );
-    assert!(!s.grants(&id(1)).immediate);
+    assert_eq!(s.grants(&id(1)).all_paths, None);
     assert!(s.grants(&id(1)).is_empty());
 }
 
@@ -148,8 +148,119 @@ fn auto_export_grant_needs_the_immediate_grant() {
         let g = s.grants(&id(1));
         assert_eq!(g.exports.get("home-auto"), None, "{why}");
         assert!(g.allows("x", true), "{why}");
-        assert!(!g.immediate, "{why}");
+        assert_eq!(g.all_paths, None, "{why}");
     }
+}
+
+/// A client `laptop` with id 1 and the rights in `rights` (lines of
+/// its table).
+fn laptop(rights: &str) -> String {
+    format!("[clients.laptop]\nclient_id = \"{}\"\n{rights}", id(1))
+}
+
+#[test]
+fn all_exports_reaches_every_hand_made_export() {
+    let s = snap(
+        &laptop("all_exports = \"ro\"\n"),
+        &format!(
+            "[exports.docs]\npath = \"/d\"\n\
+             [exports.auto-h]\npath = \"/h\"\nauto = true\nrw = [\"{}\"]\n",
+            id(2)
+        ),
+    );
+    let g = s.grants(&id(1));
+    assert_eq!(g.all_exports, Some(Access::ReadOnly));
+    assert_eq!(g.access("docs"), Some(Access::ReadOnly));
+    assert_eq!(
+        g.access_to("docs", &s.exports["docs"]),
+        Some(Access::ReadOnly)
+    );
+    assert_eq!(g.access_to("auto-h", &s.exports["auto-h"]), None);
+}
+
+#[test]
+fn an_exports_own_entry_wins_over_all_exports() {
+    let s = snap(
+        &laptop("all_exports = \"rw\"\n"),
+        "[exports.docs]\npath = \"/d\"\nro = [\"laptop\"]\n",
+    );
+    assert_eq!(s.grants(&id(1)).access("docs"), Some(Access::ReadOnly));
+}
+
+/// The level through an automatic export is the client's `all_paths` now,
+/// not the list the export names it in: lowered at once, and raised again
+/// on an export made while it was `ro`.
+#[test]
+fn an_automatic_export_gives_the_current_all_paths_level() {
+    for (list, all_paths, want) in [
+        ("rw", "ro", Access::ReadOnly),
+        ("ro", "rw", Access::ReadWrite),
+    ] {
+        let s = snap(
+            &laptop(&format!("all_paths = \"{all_paths}\"\n")),
+            &format!("[exports.auto-h]\npath = \"/h\"\nauto = true\n{list} = [\"laptop\"]\n"),
+        );
+        let g = s.grants(&id(1));
+        assert_eq!(
+            g.access_to("auto-h", &s.exports["auto-h"]),
+            Some(want),
+            "listed under {list}, all_paths = {all_paths}"
+        );
+    }
+}
+
+#[test]
+fn an_automatic_export_counts_only_with_all_paths_allowed() {
+    let s = Snapshot::from_files(
+        &parse_clients(&laptop("all_paths = \"rw\"\n"), Path::new("h")).unwrap(),
+        &parse_exports(
+            "[exports.auto-h]\npath = \"/h\"\nauto = true\nrw = [\"laptop\"]\n\
+             [exports.x]\npath = \"/x\"\nrw = [\"laptop\"]\n",
+            Path::new("e"),
+        )
+        .unwrap(),
+        false,
+    );
+    let g = s.grants(&id(1));
+    assert_eq!(g.all_paths, None);
+    assert_eq!(g.access_to("auto-h", &s.exports["auto-h"]), None);
+    assert_eq!(g.access_to("x", &s.exports["x"]), Some(Access::ReadWrite));
+}
+
+/// Two names for one id: `rw` beats `ro`, whichever comes first.
+#[test]
+fn two_names_for_one_id_take_the_higher_level() {
+    for (a, b) in [("ro", "rw"), ("rw", "ro")] {
+        let s = snap(
+            &format!(
+                "[clients.a]\nclient_id = \"{i}\"\nall_paths = \"{a}\"\nall_exports = \"{a}\"\n\
+                 [clients.b]\nclient_id = \"{i}\"\nall_paths = \"{b}\"\nall_exports = \"{b}\"\n",
+                i = id(1)
+            ),
+            "[exports.auto-h]\npath = \"/h\"\nauto = true\nro = [\"a\"]\n",
+        );
+        let g = s.grants(&id(1));
+        assert_eq!(g.all_paths, Some(Access::ReadWrite), "a = {a}, b = {b}");
+        assert_eq!(g.all_exports, Some(Access::ReadWrite), "a = {a}, b = {b}");
+        assert_eq!(
+            g.access_to("auto-h", &s.exports["auto-h"]),
+            Some(Access::ReadWrite),
+            "a = {a}, b = {b}"
+        );
+    }
+}
+
+/// Until they are removed, `[all]` and `[immediate]` still count, merged
+/// with the client's keys: `rw` beats `ro`.
+#[test]
+fn the_old_lists_merge_with_the_client_rights() {
+    let s = snap(
+        &laptop("all_exports = \"ro\"\nall_paths = \"ro\"\n"),
+        "[all]\nrw = [\"laptop\"]\n[immediate]\nrw = [\"laptop\"]\n",
+    );
+    let g = s.grants(&id(1));
+    assert_eq!(g.all_exports, Some(Access::ReadWrite));
+    assert_eq!(g.all_paths, Some(Access::ReadWrite));
 }
 
 fn parse_clients(

@@ -439,7 +439,7 @@ pub fn list_export(exports: &Exports, clients: &Clients, name: &str) -> Option<S
     Some(block(name, &e.rw, &e.ro, clients))
 }
 
-/// `{label}:`, `    immediate: rw` when `id` is in `[immediate]`, then
+/// `{label}:`, `    immediate: rw|ro` when `id` has `all_paths`, then
 /// one `    NAME: rw|ro` line per export `id` may reach: ` (all)` when the
 /// access comes from `[all]` rather than the export's own entry,
 /// ` (read_only export)` when a read-write grant is capped by the export's
@@ -447,8 +447,8 @@ pub fn list_export(exports: &Exports, clients: &Clients, name: &str) -> Option<S
 pub fn list_peer(exports: &Exports, clients: &Clients, label: &str, id: &EndpointId) -> String {
     let grants = Snapshot::from_files(clients, exports, true).grants(id);
     let mut out = format!("{label}:\n");
-    if grants.immediate {
-        out.push_str("    immediate: rw\n");
+    if let Some(a) = grants.all_paths {
+        let _ = writeln!(out, "    immediate: {}", a.as_str());
     }
     for (name, e) in &exports.exports {
         let Some(access) = grants.access_to(name, e) else {

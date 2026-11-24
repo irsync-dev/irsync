@@ -19,8 +19,7 @@ use irsync_proto::{ALPN, PROTOCOL_VERSION};
 /// A daemon that grants `client` everything, with `pq_key_exchange` as given.
 async fn daemon(client: iroh::EndpointId, pq_key_exchange: PqKeyExchange) -> DaemonHandle {
     let grants = Grants {
-        all: Some(Access::ReadWrite),
-        immediate: false,
+        all_exports: Some(Access::ReadWrite),
         ..Grants::default()
     };
     spawn_daemon_settings(
