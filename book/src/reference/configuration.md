@@ -234,7 +234,7 @@ an `EndpointId`.
 | `dial_retries` | `[client]`'s | How often to retry this server before it has answered. |
 | `dht` | `[client]`'s | Look this server up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this server up with mDNS. |
-| `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a sync to a server with `ssh` gets no answer within about 15 seconds, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. It does not add back an immediate grant that was removed on the server. The export listing, `irsync NAME:`, is not checked this way. A server without `ssh` is never touched over ssh. |
+| `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. It is what `irsync pair` logs in to. A sync never uses it, except to find the server when you type that address. `irsync pair` for a saved server checks it again, and never adds back an immediate grant that was removed on the server. |
 | `ssh_aliases` | none | Other ssh destinations that were typed for this server, such as its address: `["192.168.1.5"]`. Typing one of them finds this server, as typing its `ssh` value does. `irsync pair` adds to it; nothing is ever dialled through it. These are not server names: they do not work with `irsync server`. |
 
 `--address` on the command line replaces the server's `address` list.

@@ -133,14 +133,14 @@ irsync: no release files for this build (could not download release v0.1.0-beta.
 ```
 
 This is a notice, not an error. The server has the same OS and CPU as the
-client, so when the download fails, or the release is another build, the
-setup sends the client's own files instead. The setup goes on. `fileset` and
+client, so when the download fails, or the release is another build,
+`pair` sends the client's own files instead. `pair` goes on. `fileset` and
 the manual pages come along only if they sit beside the client's `irsync`;
 the summary says when they did not.
 
 ## pair stops on the server
 
-These stop the setup after the files reached the server:
+These stop `pair` after the files reached the server:
 
 - `could not unpack irsync on myserver (it needs tar and a writable home
   directory). Nothing was changed there.`: the server has no `tar`, or the
@@ -159,12 +159,12 @@ irsync: … setting it up over ssh failed: --no-install: myserver has no irsync 
 ```
 
 **Cause.** With `--no-install`, or `ssh_install = false` in the config file,
-the setup copies nothing. It needs the client's exact build at
+`pair` copies nothing. It needs the client's exact build at
 `~/.local/bin/irsync` on the server, and found another version there
 (`found irsync …`) or none.
 
 **Fix.** Install the same version as the client on the server, in
-`~/.local/bin`. Or let the setup install it: run without `--no-install`, and
+`~/.local/bin`. Or let `pair` install it: run without `--no-install`, and
 remove `ssh_install = false` from the config file if it is there.
 
 ## The daemon rejected this client's key

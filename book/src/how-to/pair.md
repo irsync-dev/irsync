@@ -30,7 +30,7 @@ logs in the same way.
   before the first `.`. If that name already belongs to another daemon, the
   name is `myserver-2`, then `myserver-3`.
 - A server that gives no usable name (none, or `localhost`) keeps an IPv4
-  address as its name. An IPv6 address cannot be a server name, so the setup
+  address as its name. An IPv6 address cannot be a server name, so `pair`
   stops before it changes anything; give the server a host name or
   [add the server by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
 
@@ -55,7 +55,7 @@ change its `ssh` or `ssh_aliases` value in the config file), then run
 under its own name. Do not pair again before that: it would point the old
 name at the new machine.
 
-On the server, the setup saves the client under the client's short host name
+On the server, `pair` saves the client under the client's short host name
 as a client, and grants that name:
 
 ```toml
@@ -79,9 +79,9 @@ dialled its daemon. Run `irsync pair myclient` on the server. It sets the
 daemon up over ssh and saves the daemon's `endpoint_id` as
 `[servers.myclient]`.
 
-The setup stops, and leaves the server's configuration and daemon as they
+`pair` stops, and leaves the server's configuration and daemon as they
 were, when the client's host name cannot be used there. The server checks
-the name with the irsync that the setup has just installed or updated
+the name with the irsync that `pair` has just installed or updated
 there; that install stays, and the message says so. The cases:
 
 - The name already belongs to another client. This also happens when the
@@ -140,7 +140,7 @@ ssh is used only by `pair`, never for the data.
 
 ## Share only named directories
 
-By default the setup lets the client reach any path your account on the
+By default `pair` lets the client reach any path your account on the
 server can (an [immediate grant](../reference/configuration.md#immediate-grants)).
 If the client should not reach every path, set this on the server before you
 pair:
@@ -154,11 +154,11 @@ irsync config set daemon.immediate false
 
 ## What gets installed, and from where
 
-The setup installs the same files as `install.sh`: `irsync` and `fileset` in
+`pair` installs the same files as `install.sh`: `irsync` and `fileset` in
 `~/.local/bin`, and the three manual pages under `~/.local/share/man`. It
 runs the installer script on files the client sends. The installer never
 edits your shell startup files. When the server's login shell does not find
-`irsync`, the setup shows the line to add.
+`irsync`, `pair` shows the line to add.
 
 A released irsync downloads the release files of its own version on the
 client, for every server platform, and checks their SHA-256:
@@ -187,7 +187,7 @@ it had unless the binary reports the client's exact build.
 
 Release files exist for Linux on x86_64 and arm64 and for macOS on Apple
 Silicon. For any other server, and for a client built from source whose
-server has another OS or CPU, the setup stops and changes nothing. Then
+server has another OS or CPU, `pair` stops and changes nothing. Then
 install irsync on the server yourself and
 [set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
 Installing it on the server does not make `pair` work, unless you run
@@ -197,12 +197,12 @@ exact build. See
 for the messages.
 
 To copy nothing to the server, use `--no-install` (or `ssh_install = false`
-in the config file). The setup then uses the irsync at `~/.local/bin/irsync`
+in the config file). `pair` then uses the irsync at `~/.local/bin/irsync`
 there, and stops if it is missing or another version.
 
 ## Servers set up by an older irsync
 
-Older versions installed irsync in `~/.local/share/irsync/bin`. The setup now
+Older versions installed irsync in `~/.local/share/irsync/bin`. `pair` now
 moves a server off that directory: it starts the daemon from `~/.local/bin`
 and removes the old copy. It warns instead when a service file still starts
 the old copy; see

@@ -181,7 +181,7 @@ An older irsync installed itself in `~/.local/share/irsync/bin`, and a service
 file written from its steps names `~/.local/share/irsync/bin/irsync`. `irsync
 pair` warns when it finds such a file (at the two places above). A daemon that
 such a service runs is left alone. It stays on the old version, and it does
-not pick up a grant the setup adds for a new client. Change the path in the
+not pick up a grant `pair` adds for a new client. Change the path in the
 service file to `~/.local/bin/irsync`, then restart the service. `pair`
 removes the old copy only when no service file names it. A service file the
 setup cannot read gets the same warning, since it cannot tell what it names.
