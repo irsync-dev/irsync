@@ -1,0 +1,89 @@
+//! The built `irsync` for tests, never with the real home or profile.
+//!
+//! Every test starts the binary through [`irsync_command`], which points
+//! every default location at a temporary home: `HOME` (Unix), and
+//! `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` (Windows, where `HOME` means
+//! nothing to irsync). The Windows ones are laid out as the Unix ones are,
+//! so a test sees the same files on both: `APPDATA` is `<home>/.config`,
+//! `LOCALAPPDATA` is `<home>/.local/state`, or the state directory a test
+//! names with [`StateHome::state_home`]. Each path is checked first: it
+//! must lie in the temporary directory, and must not hold the real home or
+//! profile, or the test fails before anything runs. `tests/home_rule.rs`
+//! fails if a test starts the binary any other way.
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
+
+/// The built `irsync` binary.
+pub const IRSYNC_EXE: &str = env!("CARGO_BIN_EXE_irsync");
+
+/// `irsync` with every default location under `home` (see the module doc).
+/// Panics if `home` is not in the temporary directory or holds the real
+/// home or profile.
+pub fn irsync_command(home: impl AsRef<Path>) -> Command {
+    let home = isolated(home.as_ref());
+    let mut cmd = Command::new(IRSYNC_EXE);
+    cmd.env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("APPDATA", home.join(".config"))
+        .env("LOCALAPPDATA", home.join(".local").join("state"));
+    cmd
+}
+
+/// The state directory of a command from [`irsync_command`].
+pub trait StateHome {
+    /// Keeps irsync's state in `dir/irsync`: `XDG_STATE_HOME` (Unix) and
+    /// `LOCALAPPDATA` (Windows). Checked as `irsync_command` checks a home.
+    fn state_home(&mut self, dir: impl AsRef<Path>) -> &mut Self;
+}
+
+impl StateHome for Command {
+    fn state_home(&mut self, dir: impl AsRef<Path>) -> &mut Self {
+        let dir = isolated(dir.as_ref());
+        self.env("XDG_STATE_HOME", &dir).env("LOCALAPPDATA", &dir)
+    }
+}
+
+/// `p`, made absolute, if it lies inside the temporary directory and holds
+/// neither the real home nor the real profile folders; else a panic that
+/// says why. The real ones come from the system (`dirs`: the Known Folder
+/// API on Windows), not from this process's environment.
+fn isolated(p: &Path) -> PathBuf {
+    let p = std::path::absolute(p).unwrap();
+    let tmp = std::path::absolute(std::env::temp_dir()).unwrap();
+    assert!(
+        p.starts_with(&tmp) && p != tmp,
+        "refusing to run irsync with {} as a home or state directory: not \
+         inside the temporary directory {}; a test must never use the real \
+         home or profile",
+        p.display(),
+        tmp.display()
+    );
+    for real in [dirs::home_dir(), dirs::config_dir(), dirs::data_local_dir()]
+        .into_iter()
+        .flatten()
+    {
+        assert!(
+            p != real && !real.starts_with(&p),
+            "refusing to run irsync with {} as a home or state directory: it \
+             is or holds the real {}",
+            p.display(),
+            real.display()
+        );
+    }
+    p
+}
+
+/// Stops `child`, a daemon a test started, without waiting for it: SIGTERM
+/// on Unix (`kill -TERM`), `TerminateProcess` on Windows, which has no
+/// signal to ask with.
+pub fn stop_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id().to_string();
+        Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+    }
+    #[cfg(windows)]
+    child.kill().unwrap();
+}

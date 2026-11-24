@@ -1,10 +1,15 @@
 //! The debug HTTP port on the real binaries: the client waits for a signal
 //! after its sync, the daemon announces its port.
 
+#[path = "common/bin.rs"]
+mod bin;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+
+use bin::{irsync_command, StateHome};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -56,9 +61,8 @@ fn get(addr: SocketAddr, path: &str) -> String {
 }
 
 fn irsync(tmp: &Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_irsync"));
-    c.env("HOME", tmp.join("home"))
-        .env("XDG_STATE_HOME", tmp.join("xdg"))
+    let mut c = irsync_command(tmp.join("home"));
+    c.state_home(tmp.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .stdin(Stdio::null());
     c
@@ -111,7 +115,7 @@ fn start_daemon(tmp: &Path, debug_addr: Option<&str>) -> Daemon {
         ),
     )
     .unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let child = irsync_command(tmp.join("daemon-home"))
         .args(["daemon", "--config"])
         .arg(&config)
         .args(["--listen", "127.0.0.1:0"])

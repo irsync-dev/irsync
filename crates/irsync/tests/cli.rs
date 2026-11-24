@@ -1,3 +1,6 @@
+#[path = "common/bin.rs"]
+mod bin;
+
 use irsync::cli::location::Location;
 use irsync::cli::{validate, Args, Command, DeleteMode, Direction, FilterRule, SyncOptions};
 use std::path::PathBuf;
@@ -1006,7 +1009,8 @@ fn debug_addr_bare_port_is_loopback() {
 
 #[test]
 fn no_wait_requires_debug_addr() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let home = tempfile::tempdir().unwrap();
+    let out = bin::irsync_command(home.path())
         .args(["--debug-port-no-wait", "a", "b"])
         .output()
         .unwrap();
@@ -1210,7 +1214,8 @@ fn fixture_key(name: &str) -> String {
 }
 
 fn verify_signature(args: &[&str]) -> std::process::Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let home = tempfile::tempdir().unwrap();
+    bin::irsync_command(home.path())
         .arg("verify-signature")
         .args(args)
         .output()
@@ -1330,7 +1335,8 @@ fn verify_signature_unreadable_file_exit_1() {
 
 #[test]
 fn verify_signature_hidden_from_help() {
-    let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let home = tempfile::tempdir().unwrap();
+    let o = bin::irsync_command(home.path())
         .arg("--help")
         .output()
         .unwrap();
@@ -1339,7 +1345,8 @@ fn verify_signature_hidden_from_help() {
 
 #[test]
 fn verify_signature_help_mentions_minisign() {
-    let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let home = tempfile::tempdir().unwrap();
+    let o = bin::irsync_command(home.path())
         .args(["verify-signature", "--help"])
         .output()
         .unwrap();

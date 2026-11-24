@@ -1,6 +1,9 @@
 //! Shared helpers for integration tests that need real iroh endpoints.
 #![allow(dead_code)]
 
+pub mod bin;
+pub use bin::{irsync_command, StateHome};
+
 /// Creates a file named with raw non-UTF-8 `name` bytes in `dir`. Returns `None`
 /// (after a note on stderr) when the filesystem refuses such names, so callers
 /// can skip: APFS on macOS, and on Linux ZFS with `utf8only=on`, which answers
@@ -243,6 +246,8 @@ pub struct DaemonHandle {
     /// The limit on one key's dormant sessions per export; zero is none.
     pub max_dormant: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub _state: tempfile::TempDir,
+    /// The daemon's home, when the harness made one.
+    _home: Option<tempfile::TempDir>,
 }
 
 impl DaemonHandle {
@@ -362,7 +367,12 @@ pub async fn spawn_daemon_with_state(
     authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
     state: tempfile::TempDir,
 ) -> DaemonHandle {
-    spawn_daemon_full(authz, state, dirs::home_dir()).await
+    // A home of its own: a relative path or an immediate push resolves
+    // there, never in the real home.
+    let home = tempfile::tempdir().unwrap();
+    let mut d = spawn_daemon_full(authz, state, Some(home.path().to_path_buf())).await;
+    d._home = Some(home);
+    d
 }
 
 /// As [`spawn_daemon_with_state`], with the daemon's home directory.
@@ -419,6 +429,7 @@ pub async fn spawn_daemon_settings(
         sender_parallel,
         max_dormant,
         _state: state,
+        _home: None,
     }
 }
 
@@ -886,15 +897,14 @@ pub fn irsync_bin_in(
     cwd: Option<&std::path::Path>,
     args: &[&str],
 ) -> std::process::Output {
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_irsync"));
+    use std::process::Stdio;
+    let mut cmd = irsync_command(home);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
     let mut child = cmd
         .args(args)
-        .env("HOME", home)
-        .env("XDG_STATE_HOME", home.join("xdg"))
+        .state_home(home.join("xdg"))
         // An unknown host is tried as an ssh destination; never reach out.
         .env("IRSYNC_RSH", "false")
         .env_remove("IRSYNC_PASSPHRASE")
@@ -971,7 +981,7 @@ pub fn spawn_daemon_binary_env(
     env: &[(&str, &str)],
 ) -> BinaryDaemon {
     use std::io::{BufRead, BufReader};
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let cfg = server_home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     irsync::fs::private::write(
@@ -981,10 +991,9 @@ pub fn spawn_daemon_binary_env(
     )
     .unwrap();
     let log = server_home.join("daemon.stderr");
-    let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let child = irsync_command(server_home)
         .args(["daemon", "-vv", "--listen", "127.0.0.1:0"])
-        .env("HOME", server_home)
-        .env("XDG_STATE_HOME", server_home.join("xdg"))
+        .state_home(server_home.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .env_remove("RUST_LOG")
         .envs(env.iter().copied())

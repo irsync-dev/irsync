@@ -2,8 +2,13 @@
 //! the flag or the config key. The tests make the binary believe it is
 //! root through `IRSYNC_TEST_EUID_ROOT`, which only a test build reads.
 
+#[path = "common/bin.rs"]
+mod bin;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use bin::{irsync_command, stop_child, StateHome};
 use std::time::{Duration, Instant};
 
 use irsync::daemon_lock::probe;
@@ -39,11 +44,10 @@ struct Run {
 /// Runs `irsync daemon ARGS` under `home` until it exits on its own or is
 /// seen running, then stops it.
 fn daemon(home: &Path, as_root: bool, args: &[&str]) -> Run {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_irsync"));
+    let mut cmd = irsync_command(home);
     cmd.arg("daemon")
         .args(args)
-        .env("HOME", home)
-        .env("XDG_STATE_HOME", home.join("xdg"))
+        .state_home(home.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .env_remove("RUST_LOG")
         .stdin(Stdio::null())
@@ -62,8 +66,7 @@ fn daemon(home: &Path, as_root: bool, args: &[&str]) -> Run {
         if probe(&home.join("xdg/irsync")).is_some() {
             started = true;
             on_its_own = false;
-            let pid = child.id().to_string();
-            Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+            stop_child(&mut child);
             break;
         }
         assert!(
@@ -151,10 +154,9 @@ fn not_as_root_nothing_changes() {
 fn config_set_writes_the_key_as_a_boolean() {
     let (_d, home) = home("");
     let set = |value: &str| {
-        Command::new(env!("CARGO_BIN_EXE_irsync"))
+        irsync_command(&home)
             .args(["config", "set", "daemon.allow_root", value])
-            .env("HOME", &home)
-            .env("XDG_STATE_HOME", home.join("xdg"))
+            .state_home(home.join("xdg"))
             .output()
             .unwrap()
     };

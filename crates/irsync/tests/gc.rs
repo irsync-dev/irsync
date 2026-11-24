@@ -1,5 +1,9 @@
+#[path = "common/bin.rs"]
+mod bin;
+
 use std::path::Path;
-use std::process::Command;
+
+use bin::{irsync_command, StateHome};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use irsync::daemon::gc;
@@ -210,11 +214,10 @@ fn id_generate_prints_endpoint_id_matching_pub() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("k/id_ed25519");
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_irsync"))
+        // Not the config file of whoever runs the tests.
+        irsync_command(dir.path())
             .args(["id", "generate", "--out"])
             .arg(&out)
-            // Not the config file of whoever runs the tests.
-            .env("HOME", dir.path())
             .output()
             .unwrap()
     };
@@ -245,13 +248,13 @@ fn id_daemon_prints_the_key_line_and_the_id_of_the_configured_identity() {
         ),
     )
     .unwrap();
-    let g = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let g = irsync_command(dir.path().join("home"))
         .args(["id", "generate", "--daemon", "--config"])
         .arg(&cfg)
         .output()
         .unwrap();
     assert!(g.status.success(), "{}", String::from_utf8_lossy(&g.stderr));
-    let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let o = irsync_command(dir.path().join("home"))
         .args(["id", "show", "--daemon", "--config"])
         .arg(&cfg)
         .output()
@@ -617,13 +620,12 @@ fn irsync_gc_end_to_end() {
     }
     std::fs::remove_file(root.join("gone")).unwrap();
     let gc = |args: &[&str]| {
-        let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        let o = irsync_command(&home)
             .arg("gc")
             .args(args)
             .arg("--config")
             .arg(&config)
-            .env("HOME", &home)
-            .env("XDG_STATE_HOME", home.join("xdg"))
+            .state_home(home.join("xdg"))
             .output()
             .unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));

@@ -9,11 +9,12 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    archive_opts, irsync_bin, spawn_daemon_binary_env, with_netsim, BinaryDaemon, Flow, Harness,
+    archive_opts, irsync_bin, irsync_command, spawn_daemon_binary_env, with_netsim, BinaryDaemon,
+    Flow, Harness, StateHome,
 };
 use irsync::net::netsim::ProfileName;
 use irsync::session::reconnect::ReconnectOpts;
@@ -69,10 +70,9 @@ fn rig(daemon_env: &[(&str, &str)]) -> Rig {
 /// stderr without colour codes.
 fn client(rig: &Rig, env: &[(&str, &str)], args: &[&str]) -> (Output, String) {
     let limit = Duration::from_secs(60);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let mut child = irsync_command(&rig.client)
         .args(args)
-        .env("HOME", &rig.client)
-        .env("XDG_STATE_HOME", rig.client.join("xdg"))
+        .state_home(rig.client.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .env_remove("IRSYNC_NETSIM")
         .envs(env.iter().copied())

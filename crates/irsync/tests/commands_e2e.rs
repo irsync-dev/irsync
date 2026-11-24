@@ -1,13 +1,14 @@
 mod common;
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use common::{irsync_command, StateHome};
 
 fn irsync(home: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_irsync"))
+    irsync_command(home)
         .args(args)
-        .env("HOME", home)
-        .env("XDG_STATE_HOME", home.join("xdg"))
+        .state_home(home.join("xdg"))
         .env_remove("IRSYNC_PASSPHRASE")
         .env_remove("RUST_LOG")
         .stdin(Stdio::null())
@@ -2151,10 +2152,9 @@ fn rust_log_overrides_the_level_the_flags_give() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let run = |rust_log: &str, args: &[&str]| {
-        let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+        let o = irsync_command(&home)
             .args(args)
-            .env("HOME", &home)
-            .env("XDG_STATE_HOME", home.join("xdg"))
+            .state_home(home.join("xdg"))
             .env("RUST_LOG", rust_log)
             .stdin(Stdio::null())
             .output()
@@ -2173,10 +2173,9 @@ fn only_id_generate_with_the_file_encrypts() {
     let key = home.join(".config/irsync/id_ed25519");
     // IRSYNC_PASSPHRASE alone never encrypts a new key (the helper removes
     // the variable, so build this Command by hand).
-    let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let o = irsync_command(&home)
         .args(["id", "generate"])
-        .env("HOME", &home)
-        .env("XDG_STATE_HOME", home.join("xdg"))
+        .state_home(home.join("xdg"))
         .env("IRSYNC_PASSPHRASE", "hunter2")
         .env_remove("RUST_LOG")
         .stdin(Stdio::null())

@@ -1,12 +1,16 @@
 //! The build info baked into the binary: package version, git commit and
 //! whether the tree was dirty when it was built.
 
+#[path = "common/bin.rs"]
+mod bin;
+
 use std::process::{Command, Stdio};
 
 use irsync::build::{BuildInfo, LONG_VERSION};
 
 fn irsync(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let home = tempfile::tempdir().unwrap();
+    bin::irsync_command(home.path())
         .args(args)
         .stdin(Stdio::null())
         .output()

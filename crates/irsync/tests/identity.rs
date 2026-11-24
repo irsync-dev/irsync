@@ -1,3 +1,6 @@
+#[path = "common/bin.rs"]
+mod bin;
+
 use irsync::identity::{
     endpoint_id_of_public_key, generate_openssh, generate_openssh_with, load_client_identity,
     load_identity_interactive, load_or_generate, load_secret_key, parse_endpoint_id,
@@ -247,10 +250,9 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
     // generated under the real home.
     let home = dir.path().join("home");
     let run = |pass: Option<&str>| {
-        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"));
+        let mut c = bin::irsync_command(&home);
         c.args(["id", "show", "--daemon", "--config"])
             .arg(&cfg)
-            .env("HOME", &home)
             .env_remove("IRSYNC_PASSPHRASE")
             .stdin(std::process::Stdio::null());
         if let Some(p) = pass {
@@ -278,23 +280,21 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
     irsync::fs::private::write(&pf, "s3cret\n").unwrap();
     // `show` also needs the client key, which the flag will not generate on
     // the side: make it (encrypted) first.
-    let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let o = bin::irsync_command(&home)
         .args(["id", "generate", "--passphrase-file"])
         .arg(&pf)
-        .env("HOME", &home)
         .env_remove("IRSYNC_PASSPHRASE")
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     for args in [&["id", "show", "--daemon"][..], &["show"][..]] {
-        let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+        let o = bin::irsync_command(&home)
             .args(args)
             .arg("--config")
             .arg(&cfg)
             .arg("--passphrase-file")
             .arg(&pf)
-            .env("HOME", &home)
             .env_remove("IRSYNC_PASSPHRASE")
             .stdin(std::process::Stdio::null())
             .output()
@@ -333,12 +333,11 @@ fn an_ssh_key_that_does_not_unlock_is_named_in_the_error() {
     .unwrap();
     let pf = dir.path().join("pass");
     irsync::fs::private::write(&pf, "another\n").unwrap();
-    let o = std::process::Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let o = bin::irsync_command(&home)
         .args(["show", "--config"])
         .arg(&cfg)
         .arg("--passphrase-file")
         .arg(&pf)
-        .env("HOME", &home)
         .env_remove("IRSYNC_PASSPHRASE")
         .stdin(std::process::Stdio::null())
         .output()

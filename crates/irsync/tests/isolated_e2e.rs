@@ -2,10 +2,15 @@
 //! relay, no address lookup and no port mapper: the shape a stress harness
 //! or a fork-a-receiver mode would use.
 
+#[path = "common/bin.rs"]
+mod bin;
+
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
+
+use bin::{irsync_command, StateHome};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -72,10 +77,9 @@ fn run_client(args: &[&str], tmp: &Path) -> std::process::Output {
 /// [`run_client`] with extra environment variables.
 fn run_client_env(args: &[&str], tmp: &Path, env: &[(&str, &Path)]) -> std::process::Output {
     use std::io::Read;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let mut child = irsync_command(tmp.join("home"))
         .args(args)
-        .env("HOME", tmp.join("home"))
-        .env("XDG_STATE_HOME", tmp.join("xdg"))
+        .state_home(tmp.join("xdg"))
         // An unknown host is tried as an ssh destination; never reach out.
         .env("IRSYNC_RSH", "false")
         .env_remove("IRSYNC_PASSPHRASE")
@@ -164,7 +168,7 @@ fn start_daemon(tmp: &Path) -> Daemon {
     )
     .unwrap();
 
-    let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let child = irsync_command(tmp.join("daemon-home"))
         .args(["daemon", "-vv", "--config"])
         .arg(tmp.join("irsync.toml"))
         .args(["--listen", "127.0.0.1:0"])
@@ -512,7 +516,7 @@ fn no_listening_line_when_startup_fails_after_bind() {
         format!("[exports.m]\npath = {:?}\n", tmp.join("dst")),
     )
     .unwrap();
-    let o = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let o = irsync_command(tmp.join("daemon-home"))
         .args(["daemon", "--config"])
         .arg(tmp.join("irsync.toml"))
         .args(["--listen", "127.0.0.1:0"])
@@ -544,7 +548,7 @@ fn no_exports_warning_names_the_config_file() {
         ),
     )
     .unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_irsync"))
+    let child = irsync_command(tmp.join("daemon-home"))
         .args(["daemon", "--config"])
         .arg(tmp.join("irsync.toml"))
         .args(["--listen", "127.0.0.1:0"])
