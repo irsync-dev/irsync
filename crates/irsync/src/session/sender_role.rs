@@ -11,7 +11,6 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1893,7 +1892,10 @@ fn walk_admits(root: &Path, path: &RelPath, filters: &FilterSet) -> bool {
             rel.push(b'/');
         }
         rel.extend_from_slice(c);
-        full.push(std::ffi::OsStr::from_bytes(c));
+        let Ok(name) = crate::platform::bytes_to_os(c) else {
+            return false;
+        };
+        full.push(name);
         let last = i + 1 == comps.len();
         let Ok(r) = RelPath::new(&rel) else {
             return false;
@@ -2740,7 +2742,7 @@ mod tests {
         assert!(tail_digest(root.path(), &path, &path, 4, true).is_ok());
 
         std::fs::remove_dir_all(root.path().join("d")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.path().join("d")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &root.path().join("d")).unwrap();
         let Err(err) = tail_digest(root.path(), &path, &path, 4, true) else {
             panic!("the tail was read through the link");
         };

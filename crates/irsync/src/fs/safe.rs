@@ -10,8 +10,8 @@ use std::path::Path;
 use crate::fs::paths::RelPath;
 use crate::platform::{self, Cause, Dir, Kind, Open, Stat};
 
-/// TEMPORARY: the callers not yet moved to [`Dir`] still take these from
-/// here (Task 3 removes them).
+/// TEMPORARY: `fs/clone.rs`, not yet moved to [`Dir`], still takes these
+/// from here (removed by Task 4, which moves it).
 pub(crate) use crate::platform::{errno, is_symlink_errno};
 
 /// Turns the error of an `O_NOFOLLOW` open of a symlink
@@ -25,16 +25,6 @@ pub fn nofollow_error(e: io::Error, what: &Path) -> io::Error {
     } else {
         e
     }
-}
-
-/// Whether an `fstat` mode is a regular file.
-pub fn is_regular_mode(mode: u32) -> bool {
-    platform::kind_of_mode(mode) == Kind::File
-}
-
-/// Whether an `fstat` mode is a directory.
-pub fn is_dir_mode(mode: u32) -> bool {
-    platform::kind_of_mode(mode) == Kind::Dir
 }
 
 /// Fails unless the open file is a regular file.

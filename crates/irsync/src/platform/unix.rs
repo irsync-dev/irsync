@@ -94,7 +94,7 @@ fn one_name(name: &[u8]) -> io::Result<&[u8]> {
 }
 
 /// The kind of an `st_mode`.
-pub fn kind_of_mode(mode: u32) -> Kind {
+fn kind_of_mode(mode: u32) -> Kind {
     let fmt = SFlag::from_bits_truncate(mode as _) & SFlag::S_IFMT;
     if fmt == SFlag::S_IFREG {
         Kind::File
@@ -489,15 +489,6 @@ fn make_node_at(
     }
 }
 
-/// TEMPORARY bridge for the callers not yet moved to [`Dir`]'s own
-/// operations (Task 3 converts them and deletes this): lets a `&Dir` stand
-/// where they pass a descriptor to `nix`, and gives `as_fd()`.
-impl AsFd for Dir {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
-    }
-}
-
 fn not_special() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, "not a special file kind")
 }
@@ -542,6 +533,56 @@ pub fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
     (m.dev(), m.ino())
 }
 
+/// The modification time of the file `m` describes, `(seconds,
+/// nanoseconds)`.
+pub fn mtime_of(m: &std::fs::Metadata) -> (i64, i64) {
+    use std::os::unix::fs::MetadataExt;
+    (m.mtime(), m.mtime_nsec())
+}
+
+/// The inode change time of the file `m` describes, `(seconds,
+/// nanoseconds)`.
+pub fn ctime_of(m: &std::fs::Metadata) -> (i64, i64) {
+    use std::os::unix::fs::MetadataExt;
+    (m.ctime(), m.ctime_nsec())
+}
+
+/// Sets the permission bits of `path` as the standard library does
+/// (`chmod`, following a link).
+pub fn set_permissions(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// `secs` since the epoch as local time, `YYYY-MM-DD HH:MM:SS`; `@secs`
+/// when the system cannot convert it.
+pub fn local_time(secs: i64) -> String {
+    // `time_t`, inferred: naming the alias is deprecated on musl.
+    let t = secs as _;
+    // SAFETY: `tm` is a plain C struct of integers (and, on some systems, a
+    // pointer to the zone name, which may be null), so all zero bytes is a
+    // valid value.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers come from references to locals that outlive
+    // the call. localtime_r reads `t` and returns its result only through
+    // `tm`, not in a static buffer as localtime does. It also reads TZ and
+    // updates libc's own time-zone state, which libc guards with a lock;
+    // nothing in irsync changes the environment while it runs.
+    let ok = unsafe { !libc::localtime_r(&t, &mut tm).is_null() };
+    if !ok {
+        return format!("@{secs}");
+    }
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+
 /// The owner and group (`(uid, gid)`) of the file `m` describes.
 pub fn owner_of(m: &std::fs::Metadata) -> (u32, u32) {
     use std::os::unix::fs::MetadataExt;
@@ -580,8 +621,8 @@ pub fn open_read_nofollow(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-/// TEMPORARY bridge for the callers not yet converted (Task 3 removes
-/// it): a `nix` error as an `io::Error`.
+/// TEMPORARY bridge for `fs/clone.rs`, the one caller not yet converted
+/// (removed by Task 4): a `nix` error as an `io::Error`.
 #[doc(hidden)]
 pub fn errno(e: nix::Error) -> io::Error {
     errno_of(e)
@@ -756,7 +797,6 @@ pub mod testutil {
     pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
         std::os::unix::fs::symlink(target, link)
     }
-
     /// How long the swapping thread leaves each state (the link, then the
     /// directory) in place: long enough that an operation running in the
     /// other thread meets it, short enough for many swaps a second.

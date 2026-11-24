@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -696,7 +695,7 @@ async fn read_chunk(
     let read = tokio::task::spawn_blocking(move || {
         let _timed = m.as_deref().map(|m| m.start(Activity::Read));
         let mut buf = vec![0u8; len];
-        f.read_exact_at(&mut buf, offset)?;
+        crate::platform::read_exact_at(&f, &mut buf, offset)?;
         if let Some(m) = &m {
             m.add(Counter::DiskRead, len as u64);
         }

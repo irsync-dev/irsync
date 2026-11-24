@@ -170,9 +170,8 @@ fn write_tree(root: &Path, paths: &[PathBuf]) {
 
 /// The entry the hasher would queue for `rel`: its stat and its digest.
 fn new_entry(root: &Path, rel: &Path) -> NewEntry {
-    use std::os::unix::ffi::OsStrExt;
     let digest = digest_reader(std::fs::File::open(root.join(rel)).unwrap()).unwrap();
-    let path = RelPath::new(rel.as_os_str().as_bytes()).unwrap();
+    let path = RelPath::new(&irsync::platform::os_to_bytes(rel.as_os_str())).unwrap();
     let (mut entry, ctime) = lstat_entry_with_ctime(root, &path).unwrap();
     entry.whole_hash = Some(irsync_proto::v1::Hash {
         bytes: digest.hash.to_vec(),

@@ -1301,7 +1301,7 @@ mod tests {
         assert_eq!(got[1], (rel("f"), Kind::Regular, 2));
 
         std::fs::remove_dir_all(export.path().join("d")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), export.path().join("d")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &export.path().join("d")).unwrap();
         // The link is listed as a link; the file behind it is not looked at.
         let (_, got) = list();
         assert_eq!(got.len(), 1, "{got:?}");

@@ -134,7 +134,7 @@ struct At<'a> {
 
 impl io::Read for At<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = std::os::unix::fs::FileExt::read_at(self.file, buf, self.pos)?;
+        let n = crate::platform::read_at(self.file, buf, self.pos)?;
         self.pos += n as u64;
         Ok(n)
     }
@@ -568,7 +568,7 @@ mod tests {
         });
 
         std::fs::remove_dir_all(root.path().join("d")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.path().join("d")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &root.path().join("d")).unwrap();
         assert_eq!(
             std::fs::read(root.path().join("d/passwd")).unwrap(),
             b"secret"
