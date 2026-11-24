@@ -4,7 +4,7 @@
 
 use super::{id_bytes, id_of, ManageError};
 use crate::config::names::valid_alias;
-use crate::config::settings::RelayMode;
+use crate::config::settings::{PqKeyExchange, RelayMode};
 use crate::config::writer;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
@@ -24,6 +24,7 @@ pub struct ServerFlags {
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
     pub mdns: Option<bool>,
+    pub pq_key_exchange: Option<PqKeyExchange>,
     pub ssh: Option<String>,
 }
 
@@ -91,6 +92,12 @@ pub fn server_add(
     }
     if let Some(m) = flags.mdns {
         h.mdns = Some(m);
+    }
+    if let Some(p) = flags.pq_key_exchange {
+        h.pq_key_exchange = Some(match p {
+            PqKeyExchange::Prefer => pb::PqKeyExchange::Prefer,
+            PqKeyExchange::Require => pb::PqKeyExchange::Require,
+        } as i32);
     }
     if let Some(s) = &flags.ssh {
         h.ssh = Some(s.clone());

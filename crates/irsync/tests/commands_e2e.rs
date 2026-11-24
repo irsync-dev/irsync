@@ -2781,3 +2781,41 @@ fn config_version_of_an_old_file_is_what_the_file_says() {
     ok(&home, &["client", "add", "amy", &peer_id(6)]);
     assert_eq!(ok(&home, &["config", "get", "config_version"]), "2\n");
 }
+
+/// `server add --pq-key-exchange` sets the server's key, and a later
+/// `server add` without the flag keeps it.
+#[test]
+fn server_add_sets_pq_key_exchange() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    ok(
+        &home,
+        &["server", "add", "box", &id, "--pq-key-exchange", "require"],
+    );
+    let key = ["config", "get", "servers.box.pq_key_exchange"];
+    assert_eq!(ok(&home, &key), "require\n");
+    ok(&home, &["server", "add", "box", &id, "--parallel", "2"]);
+    assert_eq!(ok(&home, &key), "require\n");
+    ok(
+        &home,
+        &["server", "add", "box", &id, "--pq-key-exchange", "prefer"],
+    );
+    assert_eq!(ok(&home, &key), "prefer\n");
+    let o = irsync(
+        &home,
+        &[
+            "server",
+            "add",
+            "box",
+            &id,
+            "--pq-key-exchange",
+            "sometimes",
+        ],
+    );
+    assert!(
+        !o.status.success()
+            && String::from_utf8_lossy(&o.stderr).contains("expected prefer or require"),
+        "{o:?}"
+    );
+}

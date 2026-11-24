@@ -644,6 +644,11 @@ pub struct ServerAddArgs {
     /// client settings', else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub mdns: Option<bool>,
+    /// `require`: refuse this server when it does not offer the
+    /// post-quantum hybrid key exchange (X25519MLKEM768); `prefer`: use it
+    /// when offered (default: the client settings', else prefer).
+    #[arg(long, value_name = "prefer|require")]
+    pub pq_key_exchange: Option<PqKeyExchange>,
 }
 
 /// Accepts a duration the config files accept; keeps the user's text.

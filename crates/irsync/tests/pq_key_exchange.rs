@@ -6,7 +6,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use common::{classical_endpoint, client_endpoint, spawn_daemon_settings, within, DaemonHandle};
-use iroh::endpoint::ConnectionError;
+use iroh::endpoint::{Connection, ConnectionError, ZeroRttStatus};
+use iroh::Endpoint;
 use irsync::authz::{Access, Grants, MemoryAuthorizer};
 use irsync::config::settings::{DaemonSettings, PqKeyExchange};
 use irsync::session::engine::list_exports;
@@ -91,6 +92,64 @@ async fn prefer_serves_everyone_and_require_serves_the_hybrid() {
     let conn = within(new.connect(d.addr.clone(), ALPN)).await.unwrap();
     assert!(hello_is_answered(&conn).await);
     conn.close(0u32.into(), b"done");
+    stop(d).await;
+}
+
+/// Dials `d` from `ep`, which has been there before, so that the dial
+/// resumes the earlier TLS session. `into_0rtt` succeeds only with a
+/// session ticket from that daemon in hand, which is what makes the
+/// handshake a resumption. No data is sent before it completes.
+async fn resume(ep: &Endpoint, d: &DaemonHandle) -> Connection {
+    let connecting = within(ep.connect_with_opts(d.addr.clone(), ALPN, Default::default()))
+        .await
+        .unwrap();
+    let Ok(resuming) = connecting.into_0rtt() else {
+        panic!("no session ticket from the first connection: this dial would not resume");
+    };
+    match within(resuming.handshake_completed()).await.unwrap() {
+        ZeroRttStatus::Accepted(conn) | ZeroRttStatus::Rejected(conn) => conn,
+    }
+}
+
+/// A client that resumes its session with a requiring daemon gets a fresh
+/// hybrid key exchange (TLS 1.3 does one on resumption too), and is served
+/// as on its first connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_connection_gets_the_hybrid_and_is_served() {
+    let new = client_endpoint().await;
+    let d = daemon(new.id(), PqKeyExchange::Require).await;
+    let conn = within(new.connect(d.addr.clone(), ALPN)).await.unwrap();
+    assert!(hello_is_answered(&conn).await);
+    conn.close(0u32.into(), b"done");
+
+    let conn = resume(&new, &d).await;
+    assert_eq!(
+        irsync::net::key_exchange(&conn).as_deref(),
+        Some("X25519MLKEM768")
+    );
+    assert!(hello_is_answered(&conn).await);
+    conn.close(0u32.into(), b"done");
+    stop(d).await;
+}
+
+/// A classical client is refused on a resumed connection as on its first:
+/// resuming does not skip the check.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_requiring_daemon_closes_a_resumed_client_without_the_hybrid() {
+    let old = classical_endpoint().await;
+    let d = daemon(old.id(), PqKeyExchange::Require).await;
+    for attempt in ["first", "resumed"] {
+        let conn = match attempt {
+            "first" => within(old.connect(d.addr.clone(), ALPN)).await.unwrap(),
+            _ => resume(&old, &d).await,
+        };
+        let why = within(conn.closed()).await;
+        let ConnectionError::ApplicationClosed(close) = why else {
+            panic!("{attempt}: not closed by the daemon: {why:?}");
+        };
+        assert_eq!(close.error_code, 2u32.into(), "{attempt}");
+    }
+    assert_eq!(d.hellos.load(Ordering::SeqCst), 0, "daemon parsed a Hello");
     stop(d).await;
 }
 

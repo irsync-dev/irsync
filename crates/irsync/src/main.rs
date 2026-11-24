@@ -2533,6 +2533,7 @@ fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
         dial_retries: a.dial_retries,
         dht: a.dht,
         mdns: a.mdns,
+        pq_key_exchange: a.pq_key_exchange,
         ssh: None,
     };
     let mut lock = manage::lock_config(&paths.config)?;
