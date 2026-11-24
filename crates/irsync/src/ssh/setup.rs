@@ -428,9 +428,37 @@ pub fn run(
         Created::Existing
     };
 
+    // A daemon running from the old install path is ours too, unless a
+    // service file starts it: stopping it would fight systemd or launchd.
+    let home = usable_home(dirs::home_dir());
+    let stale = home
+        .as_deref()
+        .map(legacy::stale_services)
+        .unwrap_or_default();
+    let is_old_bin = |p: &Path| home.as_deref().is_some_and(|h| legacy::is_old_bin(h, p));
+    let state = &settings.state_dir;
+    let log = state.join("daemon.log");
+    let exe = std::env::current_exe().context("finding this executable")?;
+    // An older daemon of ours is restarted in step 4, so steps 2 and 3 may
+    // write a file it could not read.
+    let restart = match probe(state) {
+        Some(LockInfo {
+            pid,
+            exe: held,
+            version,
+        }) if pid != 0
+            && ((held == exe && version != *LONG_VERSION)
+                || (stale.is_empty() && is_old_bin(&held))) =>
+        {
+            Some(pid)
+        }
+        _ => None,
+    };
+
     // 2. The grant.
     let grant = if settings.daemon.immediate {
         let mut lock = manage::lock_config(&paths.config)?;
+        lock.restarting(restart);
         let mut msg = lock.load()?;
         let before = msg.clone();
         // Checked again on the locked message: it may have changed.
@@ -461,6 +489,7 @@ pub fn run(
         Dht::Off
     } else if no_dht {
         let mut lock = manage::lock_config(&paths.config)?;
+        lock.restarting(restart);
         let mut msg = lock.load()?;
         let key = ["daemon", "discovery", "dht"].map(String::from);
         manage::config::set(&mut msg, &key, manage::config::Value::Bool(false))
@@ -471,18 +500,7 @@ pub fn run(
         Dht::On
     };
 
-    // 4. The daemon. One running from the old install path is ours too,
-    // unless a service file starts it: stopping it would fight systemd or
-    // launchd.
-    let home = usable_home(dirs::home_dir());
-    let stale = home
-        .as_deref()
-        .map(legacy::stale_services)
-        .unwrap_or_default();
-    let is_old_bin = |p: &Path| home.as_deref().is_some_and(|h| legacy::is_old_bin(h, p));
-    let state = &settings.state_dir;
-    let log = state.join("daemon.log");
-    let exe = std::env::current_exe().context("finding this executable")?;
+    // 4. The daemon (see `restart` above).
     let lock = probe(state);
     // Held, but by whom is not known: it may be a daemon from the old path
     // that is still starting.

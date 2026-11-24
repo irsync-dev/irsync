@@ -48,12 +48,14 @@ fn reads_config_v2(version: &str) -> bool {
 /// (a file of layout 1, one without `config_version`, or none at all)
 /// while a daemon holds the lock of the state dir of `config` and cannot
 /// read layout 2: it would find a file it cannot read at its next reload.
-fn check_daemon(config: &Config) -> Result<(), ManageError> {
+/// `restarting`: the pid of a daemon the caller stops and starts again
+/// with this irsync right after the save; it is let pass.
+fn check_daemon(config: &Config, restarting: Option<u32>) -> Result<(), ManageError> {
     let state_dir = &config.settings.state_dir;
     let Some(info) = crate::daemon_lock::probe(state_dir) else {
         return Ok(());
     };
-    if info.pid != 0 && reads_config_v2(&info.version) {
+    if info.pid != 0 && (reads_config_v2(&info.version) || restarting == Some(info.pid)) {
         return Ok(());
     }
     let version = if info.version.trim().is_empty() {
@@ -265,6 +267,9 @@ pub struct ConfigLock {
     says_v2: bool,
     /// What converting the file left out (see [`reader::Read::dropped`]).
     dropped: Vec<String>,
+    /// A daemon the caller restarts after the save (see
+    /// [`ConfigLock::restarting`]).
+    restarting: Option<u32>,
 }
 
 /// Takes the lock of `path`, creating its directory if needed.
@@ -292,6 +297,7 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
             version: None,
             says_v2: false,
             dropped: Vec::new(),
+            restarting: None,
         }),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(ManageError::Locked {
             path: path.to_path_buf(),
@@ -302,6 +308,14 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
 }
 
 impl ConfigLock {
+    /// Lets [`ConfigLock::save`] write a file that the running daemon
+    /// `pid` cannot read: the caller stops that daemon and starts this
+    /// irsync's right after the save, as `ssh-setup` does with an older
+    /// daemon of its own.
+    pub fn restarting(&mut self, pid: Option<u32>) {
+        self.restarting = pid;
+    }
+
     /// The file as it is now (empty when missing); see [`load_message`].
     /// Records the layout it was in, and what a conversion left out, for
     /// [`ConfigLock::save`].
@@ -334,7 +348,7 @@ impl ConfigLock {
             typed(msg, &self.path)?;
         }
         if !self.says_v2 {
-            check_daemon(&typed(msg, &self.path)?)?;
+            check_daemon(&typed(msg, &self.path)?, self.restarting)?;
         }
         let io = |source| ManageError::Io {
             path: self.lock.clone(),

@@ -380,17 +380,37 @@ fn setup_leaves_foreign_daemon() {
         return;
     }
     let home = Home::new("");
-    let mut helper = hold_lock(&home.state(), "/usr/bin/other", "irsync 9.9");
+    // A newer irsync than this one: it reads what setup writes.
+    let mut helper = hold_lock(&home.state(), "/usr/bin/other", "9.9.9 (abc)");
     let r = home.setup(&client_id());
     assert_eq!(
         r.daemon,
         DaemonOutcome::Foreign {
             exe: PathBuf::from("/usr/bin/other"),
-            version: "irsync 9.9".into()
+            version: "9.9.9 (abc)".into()
         }
     );
     assert!(helper.0.try_wait().unwrap().is_none(), "helper was stopped");
     assert_eq!(probe(&home.state()).unwrap().pid, helper.0.id());
+}
+
+#[test]
+fn setup_refuses_to_write_past_an_old_foreign_daemon() {
+    if !have_flock() {
+        eprintln!("skipping: flock(1) not installed");
+        return;
+    }
+    let home = Home::new("");
+    let before = std::fs::read_to_string(home.config()).unwrap();
+    // Setup leaves a foreign daemon running, and this one cannot read
+    // config_version 2.
+    let mut helper = hold_lock(&home.state(), "/usr/bin/other", "0.1.0-beta.1 (abc)");
+    let out = home.try_setup(&client_id(), "myclient", &[]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("restart the daemon"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(home.config()).unwrap(), before);
+    assert!(helper.0.try_wait().unwrap().is_none(), "helper was stopped");
 }
 
 #[test]
