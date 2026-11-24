@@ -682,7 +682,7 @@ fn rebuilt_server_updates_every_alias_of_that_ssh_destination() {
     ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     let before = w.saved_id("myserver");
     assert_eq!(w.saved_id("mike@myserver"), before);
-    ok(&w.irsync_bare(&["host", "add", "elsewhere", &before]));
+    ok(&w.irsync_bare(&["server", "add", "elsewhere", &before]));
     ok(&w.irsync_bare(&["config", "set", "servers.elsewhere.ssh", "nas"]));
     w.kill_daemon();
     for entry in std::fs::read_dir(w.server.path().join(".config/irsync")).unwrap() {
@@ -1221,7 +1221,7 @@ fn fallback_updates_the_alias_not_its_ssh_name() {
 fn alias_without_ssh_does_not_fall_back() {
     let w = World::new();
     let dead = iroh::SecretKey::from_bytes(&[9; 32]).public().to_string();
-    let out = common::irsync_bin(w.client.path(), &["host", "add", "myserver", &dead]);
+    let out = common::irsync_bin(w.client.path(), &["server", "add", "myserver", &dead]);
     assert!(out.status.success(), "{out:?}");
     let dest = w.server.path().join("dest");
     let o = w.irsync(&[

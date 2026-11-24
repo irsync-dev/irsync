@@ -64,7 +64,7 @@ pub struct Args {
 }
 
 /// The operand of `list`, in place of the sync's `SRC... DEST` text.
-const LIST_OPERAND_HELP: &str = "A host alias or an EndpointId, with or without `:`, lists the \
+const LIST_OPERAND_HELP: &str = "A server name or an EndpointId, with or without `:`, lists the \
      exports this client may use; HOST:PATH lists the files a pull of it would fetch";
 
 /// clap's default template with the build info on top; subcommands get it
@@ -79,7 +79,7 @@ Quick start over ssh (irsync installed on the client only):
     irsync -av ~/Photos/ myserver:/srv/photos/
   The first run installs irsync on the server (same OS and CPU), grants this
   client access to any path (immediate mode), starts the daemon and saves
-  `myserver` as a host alias. Later runs go over iroh without ssh:
+  `myserver` as a server. Later runs go over iroh without ssh:
     irsync -av myserver:/srv/photos/ ~/Photos/  # pull them back
     irsync -av --ssh ~/Photos/ myserver:/srv/photos/   # update the server first
   To share only named directories instead of any path, set the server up by
@@ -91,12 +91,12 @@ Getting started by hand (irsync installed on both sides):
 
   On the server, export a directory, let the client in and start the daemon:
     irsync export add photos:/srv/photos        # prints the daemon's id
-    irsync host add myclient <client-id>
+    irsync client add myclient <client-id>
     irsync grant add photos myclient
     irsync daemon
 
   On the client, name the server, then list, push and pull:
-    irsync host add myserver <server-id>
+    irsync server add myserver <server-id>
     irsync myserver:                            # the exports you may use
     irsync -av ~/Photos/ myserver:photos/       # push the contents of ~/Photos
     irsync -av myserver:photos/ ~/Photos/       # pull them back
@@ -107,7 +107,7 @@ Getting started by hand (irsync installed on both sides):
 
 impl Args {
     /// The command with the help template applied to the subcommands too,
-    /// at every level (`irsync host add --help` included).
+    /// at every level (`irsync server add --help` included).
     fn command_tree() -> clap::Command {
         fn apply(c: clap::Command) -> clap::Command {
             c.help_template(HELP_TEMPLATE).mut_subcommands(apply)
@@ -327,8 +327,14 @@ pub enum Command {
     /// candidates from the first session on (`export update` does the
     /// same for the daemon's exports).
     Index(IndexArgs),
-    /// Manage host aliases (edits irsync.toml).
+    /// Manage the servers this machine connects to (edits irsync.toml).
     /// With no subcommand, runs `list`.
+    Server(ServerArgs),
+    /// Manage the clients this machine's daemon lets in (edits irsync.toml).
+    /// With no subcommand, runs `list`.
+    Client(ClientArgs),
+    /// Replaced by `server` and `client`.
+    #[command(hide = true)]
     Host(HostArgs),
     /// Manage exports (edits irsync.toml).
     /// With no subcommand, runs `list`.
@@ -344,7 +350,7 @@ pub enum Command {
     /// exports.photos.read_only true`.
     /// With no subcommand, runs `list`.
     Config(ConfigArgs),
-    /// Show the config files, identities, host aliases and exports.
+    /// Show the config files, identities, servers, clients and exports.
     Show,
     /// The server side of SSH onboarding, run by the client over ssh:
     /// makes sure the daemon identity exists, grants the client immediate
@@ -464,32 +470,70 @@ pub enum IdCmd {
     },
 }
 
+/// The old `irsync host`: any arguments, all refused.
 #[derive(Debug, clap::Args)]
 pub struct HostArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+    pub rest: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ServerArgs {
     #[command(subcommand)]
-    pub cmd: Option<HostCmd>,
+    pub cmd: Option<ServerCmd>,
 }
 
 #[derive(Debug, Subcommand)]
-pub enum HostCmd {
-    /// Add a host alias, or update the keys given for an existing one.
-    Add(HostAddArgs),
-    /// Remove a host alias. Refused while grants name it.
+pub enum ServerCmd {
+    /// Add a server, or update the keys given for an existing one.
+    Add(ServerAddArgs),
+    /// Remove a server.
     Remove {
-        /// The alias.
-        alias: String,
-        /// Also remove every grant that names the host.
+        /// The server's name.
+        name: String,
+    },
+    /// Rename a server.
+    Rename {
+        /// The current name.
+        old: String,
+        /// The new name.
+        new: String,
+    },
+    /// List servers.
+    List,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ClientArgs {
+    #[command(subcommand)]
+    pub cmd: Option<ClientCmd>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ClientCmd {
+    /// Add a client, or change the id of an existing one.
+    Add {
+        /// The name (no ':' or '/', not an EndpointId).
+        name: String,
+        /// The client's EndpointId (`irsync id show` on that machine).
+        id: String,
+    },
+    /// Remove a client. Refused while grants name it.
+    Remove {
+        /// The client's name.
+        name: String,
+        /// Also remove every grant that names the client.
         #[arg(short, long)]
         force: bool,
     },
-    /// Rename a host alias, and every grant that names it.
+    /// Rename a client, and every grant that names it.
     Rename {
-        /// The current alias.
+        /// The current name.
         old: String,
-        /// The new alias.
+        /// The new name.
         new: String,
     },
-    /// List host aliases.
+    /// List clients.
     List,
 }
 
@@ -536,8 +580,7 @@ pub enum GrantCmd {
     Add {
         /// The export's name, or `all` for every export.
         export: String,
-        /// A host alias, an EndpointId, a public key line or a
-        /// .pub file.
+        /// A client name, an EndpointId, a public key line or a .pub file.
         who: String,
         /// Read-only access (default: read-write).
         #[arg(long)]
@@ -548,60 +591,56 @@ pub enum GrantCmd {
     Remove {
         /// The export's name, or `all` for every export.
         export: String,
-        /// An alias, an EndpointId, a public key line or a .pub file; or
-        /// `all` for every peer.
+        /// A client name, an EndpointId, a public key line or a .pub file;
+        /// or `all` for every peer.
         who: String,
     },
     /// List grants: all of them, one export's, or what one peer may reach.
     List {
         /// An export's name (`all`: the every-export grants, `immediate`:
         /// the any-path grants), or a peer (an
-        /// alias or an EndpointId); nothing lists every grant.
+        /// client name or an EndpointId); nothing lists every grant.
         target: Option<String>,
     },
 }
 
 #[derive(Debug, clap::Args)]
-pub struct HostAddArgs {
-    /// The alias (no ':' or '/', not an EndpointId).
-    pub alias: String,
-    /// The host's EndpointId: its daemon, the id dialled.
+pub struct ServerAddArgs {
+    /// The name (no ':' or '/', not an EndpointId).
+    pub name: String,
+    /// The server's EndpointId: its daemon, the id dialled.
     pub id: String,
-    /// The EndpointId this machine has as a client, when it also syncs to
-    /// this one: grants that name the alias are then for this id.
-    #[arg(long, value_name = "ID")]
-    pub client_id: Option<String>,
-    /// The host's home relay, used instead of the client settings' or n0's
+    /// The server's home relay, used instead of the client settings' or n0's
     /// default.
     #[arg(long, value_name = "URL")]
     pub relay: Option<String>,
-    /// `disabled`: reach this host directly only, never through a relay;
+    /// `disabled`: reach this server directly only, never through a relay;
     /// `default`: relays as usual (default: the client settings').
     #[arg(long, value_name = "default|disabled", value_parser = parse_relay_mode)]
     pub relay_mode: Option<crate::config::settings::RelayMode>,
-    /// Dial the host at this `ip:port`, `[ipv6]:port` or `host:port`
+    /// Dial the server at this `ip:port`, `[ipv6]:port` or `host:port`
     /// directly, with relay and lookups off (repeatable; replaces the
     /// stored list).
     #[arg(long, value_name = "ADDR")]
     pub address: Vec<HostPort>,
-    /// Data streams a push to this host keeps open at once (default: the
+    /// Data streams a push to this server keeps open at once (default: the
     /// client settings', else 32).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
-    /// How long a sync with this host keeps redialling after a dropped
+    /// How long a sync with this server keeps redialling after a dropped
     /// connection: `<N>[s|m|h|d]`, e.g. `1h`; 0 gives up at once.
     #[arg(long, value_name = "DUR", value_parser = validate_duration)]
     pub reconnect: Option<String>,
-    /// How often a sync retries this host when it has not answered yet,
+    /// How often a sync retries this server when it has not answered yet,
     /// before giving up; 0 gives up on the first failure (default: the
     /// client settings', else 4).
     #[arg(long, value_name = "N")]
     pub dial_retries: Option<u32>,
-    /// Look this host up in the mainline DHT (default: the client
+    /// Look this server up in the mainline DHT (default: the client
     /// settings', else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub dht: Option<bool>,
-    /// Look this host up with mDNS on the local network (default: the
+    /// Look this server up with mDNS on the local network (default: the
     /// client settings', else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub mdns: Option<bool>,
@@ -751,7 +790,7 @@ fn parse_bwlimit(s: &str) -> Result<u64, String> {
 
 #[derive(Debug, Default, clap::Args)]
 pub struct SyncArgs {
-    /// Local paths or `HOST:PATH` (HOST: a host alias or
+    /// Local paths or `HOST:PATH` (HOST: a server name or
     /// an EndpointId; EXPORT: a directory the daemon shares by name).
     /// Exactly one side is remote; several sources only when pushing. A
     /// trailing `/` copies a directory's contents, none the directory

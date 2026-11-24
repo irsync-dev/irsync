@@ -165,7 +165,14 @@ pub fn id_of(bytes: &[u8]) -> Option<EndpointId> {
 /// [`Config::load`]), and a file the reader refuses is that error, with
 /// its line. A file of an older layout is converted (see [`reader::read`]).
 pub fn load_message(path: &Path) -> Result<pb::Config, ManageError> {
-    Ok(read_file(path)?.config)
+    let read = read_file(path)?;
+    let mut config = read.config;
+    // An old file does not say `config_version`: the reader fills in the
+    // new one when it converts. Report the layout the file has.
+    if read.version == 1 {
+        config.config_version = Some(1);
+    }
+    Ok(config)
 }
 
 /// The config file at `path` as [`reader::read`] reads it; see

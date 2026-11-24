@@ -105,21 +105,14 @@ fn host_add_then_grant_add_by_alias_then_list() {
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    assert!(irsync(
-        &home,
-        &[
-            "host",
-            "add",
-            "laptop",
-            &id,
-            "--parallel",
-            "4",
-            "--client-id",
-            &id
-        ]
-    )
-    .status
-    .success());
+    assert!(
+        irsync(&home, &["server", "add", "laptop", &id, "--parallel", "4"])
+            .status
+            .success()
+    );
+    assert!(irsync(&home, &["client", "add", "laptop", &id])
+        .status
+        .success());
     assert_eq!(
         std::fs::read_to_string(home.join(".config/irsync/irsync.toml")).unwrap(),
         format!(
@@ -141,24 +134,34 @@ fn host_add_then_grant_add_by_alias_then_list() {
             .unwrap()
             .contains("rw = [\"laptop\"]")
     );
-    let o = irsync(&home, &["host", "list"]);
+    let o = irsync(&home, &["server", "list"]);
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(
         out.starts_with(&format!("laptop: {id}\n")) && out.contains("parallel = 4"),
         "{out}"
     );
-    let o = irsync(&home, &["host", "add", &id, &id]);
+    let o = irsync(&home, &["server", "add", &id, &id]);
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("alias"));
-    // A grant names the host: it stays until the grant is gone.
-    let o = irsync(&home, &["host", "remove", "laptop"]);
-    assert_eq!(o.status.code(), Some(1));
-    ok(&home, &["grant", "remove", "p", "laptop"]);
-    let o = irsync(&home, &["host", "remove", "laptop"]);
+    // A server is no grant's: it goes at once. A client stays until the
+    // grant is gone.
+    let o = irsync(&home, &["server", "remove", "laptop"]);
     assert!(o.status.success());
     assert_eq!(
         String::from_utf8_lossy(&o.stderr),
         format!(
-            "removed host laptop from {}\n",
+            "removed server laptop from {}\n",
+            home.join(".config/irsync/irsync.toml").display()
+        )
+    );
+    let o = irsync(&home, &["client", "remove", "laptop"]);
+    assert_eq!(o.status.code(), Some(1));
+    ok(&home, &["grant", "remove", "p", "laptop"]);
+    let o = irsync(&home, &["client", "remove", "laptop"]);
+    assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!(
+            "removed client laptop from {}\n",
             home.join(".config/irsync/irsync.toml").display()
         )
     );
@@ -306,11 +309,9 @@ fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    assert!(
-        irsync(&home, &["host", "add", "laptop", &id, "--client-id", &id])
-            .status
-            .success()
-    );
+    assert!(irsync(&home, &["client", "add", "laptop", &id])
+        .status
+        .success());
     assert!(irsync(
         &home,
         &["export", "add", &format!("p:{}", home.join("p").display())]
@@ -333,11 +334,13 @@ fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(
-        out.lines().any(|l| l == "hosts:") && out.lines().any(|l| l == "exports:"),
+        out.lines().any(|l| l == "servers:")
+            && out.lines().any(|l| l == "clients:")
+            && out.lines().any(|l| l == "exports:"),
         "{out}"
     );
     assert!(
-        out.contains(&format!("laptop ({id})")) && out.contains("ghost (unknown alias)"),
+        out.contains(&format!("laptop ({id})")) && out.contains("ghost (unknown client)"),
         "{out}"
     );
     let line = format!("p: {}", home.join("p").display());
@@ -578,7 +581,7 @@ fn export_list_prints_the_export_blocks_of_show() {
     std::fs::create_dir_all(home.join("q")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
     for args in [
-        vec!["host", "add", "laptop", &id, "--client-id", &id],
+        vec!["client", "add", "laptop", &id],
         vec![
             "export",
             "add",
@@ -623,7 +626,7 @@ fn grant_list_by_export_by_peer_and_for_an_unknown_name() {
     std::fs::create_dir_all(home.join("q")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
     for args in [
-        vec!["host", "add", "laptop", &id, "--client-id", &id],
+        vec!["client", "add", "laptop", &id],
         vec!["export", "add", &format!("p:{}", home.join("p").display())],
         vec![
             "export",
@@ -689,7 +692,7 @@ fn host_list_refuses_an_old_layout_file() {
         format!("[home]\nendpoint_id = \"{id}\"\n"),
     )
     .unwrap();
-    let o = irsync(&home, &["host", "list"]);
+    let o = irsync(&home, &["server", "list"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success() && err.contains("servers live under [servers.home]"),
@@ -704,7 +707,7 @@ fn grant_remove_all_all_locks_everyone_out() {
     std::fs::create_dir_all(home.join("p")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
     for args in [
-        vec!["host", "add", "laptop", &id, "--client-id", &id],
+        vec!["client", "add", "laptop", &id],
         vec!["export", "add", &format!("p:{}", home.join("p").display())],
         vec!["grant", "add", "p", "laptop"],
         vec!["grant", "add", "all", "laptop", "--ro"],
@@ -894,14 +897,14 @@ fn ok(home: &Path, args: &[&str]) -> String {
 }
 
 #[test]
-fn host_list_prints_the_hosts_section_of_show() {
+fn server_list_prints_the_servers_section_of_show() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
     ok(
         &home,
         &[
-            "host",
+            "server",
             "add",
             "laptop",
             &id,
@@ -911,8 +914,8 @@ fn host_list_prints_the_hosts_section_of_show() {
             "4",
         ],
     );
-    ok(&home, &["host", "add", "desk", &id]);
-    let list = ok(&home, &["host", "list"]);
+    ok(&home, &["server", "add", "desk", &id]);
+    let list = ok(&home, &["server", "list"]);
     assert_eq!(
         list,
         format!("laptop: {id}\n    relay = \"https://r.example/\"\n    parallel = 4\ndesk: {id}\n")
@@ -920,9 +923,9 @@ fn host_list_prints_the_hosts_section_of_show() {
     let show = ok(&home, &["show"]);
     let section: Vec<&str> = show
         .lines()
-        .skip_while(|l| *l != "hosts:")
+        .skip_while(|l| *l != "servers:")
         .skip(1)
-        .take_while(|l| *l != "exports:")
+        .take_while(|l| *l != "clients:")
         .collect();
     assert_eq!(list, section.join("\n") + "\n", "show:\n{show}");
 }
@@ -933,7 +936,7 @@ fn grant_list_prefers_an_export_over_an_alias_of_the_same_name() {
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    ok(&home, &["host", "add", "p", &id, "--client-id", &id]);
+    ok(&home, &["client", "add", "p", &id]);
     ok(
         &home,
         &["export", "add", &format!("p:{}", home.join("p").display())],
@@ -959,7 +962,7 @@ fn grant_list_lines_appear_verbatim_in_show() {
     std::fs::create_dir_all(home.join("q")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
     let other = iroh::SecretKey::from_bytes(&[6; 32]).public().to_string();
-    ok(&home, &["host", "add", "laptop", &id, "--client-id", &id]);
+    ok(&home, &["client", "add", "laptop", &id]);
     ok(
         &home,
         &["export", "add", &format!("p:{}", home.join("p").display())],
@@ -1039,9 +1042,11 @@ fn show_names_the_config_file_once() {
     let file = cfg.join("irsync.toml").display().to_string();
     assert_eq!(out.matches(&file).count(), 1, "{out}");
     assert!(out.starts_with(&format!("config: {file}")), "{out}");
-    // The hosts and exports sections are headed by their names alone.
+    // The sections are headed by their names alone.
     assert!(
-        out.lines().any(|l| l == "hosts:") && out.lines().any(|l| l == "exports:"),
+        out.lines().any(|l| l == "servers:")
+            && out.lines().any(|l| l == "clients:")
+            && out.lines().any(|l| l == "exports:"),
         "{out}"
     );
 }
@@ -1058,7 +1063,7 @@ fn split_file_warns_on_stderr_and_is_not_read() {
         format!("[hosts.box]\nendpoint_id = \"{id}\"\n"),
     )
     .unwrap();
-    let o = irsync(&home, &["host", "list"]);
+    let o = irsync(&home, &["server", "list"]);
     let (out, err) = (
         String::from_utf8_lossy(&o.stdout),
         String::from_utf8_lossy(&o.stderr),
@@ -1084,17 +1089,17 @@ fn host_add_works_beside_a_split_hosts_file() {
     // while whatever hosts.toml held stays ignored.
     let warning = format!("ignoring {}", cfg.join("hosts.toml").display());
     for args in [
-        &["host", "add", "box", &id][..],
+        &["server", "add", "box", &id][..],
         &["config", "set", "client.parallel", "2"],
         &["config", "unset", "client.parallel"],
-        &["host", "remove", "box"],
+        &["server", "remove", "box"],
     ] {
         let o = irsync(&home, args);
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(o.status.success(), "{args:?}: {err}");
         assert_eq!(err.matches(&warning).count(), 1, "{args:?}: {err}");
     }
-    ok(&home, &["host", "add", "box", &id]);
+    ok(&home, &["server", "add", "box", &id]);
     assert!(std::fs::read_to_string(cfg.join("irsync.toml"))
         .unwrap()
         .contains("[servers.box]"));
@@ -1123,7 +1128,7 @@ fn get_prints_defaults_and_exits_1_for_unset_optional_keys() {
         "{o:?}"
     );
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    ok(&home, &["host", "add", "laptop", &id]);
+    ok(&home, &["server", "add", "laptop", &id]);
     assert_eq!(
         ok(&home, &["config", "get", "servers.laptop.endpoint_id"]),
         format!("{id}\n")
@@ -1439,7 +1444,8 @@ fn a_bare_noun_runs_its_list() {
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    ok(&home, &["host", "add", "laptop", &id, "--client-id", &id]);
+    ok(&home, &["client", "add", "laptop", &id]);
+    ok(&home, &["server", "add", "laptop", &id]);
     ok(
         &home,
         &["export", "add", &format!("p:{}", home.join("p").display())],
@@ -1448,7 +1454,7 @@ fn a_bare_noun_runs_its_list() {
     // The client identity exists before the comparison, so neither run
     // prints "generated identity".
     ok(&home, &["id", "generate"]);
-    for noun in ["id", "host", "export", "grant", "config"] {
+    for noun in ["id", "server", "client", "export", "grant", "config"] {
         let bare = irsync(&home, &[noun]);
         let list = irsync(&home, &[noun, "list"]);
         assert!(bare.status.success(), "{noun}");
@@ -1461,10 +1467,10 @@ fn a_bare_noun_runs_its_list() {
     irsync::fs::private::write(&other, format!("[servers.nas]\nendpoint_id = \"{id}\"\n")).unwrap();
     let c = other.to_str().unwrap();
     assert_eq!(
-        ok(&home, &["host", "--config", c]),
-        ok(&home, &["host", "list", "--config", c])
+        ok(&home, &["server", "--config", c]),
+        ok(&home, &["server", "list", "--config", c])
     );
-    assert!(ok(&home, &["host", "--config", c]).contains("nas"));
+    assert!(ok(&home, &["server", "--config", c]).contains("nas"));
 }
 
 /// A bare noun only lists: it writes nothing, `--help` is still help, and
@@ -1473,7 +1479,7 @@ fn a_bare_noun_runs_its_list() {
 fn a_bare_noun_changes_nothing_and_takes_no_list_arguments() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    for noun in ["host", "export", "grant", "config"] {
+    for noun in ["server", "client", "export", "grant", "config"] {
         assert!(irsync(&home, &[noun]).status.success(), "{noun}");
     }
     assert!(!home.join(".config/irsync/irsync.toml").exists());
@@ -1542,7 +1548,7 @@ fn grant_add_by_id_writes_and_prints_the_alias() {
     let d = tempfile::tempdir().unwrap();
     let (home, file) = home_with(&d, "");
     let id = peer_id(5);
-    ok(&home, &["host", "add", "box", &id, "--client-id", &id]);
+    ok(&home, &["client", "add", "box", &id]);
     let o = irsync(&home, &["grant", "add", "all", &id]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(o.status.success(), "{err}");
@@ -1553,11 +1559,7 @@ fn grant_add_by_id_writes_and_prints_the_alias() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.starts_with("box: immediate access"), "{err}");
     let text = std::fs::read_to_string(&file).unwrap();
-    assert_eq!(
-        text.matches(&id).count(),
-        2,
-        "only the server and the client: {text}"
-    );
+    assert_eq!(text.matches(&id).count(), 1, "only the client: {text}");
 }
 
 #[test]
@@ -1566,7 +1568,7 @@ fn host_add_renames_existing_grants() {
     let id = peer_id(5);
     let (home, file) = home_with(&d, &format!("[all]\nrw = [\"{id}\"]\n"));
     // A server is no client: the grant keeps the id.
-    ok(&home, &["host", "add", "box", &id]);
+    ok(&home, &["server", "add", "box", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert_eq!(
         text,
@@ -1574,7 +1576,7 @@ fn host_add_renames_existing_grants() {
             "config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[all]\nrw = [\"{id}\"]\n"
         )
     );
-    ok(&home, &["host", "add", "box", &id, "--client-id", &id]);
+    ok(&home, &["client", "add", "box", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert_eq!(
         text,
@@ -1623,7 +1625,7 @@ fn key_comment_stays_beside_the_alias() {
 }
 
 #[test]
-fn host_remove_counts_a_hand_written_id_as_a_grant() {
+fn client_remove_counts_a_hand_written_id_as_a_grant() {
     let d = tempfile::tempdir().unwrap();
     let id = peer_id(5);
     let before = format!(
@@ -1631,7 +1633,7 @@ fn host_remove_counts_a_hand_written_id_as_a_grant() {
          [all]\nrw = [\"{id}\"]\n[immediate]\nrw = [\"box\"]\n"
     );
     let (home, file) = home_with(&d, &before);
-    let o = irsync(&home, &["host", "remove", "box"]);
+    let o = irsync(&home, &["client", "remove", "box"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -1639,26 +1641,26 @@ fn host_remove_counts_a_hand_written_id_as_a_grant() {
         "{err}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
-    let o = irsync(&home, &["host", "remove", "box", "-f"]);
+    let o = irsync(&home, &["client", "remove", "box", "-f"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(o.status.success(), "{err}");
     assert_eq!(
         err,
-        format!("removed host box and 2 grants from {}\n", file.display())
+        format!("removed client box and 2 grants from {}\n", file.display())
     );
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        "config_version = 2\n\n[all]\nrw = []\n\n[immediate]\nrw = []\n"
+        format!("config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[all]\nrw = []\n\n[immediate]\nrw = []\n")
     );
     // One grant: singular.
     let (home, file) = home_with(
         &d,
         &format!("[clients.box]\nclient_id = \"{id}\"\n[all]\nro = [\"box\"]\n"),
     );
-    let o = irsync(&home, &["host", "remove", "--force", "box"]);
+    let o = irsync(&home, &["client", "remove", "--force", "box"]);
     assert_eq!(
         String::from_utf8_lossy(&o.stderr),
-        format!("removed host box and 1 grant from {}\n", file.display())
+        format!("removed client box and 1 grant from {}\n", file.display())
     );
 }
 
@@ -1697,14 +1699,15 @@ fn config_unset_does_not_remove_a_client_that_grants_name() {
 }
 
 #[test]
-fn host_remove_on_a_file_that_does_not_load_gives_the_plain_error() {
+fn server_and_client_remove_on_a_file_that_does_not_load_give_the_plain_error() {
     let d = tempfile::tempdir().unwrap();
     let (home, file) = home_with(&d, "[hosts.box]\nendpoint_id = 5\n");
-    let plain = String::from_utf8_lossy(&irsync(&home, &["host", "list"]).stderr)
-        .replace("irsync host list: ", "");
+    let plain = String::from_utf8_lossy(&irsync(&home, &["server", "list"]).stderr)
+        .replace("irsync server list: ", "");
     assert!(plain.contains(&file.display().to_string()), "{plain}");
     for (args, cmd) in [
-        (&["host", "remove", "box"][..], "host remove"),
+        (&["server", "remove", "box"][..], "server remove"),
+        (&["client", "remove", "box"], "client remove"),
         (&["config", "unset", "clients.box"], "config unset"),
     ] {
         let o = irsync(&home, args);
@@ -1715,7 +1718,7 @@ fn host_remove_on_a_file_that_does_not_load_gives_the_plain_error() {
 }
 
 #[test]
-fn host_remove_leaves_an_id_grant_to_another_alias_of_the_same_id() {
+fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
     let d = tempfile::tempdir().unwrap();
     let id = peer_id(5);
     // `amy` sorts first, so a plain save would write the id as `amy`.
@@ -1730,7 +1733,7 @@ fn host_remove_leaves_an_id_grant_to_another_alias_of_the_same_id() {
         &format!("{}[all]\nrw = [\"{id}\"]\n", hosts(&["amy", "zed"])),
     );
     // The id is not amy's alone: zed still names the peer.
-    ok(&home, &["host", "remove", "amy"]);
+    ok(&home, &["client", "remove", "amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         format!(
@@ -1744,7 +1747,7 @@ fn host_remove_leaves_an_id_grant_to_another_alias_of_the_same_id() {
         format!("{}[all]\nrw = [\"amy\"]\n", hosts(&["amy", "zed"])),
     )
     .unwrap();
-    let o = irsync(&home, &["host", "remove", "amy"]);
+    let o = irsync(&home, &["server", "remove", "amy"]);
     assert_eq!(o.status.code(), Some(1));
     // The same through config unset.
     std::fs::write(
@@ -1775,10 +1778,10 @@ fn host_add_moves_the_server_and_not_the_grants() {
              [exports.p]\npath = \"/p\"\nro = [\"{old}\"]\n"
         ),
     );
-    let o = irsync(&home, &["host", "add", "box", &old, "--parallel", "2"]);
+    let o = irsync(&home, &["server", "add", "box", &old, "--parallel", "2"]);
     assert!(o.status.success());
     assert_eq!(String::from_utf8_lossy(&o.stderr), "");
-    let o = irsync(&home, &["host", "add", "box", &new]);
+    let o = irsync(&home, &["server", "add", "box", &new]);
     assert!(o.status.success());
     assert_eq!(
         String::from_utf8_lossy(&o.stdout),
@@ -1815,7 +1818,7 @@ fn verbose_before_a_management_command_runs_the_command() {
         assert!(o.stderr.is_empty(), "{args:?}");
     }
     assert!(plain.stderr.is_empty());
-    let o = irsync(&home, &["host", "list", "-v"]);
+    let o = irsync(&home, &["server", "list", "-v"]);
     assert!(o.status.success() && o.stderr.is_empty());
 }
 
@@ -1825,20 +1828,23 @@ fn config_before_a_command_names_the_file_the_command_uses() {
     let other = home.join("other.toml");
     let other_s = other.to_str().unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    assert!(
-        irsync(&home, &["--config", other_s, "host", "add", "laptop", &id])
-            .status
-            .success()
-    );
+    assert!(irsync(
+        &home,
+        &["--config", other_s, "server", "add", "laptop", &id]
+    )
+    .status
+    .success());
     assert!(std::fs::read_to_string(&other)
         .unwrap()
         .contains("[servers.laptop]"));
     assert!(!home.join(".config/irsync/irsync.toml").exists());
-    let before = irsync(&home, &["--config", other_s, "host", "list"]);
-    let after = irsync(&home, &["host", "list", "--config", other_s]);
+    let before = irsync(&home, &["--config", other_s, "server", "list"]);
+    let after = irsync(&home, &["server", "list", "--config", other_s]);
     assert!(before.status.success() && before.stdout == after.stdout);
     assert!(String::from_utf8_lossy(&before.stdout).contains("laptop"));
-    assert!(!String::from_utf8_lossy(&irsync(&home, &["host", "list"]).stdout).contains("laptop"));
+    assert!(
+        !String::from_utf8_lossy(&irsync(&home, &["server", "list"]).stdout).contains("laptop")
+    );
 }
 
 #[test]
@@ -1847,7 +1853,7 @@ fn vv_turns_logging_on_for_every_command() {
     for args in [
         &["gc", "-vv"][..],
         &["-vv", "id", "show"],
-        &["host", "list", "-vv"],
+        &["server", "list", "-vv"],
         &["show", "-vv"],
     ] {
         let o = irsync(&home, args);
@@ -2216,7 +2222,7 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
 }
 
 #[test]
-fn host_rename_renames_the_host_and_its_grants_in_the_file() {
+fn server_and_client_rename_take_their_grants_in_the_file() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let cfg = home.join(".config/irsync");
@@ -2231,12 +2237,21 @@ fn host_rename_renames_the_host_and_its_grants_in_the_file() {
          [exports.p]\npath = \"/p\"\nrw = [\"laptop\", \"work\"]\n"
     );
     irsync::fs::private::write(cfg.join("irsync.toml"), &text).unwrap();
-    let o = irsync(&home, &["host", "rename", "laptop", "work"]);
+    let o = irsync(&home, &["server", "rename", "laptop", "work"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(
         String::from_utf8_lossy(&o.stderr),
         format!(
-            "renamed host laptop to work; updated 3 grants in {}\n",
+            "renamed server laptop to work in {}\n",
+            cfg.join("irsync.toml").display()
+        )
+    );
+    let o = irsync(&home, &["client", "rename", "laptop", "work"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!(
+            "renamed client laptop to work; updated 3 grants in {}\n",
             cfg.join("irsync.toml").display()
         )
     );
@@ -2252,7 +2267,9 @@ fn host_rename_renames_the_host_and_its_grants_in_the_file() {
     );
     // A second rename of the old name fails and changes nothing.
     let before = std::fs::read_to_string(cfg.join("irsync.toml")).unwrap();
-    let o = irsync(&home, &["host", "rename", "laptop", "other"]);
+    let o = irsync(&home, &["client", "rename", "laptop", "other"]);
+    assert!(!o.status.success());
+    let o = irsync(&home, &["server", "rename", "laptop", "other"]);
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("no such entry \"laptop\""));
     assert_eq!(
@@ -2314,7 +2331,7 @@ fn host_add_leaves_the_grants_with_the_client() {
              [clients.phone]\nclient_id = \"{client}\"\n[immediate]\nrw = [\"box\"]\n"
         ),
     );
-    let o = irsync(&home, &["host", "add", "box", &new]);
+    let o = irsync(&home, &["server", "add", "box", &new]);
     assert!(o.status.success());
     assert_eq!(
         String::from_utf8_lossy(&o.stdout),
@@ -2327,7 +2344,7 @@ fn host_add_leaves_the_grants_with_the_client() {
         "{text}"
     );
     // A client that no grant names gets a server quietly.
-    let o = irsync(&home, &["host", "add", "phone", &new]);
+    let o = irsync(&home, &["server", "add", "phone", &new]);
     assert_eq!(String::from_utf8_lossy(&o.stderr), "");
 }
 
@@ -2378,9 +2395,9 @@ fn config_says_when_a_clients_grants_move_to_another_id() {
 }
 
 /// A machine that is a server and a client, and one that is a client
-/// only, through `host list`, `show`, `host rename` and `host remove`.
+/// only, through the `server` and `client` commands and `show`.
 #[test]
-fn hosts_with_a_client_id_list_show_rename_and_remove() {
+fn servers_and_clients_list_show_rename_and_remove() {
     let d = tempfile::tempdir().unwrap();
     let (daemon, client, phone) = (peer_id(5), peer_id(6), peer_id(7));
     let (home, config) = home_with(
@@ -2390,14 +2407,16 @@ fn hosts_with_a_client_id_list_show_rename_and_remove() {
              [clients.phone]\nclient_id = \"{phone}\"\n[immediate]\nrw = [\"desk\", \"phone\"]\n"
         ),
     );
-    let list = ok(&home, &["host", "list"]);
-    assert_eq!(
-        list,
-        format!("desk: {daemon}\ndesk: {client}\nphone: {phone}\n")
-    );
+    let servers = ok(&home, &["server", "list"]);
+    assert_eq!(servers, format!("desk: {daemon}\n"));
+    let clients = ok(&home, &["client", "list"]);
+    assert_eq!(clients, format!("desk: {client}\nphone: {phone}\n"));
     // `show` has the same lines, and a grant is for the client id.
     let show = ok(&home, &["show"]);
-    assert!(show.contains(&list), "{show}");
+    assert!(
+        show.contains(&format!("servers:\n{servers}clients:\n{clients}exports:")),
+        "{show}"
+    );
     let grants = ok(&home, &["grant", "list"]);
     assert!(
         grants.contains(&format!("rw: desk ({client}), phone ({phone})")),
@@ -2405,7 +2424,8 @@ fn hosts_with_a_client_id_list_show_rename_and_remove() {
     );
 
     // A rename takes the server, the client and the grants along.
-    ok(&home, &["host", "rename", "desk", "box"]);
+    ok(&home, &["server", "rename", "desk", "box"]);
+    ok(&home, &["client", "rename", "desk", "box"]);
     let t: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
     assert!(t["servers"].get("desk").is_none(), "{t}");
     assert!(t["clients"].get("desk").is_none(), "{t}");
@@ -2415,10 +2435,11 @@ fn hosts_with_a_client_id_list_show_rename_and_remove() {
 
     // A client is removed like any other: not while grants name it,
     // unless forced.
-    let o = irsync(&home, &["host", "remove", "phone"]);
+    let o = irsync(&home, &["client", "remove", "phone"]);
     assert!(!o.status.success());
-    ok(&home, &["host", "remove", "phone", "-f"]);
-    ok(&home, &["host", "remove", "box", "-f"]);
+    ok(&home, &["client", "remove", "phone", "-f"]);
+    ok(&home, &["client", "remove", "box", "-f"]);
+    ok(&home, &["server", "remove", "box"]);
     let t: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
     for table in ["servers", "clients"] {
         assert!(
@@ -2435,21 +2456,19 @@ fn hosts_with_a_client_id_list_show_rename_and_remove() {
     );
 }
 
-/// `host add --client-id` sets the id a machine has as a client, beside
-/// its daemon's id, and says so when that moves the grants naming it.
+/// `client add` sets the id a machine has as a client, beside its
+/// server's id, and says so when that moves the grants naming it.
 #[test]
-fn host_add_takes_a_client_id() {
+fn client_add_sets_the_id_and_says_when_grants_move() {
     let d = tempfile::tempdir().unwrap();
     let (daemon, client, other) = (peer_id(5), peer_id(6), peer_id(7));
     let (home, config) = home_with(&d, "");
-    let o = irsync(
-        &home,
-        &["host", "add", "box", &daemon, "--client-id", &client],
-    );
+    ok(&home, &["server", "add", "box", &daemon]);
+    let o = irsync(&home, &["client", "add", "box", &client]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(
         String::from_utf8_lossy(&o.stdout),
-        format!("box: {daemon}\nbox: client_id {client}\n")
+        format!("box: {client}\n")
     );
     assert_eq!(String::from_utf8_lossy(&o.stderr), "");
     let t: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
@@ -2458,32 +2477,27 @@ fn host_add_takes_a_client_id() {
 
     // Grants name it: a new client id moves them, and the command says so.
     ok(&home, &["grant", "add", "all", "box"]);
-    let o = irsync(
-        &home,
-        &["host", "add", "box", &daemon, "--client-id", &other],
-    );
+    let o = irsync(&home, &["client", "add", "box", &other]);
     assert!(o.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&o.stdout),
+        format!("box: {client} -> {other}\n")
+    );
     assert_eq!(
         String::from_utf8_lossy(&o.stderr),
         format!(
-            "irsync host add: note: the grants that name box (in all) now apply to \
+            "irsync client add: note: the grants that name box (in all) now apply to \
              {other} (was {client})\n"
         )
     );
     // The same id again: nothing moved, nothing said.
-    let o = irsync(
-        &home,
-        &["host", "add", "box", &daemon, "--client-id", &other],
-    );
+    let o = irsync(&home, &["client", "add", "box", &other]);
     assert_eq!(String::from_utf8_lossy(&o.stderr), "");
     // Not an id.
-    let o = irsync(
-        &home,
-        &["host", "add", "box", &daemon, "--client-id", "nope"],
-    );
+    let o = irsync(&home, &["client", "add", "box", "nope"]);
     assert!(!o.status.success());
     let e = String::from_utf8_lossy(&o.stderr);
-    assert!(e.contains("--client-id"), "{e}");
+    assert!(e.contains("ID \"nope\""), "{e}");
 }
 
 /// Every command reads the config file first and stops at once when other
@@ -2508,8 +2522,8 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
         &["nas:x/", src],
         &["list", "nas:"],
         &["daemon", "--listen", "127.0.0.1:0"],
-        &["host", "list"],
-        &["host", "add", "box", id],
+        &["server", "list"],
+        &["server", "add", "box", id],
         &["export", "add", src],
         &["grant", "add", "all", "nas"],
         &["config", "get", "client.parallel"],
@@ -2541,7 +2555,7 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
     }
     // The file's owner can say that this is meant.
     std::fs::write(&file, format!("unsafe_config_allowed = true\n{text}")).unwrap();
-    assert!(ok(&home, &["host", "list"]).contains("nas"));
+    assert!(ok(&home, &["server", "list"]).contains("nas"));
     ok(&home, &["config", "set", "client.parallel", "4"]);
     assert_eq!(
         ok(&home, &["config", "get", "unsafe_config_allowed"]),
@@ -2550,7 +2564,7 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
     // Closing the file works as well, and the key is then not needed.
     std::fs::write(&file, &text).unwrap();
     set_mode(&file, 0o600).unwrap();
-    assert!(ok(&home, &["host", "list"]).contains("nas"));
+    assert!(ok(&home, &["server", "list"]).contains("nas"));
     assert_eq!(
         ok(&home, &["config", "get", "unsafe_config_allowed"]),
         "false\n"
@@ -2641,4 +2655,129 @@ fn the_first_save_of_an_old_file_notes_what_it_dropped() {
     let o = irsync(&home, &["config", "set", "client.parallel", "3"]);
     assert!(o.status.success());
     assert_eq!(String::from_utf8_lossy(&o.stderr), "");
+}
+
+/// `irsync host` is gone: any use exits 1 with a pointer, and a line that
+/// starts with it is no sync.
+#[test]
+fn host_is_gone_with_a_pointer() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "");
+    let id = peer_id(5);
+    for args in [
+        vec!["host", "add", "x", id.as_str()],
+        vec!["host", "list"],
+        vec!["host"],
+        vec!["host", "add", "x", id.as_str(), "--client-id", id.as_str()],
+    ] {
+        let o = irsync(&home, &args);
+        assert_eq!(o.status.code(), Some(1), "{args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&o.stderr),
+            "irsync host: hosts are now two things: `irsync server` (machines this one \
+             connects to) and `irsync client` (machines its daemon lets in)\n",
+            "{args:?}"
+        );
+        assert_eq!(o.stdout, b"");
+    }
+    assert!(!file.exists());
+}
+
+#[test]
+fn server_commands_print_and_report() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "");
+    let (a, b) = (peer_id(5), peer_id(6));
+    assert_eq!(
+        ok(&home, &["server", "add", "box", &a]),
+        format!("box: {a}\n")
+    );
+    assert_eq!(
+        ok(&home, &["server", "add", "box", &b]),
+        format!("box: {a} -> {b}\n")
+    );
+    // A server and a client may have the same name.
+    ok(&home, &["client", "add", "box", &a]);
+    assert_eq!(ok(&home, &["server", "list"]), format!("box: {b}\n"));
+    let o = irsync(&home, &["server", "rename", "box", "crate"]);
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!("renamed server box to crate in {}\n", file.display())
+    );
+    let o = irsync(&home, &["server", "remove", "crate"]);
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!("removed server crate from {}\n", file.display())
+    );
+    let o = irsync(&home, &["server", "remove", "crate"]);
+    assert_eq!(o.status.code(), Some(1));
+    // The client of that name is untouched.
+    assert_eq!(ok(&home, &["client", "list"]), format!("box: {a}\n"));
+}
+
+#[test]
+fn client_commands_print_and_report() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "");
+    let (a, b) = (peer_id(5), peer_id(6));
+    assert_eq!(
+        ok(&home, &["client", "add", "amy", &a]),
+        format!("amy: {a}\n")
+    );
+    assert_eq!(
+        ok(&home, &["client", "add", "amy", &b]),
+        format!("amy: {a} -> {b}\n")
+    );
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    ok(&home, &["grant", "add", "p", "amy"]);
+    let o = irsync(&home, &["client", "rename", "amy", "bob"]);
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!(
+            "renamed client amy to bob; updated 1 grant in {}\n",
+            file.display()
+        )
+    );
+    let o = irsync(&home, &["client", "remove", "bob", "-f"]);
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        format!("removed client bob and 1 grant from {}\n", file.display())
+    );
+    assert_eq!(ok(&home, &["client", "list"]), "");
+}
+
+#[test]
+fn grant_add_names_a_server_only_name() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, _) = home_with(&d, "");
+    ok(&home, &["server", "add", "box", &peer_id(5)]);
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    let o = irsync(&home, &["grant", "add", "p", "box"]);
+    assert_eq!(o.status.code(), Some(1));
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains("box") && e.contains("client"), "{e}");
+}
+
+/// An old file reports the layout it has, not the one it is read as.
+#[test]
+fn config_version_of_an_old_file_is_what_the_file_says() {
+    let d = tempfile::tempdir().unwrap();
+    let id = peer_id(5);
+    let (home, file) = home_with(&d, &format!("[hosts.box]\nendpoint_id = \"{id}\"\n"));
+    assert_eq!(ok(&home, &["config", "get", "config_version"]), "1\n");
+    assert!(ok(&home, &["config", "list"]).contains("config_version = 1\n"));
+    // Not rewritten by reading.
+    assert!(std::fs::read_to_string(&file)
+        .unwrap()
+        .contains("[hosts.box]"));
+    ok(&home, &["client", "add", "amy", &peer_id(6)]);
+    assert_eq!(ok(&home, &["config", "get", "config_version"]), "2\n");
 }

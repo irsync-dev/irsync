@@ -93,7 +93,7 @@ pub fn check_first(dest: &str, server_name: Option<&str>) -> anyhow::Result<()> 
         anyhow::bail!(
             "{dest} gave no host name to save it under, and an IPv6 address \
              cannot be a host alias.\n  Set a host name on that machine, or add \
-             the host by hand with `irsync host add`"
+             the server by hand with `irsync server add`"
         );
     }
     Ok(())

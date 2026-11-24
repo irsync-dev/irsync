@@ -15,9 +15,9 @@ use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::summary::SessionSummary;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
-    validate, Args, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode, Direction, ExportArgs,
-    ExportCmd, FilesArgs, GrantArgs, GrantCmd, HostAddArgs, HostArgs, HostCmd, IdArgs, IdCmd,
-    IndexArgs, LogArgs, SyncOptions,
+    validate, Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode,
+    Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs,
+    LogArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
 };
 use irsync::config::clients::Clients;
 use irsync::config::file::Config;
@@ -75,7 +75,9 @@ fn main() {
         Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d, log, files)),
         Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, log, files)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix, log, files)),
-        Some(Command::Host(h)) => std::process::exit(run_host(h, files)),
+        Some(Command::Host(_)) => std::process::exit(run_host()),
+        Some(Command::Server(s)) => std::process::exit(run_server(s, files)),
+        Some(Command::Client(c)) => std::process::exit(run_client(c, files)),
         Some(Command::Export(e)) => std::process::exit(run_export(e, log, files)),
         Some(Command::Grant(g)) => std::process::exit(run_grant(g, files)),
         Some(Command::Id(i)) => std::process::exit(run_id(i, files)),
@@ -2059,93 +2061,63 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-/// `irsync host`, until the `server` and `client` commands replace it:
-/// each verb acts on the server and the client of the name.
-fn run_host(h: &HostArgs, files: &FilesArgs) -> i32 {
+/// `irsync host`: gone, replaced by `server` and `client`.
+fn run_host() -> i32 {
+    eprintln!(
+        "irsync host: hosts are now two things: `irsync server` (machines this one connects to) \
+         and `irsync client` (machines its daemon lets in)"
+    );
+    1
+}
+
+/// A file that does not load is that error, not a refused save.
+fn load_first(paths: &Paths) -> anyhow::Result<()> {
+    Config::load(paths)?;
+    Ok(())
+}
+
+fn run_server(s: &ServerArgs, files: &FilesArgs) -> i32 {
     let paths = file_paths(files);
     // A noun alone lists.
-    let list = HostCmd::List;
-    match h.cmd.as_ref().unwrap_or(&list) {
-        HostCmd::Add(a) => finish("host add", host_add(a, &paths)),
-        HostCmd::Remove { alias, force } => finish(
-            "host remove",
+    let list = ServerCmd::List;
+    match s.cmd.as_ref().unwrap_or(&list) {
+        ServerCmd::Add(a) => finish("server add", server_add(a, &paths)),
+        ServerCmd::Remove { name } => finish(
+            "server remove",
             (|| {
-                // A file that does not load is that error, not a refused save.
-                Config::load(&paths)?;
+                load_first(&paths)?;
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                let server = msg.servers.iter().any(|s| s.name == *alias);
-                let client = msg.clients.iter().any(|c| c.name == *alias);
-                if !server && !client {
-                    return Err(manage::ManageError::NotFound(alias.clone()))
-                        .with_context(|| format!("in {}", paths.config.display()));
-                }
-                let mut grants = 0;
-                if client {
-                    // First, so an EndpointId written for this client is
-                    // found as a grant that names it.
-                    manage::canonicalize_without(&mut msg, &paths.config, alias)?;
-                    grants = manage::clients::client_remove(&mut msg, alias, *force)
-                        .with_context(|| format!("in {}", paths.config.display()))?;
-                }
-                if server {
-                    manage::servers::server_remove(&mut msg, alias)?;
-                }
+                manage::servers::server_remove(&mut msg, name)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                let also = match grants {
-                    0 => String::new(),
-                    1 => " and 1 grant".to_string(),
-                    n => format!(" and {n} grants"),
-                };
-                eprintln!("removed host {alias}{also} from {}", paths.config.display());
+                eprintln!("removed server {name} from {}", paths.config.display());
                 Ok(())
             })(),
         ),
-        HostCmd::Rename { old, new } => finish(
-            "host rename",
+        ServerCmd::Rename { old, new } => finish(
+            "server rename",
             (|| {
-                // A file that does not load is that error, not a refused save.
-                Config::load(&paths)?;
+                load_first(&paths)?;
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                let server = msg.servers.iter().any(|s| s.name == *old);
-                let client = msg.clients.iter().any(|c| c.name == *old);
-                if !server && !client {
-                    return Err(manage::ManageError::NotFound(old.clone()))
-                        .with_context(|| format!("in {}", paths.config.display()));
-                }
-                // First, so an EndpointId written for this client is found
-                // as a grant that names it.
-                manage::canonicalize_doc(&mut msg, &paths.config)?;
-                let mut grants = 0;
-                if server {
-                    manage::servers::server_rename(&mut msg, old, new)
-                        .with_context(|| format!("in {}", paths.config.display()))?;
-                }
-                if client {
-                    grants = manage::clients::client_rename(&mut msg, old, new)
-                        .with_context(|| format!("in {}", paths.config.display()))?;
-                }
+                manage::servers::server_rename(&mut msg, old, new)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                let also = match grants {
-                    0 => String::new(),
-                    1 => "; updated 1 grant".to_string(),
-                    n => format!("; updated {n} grants"),
-                };
                 eprintln!(
-                    "renamed host {old} to {new}{also} in {}",
+                    "renamed server {old} to {new} in {}",
                     paths.config.display()
                 );
                 Ok(())
             })(),
         ),
-        HostCmd::List => finish(
-            "host list",
+        ServerCmd::List => finish(
+            "server list",
             (|| {
                 // Load first: a file that does not load is an error, not an
                 // empty list.
-                Config::load(&paths)?;
-                for line in host_lines(&manage::load_message(&paths.config)?) {
+                load_first(&paths)?;
+                for line in manage::servers::server_list(&manage::load_message(&paths.config)?) {
                     println!("{line}");
                 }
                 Ok(())
@@ -2154,11 +2126,96 @@ fn run_host(h: &HostArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-/// What `host list` prints: the servers' lines, then the clients'.
-fn host_lines(msg: &irsync_proto::config::Config) -> Vec<String> {
-    let mut lines = manage::servers::server_list(msg);
-    lines.extend(manage::clients::client_list(msg));
-    lines
+fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
+    let paths = file_paths(files);
+    // A noun alone lists.
+    let list = ClientCmd::List;
+    match c.cmd.as_ref().unwrap_or(&list) {
+        ClientCmd::Add { name, id } => finish(
+            "client add",
+            (|| {
+                let id = parse_endpoint_id(id).with_context(|| format!("ID {id:?}"))?;
+                let mut lock = manage::lock_config(&paths.config)?;
+                let mut msg = lock.load()?;
+                let before = peer_ids(&msg, &paths.config);
+                let old = manage::clients::client_add(&mut msg, name, id)?;
+                lock.save(&mut msg)?;
+                match old {
+                    Some(old) => println!("{name}: {old} -> {id}"),
+                    None => println!("{name}: {id}"),
+                }
+                // The id the grants are for may have changed: say so.
+                note_moved_grants("client add", &before, &msg, &paths.config);
+                Ok(())
+            })(),
+        ),
+        ClientCmd::Remove { name, force } => finish(
+            "client remove",
+            (|| {
+                load_first(&paths)?;
+                let mut lock = manage::lock_config(&paths.config)?;
+                let mut msg = lock.load()?;
+                if !msg.clients.iter().any(|c| c.name == *name) {
+                    return Err(manage::ManageError::NotFound(name.clone()))
+                        .with_context(|| format!("in {}", paths.config.display()));
+                }
+                // First, so an EndpointId written for this client is found
+                // as a grant that names it.
+                manage::canonicalize_without(&mut msg, &paths.config, name)?;
+                let grants = manage::clients::client_remove(&mut msg, name, *force)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                lock.save(&mut msg)?;
+                let also = match grants {
+                    0 => String::new(),
+                    1 => " and 1 grant".to_string(),
+                    n => format!(" and {n} grants"),
+                };
+                eprintln!(
+                    "removed client {name}{also} from {}",
+                    paths.config.display()
+                );
+                Ok(())
+            })(),
+        ),
+        ClientCmd::Rename { old, new } => finish(
+            "client rename",
+            (|| {
+                load_first(&paths)?;
+                let mut lock = manage::lock_config(&paths.config)?;
+                let mut msg = lock.load()?;
+                if !msg.clients.iter().any(|c| c.name == *old) {
+                    return Err(manage::ManageError::NotFound(old.clone()))
+                        .with_context(|| format!("in {}", paths.config.display()));
+                }
+                // First, so an EndpointId written for this client is found
+                // as a grant that names it.
+                manage::canonicalize_doc(&mut msg, &paths.config)?;
+                let grants = manage::clients::client_rename(&mut msg, old, new)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                lock.save(&mut msg)?;
+                let also = match grants {
+                    0 => String::new(),
+                    1 => "; updated 1 grant".to_string(),
+                    n => format!("; updated {n} grants"),
+                };
+                eprintln!(
+                    "renamed client {old} to {new}{also} in {}",
+                    paths.config.display()
+                );
+                Ok(())
+            })(),
+        ),
+        ClientCmd::List => finish(
+            "client list",
+            (|| {
+                load_first(&paths)?;
+                for line in manage::clients::client_list(&manage::load_message(&paths.config)?) {
+                    println!("{line}");
+                }
+                Ok(())
+            })(),
+        ),
+    }
 }
 
 /// The client identity: `explicit` (`--identity`) or the config's `identity`
@@ -2414,8 +2471,11 @@ fn run_show(f: &FilesArgs) -> i32 {
             let paths = file_paths(f);
             let config = Config::load(&paths)?;
             let settings = &config.settings;
-            // The hosts section is `host list`, line for line.
-            let host_lines = host_lines(&manage::load_message(&paths.config)?);
+            // The servers and clients sections are `server list` and
+            // `client list`, line for line.
+            let msg = manage::load_message(&paths.config)?;
+            let server_lines = manage::servers::server_list(&msg);
+            let client_lines = manage::clients::client_list(&msg);
             let pass = PassphraseSource::from_env(
                 f.passphrase_file.clone(),
                 settings.unsafe_config_allowed,
@@ -2431,7 +2491,8 @@ fn run_show(f: &FilesArgs) -> i32 {
                 manage::show::report(
                     &paths,
                     &config,
-                    &host_lines,
+                    &server_lines,
+                    &client_lines,
                     (&client.public(), &client_line),
                     &daemon.public(),
                 )
@@ -2441,15 +2502,9 @@ fn run_show(f: &FilesArgs) -> i32 {
     )
 }
 
-/// `host add`: the server `ALIAS`, and the client of that name when
-/// `--client-id` is given.
-fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
+/// `server add`: the server `NAME`, set to dial `ID`.
+fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let id = parse_endpoint_id(&a.id).with_context(|| format!("ID {:?}", a.id))?;
-    let client_id = a
-        .client_id
-        .as_deref()
-        .map(|c| parse_endpoint_id(c).with_context(|| format!("--client-id {c:?}")))
-        .transpose()?;
     let flags = manage::servers::ServerFlags {
         relay: a
             .relay
@@ -2473,20 +2528,11 @@ fn host_add(a: &HostAddArgs, paths: &Paths) -> anyhow::Result<()> {
     };
     let mut lock = manage::lock_config(&paths.config)?;
     let mut msg = lock.load()?;
-    let before = peer_ids(&msg, &paths.config);
-    let old = manage::servers::server_add(&mut msg, &a.alias, id, &flags)?;
-    if let Some(client_id) = client_id {
-        manage::clients::client_add(&mut msg, &a.alias, client_id)?;
-    }
+    let old = manage::servers::server_add(&mut msg, &a.name, id, &flags)?;
     lock.save(&mut msg)?;
     match old {
-        Some(old) => println!("{}: {old} -> {id}", a.alias),
-        None => println!("{}: {id}", a.alias),
-    }
-    if let Some(client_id) = client_id {
-        println!("{}: client_id {client_id}", a.alias);
-        // The id the grants are for was given: say so when it changed.
-        note_moved_grants("host add", &before, &msg, &paths.config);
+        Some(old) => println!("{}: {old} -> {id}", a.name),
+        None => println!("{}: {id}", a.name),
     }
     Ok(())
 }

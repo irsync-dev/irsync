@@ -485,7 +485,7 @@ fn hosts_and_exports_flags_are_gone() {
     for args in [
         &["daemon", "--hosts", "h"][..],
         &["daemon", "--exports", "e"],
-        &["host", "list", "--hosts", "h"],
+        &["server", "list", "--hosts", "h"],
         &["grant", "list", "--exports", "e"],
         &["show", "--hosts", "h"],
         &["-a", "--hosts", "h", "a", "b:c"],
@@ -552,11 +552,11 @@ fn no_relay_flag_parses_and_conflicts_with_relay() {
     assert!(
         Args::try_parse_from(["irsync", "--no-relay", "--relay", "https://r", "a", "h:m"]).is_err()
     );
-    // host add takes the mode by name.
+    // server add takes the mode by name.
     use irsync::config::settings::RelayMode;
     let a = Args::try_parse_from([
         "irsync",
-        "host",
+        "server",
         "add",
         "home",
         "k51",
@@ -567,8 +567,8 @@ fn no_relay_flag_parses_and_conflicts_with_relay() {
     ])
     .unwrap();
     match a.cmd {
-        Some(Command::Host(h)) => match h.cmd.unwrap() {
-            irsync::cli::HostCmd::Add(add) => {
+        Some(Command::Server(h)) => match h.cmd.unwrap() {
+            irsync::cli::ServerCmd::Add(add) => {
                 assert_eq!(add.relay_mode, Some(RelayMode::Disabled));
                 assert_eq!(add.dial_retries, Some(1));
             }
@@ -578,7 +578,7 @@ fn no_relay_flag_parses_and_conflicts_with_relay() {
     }
     assert!(Args::try_parse_from([
         "irsync",
-        "host",
+        "server",
         "add",
         "home",
         "k51",
@@ -632,7 +632,7 @@ fn export_update_parses_export_names_or_all() {
 
 #[test]
 fn nouns_share_add_remove_list() {
-    use irsync::cli::{ExportCmd, GrantCmd, HostCmd};
+    use irsync::cli::{ClientCmd, ExportCmd, GrantCmd, ServerCmd};
     assert!(matches!(
         parse(&["export", "add", "photos:/srv/photos", "--ro", "--warm-index"]).cmd,
         Some(Command::Export(ref e))
@@ -652,23 +652,54 @@ fn nouns_share_add_remove_list() {
         Some(Command::Grant(ref g)) if matches!(g.cmd, Some(GrantCmd::Remove { .. }))
     ));
     assert!(matches!(
-        parse(&["host", "remove", "home"]).cmd,
-        Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::Remove { ref alias, force: false }) if alias == "home")
+        parse(&["server", "remove", "home"]).cmd,
+        Some(Command::Server(ref h)) if matches!(h.cmd, Some(ServerCmd::Remove { ref name }) if name == "home")
+    ));
+    assert!(matches!(
+        parse(&["server", "rename", "home", "work"]).cmd,
+        Some(Command::Server(ref h))
+            if matches!(h.cmd, Some(ServerCmd::Rename { ref old, ref new }) if old == "home" && new == "work")
+    ));
+    assert!(matches!(
+        parse(&["server", "list"]).cmd,
+        Some(Command::Server(ref h)) if matches!(h.cmd, Some(ServerCmd::List))
+    ));
+    assert!(matches!(
+        parse(&["client", "add", "home", "abc"]).cmd,
+        Some(Command::Client(ref h))
+            if matches!(h.cmd, Some(ClientCmd::Add { ref name, ref id }) if name == "home" && id == "abc")
+    ));
+    assert!(matches!(
+        parse(&["client", "remove", "home"]).cmd,
+        Some(Command::Client(ref h)) if matches!(h.cmd, Some(ClientCmd::Remove { ref name, force: false }) if name == "home")
     ));
     for flag in ["-f", "--force"] {
         assert!(matches!(
-            parse(&["host", "remove", "home", flag]).cmd,
-            Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::Remove { force: true, .. }))
+            parse(&["client", "remove", "home", flag]).cmd,
+            Some(Command::Client(ref h)) if matches!(h.cmd, Some(ClientCmd::Remove { force: true, .. }))
         ));
     }
     assert!(matches!(
-        parse(&["host", "rename", "home", "work"]).cmd,
-        Some(Command::Host(ref h))
-            if matches!(h.cmd, Some(HostCmd::Rename { ref old, ref new }) if old == "home" && new == "work")
+        parse(&["client", "rename", "home", "work"]).cmd,
+        Some(Command::Client(ref h))
+            if matches!(h.cmd, Some(ClientCmd::Rename { ref old, ref new }) if old == "home" && new == "work")
     ));
     assert!(matches!(
-        parse(&["host", "list"]).cmd,
-        Some(Command::Host(ref h)) if matches!(h.cmd, Some(HostCmd::List))
+        parse(&["client", "list"]).cmd,
+        Some(Command::Client(ref h)) if matches!(h.cmd, Some(ClientCmd::List))
+    ));
+    // `client add` has no flags of a server; `server remove` has no --force.
+    assert!(
+        Args::try_parse_from(["irsync", "client", "add", "a", "b", "--parallel", "2"]).is_err()
+    );
+    assert!(Args::try_parse_from(["irsync", "server", "remove", "a", "-f"]).is_err());
+    assert!(
+        Args::try_parse_from(["irsync", "server", "add", "a", "b", "--client-id", "c"]).is_err()
+    );
+    // `host` is hidden, takes anything and is refused when run.
+    assert!(matches!(
+        parse(&["host", "add", "x", "abc", "--client-id", "d"]).cmd,
+        Some(Command::Host(ref h)) if h.rest == ["add", "x", "abc", "--client-id", "d"]
     ));
     assert!(matches!(
         parse(&["export", "list"]).cmd,
@@ -683,9 +714,9 @@ fn nouns_share_add_remove_list() {
         Some(Command::Grant(ref g)) if matches!(g.cmd, Some(GrantCmd::List { target: Some(ref t) }) if t == "photos")
     ));
     assert!(Args::try_parse_from(["irsync", "grant", "list", "a", "b"]).is_err());
-    // host add keeps every flag
+    // server add keeps every flag
     let a = parse(&[
-        "host",
+        "server",
         "add",
         "home",
         "abc",
@@ -704,21 +735,21 @@ fn nouns_share_add_remove_list() {
         "--mdns",
         "yes",
     ]);
-    let Some(Command::Host(h)) = a.cmd else {
+    let Some(Command::Server(h)) = a.cmd else {
         panic!()
     };
-    let Some(HostCmd::Add(h)) = h.cmd else {
+    let Some(ServerCmd::Add(h)) = h.cmd else {
         panic!()
     };
     assert!(
-        h.alias == "home"
+        h.name == "home"
             && h.id == "abc"
             && h.address.len() == 2
             && h.dht == Some(false)
             && h.mdns == Some(true)
     );
     assert!(
-        Args::try_parse_from(["irsync", "host", "add", "home", "abc", "--dht", "maybe"]).is_err()
+        Args::try_parse_from(["irsync", "server", "add", "home", "abc", "--dht", "maybe"]).is_err()
     );
 }
 
@@ -747,18 +778,18 @@ fn old_bare_verbs_are_gone() {
 
 #[test]
 fn file_flags_are_accepted_after_the_noun_in_either_position() {
-    let after_noun = parse(&["host", "--config", "/c", "list"]);
-    let after_verb = parse(&["host", "list", "--config", "/c"]);
+    let after_noun = parse(&["server", "--config", "/c", "list"]);
+    let after_verb = parse(&["server", "list", "--config", "/c"]);
     for a in [after_noun, after_verb] {
-        assert!(matches!(a.cmd, Some(Command::Host(_))));
+        assert!(matches!(a.cmd, Some(Command::Server(_))));
         assert_eq!(a.files.config, Some("/c".into()));
     }
     let a = parse(&["grant", "add", "photos", "laptop", "--config", "/c"]);
     assert!(matches!(a.cmd, Some(Command::Grant(_))));
     assert_eq!(a.files.config, Some("/c".into()));
     // Before the noun it is the same flag.
-    let a = parse(&["--config", "/c", "host", "list"]);
-    assert!(matches!(a.cmd, Some(Command::Host(_))), "{a:?}");
+    let a = parse(&["--config", "/c", "server", "list"]);
+    assert!(matches!(a.cmd, Some(Command::Server(_))), "{a:?}");
     assert_eq!(a.files.config, Some("/c".into()));
 }
 
@@ -820,7 +851,7 @@ fn id_and_show_parse() {
     // `--out` names the file; `--daemon` picks the configured one.
     assert!(Args::try_parse_from(["irsync", "id", "generate", "--daemon", "--out", "/k"]).is_err());
     // A noun alone parses: it runs `list`.
-    for noun in ["id", "host", "export", "grant", "config"] {
+    for noun in ["id", "server", "client", "export", "grant", "config"] {
         assert!(Args::try_parse_from(["irsync", noun]).is_ok(), "{noun}");
     }
     assert!(matches!(parse(&["id"]).cmd, Some(Command::Id(ref i)) if i.cmd.is_none()));
@@ -966,7 +997,7 @@ fn verbose_and_quiet_are_accepted_before_and_after_any_command() {
         assert!(matches!(a.cmd, Some(Command::Id(_))), "{args:?}");
         assert_eq!(a.log.verbose, 2, "{args:?}");
     }
-    assert!(parse(&["--quiet", "host", "list"]).log.quiet);
+    assert!(parse(&["--quiet", "server", "list"]).log.quiet);
     assert_eq!(parse(&["daemon", "-vv"]).log.verbose, 2);
     assert_eq!(parse(&["index", "-v", "/srv/a"]).log.verbose, 1);
     assert_eq!(parse(&["-v", "show"]).log.verbose, 1);
@@ -1011,9 +1042,9 @@ fn a_path_named_like_a_command_is_still_a_path() {
 fn config_is_accepted_before_and_after_any_command() {
     let f = Some(PathBuf::from("f"));
     for args in [
-        &["--config", "f", "host", "list"][..],
-        &["host", "--config", "f", "list"],
-        &["host", "list", "--config", "f"],
+        &["--config", "f", "server", "list"][..],
+        &["server", "--config", "f", "list"],
+        &["server", "list", "--config", "f"],
         &["--config", "f", "daemon"],
         &["daemon", "--config", "f"],
         &["--config", "f", "gc"],
@@ -1027,7 +1058,7 @@ fn config_is_accepted_before_and_after_any_command() {
     }
     assert_eq!(opts(&["--config", "f", "src", "h:m/"]).config, f);
     assert_eq!(opts(&["src", "h:m/", "--config", "f"]).config, f);
-    assert_eq!(parse(&["host", "list"]).files.config, None);
+    assert_eq!(parse(&["server", "list"]).files.config, None);
 }
 
 #[test]
@@ -1051,7 +1082,7 @@ fn passphrase_file_is_accepted_before_and_after_any_command() {
         &["daemon", "--passphrase-file", "p"],
         // Accepted and ignored where no key is loaded.
         &["gc", "--passphrase-file", "p"],
-        &["--passphrase-file", "p", "host", "list"],
+        &["--passphrase-file", "p", "server", "list"],
     ] {
         let a = parse(args);
         assert!(a.cmd.is_some(), "{args:?}");
@@ -1101,12 +1132,12 @@ fn a_flag_between_paths_does_not_turn_a_later_path_into_a_command() {
     let a = parse(&["src", "-v", "gc", "h:m/"]);
     assert!(a.sync_args().paths == ["src", "gc", "h:m/"]);
     // A path whose command would fail to parse is still a path.
-    let a = parse(&["h:photos/", "-v", "host", "add"]);
-    assert!(a.sync_args().paths == ["h:photos/", "host", "add"]);
+    let a = parse(&["h:photos/", "-v", "server", "add"]);
+    assert!(a.sync_args().paths == ["h:photos/", "server", "add"]);
     // With no path first, a command name is the command.
     assert!(matches!(parse(&["-v", "gc"]).cmd, Some(Command::Gc { .. })));
     assert!(matches!(parse(&["gc", "-v"]).cmd, Some(Command::Gc { .. })));
-    let a = parse(&["--config", "f", "host", "list"]);
+    let a = parse(&["--config", "f", "server", "list"]);
     assert!(a.cmd.is_some() && a.sync.paths.is_empty());
     assert!(err(&["-a", "gc"]).contains("-a is a sync option and cannot be used with 'gc'"));
 }

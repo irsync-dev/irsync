@@ -21,7 +21,7 @@ fn entry_text(entry: &str, clients: &Clients) -> String {
     } else if let Some(c) = clients.get(entry) {
         format!("{entry} ({})", c.client_id)
     } else {
-        format!("{entry} (unknown alias)")
+        format!("{entry} (unknown client)")
     }
 }
 
@@ -68,12 +68,14 @@ pub fn all_block(exports: &Exports, clients: &Clients) -> String {
 }
 
 /// The report: the config file, identities (`client` is the id and the
-/// public key line), hosts (`host_lines`, what `host list` prints) and
+/// public key line), servers and clients (`server_lines` and
+/// `client_lines`, what `server list` and `client list` print) and
 /// exports, each section under its name.
 pub fn report(
     paths: &Paths,
     config: &Config,
-    host_lines: &[String],
+    server_lines: &[String],
+    client_lines: &[String],
     client: (&EndpointId, &str),
     daemon: &EndpointId,
 ) -> String {
@@ -81,9 +83,12 @@ pub fn report(
     let exports = &config.exports;
     let mut out = file_line("config", &paths.config);
     let _ = writeln!(out, "client identity: {}\n{}", client.0, client.1);
-    out.push_str("hosts:\n");
-    for line in host_lines {
-        let _ = writeln!(out, "{line}");
+    for (title, lines) in [("servers:", server_lines), ("clients:", client_lines)] {
+        out.push_str(title);
+        out.push('\n');
+        for line in lines {
+            let _ = writeln!(out, "{line}");
+        }
     }
     out.push_str("exports:\n");
     let _ = writeln!(out, "daemon identity: {daemon}");

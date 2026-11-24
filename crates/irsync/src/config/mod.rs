@@ -47,7 +47,7 @@ pub enum ConfigError {
     TooOpen { path: PathBuf, problem: String },
     #[error("unknown client {name:?} (and not an EndpointId); clients are defined in {}", path.display())]
     UnknownClient { name: String, path: PathBuf },
-    #[error("bad peer {0:?}: expected a host alias or an EndpointId")]
+    #[error("bad peer {0:?}: expected a client name or an EndpointId")]
     BadPeer(String),
 }
 
