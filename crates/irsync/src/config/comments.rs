@@ -49,21 +49,35 @@ pub(crate) fn attach_with(
     msg: &mut pb::Config,
     map: &dyn Fn(&pb::Config, Place) -> Place,
 ) -> Result<(), ConfigError> {
-    let doc = text.parse::<DocumentMut>().map_err(|e| ConfigError::File {
+    attach_doc_with(&document(text, path)?, msg, map);
+    Ok(())
+}
+
+/// The text of a config file as `toml_edit` reads it, with its comments;
+/// an error at its line when it does not take the text (see [`attach`]).
+pub(crate) fn document(text: &str, path: &Path) -> Result<DocumentMut, ConfigError> {
+    text.parse::<DocumentMut>().map_err(|e| ConfigError::File {
         path: path.to_path_buf(),
         line: e.span().map(|s| line_of(text, s.start)),
         message: e.message().to_string(),
-    })?;
+    })
+}
+
+/// [`attach_with`] for a file already read by [`document`].
+pub(crate) fn attach_doc_with(
+    doc: &DocumentMut,
+    msg: &mut pb::Config,
+    map: &dyn Fn(&pb::Config, Place) -> Place,
+) {
     let mut walk = Walk {
         lines: Vec::new(),
         at_start: true,
     };
-    walk.document(&doc);
+    walk.document(doc);
     for (place, line) in walk.lines {
         let place = map(msg, place);
         put(msg, place, line);
     }
-    Ok(())
 }
 
 /// What a comment belongs to: a table by its path, a key in a table, or

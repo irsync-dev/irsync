@@ -10,7 +10,7 @@
 //! The rule "a host's `client_id`, else its `endpoint_id`" lives only
 //! here.
 
-use super::comments::{attach_with, Place, Spot};
+use super::comments::{attach_doc_with, document, Place, Spot};
 use super::exports::{name_problem, not_absolute};
 use super::names::valid_alias;
 use super::settings::{listen_problem, parse_debug_addr};
@@ -294,15 +294,43 @@ const SERVER_KEYS: [&str; 12] = [
 /// client `N` when there is no server. The comments of a bare `[hosts]`
 /// or of `hosts = { … }` go to the first entry made from the first host.
 pub fn read(text: &str, path: &Path) -> Result<Converted, ConfigError> {
+    let (mut config, hosts) = convert(text, path)?;
+    let doc = document(text, path)?;
+    let mut dropped = Vec::new();
+    for (name, _) in hosts.iter().filter(|(_, server)| !server) {
+        let keys = server_keys_in_file(&doc, name);
+        if !keys.is_empty() {
+            dropped.push(format!(
+                "[hosts.{name}] had a client_id and no endpoint_id: dropped {} (they only apply to a server)",
+                keys.join(", ")
+            ));
+        }
+    }
+    let first = hosts
+        .first()
+        .map(|(name, server)| table_path(if *server { "servers" } else { "clients" }, name));
+    attach_doc_with(&doc, &mut config, &|msg, place| {
+        moved(msg, first.as_ref(), place)
+    });
+    Ok(Converted { config, dropped })
+}
+
+/// Reads the text of a file of layout 1 into the message of layout 2, as
+/// [`read`] does, without its comments and the notes of what it left out.
+pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
+    Ok(convert(text, path)?.0)
+}
+
+/// The message of layout 2 of a file of layout 1, without comments, and
+/// its hosts in file order: each name, and whether it became a server.
+fn convert(text: &str, path: &Path) -> Result<(pb::Config, Vec<(String, bool)>), ConfigError> {
     let (old, hosts) = read_v1_values(text, path)?;
     let granted = granted_names(&old);
-    let doc = text.parse::<toml_edit::DocumentMut>().ok();
     let mut config = pb::Config {
         config_version: Some(2),
         ..old
     };
-    let mut dropped = Vec::new();
-    let mut first = None;
+    let mut names = Vec::new();
     for h in hosts {
         let name = h.name.clone();
         if let Some(endpoint_id) = h.endpoint_id.clone() {
@@ -319,29 +347,12 @@ pub fn read(text: &str, path: &Path) -> Result<Converted, ConfigError> {
             )),
             _ => None,
         };
-        if h.endpoint_id.is_none() {
-            let keys = server_keys_in_file(doc.as_ref(), &name);
-            if !keys.is_empty() {
-                dropped.push(format!(
-                    "[hosts.{name}] had a client_id and no endpoint_id: dropped {} (they only apply to a server)",
-                    keys.join(", ")
-                ));
-            }
-        }
         if let Some(c) = client {
             config.clients.push(c);
         }
-        let group = if h.endpoint_id.is_some() {
-            "servers"
-        } else {
-            "clients"
-        };
-        first.get_or_insert_with(|| table_path(group, &name));
+        names.push((name, h.endpoint_id.is_some()));
     }
-    attach_with(text, path, &mut config, &|msg, place| {
-        moved(msg, first.as_ref(), place)
-    })?;
-    Ok(Converted { config, dropped })
+    Ok((config, names))
 }
 
 /// Every name or id in a grant list: `[all]`, `[immediate]` or an export.
@@ -391,9 +402,9 @@ fn client_entry(name: &str, client_id: Vec<u8>, above: Vec<String>) -> pb::Clien
 }
 
 /// The keys of `[hosts.NAME]` that only apply to a server, in file order.
-fn server_keys_in_file(doc: Option<&toml_edit::DocumentMut>, name: &str) -> Vec<String> {
+fn server_keys_in_file(doc: &toml_edit::DocumentMut, name: &str) -> Vec<String> {
     let host = doc
-        .and_then(|d| d.get("hosts"))
+        .get("hosts")
         .and_then(toml_edit::Item::as_table_like)
         .and_then(|t| t.get(name))
         .and_then(toml_edit::Item::as_table_like);
@@ -826,4 +837,29 @@ fn pq_key_exchange(p: PqKeyExchange) -> i32 {
         PqKeyExchange::Prefer => pb::PqKeyExchange::Prefer,
         PqKeyExchange::Require => pb::PqKeyExchange::Require,
     }) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The keys of a server come from the parsed file itself: there is no
+    /// way to call this without one, so a note cannot be lost to a file
+    /// `toml_edit` did not take.
+    #[test]
+    fn server_keys_come_from_the_parsed_file_in_file_order() {
+        let text = "[hosts.lap]\nclient_id = \"x\"\nmdns = false\nrelay_mode = \"disabled\"\nparallel = 2\n";
+        let doc = document(text, Path::new("irsync.toml")).unwrap();
+        assert_eq!(
+            server_keys_in_file(&doc, "lap"),
+            ["mdns", "relay_mode", "parallel"]
+        );
+        assert!(server_keys_in_file(&doc, "nas").is_empty());
+    }
+
+    #[test]
+    fn a_file_toml_edit_refuses_is_an_error_at_its_line() {
+        let err = document("a = 1\n[b\n", Path::new("irsync.toml")).unwrap_err();
+        assert!(err.to_string().starts_with("irsync.toml:2:"), "{err}");
+    }
 }
