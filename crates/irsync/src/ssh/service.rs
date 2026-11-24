@@ -61,6 +61,7 @@ fn systemd_word(s: &str) -> String {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
             '%' => out.push_str("%%"),
+            '$' => out.push_str("$$"),
             c => out.push(c),
         }
     }
@@ -184,9 +185,9 @@ fn exec_start_words(text: &str) -> Vec<String> {
                         w.push(n);
                     }
                 }
-                '%' if chars.peek() == Some(&'%') => {
+                '%' | '$' if chars.peek() == Some(&c) => {
                     chars.next();
-                    w.push('%');
+                    w.push(c);
                 }
                 c => w.push(c),
             }
@@ -250,6 +251,21 @@ mod tests {
         );
         let t = unit_text(Manager::Systemd, Path::new("/a\"b\\c/irsync"), None);
         assert!(t.contains("ExecStart=\"/a\\\"b\\\\c/irsync\" "), "{t}");
+    }
+
+    #[test]
+    fn systemd_unit_escapes_dollar() {
+        let exe = Path::new("/home/a$b/irsync");
+        let t = unit_text(Manager::Systemd, exe, None);
+        assert!(
+            t.contains("ExecStart=\"/home/a$$b/irsync\" \"daemon\" \"-vv\"\n"),
+            "{t}"
+        );
+        let hand = "[Service]\nExecStart=\"/home/a$$b/irsync\" daemon\n";
+        assert_eq!(
+            classify(Some(hand), Manager::Systemd, exe),
+            Existing::UsesThisBinary
+        );
     }
 
     #[test]
