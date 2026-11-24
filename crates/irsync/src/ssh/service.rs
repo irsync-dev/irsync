@@ -339,17 +339,12 @@ fn write_unit(m: Manager, home: &Path, exe: &Path, config: Option<&Path>) -> Res
     crate::fs::private::write(&path, text).map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
-/// Makes `exe daemon` (with `--config config`) a user service of `m` and
-/// starts it; with `restart`, a running one is restarted so the new binary
-/// runs. On systemd, linger comes first: without it the service would stop
-/// when the ssh session ends, so nothing is written when it is refused.
-pub fn start(
-    m: Manager,
-    home: &Path,
-    exe: &Path,
-    config: Option<&Path>,
-    restart: bool,
-) -> Result<(), String> {
+/// Gets the user service of `m` ready to run `exe daemon` (with
+/// `--config config`), without starting it. On systemd, linger comes
+/// first: without it the service would stop when the ssh session ends, so
+/// nothing is written when it is refused. Then the service file is written
+/// (when there is none, or irsync wrote it) and systemd re-reads it.
+pub fn prepare(m: Manager, home: &Path, exe: &Path, config: Option<&Path>) -> Result<(), String> {
     match m {
         Manager::Systemd => {
             let uid = uid().to_string();
@@ -359,6 +354,17 @@ pub fn start(
             }
             write_unit(m, home, exe, config)?;
             run("systemctl", &["--user", "daemon-reload"])?;
+        }
+        Manager::Launchd => write_unit(m, home, exe, config)?,
+    }
+    Ok(())
+}
+
+/// Starts the service [`prepare`] made ready; with `restart`, a running
+/// one is restarted so the new binary runs.
+pub fn activate(m: Manager, home: &Path, restart: bool) -> Result<(), String> {
+    match m {
+        Manager::Systemd => {
             if restart {
                 run("systemctl", &["--user", "restart", UNIT])?;
             } else {
@@ -366,7 +372,6 @@ pub fn start(
             }
         }
         Manager::Launchd => {
-            write_unit(m, home, exe, config)?;
             let plist = unit_path(home, m);
             let plist = plist.to_string_lossy();
             let domain = match launchd_loaded() {
@@ -398,6 +403,19 @@ pub fn start(
         }
     }
     Ok(())
+}
+
+/// Stops the service and keeps it from starting again (after a reboot
+/// too), so a daemon started in the background is the only one. The
+/// service file stays.
+pub fn deactivate(m: Manager) -> Result<(), String> {
+    match m {
+        Manager::Systemd => run("systemctl", &["--user", "disable", "--now", UNIT]).map(|_| ()),
+        Manager::Launchd => match launchd_loaded() {
+            Some(d) => run("launchctl", &["bootout", &format!("{d}/{LABEL}")]).map(|_| ()),
+            None => Ok(()),
+        },
+    }
 }
 
 #[cfg(test)]

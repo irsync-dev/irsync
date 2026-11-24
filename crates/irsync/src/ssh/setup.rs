@@ -643,12 +643,14 @@ fn background(
     })
 }
 
-/// The daemon as a user service of `m`: a daemon of ours that runs
-/// outside the service is stopped first, so the service can take the lock;
-/// a service that runs an older build is restarted; one that runs this
-/// build is left alone (and told to reload when `reload`). Waits for the
-/// lock as [`start_daemon`] does. `lock` is held by a daemon of ours, or
-/// by none.
+/// The daemon as a user service of `m`. A service that runs this build is
+/// left alone (and told to reload when `reload`). Otherwise the service is
+/// prepared first, and only then is a daemon of ours that runs outside it
+/// stopped, so a refusal (linger, say) leaves that daemon running. A
+/// service that runs an older build is restarted. Waits for the lock as
+/// [`start_daemon`] does; when it never comes, the service is turned off
+/// again, so the background start that follows is the only daemon. `lock`
+/// is held by a daemon of ours, or by none.
 fn as_service(
     m: service::Manager,
     home: &Path,
@@ -660,14 +662,15 @@ fn as_service(
 ) -> Result<DaemonOutcome, String> {
     let active = service::is_active(m);
     let current = |i: &LockInfo| i.exe == exe && i.version == *LONG_VERSION;
-    let outcome = match lock {
-        Some(i) if active && current(&i) => {
-            if reload {
-                reload_daemon(i.pid).map_err(|e| format!("{e:#}"))?;
-                return Ok(DaemonOutcome::Reloaded);
-            }
-            return Ok(DaemonOutcome::Running);
+    if let Some(i) = lock.as_ref().filter(|i| active && current(i)) {
+        if reload {
+            reload_daemon(i.pid).map_err(|e| format!("{e:#}"))?;
+            return Ok(DaemonOutcome::Reloaded);
         }
+        return Ok(DaemonOutcome::Running);
+    }
+    service::prepare(m, home, exe, config)?;
+    let outcome = match lock {
         Some(i) => {
             if !active {
                 stop_daemon(i.pid, state).map_err(|e| format!("{e:#}"))?;
@@ -683,14 +686,18 @@ fn as_service(
         }
         None => DaemonOutcome::Started,
     };
-    service::start(m, home, exe, config, active)?;
+    service::activate(m, home, active)?;
     let deadline = Instant::now() + DAEMON_WAIT;
     while !probe(state).is_some_and(|i| i.pid != 0 && current(&i)) {
         if Instant::now() >= deadline {
-            return Err(format!(
+            let mut e = format!(
                 "the service did not start the daemon within {} s",
                 DAEMON_WAIT.as_secs()
-            ));
+            );
+            if let Err(off) = service::deactivate(m) {
+                e.push_str(&format!(", and turning it off again failed: {off}"));
+            }
+            return Err(e);
         }
         std::thread::sleep(Duration::from_millis(50));
     }

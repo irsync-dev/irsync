@@ -2,7 +2,9 @@
 # Stands in for `systemctl --user` in tests: runs the irsync unit's
 # ExecStart in the background under the (fake) server HOME.
 # Env: FAKE_SERVICE_LOG (each call is appended to it), FAKE_SYSTEMD_DOWN
-# (optional: 1 makes show-environment fail, as with no user session).
+# (optional: 1 makes show-environment fail, as with no user session),
+# FAKE_SERVICE_NO_START (optional: 1 makes enable and restart succeed
+# without starting anything).
 echo "systemctl $*" >> "$FAKE_SERVICE_LOG"
 if [ "$1" != --user ]; then
     echo "fake systemctl: only --user is faked" >&2
@@ -27,6 +29,7 @@ stop() {
 
 # Starts the ExecStart of the unit file $1.
 start() {
+    [ "$FAKE_SERVICE_NO_START" = 1 ] && return 0
     line=$(sed -n 's/^ExecStart=//p' "$1")
     if [ -z "$line" ]; then
         echo "fake systemctl: no ExecStart in $1" >&2
@@ -62,7 +65,7 @@ case "$1" in
         stop
         start "$unit"
         ;;
-    stop)
+    stop | disable)
         stop
         ;;
     *)

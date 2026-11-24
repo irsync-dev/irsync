@@ -468,8 +468,9 @@ fn service_line(s: &ServiceOutcome) -> Option<String> {
             format!("  no systemd or launchd user session there: {UNTIL}")
         }
         ServiceOutcome::Failed(e) => format!(
-            "  warning: could not make the daemon a user service: {e}; it runs in the \
-             background until the server reboots"
+            "  warning: could not make the daemon a user service: {}; it runs in the \
+             background until the server reboots",
+            e.replace(['\r', '\n'], " ")
         ),
         ServiceOutcome::Foreign(p) => format!(
             "  {} was not written by irsync; left it alone. The daemon runs in the \
@@ -1065,6 +1066,17 @@ mod tests {
                 None => assert_eq!(s.len(), daemon + 1, "{s:#?}"),
             }
         }
+    }
+
+    /// A multi-line error is one line of the summary.
+    #[test]
+    fn failed_service_error_is_one_line() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        o.report.service = ServiceOutcome::Failed("first\nsecond".into());
+        at(
+            &summary(&o),
+            "  warning: could not make the daemon a user service: first second; it runs in the background until the server reboots",
+        );
     }
 
     /// The manual steps only when irsync could not make the service itself.

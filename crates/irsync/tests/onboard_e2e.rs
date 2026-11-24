@@ -1744,6 +1744,53 @@ fn pair_leaves_a_foreign_unit_alone() {
     assert!(alive(w.lock_pid()));
 }
 
+/// A refused linger leaves the daemon that runs in the background alone:
+/// nothing is stopped before the service is ready.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_keeps_a_background_daemon_when_linger_is_refused() {
+    let mut w = World::new();
+    w.service = true;
+    ok(&w.irsync_bare(&["pair", "--no-service", "myserver"]));
+    let pid = w.lock_pid();
+    w.env.push(("FAKE_LINGER".into(), "no".into()));
+    w.env.push(("FAKE_LINGER_REFUSED".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.contains("irsync:   warning: could not make the daemon a user service"),
+        "{err}"
+    );
+    assert!(!err.contains("started the daemon"), "{err}");
+    assert_eq!(w.lock_pid(), pid);
+}
+
+/// A service that never starts the daemon is turned off again, so the
+/// daemon started in the background is the only one.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_turns_off_a_service_that_starts_nothing() {
+    let mut w = World::new();
+    w.service = true;
+    w.env.push(("FAKE_SERVICE_NO_START".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.contains(
+            "irsync:   warning: could not make the daemon a user service: \
+             the service did not start the daemon"
+        ),
+        "{err}"
+    );
+    let log = w.service_log();
+    assert!(
+        log.contains("systemctl --user disable --now irsync"),
+        "{log}"
+    );
+    assert_eq!(w.service_pid(), None);
+    assert!(alive(w.lock_pid()));
+    // Our unit stays, for the next `pair`.
+    assert!(w.unit().exists());
+}
+
 /// Another daemon holds the lock: no unit is written and no service
 /// started, so the two never fight over the lock.
 #[cfg(target_os = "linux")]
