@@ -26,7 +26,11 @@ pub static FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), 
 /// ALPN identifier for the irsync protocol.
 pub const ALPN: &[u8] = b"irsync/1";
 /// Current protocol version.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
+/// The most bytes of a chunk one `DataChunk` frame carries: a chunk's bytes
+/// travel in pieces of this size, so a connection that drops mid-chunk
+/// still leaves the receiver the pieces that arrived.
+pub const DATA_PIECE: usize = 64 * 1024;
 
 #[cfg(test)]
 mod tests {

@@ -420,11 +420,15 @@ impl FaultInjector {
         self.fired.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Called with a connection's running byte count.
+    /// Called with a connection's running byte count. A connection already
+    /// closed is not the one to drop: the data streams of one this fault
+    /// dropped may still be reading what had arrived, past the limit, after
+    /// the fault was armed again for the next connection.
     pub(crate) fn observe(&self, total: u64, conn: &Connection) {
         use std::sync::atomic::Ordering::SeqCst;
         if self.armed.load(SeqCst)
             && total >= self.limit.load(SeqCst)
+            && conn.close_reason().is_none()
             && !self.fired.swap(true, SeqCst)
         {
             tracing::warn!(total, "fault injection: dropping the connection");

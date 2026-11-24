@@ -133,7 +133,7 @@ pub fn link(p: ProfileName, d: Dir) -> LinkParams {
             cross: None,
         },
         // For tests only: a slow, clean uplink and an unlimited downlink;
-        // `test-dead-zones` adds a dead zone every 1.5 MiB.
+        // `test-dead-zones` adds a dead zone every 512 KiB.
         ProfileName::TestSlow | ProfileName::TestDeadZones => LinkParams {
             rate_bps: match d {
                 Dir::Down => (u64::MAX, u64::MAX),
@@ -242,7 +242,7 @@ pub fn outages(p: ProfileName) -> Option<OutageParams> {
             handover_every_ms: (0, 0),
             handover_ms: (0, 0),
             dead_zone_ms: (6000, 6000),
-            dead_zone_after_bytes: (1536 * KIB, 1536 * KIB),
+            dead_zone_after_bytes: (512 * KIB, 512 * KIB),
             dead_zone_repeats: true,
         }),
     }

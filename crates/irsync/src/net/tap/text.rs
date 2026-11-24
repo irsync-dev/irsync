@@ -211,6 +211,7 @@ mod tests {
             msg: Some(Msg::Need(NeedChunks {
                 file_id: 12,
                 chunk_idx: vec![0, 1, 5],
+                ..Default::default()
             })),
         };
         assert_eq!(

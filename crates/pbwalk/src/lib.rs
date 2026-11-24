@@ -1012,6 +1012,7 @@ mod tests {
             msg: Some(v1::control::Msg::Need(v1::NeedChunks {
                 file_id: 1,
                 chunk_idx: (0..20).collect(),
+                ..Default::default()
             })),
         };
         let mut junk_tail = hello().encode_to_vec();

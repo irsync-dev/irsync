@@ -131,6 +131,7 @@ fn control_oneof_roundtrips() {
         Msg::Need(NeedChunks {
             file_id: 3,
             chunk_idx: vec![0, 5, 7],
+            held: [(5, 70_000)].into(),
         }),
         Msg::ChunkBasis(ChunkBasis {
             file_id: 3,

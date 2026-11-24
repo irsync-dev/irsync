@@ -163,6 +163,10 @@ message LinksChecked {}
 message NeedChunks {
   uint64 file_id = 1;
   repeated uint32 chunk_idx = 2;
+  // Chunks of `chunk_idx` the receiver already holds the first bytes of,
+  // from an earlier connection: chunk index -> bytes held, less than the
+  // chunk. The sender starts that chunk's data there and sends it raw.
+  map<uint32, uint32> held = 3;
 } // receiver -> sender; empty = nothing needed (local copy / already have).
 // A large request comes as several, each taking the bases sent before it.
 // receiver -> sender, before the NeedChunks that asks for `chunk_idx`: block

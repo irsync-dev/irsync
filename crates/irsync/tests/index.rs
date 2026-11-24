@@ -158,6 +158,7 @@ fn partial_roundtrip() {
                 },
             ],
         },
+        held: Vec::new(),
         updated_at: now - 10 * 86400,
     };
     {
@@ -624,6 +625,7 @@ fn lookups_are_never_re_prepared() {
                 length: 1,
             }],
         },
+        held: Vec::new(),
         updated_at: 0,
     };
     for (i, p) in paths.iter().enumerate() {
@@ -721,6 +723,7 @@ fn a_new_index_takes_the_partials_and_sessions_of_the_version_1_file() {
                 length: 1024,
             }],
         },
+        held: Vec::new(),
         updated_at: 30,
     };
     let session = SessionRow {

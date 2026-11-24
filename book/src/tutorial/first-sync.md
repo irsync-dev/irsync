@@ -118,7 +118,7 @@ irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
 `irsync` finds the stopped session and says `resuming session <id> from
-<time>`. Files that were partly sent continue from the last verified chunk.
+<time>`. Files that were partly sent continue where they stopped.
 The same happens after a dropped network connection, except that `irsync`
 redials on its own, for up to 24 hours by default.
 

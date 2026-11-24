@@ -176,7 +176,7 @@ mod tests {
         let mut o = Outages::new(outages(ProfileName::TestDeadZones).unwrap(), 1);
         let mut opened = vec![];
         for i in 0..120_000u64 {
-            // 64 bytes per ms: 1.5 MiB in 24576 ms after each close, plus 6 s dead.
+            // 64 bytes per ms: 512 KiB in 8192 ms after each close, plus 6 s dead.
             let (_, c) = o.packet(ms(i), 64);
             if let Some(Change::DeadZoneOpened { secs }) = c {
                 assert_eq!(secs, 6);
@@ -185,7 +185,7 @@ mod tests {
         }
         let gaps: Vec<u64> = opened.windows(2).map(|w| w[1] - w[0]).collect();
         assert!(opened.len() >= 3, "{opened:?}");
-        assert!(gaps.iter().all(|&g| g == 6000 + 24_576), "{gaps:?}");
+        assert!(gaps.iter().all(|&g| g == 6000 + 8192), "{gaps:?}");
     }
 
     #[test]

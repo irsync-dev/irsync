@@ -11,6 +11,7 @@ use irsync::net::frame::read_msg;
 use irsync::send::Sender;
 use irsync_proto::chunk::{digest_bytes, FileDigest};
 use irsync_proto::v1::{DataChunk, DataStreamHeader};
+use irsync_proto::DATA_PIECE;
 
 const MIB: usize = 1024 * 1024;
 
@@ -101,7 +102,7 @@ fn sender(f: &Fixture, parallel: usize, split: u64, bw: Option<u64>) -> Sender {
 }
 
 #[tokio::test]
-async fn whole_file_arrives_in_chunk_frames() {
+async fn whole_file_arrives_in_pieces_of_its_chunks() {
     let f = fixture().await;
     let bytes = data(MIB / 2, 1);
     let (p, d) = put(&f, "a.bin", &bytes);
@@ -112,14 +113,55 @@ async fn whole_file_arrives_in_chunk_frames() {
         .unwrap();
     let got = within(rx).await.unwrap();
     assert_eq!(got.len(), 1);
-    let (h, chunks) = &got[0];
+    let (h, pieces) = &got[0];
     assert_eq!(h.session_id, vec![7; 16]);
     assert_eq!(
         (h.file_id, h.offset, h.length, h.first_chunk_idx),
         (3, 0, d.size, 0)
     );
-    assert_eq!(chunks.len(), d.chunks.len());
-    assert_eq!(chunks.concat(), bytes);
+    // Each chunk in pieces of at most DATA_PIECE, none running into the next.
+    let mut want = Vec::new();
+    for c in &d.chunks {
+        let mut left = c.len as usize;
+        while left > 0 {
+            want.push(left.min(DATA_PIECE));
+            left -= left.min(DATA_PIECE);
+        }
+    }
+    assert_eq!(pieces.iter().map(Vec::len).collect::<Vec<_>>(), want);
+    assert_eq!(pieces.concat(), bytes);
+}
+
+/// A chunk the receiver holds the first bytes of starts where they end.
+#[tokio::test]
+async fn a_held_chunk_starts_after_its_held_bytes() {
+    let f = fixture().await;
+    let bytes = data(MIB / 2, 4);
+    let (p, d) = put(&f, "h.bin", &bytes);
+    let idxs: Vec<u32> = (0..d.chunks.len() as u32).collect();
+    let held = std::collections::BTreeMap::from([(0, 1000)]);
+    let rx = receive(f.server.clone(), d.size - 1000);
+    let sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let n = within(sender(&f, 4, 64 << 20, None).send_chunks_counted(
+        3,
+        &p,
+        &d,
+        &idxs,
+        Default::default(),
+        &held,
+        &sent,
+        None,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(n, d.size - 1000);
+    let got = within(rx).await.unwrap();
+    let (h, pieces) = &got[0];
+    assert_eq!(
+        (h.offset, h.length, h.first_chunk_idx),
+        (1000, d.size - 1000, 0)
+    );
+    assert_eq!(pieces.concat(), bytes[1000..]);
 }
 
 #[tokio::test]

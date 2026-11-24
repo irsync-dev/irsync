@@ -483,12 +483,13 @@ a minute of network time, on tokio's paused clock. `irsync-netstress` does not o
 
 #### `test-dead-zones`: for irsync's own tests
 
-The `test-slow` link with a 6 s dead zone every 1.5 MiB of traffic, again
+The `test-slow` link with a 6 s dead zone every 512 KiB of traffic, again
 and again. irsync's test
 `a_big_push_through_repeated_dead_zones_keeps_going_while_data_moves` (in
 `crates/irsync/tests/netsim.rs`) uses it to push one 8 MiB file that no
 single connection can finish, and checks that the client keeps redialling
-while each connection moves part of it. `irsync-netstress` does not offer it.
+while each connection moves part of it. A connection carries less than the
+file's largest chunk, so that chunk arrives over several connections. `irsync-netstress` does not offer it.
 
 #### `test-wan`: for measurements
 

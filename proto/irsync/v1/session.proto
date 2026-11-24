@@ -46,3 +46,13 @@ message PlacedStat {
   bytes path = 1;
   SourceStat stat = 2;
 }
+
+// The `ranges` column of a partial record (a `RangeSet` before `held`
+// existed, which decodes the same). `ranges`: the verified bytes of the
+// `.part`. `held`: chunks not verified yet whose first bytes were written
+// (offset: the chunk's, length: the bytes), so a later request can start
+// after them; they are verified with the rest of the chunk.
+message PartialRanges {
+  repeated Range ranges = 1;
+  repeated Range held = 2;
+}

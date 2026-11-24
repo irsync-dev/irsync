@@ -32,6 +32,7 @@ fn partial(updated_at: i64) -> Partial {
         expected_hash: [1; 32],
         size: 10,
         ranges: RangeSet::default(),
+        held: Vec::new(),
         updated_at,
     }
 }

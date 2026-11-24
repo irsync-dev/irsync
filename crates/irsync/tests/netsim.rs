@@ -246,19 +246,31 @@ async fn a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything()
 }
 
 /// A push of one big file over `test-dead-zones` (32 KB/s up, 6 s dead
-/// every 1.5 MiB): no connection lives long enough to send the whole file,
+/// every 512 KiB): no connection lives long enough to send the whole file,
 /// but each one moves part of it. That is progress, so the client keeps
 /// redialling past a `--reconnect` shorter than the whole push. (The
 /// sender once counted progress only per finished send or confirmed file,
-/// and gave up after `max` while data kept moving.)
+/// and gave up after `max` while data kept moving.) A connection carries
+/// less than the file's largest chunk, so that chunk arrives over several:
+/// each continues from the bytes the one before it delivered (#281).
 #[tokio::test(start_paused = true)]
 async fn a_big_push_through_repeated_dead_zones_keeps_going_while_data_moves() {
     with_netsim(ProfileName::TestDeadZones, 1, async {
         let h = Harness::new().await;
-        // 8 MiB: over four minutes at 32 KB/s, across five dead zones or so.
-        // Each connection carries about 1.5 MiB, more than the largest
-        // chunk (1 MiB), so every connection can deliver whole chunks.
-        std::fs::write(h.local.path().join("big"), noise(8 << 20)).unwrap();
+        // 8 MiB: over four minutes at 32 KB/s, across fifteen dead zones
+        // or so. Each connection carries less than 512 KiB.
+        let big = noise(8 << 20);
+        let largest = irsync_proto::chunk::digest_bytes(&big)
+            .chunks
+            .iter()
+            .map(|c| c.len)
+            .max()
+            .unwrap();
+        assert!(
+            largest > 512 << 10,
+            "the largest chunk ({largest} bytes) fits one connection"
+        );
+        std::fs::write(h.local.path().join("big"), big).unwrap();
         let mut opts = archive_opts();
         opts.timeout = Some(Duration::from_secs(2));
         let ropts = ReconnectOpts {

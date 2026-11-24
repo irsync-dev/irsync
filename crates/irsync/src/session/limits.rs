@@ -1,5 +1,6 @@
 //! Bounds on the session's queues.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use irsync_proto::v1::{ChunkBasis, NeedChunks};
@@ -57,10 +58,26 @@ pub(super) fn need_piece(hooks: &super::SideHooks) -> usize {
 /// is one empty `NeedChunks`. The sender treats consecutive requests for a
 /// file as one, except for bases: each request takes all the bases it holds
 /// for the file, so bases must precede the piece that names their chunks.
-pub(super) fn need_pieces(file_id: u64, idxs: Vec<u32>, piece: usize) -> Vec<NeedChunks> {
+///
+/// `held` (sender indices too): the chunks the receiver holds the first
+/// bytes of, each named in the piece that requests it. At most
+/// `recv::MAX_HELD_CHUNKS` entries, a few hundred bytes on the wire, which
+/// [`FILE_WIRE`] leaves room for.
+pub(super) fn need_pieces(
+    file_id: u64,
+    idxs: Vec<u32>,
+    held: &BTreeMap<u32, u32>,
+    piece: usize,
+) -> Vec<NeedChunks> {
+    let of = |c: &[u32]| -> BTreeMap<u32, u32> {
+        c.iter()
+            .filter_map(|i| held.get(i).map(|&n| (*i, n)))
+            .collect()
+    };
     if idxs.len() <= piece {
         return vec![NeedChunks {
             file_id,
+            held: of(&idxs),
             chunk_idx: idxs,
         }];
     }
@@ -68,6 +85,7 @@ pub(super) fn need_pieces(file_id: u64, idxs: Vec<u32>, piece: usize) -> Vec<Nee
         .map(|c| NeedChunks {
             file_id,
             chunk_idx: c.to_vec(),
+            held: of(c),
         })
         .collect()
 }
@@ -459,6 +477,7 @@ mod tests {
             len(Msg::Need(NeedChunks {
                 file_id: u64::MAX,
                 chunk_idx: vec![MAX_LIST_CHUNKS as u32 - 1; n],
+                ..Default::default()
             }))
         };
         // A few bytes more for the packed field's length.
@@ -500,9 +519,10 @@ mod tests {
         let whole = NeedChunks {
             file_id: u64::MAX,
             chunk_idx: all.clone(),
+            ..Default::default()
         };
         assert!(len(&whole) > MAX_FRAME, "{}", len(&whole));
-        let pieces = need_pieces(u64::MAX, all.clone(), NEED_PIECE);
+        let pieces = need_pieces(u64::MAX, all.clone(), &BTreeMap::new(), NEED_PIECE);
         assert!(pieces.len() > 1);
         for p in &pieces {
             assert_eq!(p.file_id, u64::MAX);
@@ -515,11 +535,11 @@ mod tests {
     /// An empty request still goes out, as one empty `NeedChunks`.
     #[test]
     fn an_empty_request_is_one_empty_piece() {
-        let pieces = need_pieces(7, Vec::new(), 3);
+        let pieces = need_pieces(7, Vec::new(), &BTreeMap::new(), 3);
         assert_eq!(pieces.len(), 1);
         assert_eq!(pieces[0].file_id, 7);
         assert!(pieces[0].chunk_idx.is_empty());
-        let sizes: Vec<usize> = need_pieces(7, (0..7).collect(), 3)
+        let sizes: Vec<usize> = need_pieces(7, (0..7).collect(), &BTreeMap::new(), 3)
             .iter()
             .map(|p| p.chunk_idx.len())
             .collect();

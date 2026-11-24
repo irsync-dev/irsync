@@ -32,6 +32,11 @@ const PERSIST_EVERY_CHUNKS: u32 = 64;
 /// spent more than this long in flight (a slow disk), slowing them further.
 const PERSIST_EVERY: Duration = Duration::from_secs(2);
 
+/// The most partly received chunks a file's record keeps (those with the
+/// most bytes): each comes back in a request, and a file has at most one
+/// chunk in flight per data stream anyway.
+pub const MAX_HELD_CHUNKS: usize = 16;
+
 /// How long `open` waits for another holder of the `.part` lock (typically
 /// this session's own previous connection, still finalizing) to let go.
 const BUSY_WAIT: Duration = Duration::from_secs(60);
@@ -89,6 +94,11 @@ pub struct FileWriter {
     done: bool,
     /// Bytes of the chunks written from the sender's data (not local copies).
     received: u64,
+    /// Chunks not verified yet whose first bytes the sender's pieces put
+    /// in the `.part`: chunk index -> bytes written (see `write_piece`).
+    held: std::collections::BTreeMap<u32, u32>,
+    /// `held` changed since the record was last written.
+    held_dirty: bool,
     /// Whether the index holds a partial record for this file (this writer
     /// wrote or adopted one). Without one, finalizing writes none: a `.part`
     /// left by a crash meanwhile is adopted by re-chunking it.
@@ -622,6 +632,8 @@ impl FileWriter {
         } else if !adopted_from_record {
             w.adopt_unrecorded()?;
         }
+        let verified = &w.verified;
+        w.held.retain(|&i, _| !verified[i as usize]);
         w.held()?.set_len(w.size)?;
         if !adopted_from_record && w.verified.iter().any(|&v| v) {
             w.persist_sync()?;
@@ -712,6 +724,8 @@ impl FileWriter {
             last_persist: tokio::time::Instant::now(),
             done: false,
             received: 0,
+            held: Default::default(),
+            held_dirty: false,
             recorded: false,
             sparse: false,
             hole_from: 0,
@@ -856,6 +870,24 @@ impl FileWriter {
                 if *blake3::hash(&bytes).as_bytes() == c.hash {
                     self.verified[i] = true;
                     self.tree.add(c.offset, &bytes);
+                }
+            }
+        }
+        // The first bytes of chunks that did not finish: checked with the
+        // rest of the chunk once it arrives. Never in place, where only
+        // verified bytes are written.
+        if !self.inplace {
+            for r in &p.held {
+                let Ok(i) = self.chunks.binary_search_by_key(&r.offset, |c| c.offset) else {
+                    continue;
+                };
+                let c = self.chunks[i];
+                if !self.verified[i]
+                    && r.length > 0
+                    && r.length < u64::from(c.len)
+                    && c.offset + r.length <= file_len
+                {
+                    self.held.insert(i as u32, r.length as u32);
                 }
             }
         }
@@ -1029,20 +1061,150 @@ impl FileWriter {
                 m.add(Counter::DiskWrite, data.len() as u64);
             }
         }
+        let received = if remote { data.len() as u64 } else { 0 };
+        self.note_verified(idx, c, &data, received).await
+    }
+
+    /// Bytes of chunk `idx` that pieces put in the `.part`, not verified
+    /// yet (0: none).
+    pub fn held_bytes(&self, idx: u32) -> u32 {
+        self.held.get(&idx).copied().unwrap_or(0)
+    }
+
+    /// The chunks among `idxs` this writer holds the first bytes of, with
+    /// how many, at most [`MAX_HELD_CHUNKS`] of them: what a request tells
+    /// the sender to skip.
+    pub fn held_of(&self, idxs: &[u32]) -> std::collections::BTreeMap<u32, u32> {
+        let mut held: Vec<(u32, u32)> = idxs
+            .iter()
+            .filter_map(|&i| self.held.get(&i).map(|&n| (i, n)))
+            .collect();
+        held.sort_unstable_by_key(|&(_, n)| std::cmp::Reverse(n));
+        held.truncate(MAX_HELD_CHUNKS);
+        held.into_iter().collect()
+    }
+
+    /// Writes `data`, the bytes of chunk `idx` from its byte `at` on, as
+    /// the sender's pieces bring them: into the `.part` now, unverified,
+    /// so that a connection that drops before the chunk is whole leaves
+    /// them for a later request to continue from. `at` is 0 (the chunk
+    /// starts afresh) or the bytes already held. [`FileWriter::complete_held`]
+    /// verifies the chunk once all of it is written. Not in place, where
+    /// only verified bytes may reach the file.
+    pub async fn write_piece(&mut self, idx: u32, at: u32, data: &[u8]) -> io::Result<()> {
+        let c = *self.chunks.get(idx as usize).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
+        })?;
+        if self.inplace {
+            return Err(io::Error::other("internal: chunk pieces in place"));
+        }
+        if self.verified[idx as usize] {
+            return Ok(());
+        }
+        if (at != 0 && at != self.held_bytes(idx))
+            || u64::from(at) + data.len() as u64 > u64::from(c.len)
+        {
+            return Err(invalid(format!(
+                "piece at {at} of chunk {idx} does not continue it"
+            )));
+        }
+        let file = self.ensure_open().await?;
+        let offset = c.offset + u64::from(at);
+        // As for a whole chunk: zeros above `hole_from` already read as zeros.
+        let hole = self.sparse && offset >= self.hole_from && data.iter().all(|&b| b == 0);
+        if !hole {
+            let (meter, bytes) = (self.meter.clone(), data.to_vec());
+            #[cfg(feature = "test-hooks")]
+            let inject = self.fail_at == Some(idx);
+            #[cfg(not(feature = "test-hooks"))]
+            let inject = false;
+            tokio::task::spawn_blocking(move || {
+                let _timed = meter.as_deref().map(|m| m.start(Activity::Write));
+                if inject {
+                    return Err(crate::platform::no_space_error());
+                }
+                crate::platform::write_all_at(&file, &bytes, offset)
+            })
+            .await
+            .map_err(io::Error::other)??;
+            #[cfg(feature = "test-hooks")]
+            {
+                self.written += data.len() as u64;
+            }
+            if let Some(m) = &self.meter {
+                m.add(Counter::DiskWrite, data.len() as u64);
+            }
+        }
+        self.received += data.len() as u64;
         self.activity.fetch_add(1, Ordering::Relaxed);
+        if !self.held_dirty && self.chunks_since_persist == 0 {
+            self.last_persist = tokio::time::Instant::now();
+        }
+        self.held.insert(idx, at + data.len() as u32);
+        self.held_dirty = true;
+        if self.last_persist.elapsed() >= PERSIST_EVERY {
+            self.persist().await?;
+        }
+        Ok(())
+    }
+
+    /// Verifies chunk `idx`, all of whose bytes [`FileWriter::write_piece`]
+    /// wrote, by reading it back from the `.part`. A chunk that does not
+    /// match is no longer held: it is asked for whole again.
+    pub async fn complete_held(&mut self, idx: u32) -> io::Result<()> {
+        let c = *self.chunks.get(idx as usize).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "chunk index out of range")
+        })?;
+        if self.verified[idx as usize] {
+            return Ok(());
+        }
+        if self.held_bytes(idx) != c.len {
+            return Err(invalid(format!("chunk {idx} is not all written")));
+        }
+        let (file, meter) = (self.held()?, self.meter.clone());
+        let (data, ok) = tokio::task::spawn_blocking(move || {
+            let data = {
+                let _timed = meter.as_deref().map(|m| m.start(Activity::Read));
+                read_chunk(&file, &c)?
+            };
+            let ok = verify(meter.as_deref(), &c, &data);
+            Ok::<_, io::Error>((data, ok))
+        })
+        .await
+        .map_err(io::Error::other)??;
+        self.held.remove(&idx);
+        self.held_dirty = true;
+        if !ok {
+            return Err(invalid(format!("chunk {idx} does not match its hash")));
+        }
+        self.note_verified(idx, c, &data, 0).await
+    }
+
+    /// Chunk `idx` (`c`) is verified on disk with `data`, `received` of
+    /// its bytes just now from the sender; the record is written when due.
+    async fn note_verified(
+        &mut self,
+        idx: u32,
+        c: ChunkRecord,
+        data: &[u8],
+        received: u64,
+    ) -> io::Result<()> {
+        self.activity.fetch_add(1, Ordering::Relaxed);
+        if self.held.remove(&idx).is_some() {
+            self.held_dirty = true;
+        }
         if !self.verified[idx as usize] {
             self.verified[idx as usize] = true;
-            self.tree.add(c.offset, &data);
-            if self.chunks_since_persist == 0 {
+            self.tree.add(c.offset, data);
+            if self.chunks_since_persist == 0 && !self.held_dirty {
                 self.last_persist = tokio::time::Instant::now();
             }
             self.chunks_since_persist += 1;
-            if remote {
-                self.received += data.len() as u64;
-            }
+            self.received += received;
         }
         if self.chunks_since_persist >= PERSIST_EVERY_CHUNKS
-            || self.last_persist.elapsed() >= PERSIST_EVERY
+            || ((self.chunks_since_persist > 0 || self.held_dirty)
+                && self.last_persist.elapsed() >= PERSIST_EVERY)
         {
             self.persist().await?;
         }
@@ -1050,10 +1212,18 @@ impl FileWriter {
     }
 
     fn partial_record(&self) -> Partial {
+        let held = self.held_of(&self.held.keys().copied().collect::<Vec<_>>());
         Partial {
             expected_hash: self.whole_hash,
             size: self.size,
             ranges: self.have(),
+            held: held
+                .into_iter()
+                .map(|(i, n)| Range {
+                    offset: self.chunks[i as usize].offset,
+                    length: u64::from(n),
+                })
+                .collect(),
             updated_at: now_secs(),
         }
     }
@@ -1067,6 +1237,7 @@ impl FileWriter {
             .put_partial(&self.rel, &rec)
             .map_err(index_err)?;
         self.chunks_since_persist = 0;
+        self.held_dirty = false;
         self.last_persist = tokio::time::Instant::now();
         self.recorded = true;
         Ok(())
@@ -1085,6 +1256,7 @@ impl FileWriter {
         .await
         .map_err(io::Error::other)??;
         self.chunks_since_persist = 0;
+        self.held_dirty = false;
         self.last_persist = tokio::time::Instant::now();
         self.recorded = true;
         Ok(())
@@ -1387,7 +1559,7 @@ pub struct Placed {
 impl Drop for FileWriter {
     /// Record unpersisted progress so a later writer can adopt it.
     fn drop(&mut self) {
-        if self.done || self.chunks_since_persist == 0 {
+        if self.done || (self.chunks_since_persist == 0 && !self.held_dirty) {
             return;
         }
         let rec = self.partial_record();
