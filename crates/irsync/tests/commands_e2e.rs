@@ -673,7 +673,7 @@ fn grant_list_by_export_by_peer_and_for_an_unknown_name() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success()
-            && err.contains("\"ghost\" is not an export, an alias in")
+            && err.contains("\"ghost\" is not an export, a client in")
             && err.contains("irsync.toml")
             && err.contains("EndpointId"),
         "{err}"

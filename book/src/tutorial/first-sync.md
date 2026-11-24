@@ -32,7 +32,7 @@ and sets the server up first. The account you log in to must not be root:
 irsync refuses to set up a daemon as root. It says what it did:
 
 ```text
-irsync: myserver is not a saved alias; setting it up over ssh
+irsync: myserver is not a saved server; setting it up over ssh
 irsync: set up myserver over ssh:
 irsync:   installed irsync 0.1.0 (1a2b3c4) in ~/.local/bin, with fileset and the manual pages
 irsync:   generated the daemon identity

@@ -472,7 +472,7 @@ fn resolve_target(servers: &Servers, clients: &Clients, host: &str) -> anyhow::R
             "; no such file"
         };
         anyhow::anyhow!(
-            "{host:?} is not an alias in {} and not an EndpointId{missing}",
+            "{host:?} is not a server in {} and not an EndpointId{missing}",
             servers.path.display()
         )
     })
@@ -617,7 +617,7 @@ async fn connect_for(
         log.eprintln(&if client_only {
             format!("irsync: {host} is saved as a client only; setting it up over ssh")
         } else if unknown {
-            format!("irsync: {host} is not a saved alias; setting it up over ssh")
+            format!("irsync: {host} is not a saved server; setting it up over ssh")
         } else {
             format!("irsync: checking {host} over ssh")
         });
@@ -636,7 +636,7 @@ async fn connect_for(
                 )
             } else if unknown {
                 format!(
-                    "{host:?} is not an alias in {} and not an EndpointId; \
+                    "{host:?} is not a server in {} and not an EndpointId; \
                      setting it up over ssh failed",
                     paths.config.display()
                 )
@@ -2041,7 +2041,7 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                         None => {
                             let Ok(id) = clients.resolve_peer(t) else {
                                 bail!(
-                                    "{t:?} is not an export, an alias in {} or an EndpointId",
+                                    "{t:?} is not an export, a client in {} or an EndpointId",
                                     paths.config.display()
                                 );
                             };

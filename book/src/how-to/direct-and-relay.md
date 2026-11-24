@@ -34,7 +34,7 @@ relay.
   irsync -a --no-relay ~/Photos/ myserver:photos/
   ```
 
-- For every sync to one host, or to every host:
+- For every sync to one server, or to every server:
 
   ```sh
   irsync server add myserver <id> --relay-mode disabled
@@ -67,7 +67,7 @@ than the shared public relays. iroh ships one as `iroh-relay`.
    irsync config set daemon.relay https://relay.example.net
    ```
 
-3. Point the client at it, for one host or for all:
+3. Point the client at it, for one server or for all:
 
    ```sh
    irsync server add myserver <id> --relay https://relay.example.net
@@ -78,7 +78,7 @@ than the shared public relays. iroh ships one as `iroh-relay`.
 
 ## Turn the lookups off
 
-- On the client, `--no-dht` skips the mainline DHT for one sync. A host's
+- On the client, `--no-dht` skips the mainline DHT for one sync. A server's
   `dht` and `mdns` keys, or `[client]`'s, turn either lookup off for good:
 
   ```sh

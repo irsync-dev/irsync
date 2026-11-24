@@ -250,7 +250,7 @@ fn first_push_sets_up_and_syncs() {
     let err = ok(&o);
     same_tree(w.src.path(), &dest);
     for want in [
-        "irsync: myserver is not a saved alias; setting it up over ssh",
+        "irsync: myserver is not a saved server; setting it up over ssh",
         "irsync: set up myserver over ssh:",
         "irsync:   installed irsync",
         "irsync:   started the daemon",
@@ -260,7 +260,7 @@ fn first_push_sets_up_and_syncs() {
     }
     // The notice comes before the report; the how-to is unprefixed so it
     // pastes.
-    assert!(err.find("not a saved alias") < err.find("set up myserver"));
+    assert!(err.find("not a saved server") < err.find("set up myserver"));
     // The fake server is this machine, so the how-to is for its platform.
     let lines: Vec<&str> = err.lines().collect();
     let service: &[&str] = if cfg!(target_os = "macos") {
@@ -978,7 +978,7 @@ fn an_address_takes_ssh_and_no_remote_dht() {
         let err = ok(&w.irsync(&["-a", flag, &w.src_arg(), &target]));
         assert!(err.contains("192.168.1.5 is saved as myserver"), "{err}");
         assert!(err.contains(said), "{flag}: {err}");
-        assert!(!err.contains("not a saved alias"), "{err}");
+        assert!(!err.contains("not a saved server"), "{err}");
     }
     assert_eq!(w.ssh_calls(), calls + 4);
     let log = std::fs::read_to_string(w.ssh_log()).unwrap();
@@ -1257,7 +1257,7 @@ fn force_ssh_checks_a_saved_host() {
     let err = ok(&w.irsync(&["-a", "--ssh", &w.src_arg(), &target]));
     assert!(err.contains("irsync: checking myserver over ssh"), "{err}");
     assert!(err.contains("irsync: set up myserver over ssh:"), "{err}");
-    assert!(!err.contains("not a saved alias"), "{err}");
+    assert!(!err.contains("not a saved server"), "{err}");
     assert!(!err.contains("installed"), "{err}");
     assert_eq!(w.ssh_calls(), calls + 2);
     assert_eq!(
