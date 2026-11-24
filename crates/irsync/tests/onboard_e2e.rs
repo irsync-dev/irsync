@@ -1627,6 +1627,8 @@ fn alive(pid: u32) -> bool {
         .success()
 }
 
+// Only the Linux-only service tests use it.
+#[cfg(target_os = "linux")]
 const SYSTEMD_LINE: &str =
     "irsync:   the daemon runs as a systemd user service (irsync.service), also after a reboot";
 const HOWTO: &str = "To keep the daemon running after a reboot, make it a user service.";
