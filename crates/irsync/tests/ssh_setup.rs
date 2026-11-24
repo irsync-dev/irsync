@@ -267,11 +267,7 @@ fn recheck_does_not_regrant() {
     let home = Home::new("");
     let client = client_id();
     assert_eq!(home.setup(&client).grant, GrantOutcome::Added);
-    let out = irsync_bin(
-        home.path(),
-        &["grant", "remove", "immediate", &client.to_string()],
-    );
-    assert!(out.status.success(), "{out:?}");
+    common::edit_immediate(home.path(), &client.to_string(), false);
     let bytes = std::fs::read(home.config()).unwrap();
     let r = home.setup_with(&client, &["--recheck"]);
     assert_eq!(r.grant, GrantOutcome::Missing);
@@ -279,11 +275,7 @@ fn recheck_does_not_regrant() {
     assert_eq!(std::fs::read(home.config()).unwrap(), bytes);
     // Still granted: nothing to say.
     let other = client_id();
-    let out = irsync_bin(
-        home.path(),
-        &["grant", "add", "immediate", &other.to_string()],
-    );
-    assert!(out.status.success(), "{out:?}");
+    common::edit_immediate(home.path(), &other.to_string(), true);
     assert_eq!(
         home.setup_named(&other, "other", &["--recheck"]).grant,
         GrantOutcome::Already

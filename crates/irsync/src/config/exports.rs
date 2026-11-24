@@ -40,9 +40,9 @@ pub struct Exports {
 /// The message for a reserved export name.
 pub fn reserved(name: &str) -> String {
     let word = if name == "immediate" {
-        "`grant add immediate WHO` uses for a grant to any path"
+        "that used to mean a grant to any path; now it is `irsync client set NAME all_paths=rw`"
     } else {
-        "`grant add all WHO` uses for every export"
+        "`grant remove all WHO` and `export update all` use for every export"
     };
     format!("{name:?} is reserved: it is the word {word}")
 }

@@ -7,7 +7,7 @@
 use super::show::grant_lines;
 use super::{check_comment, ManageError, PeerSpec};
 use crate::authz::{Access, Snapshot};
-use crate::config::clients::Clients;
+use crate::config::clients::{Clients, Right, RIGHTS};
 use crate::config::exports::Exports;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
@@ -376,8 +376,8 @@ fn remove_in(lists: &mut Lists, who: Option<&PeerSpec>, resolve: Resolve) -> usi
 }
 
 /// Remove grants; the number of entries removed. `who = None` empties both
-/// lists of `export` (or of `[all]`); `export = None` walks `[all]` and
-/// every export, so `(None, None)` empties every list but `[immediate]`.
+/// lists of `export`; `export = None` walks every export, so
+/// `(None, None)` empties every export's lists. The old `[all]` table is not touched.
 /// An emptied list stays in the file, as `rw = []`.
 pub fn grant_remove(
     msg: &mut pb::Config,
@@ -387,10 +387,7 @@ pub fn grant_remove(
 ) -> Result<usize, ManageError> {
     let n = match export {
         None => {
-            let mut n = match msg.all.as_mut() {
-                Some(all) => remove_in(&mut Lists::of_table(all), who, resolve),
-                None => 0,
-            };
+            let mut n = 0;
             for e in msg.exports.iter_mut() {
                 n += remove_in(&mut Lists::of_export(e), who, resolve);
             }
@@ -416,39 +413,55 @@ fn block(name: &str, rw: &[String], ro: &[String], clients: &Clients) -> String 
     out
 }
 
-/// Every grant: the `all:` block, the `immediate:` block, then one block
-/// per export in name order.
+/// `KEY:` and the `rw` and `ro` lines of the clients that hold the right
+/// `right`; the header always.
+fn right_block(right: Right, clients: &Clients) -> String {
+    let names = |access: Access| -> Vec<String> {
+        clients
+            .entries
+            .iter()
+            .filter(|(_, c)| right.of(c) == Some(access))
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+    block(
+        right.key(),
+        &names(Access::ReadWrite),
+        &names(Access::ReadOnly),
+        clients,
+    )
+}
+
+/// Every grant: one block per right of [`RIGHTS`] (`all_exports:`,
+/// `all_paths:`), then one block per export in name order.
 pub fn list_all(exports: &Exports, clients: &Clients) -> String {
-    let mut out = block("all", &exports.rw, &exports.ro, clients);
-    out.push_str(&block("immediate", &exports.immediate_rw, &[], clients));
+    let mut out: String = RIGHTS.iter().map(|r| right_block(*r, clients)).collect();
     for (name, e) in &exports.exports {
         out.push_str(&block(name, &e.rw, &e.ro, clients));
     }
     out
 }
 
-/// The block of one export, of `all` or of `immediate`; `None` when no
-/// such export.
+/// The block of one export or of one right (`all_exports`, `all_paths`);
+/// `None` when no such export.
 pub fn list_export(exports: &Exports, clients: &Clients, name: &str) -> Option<String> {
-    match name {
-        "all" => return Some(block("all", &exports.rw, &exports.ro, clients)),
-        "immediate" => return Some(block("immediate", &exports.immediate_rw, &[], clients)),
-        _ => {}
+    if let Some(right) = RIGHTS.into_iter().find(|r| r.key() == name) {
+        return Some(right_block(right, clients));
     }
     let e = exports.exports.get(name)?;
     Some(block(name, &e.rw, &e.ro, clients))
 }
 
-/// `{label}:`, `    immediate: rw|ro` when `id` has `all_paths`, then
-/// one `    NAME: rw|ro` line per export `id` may reach: ` (all)` when the
-/// access comes from `[all]` rather than the export's own entry,
+/// `{label}:`, `    all_paths: rw|ro` when `id` has `all_paths`, then
+/// one `    NAME: rw|ro` line per export `id` may reach: ` (all_exports)` when the
+/// access comes from `all_exports` rather than the export's own entry,
 /// ` (read_only export)` when a read-write grant is capped by the export's
 /// `read_only` flag.
 pub fn list_peer(exports: &Exports, clients: &Clients, label: &str, id: &EndpointId) -> String {
     let grants = Snapshot::from_files(clients, exports, true).grants(id);
     let mut out = format!("{label}:\n");
     if let Some(a) = grants.all_paths {
-        let _ = writeln!(out, "    immediate: {}", a.as_str());
+        let _ = writeln!(out, "    all_paths: {}", a.as_str());
     }
     for (name, e) in &exports.exports {
         let Some(access) = grants.access_to(name, e) else {
@@ -463,7 +476,7 @@ pub fn list_peer(exports: &Exports, clients: &Clients, label: &str, id: &Endpoin
         };
         let _ = write!(out, "    {name}: {mode}");
         if inherited {
-            out.push_str(" (all)");
+            out.push_str(" (all_exports)");
         }
         if capped {
             out.push_str(" (read_only export)");

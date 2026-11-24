@@ -1013,3 +1013,31 @@ pub fn spawn_daemon_binary_env(
         stdout: rx,
     }
 }
+
+/// Edits the `[immediate]` table of the config under `home` the way
+/// `irsync grant add|remove immediate` once did. The command is gone (a
+/// client's `all_paths` replaced the table); ssh setup still writes the
+/// table, and these tests need to change what it wrote.
+pub fn edit_immediate(home: &std::path::Path, id: &str, add: bool) {
+    use irsync::manage::grants::{grant_immediate, grant_remove_immediate};
+    use irsync::manage::PeerSpec;
+    let path = home.join(".config/irsync/irsync.toml");
+    let mut lock = irsync::manage::lock_config(&path).unwrap();
+    let mut msg = lock.load().unwrap();
+    let names: Vec<(String, Option<iroh::EndpointId>)> = msg
+        .clients
+        .iter()
+        .map(|c| (c.name.clone(), irsync::manage::id_of(&c.client_id)))
+        .collect();
+    let resolve = |s: &str| names.iter().find(|(n, _)| n == s).and_then(|(_, id)| *id);
+    let spec = PeerSpec::Id {
+        id: irsync::identity::parse_endpoint_id(id).unwrap(),
+        comment: None,
+    };
+    if add {
+        grant_immediate(&mut msg, &spec, &resolve).unwrap();
+    } else {
+        grant_remove_immediate(&mut msg, Some(&spec), &resolve).unwrap();
+    }
+    lock.save(&mut msg).unwrap();
+}

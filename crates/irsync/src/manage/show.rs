@@ -57,16 +57,6 @@ pub fn export_blocks(exports: &Exports, clients: &Clients) -> String {
     out
 }
 
-/// `all:` and its grant lines, or nothing when `[all]` grants nobody.
-pub fn all_block(exports: &Exports, clients: &Clients) -> String {
-    let mut out = String::new();
-    if !exports.rw.is_empty() || !exports.ro.is_empty() {
-        out.push_str("all:\n");
-        grant_lines(&mut out, &exports.rw, &exports.ro, clients);
-    }
-    out
-}
-
 /// The report: the config file, identities (`client` is the id and the
 /// public key line), servers and clients (`server_lines` and
 /// `client_lines`, what `server list` and `client list` print) and
@@ -93,6 +83,5 @@ pub fn report(
     out.push_str("exports:\n");
     let _ = writeln!(out, "daemon identity: {daemon}");
     out.push_str(&export_blocks(exports, clients));
-    out.push_str(&all_block(exports, clients));
     out
 }

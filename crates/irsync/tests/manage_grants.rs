@@ -87,8 +87,8 @@ fn grant_remove_by_export_by_all_and_everywhere() {
     let mut m = msg(&text);
     assert_eq!(
         grant_remove(&mut m, None, Some(&peer(1)), &resolve).unwrap(),
-        4
-    ); // everywhere
+        3
+    ); // every export, not the old [all]
     let mut m = msg(&text);
     assert_eq!(grant_remove(&mut m, Some("p"), None, &resolve).unwrap(), 3); // all of p
     assert!(matches!(
@@ -208,13 +208,12 @@ fn grant_add_to_all_creates_the_all_table() {
 #[test]
 fn grant_remove_all_all_empties_every_array_in_the_file() {
     let mut m = msg(&format!(
-        "[all]\nrw = [\"{a}\"]\n[exports.p]\npath = \"/p\"\nrw = [\"{a}\"]\nro = [\"{b}\"]\n[exports.q]\npath = \"/q\"\nro = [\"lap\"]\n",
+        "[exports.p]\npath = \"/p\"\nrw = [\"{a}\"]\nro = [\"{b}\"]\n[exports.q]\npath = \"/q\"\nro = [\"lap\"]\n",
         a = id(1),
         b = id(2)
     ));
-    assert_eq!(grant_remove(&mut m, None, None, &|_| None).unwrap(), 4);
+    assert_eq!(grant_remove(&mut m, None, None, &|_| None).unwrap(), 3);
     let x = typed(&msg(&write(&m))).exports;
-    assert!(x.rw.is_empty() && x.ro.is_empty());
     assert!(
         x.exports
             .values()
@@ -232,16 +231,16 @@ fn grant_remove_all_all_empties_every_array_in_the_file() {
 fn grant_edits_reach_inline_tables() {
     // Inline tables read into the same message as headers do.
     let text = format!(
-        "all = {{ rw = [\"{a}\"] }}\nexports = {{ photos = {{ path = \"/p\", rw = [\"{a}\"] }} }}\n",
+        "exports = {{ photos = {{ path = \"/p\", rw = [\"{a}\"] }} }}\n",
         a = id(1)
     );
     let mut m = msg(&text);
     assert_eq!(
         grant_remove(&mut m, None, Some(&peer(1)), &|_| None).unwrap(),
-        2
+        1
     );
     let x = typed(&m).exports;
-    assert!(x.rw.is_empty() && x.exports["photos"].rw.is_empty());
+    assert!(x.exports["photos"].rw.is_empty());
     grant_add(&mut m, Some("photos"), &peer(2), true, &|_| None).unwrap();
     grant_add(&mut m, None, &peer(2), false, &|_| None).unwrap();
     let x = typed(&m).exports;
@@ -534,26 +533,29 @@ fn after(body: &str, f: impl FnOnce(&mut pb::Config)) -> String {
 #[test]
 fn removing_a_middle_entry_keeps_the_lines_above_it_on_the_next() {
     let text = after(
-        "[all]\nrw = [\n    \"a\",\n    # about b\n    \"b\", # bee\n    \"c\",\n]\n",
+        "[exports.p]\npath = \"/p\"\nrw = [\n    \"a\",\n    # about b\n    \"b\", # bee\n    \"c\",\n]\n",
         |m| {
-            grant_remove(m, None, Some(&PeerSpec::Alias("b".into())), &|_| None).unwrap();
+            grant_remove(m, Some("p"), Some(&PeerSpec::Alias("b".into())), &|_| None).unwrap();
         },
     );
     assert_eq!(
         text,
-        "[all]\nrw = [\n    \"a\",\n    # about b\n    \"c\",\n]\n"
+        "[exports.p]\npath = \"/p\"\nrw = [\n    \"a\",\n    # about b\n    \"c\",\n]\n"
     );
 }
 
 #[test]
 fn removing_the_last_entry_moves_the_lines_before_the_bracket_above_the_one_before() {
     let text = after(
-        "[all]\nrw = [\n    \"a\",\n    \"b\", # bee\n    # tail\n]\n",
+        "[exports.p]\npath = \"/p\"\nrw = [\n    \"a\",\n    \"b\", # bee\n    # tail\n]\n",
         |m| {
-            grant_remove(m, None, Some(&PeerSpec::Alias("b".into())), &|_| None).unwrap();
+            grant_remove(m, Some("p"), Some(&PeerSpec::Alias("b".into())), &|_| None).unwrap();
         },
     );
-    assert_eq!(text, "[all]\nrw = [\n    # tail\n    \"a\",\n]\n");
+    assert_eq!(
+        text,
+        "[exports.p]\npath = \"/p\"\nrw = [\n    # tail\n    \"a\",\n]\n"
+    );
 }
 
 #[test]
@@ -607,13 +609,16 @@ fn grant_add_moves_an_entry_with_its_comment_and_replaces_another_spelling() {
 
 fn fixture() -> (Clients, Exports) {
     let h = parse_clients(
-        &format!("[clients.laptop]\nclient_id = \"{}\"\n", id(1)),
+        &format!(
+            "[clients.laptop]\nclient_id = \"{}\"\nall_exports = \"rw\"\n",
+            id(1)
+        ),
         Path::new("h"),
     )
     .unwrap();
     let e = parse_exports(
         &format!(
-            "[all]\nrw = [\"laptop\"]\n[exports.backups]\npath = \"/b\"\n[exports.docs]\npath = \"/d\"\nread_only = true\nrw = [\"laptop\"]\n[exports.photos]\npath = \"/p\"\nro = [\"{}\"]\n",
+            "[exports.backups]\npath = \"/b\"\n[exports.docs]\npath = \"/d\"\nread_only = true\nrw = [\"laptop\"]\n[exports.photos]\npath = \"/p\"\nro = [\"{}\"]\n",
             id(2)
         ),
         Path::new("e"),
@@ -623,13 +628,13 @@ fn fixture() -> (Clients, Exports) {
 }
 
 #[test]
-fn list_all_names_every_export_and_the_all_table() {
+fn list_all_names_the_rights_then_every_export() {
     let (h, e) = fixture();
     let s = list_all(&e, &h);
     assert_eq!(
         s,
         format!(
-            "all:\n    rw: laptop ({l})\nimmediate:\nbackups:\ndocs:\n    rw: laptop ({l})\nphotos:\n    ro: {o}\n",
+            "all_exports:\n    rw: laptop ({l})\nall_paths:\nbackups:\ndocs:\n    rw: laptop ({l})\nphotos:\n    ro: {o}\n",
             l = id(1),
             o = id(2)
         )
@@ -639,45 +644,48 @@ fn list_all_names_every_export_and_the_all_table() {
         format!("docs:\n    rw: laptop ({})\n", id(1))
     );
     assert_eq!(
-        list_export(&e, &h, "all").unwrap(),
-        format!("all:\n    rw: laptop ({})\n", id(1))
+        list_export(&e, &h, "all_exports").unwrap(),
+        format!("all_exports:\n    rw: laptop ({})\n", id(1))
     );
+    assert!(list_export(&e, &h, "all").is_none());
     assert!(list_export(&e, &h, "nope").is_none());
 }
 
 #[test]
-fn grant_list_shows_immediate_grants() {
+fn grant_list_shows_all_paths_rights() {
     let h = parse_clients(
-        &format!("[clients.laptop]\nclient_id = \"{}\"\n", id(1)),
+        &format!(
+            "[clients.laptop]\nclient_id = \"{}\"\nall_paths = \"rw\"\n\
+             [clients.other]\nclient_id = \"{}\"\nall_exports = \"ro\"\n",
+            id(1),
+            id(2)
+        ),
         Path::new("h"),
     )
     .unwrap();
     let e = parse_exports(
-        &format!(
-            "[all]\nrw = [\"{o}\"]\n[immediate]\nrw = [\"laptop\"]\n\
-             [exports.auto-h]\npath = \"/h\"\nauto = true\nrw = [\"laptop\"]\n",
-            o = id(2)
-        ),
+        "[exports.auto-h]\npath = \"/h\"\nauto = true\nrw = [\"laptop\"]\n",
         Path::new("e"),
     )
     .unwrap();
     assert_eq!(
         list_all(&e, &h),
         format!(
-            "all:\n    rw: {o}\nimmediate:\n    rw: laptop ({l})\nauto-h:\n    rw: laptop ({l})\n",
+            "all_exports:\n    ro: other ({o})\nall_paths:\n    rw: laptop ({l})\nauto-h:\n    rw: laptop ({l})\n",
             l = id(1),
             o = id(2)
         )
     );
     assert_eq!(
-        list_export(&e, &h, "immediate").unwrap(),
-        format!("immediate:\n    rw: laptop ({})\n", id(1))
+        list_export(&e, &h, "all_paths").unwrap(),
+        format!("all_paths:\n    rw: laptop ({})\n", id(1))
     );
     assert_eq!(
         list_peer(&e, &h, "laptop", &id(1)),
-        "laptop:\n    immediate: rw\n    auto-h: rw\n"
+        "laptop:\n    all_paths: rw\n    auto-h: rw\n"
     );
-    assert_eq!(list_peer(&e, &h, "o", &id(2)), "o:\n");
+    // all_exports never reaches an automatic export.
+    assert_eq!(list_peer(&e, &h, "other", &id(2)), "other:\n");
 }
 
 #[test]
@@ -687,7 +695,7 @@ fn list_peer_marks_inherited_and_capped_grants() {
     assert_eq!(
         s,
         format!(
-            "laptop ({}):\n    backups: rw (all)\n    docs: ro (read_only export)\n    photos: rw (all)\n",
+            "laptop ({}):\n    backups: rw (all_exports)\n    docs: ro (read_only export)\n    photos: rw (all_exports)\n",
             id(1)
         )
     );

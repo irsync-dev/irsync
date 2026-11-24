@@ -330,7 +330,7 @@ fn errors_are_those_of_the_stage_1_reader() {
         ),
         (
             "[exports.all]\npath = \"/p\"\n".to_string(),
-            "1: \"all\" is reserved: it is the word `grant add all WHO` uses for every export",
+            "1: \"all\" is reserved: it is the word `grant remove all WHO` and `export update all` use for every export",
         ),
         (
             "[client]\nrelay = \"not a url\"\n".to_string(),

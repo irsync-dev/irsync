@@ -493,7 +493,7 @@ fn grant_add_refuses_a_pasted_key_line_with_a_multi_line_comment() {
     let other = iroh::SecretKey::from_bytes(&[8; 32]).public();
     let evil = format!("{key} laptop\n]\n[etc]\npath = \"/etc\"\nrw = [\"{other}\"");
     // No config file yet: nothing is created.
-    let o = irsync(&home, &["grant", "add", "all", &evil]);
+    let o = irsync(&home, &["grant", "add", "p", &evil]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success() && err.contains("control characters"),
@@ -590,7 +590,7 @@ fn export_list_prints_the_export_blocks_of_show() {
         ],
         vec!["export", "add", &format!("q:{}", home.join("q").display())],
         vec!["grant", "add", "p", "laptop"],
-        vec!["grant", "add", "all", "laptop", "--ro"],
+        vec!["client", "set", "laptop", "all_exports=ro"],
     ] {
         let o = irsync(&home, &args);
         assert!(
@@ -607,7 +607,6 @@ fn export_list_prints_the_export_blocks_of_show() {
         .lines()
         .skip_while(|l| !l.starts_with("daemon identity:"))
         .skip(1)
-        .take_while(|l| *l != "all:")
         .collect();
     assert_eq!(list_out, blocks.join("\n") + "\n", "show:\n{show_out}");
     assert!(
@@ -655,7 +654,7 @@ fn grant_list_by_export_by_peer_and_for_an_unknown_name() {
     };
     let all = run(&["grant", "list"]);
     assert!(
-        all.starts_with("all:\n")
+        all.starts_with("all_exports:\nall_paths:\n")
             && all.contains("p:\n    rw: laptop (")
             && all.contains("q:\n    rw: laptop ("),
         "{all}"
@@ -701,7 +700,7 @@ fn host_list_refuses_an_old_layout_file() {
 }
 
 #[test]
-fn grant_remove_all_all_locks_everyone_out() {
+fn grant_remove_all_all_empties_the_exports_but_keeps_client_rights() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
@@ -710,7 +709,7 @@ fn grant_remove_all_all_locks_everyone_out() {
         vec!["client", "add", "laptop", &id],
         vec!["export", "add", &format!("p:{}", home.join("p").display())],
         vec!["grant", "add", "p", "laptop"],
-        vec!["grant", "add", "all", "laptop", "--ro"],
+        vec!["client", "set", "laptop", "all_exports=ro"],
     ] {
         let o = irsync(&home, &args);
         assert!(
@@ -721,11 +720,12 @@ fn grant_remove_all_all_locks_everyone_out() {
     }
     let o = irsync(&home, &["grant", "remove", "all", "all"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(String::from_utf8_lossy(&o.stderr).contains("removed 2 entries"));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("removed 1 entry"));
+    // The client's own right is not a grant on an export: it stays.
     let o = irsync(&home, &["grant", "list", "laptop"]);
     assert_eq!(
         String::from_utf8(o.stdout).unwrap(),
-        format!("laptop ({id}):\n")
+        format!("laptop ({id}):\n    p: ro (all_exports)\n")
     );
 }
 
@@ -973,27 +973,33 @@ fn grant_list_lines_appear_verbatim_in_show() {
     );
     ok(&home, &["grant", "add", "p", "laptop"]);
     ok(&home, &["grant", "add", "p", &other, "--ro"]);
-    ok(&home, &["grant", "add", "all", "laptop", "--ro"]);
+    ok(&home, &["client", "set", "laptop", "all_exports=ro"]);
     let list = ok(&home, &["grant", "list"]);
     let show = ok(&home, &["show"]);
     let show_lines: Vec<&str> = show.lines().collect();
+    // The export blocks of `grant list` are in show line for line; the
+    // blocks of the clients' rights are in the clients section instead.
     let mut grant_lines = 0;
+    let mut in_rights = false;
     for line in list.lines() {
-        if line.starts_with("    ") || line == "all:" {
+        if !line.starts_with("    ") {
+            in_rights = line.starts_with("all_");
+        } else if !in_rights {
             assert!(show_lines.contains(&line), "{line:?} not in show:\n{show}");
             grant_lines += 1;
         }
     }
-    assert_eq!(grant_lines, 4, "{list}");
-    // The `all:` block is the tail of show, line for line.
-    let tail: Vec<&str> = show_lines
-        .iter()
-        .copied()
-        .skip_while(|l| *l != "all:")
-        .collect();
-    // `grant list` puts the `immediate:` block right after it.
-    let all_block: Vec<&str> = list.lines().take_while(|l| *l != "immediate:").collect();
-    assert_eq!(tail, all_block, "{show}");
+    assert_eq!(grant_lines, 2, "{list}");
+    assert!(
+        list.starts_with(&format!(
+            "all_exports:\n    ro: laptop ({id})\nall_paths:\n"
+        )),
+        "{list}"
+    );
+    assert!(
+        show.contains(&format!("laptop: {id} all_exports=ro\n")),
+        "{show}"
+    );
 }
 
 #[test]
@@ -1549,15 +1555,17 @@ fn grant_add_by_id_writes_and_prints_the_alias() {
     let (home, file) = home_with(&d, "");
     let id = peer_id(5);
     ok(&home, &["client", "add", "box", &id]);
-    let o = irsync(&home, &["grant", "add", "all", &id]);
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    let o = irsync(&home, &["grant", "add", "p", &id]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(o.status.success(), "{err}");
-    assert!(err.starts_with("box: rw on all exports"), "{err}");
+    assert!(err.starts_with("box: rw on p"), "{err}");
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("rw = [\"box\"]"), "{text}");
-    let o = irsync(&home, &["grant", "add", "immediate", &id]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.starts_with("box: immediate access"), "{err}");
     let text = std::fs::read_to_string(&file).unwrap();
     assert_eq!(text.matches(&id).count(), 1, "only the client: {text}");
 }
@@ -1618,7 +1626,12 @@ fn key_comment_stays_beside_the_alias() {
     let id = secret.public().to_string();
     ok(&home, &["config", "set", "clients.box.client_id", &id]);
     let line = irsync::identity::public_key_line(&secret, "mike@laptop");
-    ok(&home, &["grant", "add", "all", &line]);
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    ok(&home, &["grant", "add", "p", &line]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains("\"box\", # mike@laptop"), "{text}");
     assert_eq!(text.matches(&id).count(), 1, "{text}");
@@ -2403,14 +2416,17 @@ fn servers_and_clients_list_show_rename_and_remove() {
     let (home, config) = home_with(
         &d,
         &format!(
-            "[servers.desk]\nendpoint_id = \"{daemon}\"\n[clients.desk]\nclient_id = \"{client}\"\n\
-             [clients.phone]\nclient_id = \"{phone}\"\n[immediate]\nrw = [\"desk\", \"phone\"]\n"
+            "[servers.desk]\nendpoint_id = \"{daemon}\"\n[clients.desk]\nclient_id = \"{client}\"\nall_paths = \"rw\"\n\
+             [clients.phone]\nclient_id = \"{phone}\"\nall_paths = \"rw\"\n"
         ),
     );
     let servers = ok(&home, &["server", "list"]);
     assert_eq!(servers, format!("desk: {daemon}\n"));
     let clients = ok(&home, &["client", "list"]);
-    assert_eq!(clients, format!("desk: {client}\nphone: {phone}\n"));
+    assert_eq!(
+        clients,
+        format!("desk: {client} all_paths=rw\nphone: {phone} all_paths=rw\n")
+    );
     // `show` has the same lines, and a grant is for the client id.
     let show = ok(&home, &["show"]);
     assert!(
@@ -2431,14 +2447,11 @@ fn servers_and_clients_list_show_rename_and_remove() {
     assert!(t["clients"].get("desk").is_none(), "{t}");
     assert_eq!(t["servers"]["box"]["endpoint_id"].as_str(), Some(&*daemon));
     assert_eq!(t["clients"]["box"]["client_id"].as_str(), Some(&*client));
-    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("box"), "{t}");
+    assert_eq!(t["clients"]["box"]["all_paths"].as_str(), Some("rw"), "{t}");
 
-    // A client is removed like any other: not while grants name it,
-    // unless forced.
-    let o = irsync(&home, &["client", "remove", "phone"]);
-    assert!(!o.status.success());
-    ok(&home, &["client", "remove", "phone", "-f"]);
-    ok(&home, &["client", "remove", "box", "-f"]);
+    // A client's rights go with it; they never hold the removal back.
+    ok(&home, &["client", "remove", "phone"]);
+    ok(&home, &["client", "remove", "box"]);
     ok(&home, &["server", "remove", "box"]);
     let t: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
     for table in ["servers", "clients"] {
@@ -2448,12 +2461,6 @@ fn servers_and_clients_list_show_rename_and_remove() {
             "{t}"
         );
     }
-    assert!(
-        t.get("immediate")
-            .and_then(|i| i.get("rw"))
-            .is_none_or(|rw| rw.as_array().unwrap().is_empty()),
-        "{t}"
-    );
 }
 
 /// `client add` sets the id a machine has as a client, beside its
@@ -2476,7 +2483,12 @@ fn client_add_sets_the_id_and_says_when_grants_move() {
     assert_eq!(t["clients"]["box"]["client_id"].as_str(), Some(&*client));
 
     // Grants name it: a new client id moves them, and the command says so.
-    ok(&home, &["grant", "add", "all", "box"]);
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    ok(
+        &home,
+        &["export", "add", &format!("p:{}", home.join("p").display())],
+    );
+    ok(&home, &["grant", "add", "p", "box"]);
     let o = irsync(&home, &["client", "add", "box", &other]);
     assert!(o.status.success());
     assert_eq!(
@@ -2486,7 +2498,7 @@ fn client_add_sets_the_id_and_says_when_grants_move() {
     assert_eq!(
         String::from_utf8_lossy(&o.stderr),
         format!(
-            "irsync client add: note: the grants that name box (in all) now apply to \
+            "irsync client add: note: the grants that name box (in exports.p) now apply to \
              {other} (was {client})\n"
         )
     );
@@ -2525,7 +2537,7 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
         &["server", "list"],
         &["server", "add", "box", id],
         &["export", "add", src],
-        &["grant", "add", "all", "nas"],
+        &["client", "set", "nas", "all_exports=rw"],
         &["config", "get", "client.parallel"],
         &["config", "set", "client.parallel", "4"],
         &["config", "set", "unsafe_config_allowed", "true"],
@@ -2817,5 +2829,105 @@ fn server_add_sets_pq_key_exchange() {
         !o.status.success()
             && String::from_utf8_lossy(&o.stderr).contains("expected prefer or require"),
         "{o:?}"
+    );
+}
+
+#[test]
+fn client_set_sets_reports_and_lists_the_rights() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "");
+    ok(&home, &["client", "add", "laptop", &peer_id(5)]);
+    let o = irsync(
+        &home,
+        &["client", "set", "laptop", "all_exports=rw", "all_paths=ro"],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        "laptop: all_exports=rw all_paths=ro\n"
+    );
+    assert_eq!(
+        ok(&home, &["client", "list"]),
+        format!("laptop: {} all_exports=rw all_paths=ro\n", peer_id(5))
+    );
+    let o = irsync(&home, &["client", "set", "laptop", "all_paths=none"]);
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        "laptop: all_exports=rw all_paths=none\n"
+    );
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("all_paths"), "{text}");
+    let o = irsync(&home, &["client", "set", "ghost", "all_paths=rw"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("ghost"));
+}
+
+#[test]
+fn client_set_with_a_bad_pair_changes_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "");
+    ok(&home, &["client", "add", "laptop", &peer_id(5)]);
+    let before = std::fs::read(&file).unwrap();
+    for pair in ["all_paths=yes", "admin=rw", "all_paths"] {
+        let o = irsync(&home, &["client", "set", "laptop", "all_exports=rw", pair]);
+        assert!(!o.status.success(), "{pair}");
+        assert_eq!(std::fs::read(&file).unwrap(), before, "{pair}");
+    }
+}
+
+#[test]
+fn grant_add_all_and_immediate_point_to_client_set() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "");
+    ok(&home, &["client", "add", "laptop", &peer_id(5)]);
+    let before = std::fs::read(&file).unwrap();
+    for (args, hint) in [
+        (
+            ["grant", "add", "all", "laptop"],
+            "irsync client set NAME all_exports=rw",
+        ),
+        (
+            ["grant", "add", "immediate", "laptop"],
+            "irsync client set NAME all_paths=rw",
+        ),
+    ] {
+        let o = irsync(&home, &args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && err.contains(hint), "{args:?}: {err}");
+    }
+    let o = irsync(&home, &["grant", "add", "all", "laptop", "--ro"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("irsync client set NAME all_exports=ro"),
+        "{err}"
+    );
+    let o = irsync(&home, &["grant", "remove", "immediate", "laptop"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("irsync client set NAME all_paths=none"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), before);
+}
+
+#[test]
+fn grant_list_shows_client_rights() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, _) = home_with(&d, "");
+    let id = peer_id(5);
+    ok(&home, &["client", "add", "laptop", &id]);
+    ok(&home, &["client", "set", "laptop", "all_paths=rw"]);
+    let list = ok(&home, &["grant", "list"]);
+    assert!(
+        list.contains(&format!("all_paths:\n    rw: laptop ({id})\n")),
+        "{list}"
+    );
+    assert_eq!(
+        ok(&home, &["grant", "list", "all_paths"]),
+        format!("all_paths:\n    rw: laptop ({id})\n")
+    );
+    assert_eq!(
+        ok(&home, &["grant", "list", "laptop"]),
+        format!("laptop ({id}):\n    all_paths: rw\n")
     );
 }

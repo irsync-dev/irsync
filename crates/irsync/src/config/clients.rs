@@ -45,6 +45,14 @@ impl Right {
         self.field(c).and_then(Access::from_message)
     }
 
+    /// The right of a typed entry; none when unset.
+    pub fn of(self, c: &ClientEntry) -> Option<Access> {
+        match self {
+            Right::AllExports => c.all_exports,
+            Right::AllPaths => c.all_paths,
+        }
+    }
+
     /// Sets or, with `None`, removes the right of the entry.
     pub fn set(self, c: &mut pb::ClientEntry, a: Option<Access>) {
         *self.field_mut(c).0 = a.map(|a| pb::Access::from(a) as i32);

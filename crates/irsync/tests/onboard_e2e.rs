@@ -471,8 +471,7 @@ fn pair_again_does_not_regrant() {
     let w = World::new();
     ok(&w.irsync_bare(&["pair", "myserver"]));
     let id = client_id(w.client.path());
-    let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
-    assert!(out.status.success(), "{out:?}");
+    common::edit_immediate(w.server.path(), &id, false);
     w.kill_daemon();
     let o = w.irsync_bare(&["pair", "myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
@@ -879,8 +878,7 @@ fn refusal_never_uses_ssh() {
     w.pair("myserver");
     let calls = w.ssh_calls();
     let id = client_id(w.client.path());
-    let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
-    assert!(out.status.success(), "{out:?}");
+    common::edit_immediate(w.server.path(), &id, false);
     let other = w.server.path().join("other");
     let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", other.display())]);
     let err = String::from_utf8_lossy(&o.stderr);
@@ -1563,8 +1561,7 @@ impl World {
         let out = common::irsync_bin(self.client.path(), &["id", "generate"]);
         assert!(out.status.success(), "{out:?}");
         let id = client_id(self.client.path());
-        let out = common::irsync_bin(self.server.path(), &["grant", "add", "immediate", &id]);
-        assert!(out.status.success(), "{out:?}");
+        common::edit_immediate(self.server.path(), &id, true);
     }
 }
 

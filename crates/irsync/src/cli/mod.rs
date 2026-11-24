@@ -540,7 +540,16 @@ pub enum ClientCmd {
         /// The new name.
         new: String,
     },
-    /// List clients.
+    /// Set a client's server-wide rights: all_exports=rw|ro|none,
+    /// all_paths=rw|ro|none.
+    Set {
+        /// The client's name.
+        name: String,
+        /// A right and its value: `none` removes the right.
+        #[arg(required = true, value_name = "KEY=VALUE")]
+        settings: Vec<String>,
+    },
+    /// List clients, with their server-wide rights.
     List,
 }
 
@@ -583,9 +592,10 @@ pub struct GrantArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GrantCmd {
-    /// Grant a peer access to an export (`all`: every export).
+    /// Grant a peer access to an export. For every export or any path,
+    /// see `irsync client set`.
     Add {
-        /// The export's name, or `all` for every export.
+        /// The export's name.
         export: String,
         /// A client name, an EndpointId, a public key line or a .pub file.
         who: String,
@@ -594,9 +604,10 @@ pub enum GrantCmd {
         ro: bool,
     },
     /// Remove grants: of one peer or of every peer, on one export or on
-    /// every export.
+    /// every export's own list. Server-wide rights go with
+    /// `irsync client set`.
     Remove {
-        /// The export's name, or `all` for every export.
+        /// The export's name, or `all` for every export's own list.
         export: String,
         /// A client name, an EndpointId, a public key line or a .pub file;
         /// or `all` for every peer.
@@ -604,9 +615,9 @@ pub enum GrantCmd {
     },
     /// List grants: all of them, one export's, or what one peer may reach.
     List {
-        /// An export's name (`all`: the every-export grants, `immediate`:
-        /// the any-path grants), or a peer (an
-        /// client name or an EndpointId); nothing lists every grant.
+        /// An export's name (`all_exports`, `all_paths`: the clients with
+        /// that server-wide right), or a peer (a client name or an
+        /// EndpointId); nothing lists every grant.
         target: Option<String>,
     },
 }

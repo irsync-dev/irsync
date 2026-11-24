@@ -127,7 +127,7 @@ fn names(dir: &Path) -> Vec<std::ffi::OsString> {
 fn immediate_push_of_one_file() {
     for case in ["missing", "dir", "file", "no_parent"] {
         let s = setup();
-        ok(&s.server, &["grant", "add", "immediate", &s.client_id]);
+        common::edit_immediate(&s.server, &s.client_id, true);
         let home = s.server.canonicalize().unwrap();
         let tmp = home.join("tmp");
         fs::write(s.work.join("f.iso"), b"image").unwrap();

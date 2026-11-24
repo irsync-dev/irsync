@@ -376,7 +376,7 @@ fn exports_all_is_the_only_reserved_name() {
     assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
     let e = e.to_string();
     assert!(
-        e.contains("\"all\" is reserved: it is the word `grant add all WHO` uses for every export"),
+        e.contains("\"all\" is reserved: it is the word `grant remove all WHO` and `export update all` use for every export"),
         "{e}"
     );
     assert!(e.contains(":2:"), "{e}");

@@ -51,7 +51,7 @@ fn add_writes_under_exports_as_a_dotted_header_and_refuses_all() {
     let e = add_export(&mut m, "all", Path::new("/srv/all"), false, false).unwrap_err();
     assert_eq!(
         e.to_string(),
-        "\"all\" is reserved: it is the word `grant add all WHO` uses for every export"
+        "\"all\" is reserved: it is the word `grant remove all WHO` and `export update all` use for every export"
     );
     assert!(add_export(&mut m, "rw", Path::new("/srv/rw"), false, false).is_ok());
 }

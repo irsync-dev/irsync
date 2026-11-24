@@ -233,7 +233,7 @@ fn from_message_checks_each_edit_again() {
     );
     assert_eq!(
         refusal(&|m| m.exports.push(export("all"))),
-        "f: \"all\" is reserved: it is the word `grant add all WHO` uses for every export"
+        "f: \"all\" is reserved: it is the word `grant remove all WHO` and `export update all` use for every export"
     );
     assert_eq!(
         refusal(&|m| m.exports.push(export("a/b"))),
