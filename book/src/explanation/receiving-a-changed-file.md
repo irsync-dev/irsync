@@ -83,7 +83,8 @@ calls `index_old_file` itself, which by then is a cache hit.
    hashes differ, it goes on.
 3. **Opens the `.part`**, locked (`FileWriter::open_tracked`). The writer
    adopts the progress recorded for an earlier `.part` of the same expected
-   file and keeps a *verified* bit per chunk. When there is no `.part` yet and
+   file and keeps a *verified* bit per chunk, and how many bytes it holds of
+   each chunk an earlier connection left unfinished. When there is no `.part` yet and
    no old file to clone, the open is deferred: the writer holds no descriptor
    until its first write creates and locks the file. A file waiting for the
    sender's data thus costs no open file.

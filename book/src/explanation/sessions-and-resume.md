@@ -22,8 +22,9 @@ them at most every 2 seconds and once more at the end:
   connections, and the deletions so far, which count against `--max-delete`.
 
 Separately from the session, the receiver records for each partly received
-file which byte ranges of its `.part` file it has verified. That record is
-written after every 64 newly verified chunks or every 2 seconds, and belongs to
+file which byte ranges of its `.part` file it has verified, and how far it got
+into chunks that did not finish. That record is written after every 64 newly
+verified chunks or every 2 seconds, when the connection drops, and belongs to
 the file, not to the session. The exact messages are in
 [Protocol](../reference/protocol.md#persisted-state).
 
@@ -37,6 +38,14 @@ again. A file that was partly received continues from its verified chunks: the
 receiver reads each recorded chunk of the `.part` back, checks it against its
 hash, and requests only the rest. Chunks that were written but not yet
 recorded are requested again.
+
+A chunk is up to 1 MiB, and it travels in pieces of 64 KiB. The receiver
+writes each piece into the `.part` as it arrives, so a chunk that was cut off
+continues after its last piece: the request says how many of its bytes the
+receiver holds, and the sender sends only the rest. Once the chunk is whole,
+the receiver checks it against its hash; if the check fails, it asks for the
+whole chunk again. So a link that drops before a whole chunk crosses still
+moves the file forward, one connection at a time.
 
 The client redials with exponential backoff: 1 second, doubling up to 60
 seconds, plus up to a quarter of random jitter, so that many clients do not

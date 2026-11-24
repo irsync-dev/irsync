@@ -219,6 +219,98 @@ async fn adopts_partial_from_previous_writer() {
     assert_eq!(w.missing_chunks(), (1..n).collect::<Vec<_>>());
 }
 
+/// The pieces of a chunk that did not finish stay in the `.part` and in
+/// the record: the next writer holds them, asks only for the rest, and
+/// verifies the whole chunk once the rest is written.
+#[tokio::test]
+async fn pieces_of_an_unfinished_chunk_carry_over_to_the_next_writer() {
+    let e = env();
+    let data = content(29);
+    let cl = chunk_list(&data);
+    let first = piece(&data, &cl, 0);
+    let cut = 20_000;
+    {
+        let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+        w.write_piece(0, 0, &first[..cut / 2]).await.unwrap();
+        w.write_piece(0, (cut / 2) as u32, &first[cut / 2..cut])
+            .await
+            .unwrap();
+        assert_eq!(w.held_bytes(0), cut as u32);
+        // Pieces are not verified chunks.
+        assert_eq!(w.missing_chunks(), all(&cl));
+        assert_eq!(w.received(), cut as u64);
+    }
+    let p = e.index.lock().unwrap().partial(&rel()).unwrap().unwrap();
+    assert_eq!(p.held.len(), 1);
+    assert_eq!((p.held[0].offset, p.held[0].length), (0, cut as u64));
+
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    assert_eq!(w.held_bytes(0), cut as u32);
+    assert_eq!(
+        w.held_of(&all(&cl)),
+        std::collections::BTreeMap::from([(0, cut as u32)])
+    );
+    w.write_piece(0, cut as u32, &first[cut..]).await.unwrap();
+    w.complete_held(0).await.unwrap();
+    assert_eq!(w.held_bytes(0), 0);
+    assert!(!w.missing_chunks().contains(&0));
+    let rest: Vec<u32> = (1..cl.chunks.len() as u32).collect();
+    write_all(&mut w, &data, &cl, &rest).await;
+    w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
+    assert_eq!(fs::read(final_path(&e.root)).unwrap(), data);
+}
+
+/// Held bytes that were damaged on disk fail the chunk's check: it is no
+/// longer held, so it is asked for whole, and then verifies.
+#[tokio::test]
+async fn a_chunk_whose_held_bytes_were_damaged_is_asked_for_whole() {
+    let e = env();
+    let data = content(31);
+    let cl = chunk_list(&data);
+    let first = piece(&data, &cl, 0);
+    {
+        let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+        w.write_piece(0, 0, &first[..1000]).await.unwrap();
+    }
+    let mut bytes = fs::read(part_path(&e.root)).unwrap();
+    bytes[10] ^= 0xFF;
+    fs::write(part_path(&e.root), &bytes).unwrap();
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    assert_eq!(w.held_bytes(0), 1000);
+    w.write_piece(0, 1000, &first[1000..]).await.unwrap();
+    let err = w.complete_held(0).await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(w.held_bytes(0), 0);
+    assert!(w.missing_chunks().contains(&0));
+    w.write_chunk(0, first).await.unwrap();
+    assert!(!w.missing_chunks().contains(&0));
+}
+
+/// A piece must continue the bytes held, or start the chunk afresh.
+#[tokio::test]
+async fn a_piece_that_does_not_continue_the_chunk_is_rejected() {
+    let e = env();
+    let data = content(37);
+    let cl = chunk_list(&data);
+    let first = piece(&data, &cl, 0);
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    w.write_piece(0, 0, &first[..100]).await.unwrap();
+    let err = w.write_piece(0, 50, &first[50..150]).await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    // Past the end of the chunk.
+    let len = first.len() as u32;
+    let err = w
+        .write_piece(0, 100, &vec![0; len as usize])
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    // Not all of it written yet.
+    assert!(w.complete_held(0).await.is_err());
+    // From the start again: the held count starts over.
+    w.write_piece(0, 0, &first[..10]).await.unwrap();
+    assert_eq!(w.held_bytes(0), 10);
+}
+
 #[tokio::test]
 async fn adopts_unrecorded_part_file_by_rechunking() {
     let e = env();
@@ -409,6 +501,7 @@ async fn record_covering_part_of_a_chunk_does_not_adopt_it() {
                 expected_hash: *blake3::hash(&data).as_bytes(),
                 size: data.len() as u64,
                 ranges,
+                held: Vec::new(),
                 updated_at: 0,
             },
         )

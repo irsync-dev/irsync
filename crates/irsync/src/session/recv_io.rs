@@ -539,7 +539,16 @@ pub(super) async fn open_writer(
         }
     }
     let mut bases = match old_size {
-        Some(size) if !remote.is_empty() => basis_specs(&digest.chunks, &remote, size, w.inplace()),
+        // A chunk partly written by an earlier connection continues raw
+        // from where it stopped: no basis for it.
+        Some(size) if !remote.is_empty() => {
+            let unheld: Vec<u32> = remote
+                .iter()
+                .copied()
+                .filter(|&i| w.held_bytes(i) == 0)
+                .collect();
+            basis_specs(&digest.chunks, &unheld, size, w.inplace())
+        }
         _ => Vec::new(),
     };
     let gate = w
@@ -802,6 +811,10 @@ async fn request_chunks(
                 .iter()
                 .map(|&i| sender_idx(route.idx_base, i))
                 .collect(),
+            // Chunks with a basis are never partly written (see
+            // `open_writer`), nor is a chunk in place; the raw ones go
+            // with what is held through `Receiver::send_need`.
+            held: Default::default(),
         }))
         .await;
     // Checked after the wait for room, and the lock let go before queueing.
@@ -813,6 +826,7 @@ async fn request_chunks(
         out.send_paced(Msg::Need(NeedChunks {
             file_id,
             chunk_idx: Vec::new(),
+            held: Default::default(),
         }))
         .await;
     }
@@ -1225,17 +1239,26 @@ fn queue_record(
     });
 }
 
-/// Chunk count of a data stream's range, if it lines up with the chunk list.
-fn range_len(chunks: &[ChunkRecord], first: usize, offset: u64, length: u64) -> Option<usize> {
+/// Chunk count of a data stream's range, if it lines up with the chunk
+/// list, and where in its first chunk it starts (bytes the receiver held of
+/// it, `NeedChunks.held`).
+fn range_len(
+    chunks: &[ChunkRecord],
+    first: usize,
+    offset: u64,
+    length: u64,
+) -> Option<(usize, u32)> {
     let start = chunks.get(first)?;
-    if start.offset != offset || length == 0 {
+    let skip = offset.checked_sub(start.offset)?;
+    if skip >= u64::from(start.len) || length == 0 {
         return None;
     }
+    // Bytes of the range up to the end of each chunk.
     let mut sum = 0u64;
     for (k, c) in chunks[first..].iter().enumerate() {
-        sum += u64::from(c.len);
+        sum += u64::from(c.len) - if k == 0 { skip } else { 0 };
         if sum == length {
-            return Some(k + 1);
+            return Some((k + 1, skip as u32));
         }
         if sum > length {
             return None;
@@ -1307,71 +1330,133 @@ async fn read_range(
 ) -> usize {
     let file_id = header.file_id;
     let first = header.first_chunk_idx as usize + route.idx_base as usize;
-    let Some(n) = range_len(&route.digest.chunks, first, header.offset, header.length) else {
+    let Some((n, skip)) = range_len(&route.digest.chunks, first, header.offset, header.length)
+    else {
         tracing::warn!(file_id, "data stream range does not match the chunk list");
         stop(s, 1);
         return usize::MAX;
     };
+    // Elsewhere than in place, each piece of a chunk goes into the `.part`
+    // as it arrives (`FileWriter::write_piece`), so a connection that
+    // drops mid-chunk leaves them for the next request to continue from.
+    // In place only verified bytes may reach the file: the pieces are
+    // gathered and the chunk written once checked, as a whole.
+    let pieces = route.gate.is_none();
+    if skip > 0 && !pieces {
+        tracing::warn!(file_id, "data stream starts inside a chunk in place");
+        stop(s, 1);
+        return usize::MAX;
+    }
+    // Chunks whose frames all arrived.
     let mut arrived = 0;
-    for k in 0..n {
-        let frame = {
-            let _recv = ctx.meter.start(Activity::Recv);
-            read_msg_tapped::<DataChunk, _>(s, tap).await
-        };
-        let frame = match frame {
-            Ok(Some(c)) => c,
-            Ok(None) => break,
-            Err(e) => {
-                tracing::debug!(file_id, error = %e, "data stream failed");
+    // The sender broke the protocol: the stream is stopped with code 1.
+    let mut broken = false;
+    'chunks: for k in 0..n {
+        let idx = (first + k) as u32;
+        let len = route.digest.chunks[first + k].len;
+        let start = if k == 0 { skip } else { 0 };
+        let mut at = start;
+        // In place: the chunk's bytes, gathered.
+        let mut whole: Vec<u8> = Vec::new();
+        // Operations instead of bytes: the rebuilt chunk, if the rebuild worked.
+        let mut rebuilt: Option<Option<Vec<u8>>> = None;
+        // The pieces so far went into the writer (one it rejected is not
+        // completed, and the chunk stays missing).
+        let mut kept = true;
+        while at < len {
+            let frame = {
+                let _recv = ctx.meter.start(Activity::Recv);
+                read_msg_tapped::<DataChunk, _>(s, tap).await
+            };
+            let frame = match frame {
+                Ok(Some(c)) => c,
+                Ok(None) => break 'chunks,
+                Err(e) => {
+                    tracing::debug!(file_id, error = %e, "data stream failed");
+                    break 'chunks;
+                }
+            };
+            if !frame.ops.is_empty() {
+                // Operations rebuild a whole chunk, in one frame.
+                if at != 0 {
+                    tracing::warn!(file_id, idx, "operations for part of a chunk");
+                    broken = true;
+                    break 'chunks;
+                }
+                // The chunk's bytes rebuilt from operations against the old
+                // file (outside the writer lock), with what they cost on the
+                // wire. A rebuild that fails leaves the chunk missing.
+                let ops: io::Result<Vec<Op>> = frame.ops.into_iter().map(Op::from_wire).collect();
+                let (data, wire) = match ops {
+                    Ok(ops) => {
+                        let wire = encoded_len(&ops) as u64;
+                        (
+                            rebuild(route, first + k, ops, ctx.meter.clone()).await,
+                            wire,
+                        )
+                    }
+                    Err(e) => (Err(e), 0),
+                };
+                account(ctx, route, bytes, wire);
+                rebuilt = Some(match data {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        tracing::debug!(file_id, idx, error = %e, "rebuilding a chunk failed");
+                        None
+                    }
+                });
                 break;
             }
-        };
-        arrived += 1;
-        // The chunk's bytes, raw or rebuilt from operations against the
-        // old file (outside the writer lock), with what they cost on the
-        // wire. A rebuild that fails leaves the chunk missing.
-        let rebuilt = !frame.ops.is_empty();
-        let (data, wire) = if rebuilt {
-            let ops: io::Result<Vec<Op>> = frame.ops.into_iter().map(Op::from_wire).collect();
-            let (ops, wire) = match ops {
-                Ok(ops) => {
-                    let wire = encoded_len(&ops) as u64;
-                    (
-                        rebuild(route, first + k, ops, ctx.meter.clone()).await,
-                        wire,
-                    )
-                }
-                Err(e) => (Err(e), 0),
-            };
-            match ops {
-                Ok(d) => (Some(d), wire),
-                Err(e) => {
-                    tracing::debug!(file_id, idx = first + k, error = %e, "rebuilding a chunk failed");
-                    (None, wire)
-                }
+            let piece = frame.data;
+            if piece.is_empty() || u64::from(at) + piece.len() as u64 > u64::from(len) {
+                tracing::warn!(file_id, idx, "data stream piece does not fit its chunk");
+                broken = true;
+                break 'chunks;
             }
-        } else {
-            let wire = frame.data.len() as u64;
-            (Some(frame.data), wire)
-        };
-        ctx.progress.store(true, Ordering::Relaxed);
-        ctx.busy.received.fetch_add(wire, Ordering::Relaxed);
-        ctx.activity.fetch_add(1, Ordering::Relaxed);
-        ctx.hooks
-            .bus
-            .emit(super::Event::FileBytes(route.path.clone(), wire));
-        ctx.hooks.bus.emit(super::Event::Bytes(wire));
-        ctx.meter.add(Counter::BytesLiteral, wire);
-        let _total = bytes.fetch_add(wire, Ordering::Relaxed) + wire;
-        #[cfg(feature = "test-hooks")]
-        if let Some(f) = &ctx.fault {
-            f.observe(_total, &ctx.conn);
+            account(ctx, route, bytes, piece.len() as u64);
+            if pieces {
+                let mut guard = route.slot.lock().await;
+                let Some(w) = guard.as_mut() else {
+                    // The writer was retired (new chunk list, failure): drop the rest.
+                    drop(guard);
+                    stop(s, 0);
+                    return n;
+                };
+                if kept {
+                    let was_open = w.is_open();
+                    let res = w.write_piece(idx, at, &piece).await;
+                    if !was_open && w.is_open() {
+                        ctx.hooks.event("open", &route.path);
+                    }
+                    match res {
+                        Ok(()) => {}
+                        // Not where the writer's bytes of the chunk end.
+                        Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                            tracing::debug!(file_id, idx, error = %e, "rejected piece");
+                            kept = false;
+                        }
+                        Err(e) => {
+                            drop(guard);
+                            let _ = events.send(Ev::Recv(Done::StreamFailed {
+                                file_id,
+                                gen: route.gen,
+                                msg: e.to_string(),
+                            }));
+                            stop(s, 0);
+                            return n;
+                        }
+                    }
+                }
+            } else {
+                whole.extend_from_slice(&piece);
+            }
+            at += piece.len() as u32;
         }
-        let idx = (first + k) as u32;
-        let Some(data) = data else {
+        arrived += 1;
+        if rebuilt == Some(None) || !kept {
             settle(route, idx);
             continue;
-        };
+        }
         if let Some(g) = &route.gate {
             // In place: wait for the chunks before this one.
             if !g.admit(idx).await {
@@ -1386,10 +1471,15 @@ async fn read_range(
             stop(s, 0);
             return n;
         };
-        match write_into(ctx, route, w, idx, &data, true).await {
+        let res = match &rebuilt {
+            Some(Some(data)) => write_into(ctx, route, w, idx, data, true).await,
+            _ if pieces => w.complete_held(idx).await,
+            _ => write_into(ctx, route, w, idx, &whole, true).await,
+        };
+        match res {
             Ok(()) => {
                 ctx.hooks.event("chunk", &route.path);
-                if rebuilt {
+                if rebuilt.is_some() {
                     ctx.hooks.event("ops", &route.path);
                 }
             }
@@ -1418,6 +1508,9 @@ async fn read_range(
             promised = n,
             "incomplete range; its missing chunks stay missing"
         );
+        if broken {
+            stop(s, 1);
+        }
         // In place: the cursor must not wait for chunks that will not come.
         for k in arrived..n {
             settle(route, (first + k) as u32);
@@ -1435,6 +1528,24 @@ async fn read_range(
         }
     }
     n
+}
+
+/// Counts `wire` bytes of a data stream as received: progress for the
+/// watchdogs and the display, and the session's byte count.
+fn account(ctx: &Ctx, route: &Route, bytes: &AtomicU64, wire: u64) {
+    ctx.progress.store(true, Ordering::Relaxed);
+    ctx.busy.received.fetch_add(wire, Ordering::Relaxed);
+    ctx.activity.fetch_add(1, Ordering::Relaxed);
+    ctx.hooks
+        .bus
+        .emit(super::Event::FileBytes(route.path.clone(), wire));
+    ctx.hooks.bus.emit(super::Event::Bytes(wire));
+    ctx.meter.add(Counter::BytesLiteral, wire);
+    let _total = bytes.fetch_add(wire, Ordering::Relaxed) + wire;
+    #[cfg(feature = "test-hooks")]
+    if let Some(f) = &ctx.fault {
+        f.observe(_total, &ctx.conn);
+    }
 }
 
 pub(super) async fn accept_streams(
@@ -1687,9 +1798,15 @@ mod tests {
     #[test]
     fn range_len_requires_exact_chunk_boundaries() {
         let c = chunks(&[10, 20, 30]);
-        assert_eq!(range_len(&c, 0, 0, 60), Some(3));
-        assert_eq!(range_len(&c, 1, 10, 20), Some(1));
-        assert_eq!(range_len(&c, 1, 10, 50), Some(2));
+        assert_eq!(range_len(&c, 0, 0, 60), Some((3, 0)));
+        assert_eq!(range_len(&c, 1, 10, 20), Some((1, 0)));
+        assert_eq!(range_len(&c, 1, 10, 50), Some((2, 0)));
+        // Starting inside the first chunk, after bytes the receiver holds.
+        assert_eq!(range_len(&c, 1, 17, 13), Some((1, 7)));
+        assert_eq!(range_len(&c, 1, 29, 31), Some((2, 19)));
+        // Not inside it: before it, or at (or past) its end.
+        assert_eq!(range_len(&c, 1, 9, 21), None);
+        assert_eq!(range_len(&c, 1, 30, 30), None);
         // Wrong offset, a length ending mid-chunk, past the end, empty.
         assert_eq!(range_len(&c, 1, 0, 20), None);
         assert_eq!(range_len(&c, 0, 0, 15), None);

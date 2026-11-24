@@ -35,9 +35,10 @@ Where the code and the spec differ, the code is what shipped.
    (added 2026-11-09): 100 Mbit/s each way and 80 ms round trip, clean,
    for measuring `--parallel` (`IRSYNC_DECISIONS.md`, 2.1 item 7).
    Nor `test-dead-zones` (added 2026-11-24 for #271): `test-slow`'s link
-   with a 6 s dead zone every 1.5 MiB, repeated, so that a big push needs
-   several connections. 1.5 MiB is above the largest chunk (1 MiB): a
-   connection that cannot carry one whole chunk delivers nothing.
+   with a 6 s dead zone every 512 KiB (1.5 MiB at first), repeated, so that
+   a big push needs several connections. 512 KiB is below the largest chunk
+   (1 MiB): since #281 a chunk continues where the last connection left it,
+   so one that no connection can carry whole still arrives.
 
 3. **When the dead zone opens.** After 256 KiB to 4 MiB of traffic (drawn per
    client process), not after a fixed time. One per client process, so one per

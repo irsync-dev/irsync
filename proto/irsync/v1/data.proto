@@ -2,7 +2,10 @@
 syntax = "proto3";
 package irsync.v1;
 
-// One unidirectional stream per range, sender -> receiver.
+// One unidirectional stream per range, sender -> receiver. `offset` is
+// where the range starts in the file: the first chunk's offset, or inside
+// the first chunk when the receiver already holds that many of its bytes
+// (`NeedChunks.held`). `length` counts from `offset`.
 message DataStreamHeader {
   bytes session_id = 1;
   uint64 file_id = 2;
@@ -10,10 +13,13 @@ message DataStreamHeader {
   uint64 length = 4;
   uint32 first_chunk_idx = 5;
 }
-// One chunk per frame: its bytes in `data` (<= 1 MiB), or, for a chunk the
-// receiver offered a `ChunkBasis` for, the operations that rebuild it in
-// `ops` (then `data` is empty). The rebuilt bytes must hash to the chunk's
-// record like any other; the receiver verifies them before writing.
+// A piece of a chunk's bytes in `data`, at most 64 KiB: a chunk's bytes
+// travel as one or more pieces, in order, and a piece never runs into the
+// next chunk. The receiver keeps the pieces of a chunk that did not finish,
+// so a later request can start after them. Or, for a chunk the receiver
+// offered a `ChunkBasis` for, the operations that rebuild the whole chunk
+// in `ops`, in one frame (then `data` is empty). The bytes must hash to
+// the chunk's record like any other; the receiver verifies them.
 message DataChunk {
   bytes data = 1;
   repeated DeltaOp ops = 2;

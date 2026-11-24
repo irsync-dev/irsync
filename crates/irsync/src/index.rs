@@ -5,7 +5,7 @@
 use crate::fs::paths::RelPath;
 use crate::telemetry::meter::{Activity, Meter};
 use irsync_proto::chunk::{ChunkRecord, FileDigest, CHUNK_PARAMS};
-use irsync_proto::v1::{FileEntry, Hash, RangeSet};
+use irsync_proto::v1::{FileEntry, Hash, PartialRanges, Range, RangeSet};
 use prost::Message;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -242,10 +242,14 @@ impl Reader<'_> {
             })
             .optional()?;
         row.map(|(h, size, ranges, updated_at)| {
+            let stored = PartialRanges::decode(&ranges[..])?;
             Ok(Partial {
                 expected_hash: arr(h, "partial hash")?,
                 size,
-                ranges: RangeSet::decode(&ranges[..])?,
+                ranges: RangeSet {
+                    ranges: stored.ranges,
+                },
+                held: stored.held,
                 updated_at,
             })
         })
@@ -702,6 +706,9 @@ pub struct Partial {
     pub expected_hash: [u8; 32],
     pub size: u64,
     pub ranges: RangeSet,
+    /// Chunks not verified yet whose first bytes are in the `.part`:
+    /// offset is the chunk's, length the bytes written.
+    pub held: Vec<Range>,
     /// Unix seconds of the last progress update; stored as given.
     pub updated_at: i64,
 }
@@ -1111,7 +1118,11 @@ impl Index {
                 path.as_bytes(),
                 &p.expected_hash[..],
                 p.size as i64,
-                p.ranges.encode_to_vec(),
+                PartialRanges {
+                    ranges: p.ranges.ranges.clone(),
+                    held: p.held.clone(),
+                }
+                .encode_to_vec(),
                 p.updated_at
             ])?;
         Ok(())

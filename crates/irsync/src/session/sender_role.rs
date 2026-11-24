@@ -9,7 +9,7 @@
 //! Per-file state lives only while a file is in flight: it is dropped at its
 //! final ack or when the sender gives up on it.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -161,6 +161,9 @@ struct Pending {
     /// once it has sent it), so pending bases sit outside the budget,
     /// bounded by the file's chunk count.
     bases: HashMap<u32, Basis>,
+    /// Bytes the receiver holds of some of `idxs` (see `NeedChunks.held`),
+    /// from the latest request that named each.
+    held: BTreeMap<u32, u32>,
 }
 
 struct SFile {
@@ -901,6 +904,14 @@ impl SenderRole {
             .into_iter()
             .filter(|&i| (i as usize) < digest.chunks.len())
             .collect();
+        // What the receiver holds of the chunks it asks for: those start
+        // there (`send::split_ranges` ignores a count that is not less
+        // than the chunk).
+        let from: BTreeMap<u32, u32> = n
+            .held
+            .into_iter()
+            .filter(|(i, n)| *n > 0 && idxs.contains(i))
+            .collect();
         // Everything not requested so far is matched. An empty request says
         // nothing (it may be "nothing for now", with chunks that have a
         // basis still to come), so it reports nothing: a file the receiver
@@ -941,18 +952,26 @@ impl SenderRole {
             let p = f.pending.get_or_insert_with(Pending::default);
             for i in &idxs {
                 p.bases.remove(i);
+                p.held.remove(i);
             }
             p.idxs.extend(idxs);
             p.bases.extend(bases);
+            p.held.extend(from);
             return;
         }
-        self.spawn_send(file_id, idxs, bases);
+        self.spawn_send(file_id, idxs, bases, from);
     }
 
     /// Starts the file's send task for `idxs` (the file is in flight, with
     /// a digest, and has no send task running).
     #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
-    fn spawn_send(&mut self, file_id: u64, idxs: Vec<u32>, mut bases: HashMap<u32, Basis>) {
+    fn spawn_send(
+        &mut self,
+        file_id: u64,
+        idxs: Vec<u32>,
+        mut bases: HashMap<u32, Basis>,
+        held: BTreeMap<u32, u32>,
+    ) {
         let Some(f) = self.files.get_mut(&file_id) else {
             return;
         };
@@ -991,6 +1010,7 @@ impl SenderRole {
                                 &digest,
                                 &idxs[..1],
                                 first,
+                                &held,
                                 &sent,
                                 clone.clone(),
                             )
@@ -1005,6 +1025,7 @@ impl SenderRole {
                                         &digest,
                                         &idxs[1..],
                                         bases,
+                                        &held,
                                         &sent,
                                         clone,
                                     )
@@ -1016,13 +1037,15 @@ impl SenderRole {
                     }
                     _ => {
                         sender
-                            .send_chunks_counted(file_id, &key, &digest, &idxs, bases, &sent, clone)
+                            .send_chunks_counted(
+                                file_id, &key, &digest, &idxs, bases, &held, &sent, clone,
+                            )
                             .await
                     }
                 };
                 #[cfg(not(feature = "test-hooks"))]
                 let result = sender
-                    .send_chunks_counted(file_id, &key, &digest, &idxs, bases, &sent, clone)
+                    .send_chunks_counted(file_id, &key, &digest, &idxs, bases, &held, &sent, clone)
                     .await;
                 let _ = events.send(Ev::Send(Done::Sent {
                     file_id,
@@ -1088,7 +1111,7 @@ impl SenderRole {
         }
         // What was requested while the task ran (a retry dropped it).
         if let Some(p) = self.files.get_mut(&file_id).and_then(|f| f.pending.take()) {
-            self.spawn_send(file_id, p.idxs.into_iter().collect(), p.bases);
+            self.spawn_send(file_id, p.idxs.into_iter().collect(), p.bases, p.held);
         }
     }
 
@@ -2485,7 +2508,7 @@ mod tests {
         assert_eq!(s.files[&1].bases.len(), 2);
         s.on_need(NeedChunks {
             file_id: 1,
-            chunk_idx: Vec::new(),
+            ..NeedChunks::default()
         });
         assert_eq!(s.basis_held, 0);
         assert_eq!(s.files[&1].bases_held, 0);

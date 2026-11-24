@@ -18,7 +18,7 @@ version is refused with `VERSION_MISMATCH`.
 | Item | Value |
 | --- | --- |
 | ALPN | `irsync/1` |
-| `PROTOCOL_VERSION` | `5`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
+| `PROTOCOL_VERSION` | `6`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
 | Framing | A protobuf varint length (at most 4 bytes for `MAX_FRAME`), then that many bytes of one protobuf message: protobuf's standard length-delimited form |
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
@@ -30,7 +30,7 @@ version is refused with `VERSION_MISMATCH`.
 | `Hello.filters` | At most 16,384 rules; a pattern at most 4,096 bytes; all patterns together at most 1 MiB. The daemon refuses a `Hello` with more. |
 | Path in `PlanItem` and `CheckLink` | At most 64 KiB, and a valid relative path; anything else is a protocol error |
 | Chunk basis | Blocks of 512 B to 4 KiB, at most 8,192 blocks; at most 32 MiB of bases held per session |
-| `DataChunk` | One chunk per frame, at most 1 MiB of data |
+| `DataChunk` | A piece of one chunk, at most 64 KiB of data; or the operations that rebuild one whole chunk |
 | Heartbeat | At most one every 500 ms |
 | Hello timeout | The daemon waits 10 s for `Hello` |
 
@@ -78,7 +78,11 @@ unidirectional ones.
 - **Data streams** are unidirectional, from sender to receiver, one per run of
   contiguous requested chunks of one file, a run being cut at 64 MiB. Each
   starts with a `DataStreamHeader` (session id, file id, offset, length,
-  index of the first chunk) and carries one `DataChunk` frame per chunk. A
+  index of the first chunk) and carries each chunk's bytes in `DataChunk`
+  frames of at most 64 KiB, in order; a frame never runs into the next chunk.
+  The offset is the first chunk's, or inside it when the receiver already
+  holds that chunk's first bytes (see
+  [Requests, bases and operations](#requests-bases-and-operations)). A
   sender keeps at most `--parallel` of them open, 128 by default; a daemon that
   sends always uses 128.
 
@@ -229,6 +233,16 @@ it. The sender keeps a basis for that one request and drops it; a chunk asked
 for again comes raw. A malformed basis is ignored. A sender that holds more
 than 32 MiB of bases fails the session.
 
+`NeedChunks.held` names chunks of the request whose first bytes the
+receiver already holds, with how many: the pieces an earlier connection
+delivered before it dropped, at most 16 chunks per file. The sender starts
+such a chunk's data there, raw, in a stream of its own whose offset is
+inside the chunk. The receiver writes each piece into the `.part` as it
+arrives and verifies the chunk against its hash once it is whole; a chunk
+that fails is asked for again from its start. The receiver sends no basis for
+a chunk it holds bytes of. In place (`--inplace`) it holds none: only
+verified chunks reach the file there.
+
 A chunk with a basis may arrive as `DataChunk.ops` instead of `data`: a list
 of literals and copies (`offset`, `len` in the receiver's old file) that add up
 to the chunk. The sender uses operations only when they are at least a quarter
@@ -260,7 +274,8 @@ Nothing is listed again, and the sender shows its progress from these. See
 `session.proto` describes what each side stores in its index for a session
 that may resume: the plan (`SessionPlan`, with `PlanEntry` per file) and the
 progress (`SessionProgress`). These messages never go on the wire. Partial
-files are stored as `RangeSet`s of verified bytes. See
+files are stored as `PartialRanges`: the verified bytes, and the first bytes
+of chunks that did not finish (`held`). See
 [Sessions and resume](../explanation/sessions-and-resume.md).
 
 ## Cross-implementation check

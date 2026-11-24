@@ -579,6 +579,7 @@ mod tests {
             msg: Some(control::Msg::Need(irsync_proto::v1::NeedChunks {
                 file_id: 9,
                 chunk_idx: vec![1, 2],
+                ..Default::default()
             })),
         };
         let mut buf = Vec::new();

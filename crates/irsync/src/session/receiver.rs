@@ -655,8 +655,12 @@ impl Receiver {
             return;
         };
         // Held by others only for local disk work (see `Slot`).
-        let missing = match route.slot.lock().await.as_ref() {
-            Some(w) => w.missing_chunks(),
+        let (missing, held) = match route.slot.lock().await.as_ref() {
+            Some(w) => {
+                let missing = w.missing_chunks();
+                let held = w.held_of(&missing);
+                (missing, held)
+            }
             None => return,
         };
         if missing.is_empty() || route.pending.load(Ordering::SeqCst) != 0 {
@@ -674,19 +678,25 @@ impl Receiver {
         }
         tracing::info!(path = ?f.path, missing = missing.len(), "re-requesting chunks");
         route.pending.fetch_add(missing.len(), Ordering::SeqCst);
+        let held = held
+            .into_iter()
+            .map(|(i, n)| (sender_idx(route.idx_base, i), n))
+            .collect();
         self.send_need(
             file_id,
             missing
                 .into_iter()
                 .map(|i| sender_idx(route.idx_base, i))
                 .collect(),
+            &held,
         );
     }
 
     /// Requests chunks `idxs` (sender indices) of `file_id`, in pieces
-    /// that fit a frame (see `limits::need_pieces`).
-    fn send_need(&self, file_id: u64, idxs: Vec<u32>) {
-        for n in need_pieces(file_id, idxs, need_piece(&self.ctx.hooks)) {
+    /// that fit a frame (see `limits::need_pieces`); `held`: the bytes
+    /// held of some of them (see `NeedChunks.held`).
+    fn send_need(&self, file_id: u64, idxs: Vec<u32>, held: &std::collections::BTreeMap<u32, u32>) {
+        for n in need_pieces(file_id, idxs, held, need_piece(&self.ctx.hooks)) {
             self.out.send(Msg::Need(n));
         }
     }
@@ -1090,6 +1100,7 @@ impl Receiver {
                 self.out.send(Msg::Need(NeedChunks {
                     file_id,
                     chunk_idx: Vec::new(),
+                    held: Default::default(),
                 }));
                 self.confirm(file_id, Held::Identical(file));
                 return;
@@ -1136,12 +1147,21 @@ impl Receiver {
             self.out.send(Msg::Need(NeedChunks {
                 file_id,
                 chunk_idx: Vec::new(),
+                held: Default::default(),
             }));
             self.spawn_verify(file_id, gen, writer);
             return;
         }
         f.st = St::Receiving;
         f.recv = Some(tracing::debug_span!(parent: &f.span, "recv"));
+        // Chunks an earlier connection left partly written: requested from
+        // where they stopped. They have no basis (see `open_writer`), so
+        // they are among the raw ones.
+        let held: std::collections::BTreeMap<u32, u32> = writer
+            .held_of(&remote)
+            .into_iter()
+            .map(|(i, n)| (sender_idx(idx_base, i), n))
+            .collect();
         let route = Route {
             gen,
             slot: Arc::new(tokio::sync::Mutex::new(Some(writer))),
@@ -1182,6 +1202,7 @@ impl Receiver {
             self.send_need(
                 file_id,
                 raw.into_iter().map(|i| sender_idx(idx_base, i)).collect(),
+                &held,
             );
         }
         if !request.is_empty() {
@@ -1199,6 +1220,7 @@ impl Receiver {
                         .into_iter()
                         .map(|i| sender_idx(idx_base, i))
                         .collect(),
+                    &held,
                 ),
             }
         }

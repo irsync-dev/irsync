@@ -141,7 +141,7 @@ The first hides the per-file round trips; the second fills the link.
 | Extra receiver pass after last byte | none (MD5 computed while writing) | none (BLAKE3 folded from the verified chunks) |
 | Streams | one, in order | up to `--parallel` QUIC streams (128 by default), runs split at 64 MiB |
 | Files in flight | pipelined, bounded by the window | up to 4,096 per session, fewer when the open-file limit is low |
-| Resume | `--partial` keeps bytes; the next run re-checksums them | chunk-granular, verified ranges persisted; plan persisted |
+| Resume | `--partial` keeps bytes; the next run re-checksums them | chunk-granular, verified ranges persisted, an unfinished chunk continued; plan persisted |
 | In place, append | `--inplace`, `--append`, `--append-verify` | the same three; by default a `.part` that is a reflink clone of the old file where the filesystem allows, so only changed chunks are written and the file is still renamed into place |
 | Per-block integrity | 4-byte rolling + 2..16-byte MD5 | 32-byte BLAKE3, checked when the sender reads and before the receiver writes |
 | Whole-file integrity | MD5 (xxh3 negotiable in 3.2+), one redo | BLAKE3, folded from the verified chunks; a mismatch re-offers the file once |

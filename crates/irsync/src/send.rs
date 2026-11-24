@@ -1,8 +1,11 @@
 //! Sender data streams: requested chunks of a file go out over parallel
 //! unidirectional QUIC streams, one stream per contiguous range.
 //!
-//! Each stream carries one `DataStreamHeader` frame followed by one
-//! `DataChunk` frame per chunk. Chunks are re-hashed as they are read; a
+//! Each stream carries one `DataStreamHeader` frame followed by each
+//! chunk's bytes in `DataChunk` frames of at most [`DATA_PIECE`] bytes, so a
+//! receiver keeps what arrived of a chunk when the connection drops, and a
+//! request can start a chunk where those bytes end (`NeedChunks.held`).
+//! Chunks are re-hashed as they are read; a
 //! mismatch with the digest means the file changed under us and is reported
 //! as `InvalidData` instead of sending stale bytes.
 //!
@@ -10,7 +13,7 @@
 //! file, see [`crate::delta`]) goes out as copy/literal operations when
 //! those are clearly smaller than the chunk, as its bytes otherwise.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -21,6 +24,7 @@ use std::time::Duration;
 use iroh::endpoint::{Connection, VarInt};
 use irsync_proto::chunk::{ChunkRecord, FileDigest};
 use irsync_proto::v1::{DataChunk, DataStreamHeader};
+use irsync_proto::DATA_PIECE;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -171,10 +175,12 @@ pub struct Sender {
     inner: Arc<Inner>,
 }
 
-/// A contiguous run of chunk indices, `first..=last`.
+/// A contiguous run of chunk indices, `first..=last`, starting `skip`
+/// bytes into the first: the bytes of it the receiver already holds.
 struct Range {
     first: usize,
     last: usize,
+    skip: u32,
 }
 
 impl Sender {
@@ -274,14 +280,25 @@ impl Sender {
         bases: HashMap<u32, Basis>,
     ) -> io::Result<u64> {
         let sent = Arc::new(AtomicU64::new(0));
-        self.send_chunks_counted(file_id, path, digest, idxs, bases, &sent, None)
-            .await
+        self.send_chunks_counted(
+            file_id,
+            path,
+            digest,
+            idxs,
+            bases,
+            &BTreeMap::new(),
+            &sent,
+            None,
+        )
+        .await
     }
 
     /// [`Sender::send_chunks_against`], adding the bytes to `sent` as they
     /// go on the wire, so a caller that cancels the send still knows what
     /// went. Returns the bytes this call sent. With `clone`, the chunks are
     /// read from that clone of the file (`--paranoid`), not from the file.
+    /// `held`: chunks the receiver holds the first bytes of (index ->
+    /// bytes); they start there, raw.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_chunks_counted(
         &self,
@@ -290,6 +307,7 @@ impl Sender {
         digest: &FileDigest,
         idxs: &[u32],
         bases: HashMap<u32, Basis>,
+        held: &BTreeMap<u32, u32>,
         sent: &Arc<AtomicU64>,
         clone: Option<Arc<Cloned>>,
     ) -> io::Result<u64> {
@@ -304,7 +322,7 @@ impl Sender {
                 format!("{name}: chunk index {bad} out of range"),
             ));
         }
-        let ranges = split_ranges(&sorted, digest, self.inner.split_threshold);
+        let ranges = split_ranges(&sorted, digest, held, self.inner.split_threshold);
         let digest = Arc::new(digest.clone());
         let root = self.inner.root.clone();
         let name = Arc::new(name);
@@ -391,19 +409,36 @@ impl Sender {
 }
 
 /// Groups sorted, deduplicated indices into consecutive runs, splitting a run
-/// before the range would exceed `threshold` bytes.
-fn split_ranges(sorted: &[usize], digest: &FileDigest, threshold: u64) -> Vec<Range> {
+/// before the range would exceed `threshold` bytes. A chunk the receiver
+/// holds part of (`held`: index -> bytes, less than the chunk) starts a
+/// run of its own, from where its held bytes end.
+fn split_ranges(
+    sorted: &[usize],
+    digest: &FileDigest,
+    held: &BTreeMap<u32, u32>,
+    threshold: u64,
+) -> Vec<Range> {
     let mut out: Vec<Range> = Vec::new();
     let mut bytes = 0u64;
     for &i in sorted {
-        let len = digest.chunks[i].len as u64;
+        let len = digest.chunks[i].len;
+        let skip = held
+            .get(&(i as u32))
+            .copied()
+            .filter(|&n| n < len)
+            .unwrap_or(0);
+        let len = u64::from(len - skip);
         match out.last_mut() {
-            Some(r) if r.last + 1 == i && bytes + len <= threshold => {
+            Some(r) if skip == 0 && r.last + 1 == i && bytes + len <= threshold => {
                 r.last = i;
                 bytes += len;
             }
             _ => {
-                out.push(Range { first: i, last: i });
+                out.push(Range {
+                    first: i,
+                    last: i,
+                    skip,
+                });
                 bytes = len;
             }
         }
@@ -551,11 +586,12 @@ impl Inner {
         sent: &AtomicU64,
     ) -> io::Result<()> {
         let chunks = &digest.chunks[r.first..=r.last];
+        let skip = u64::from(r.skip);
         let header = DataStreamHeader {
             session_id: self.session_id.clone(),
             file_id,
-            offset: chunks[0].offset,
-            length: chunks.iter().map(|c| c.len as u64).sum(),
+            offset: chunks[0].offset + skip,
+            length: chunks.iter().map(|c| c.len as u64).sum::<u64>() - skip,
             first_chunk_idx: r.first as u32,
         };
         let meter = self.meter.get().map(|m| &**m);
@@ -575,39 +611,39 @@ impl Inner {
                 tap.finished();
                 return Ok(());
             }
-            let data = match next.take() {
+            let mut data = match next.take() {
                 Some(d) => d,
                 None => read_chunk(file, c, name, r.first + k, self.meter.get()).await?,
             };
             let idx = (r.first + k) as u32;
-            let (frame, n) = if bases.contains_key(&idx) {
+            // The receiver holds the first bytes: the rest goes raw.
+            let held = k == 0 && r.skip > 0;
+            if held {
+                data.drain(..r.skip as usize);
+            }
+            let frames = if !held && bases.contains_key(&idx) {
                 // Matching blocks against the receiver's bases is hashing
                 // work, not sending.
                 let _encoding = meter.map(|m| m.start(Activity::Hash));
                 payload(data, idx, bases.clone()).await?
             } else {
-                let n = data.len() as u64;
-                (
-                    DataChunk {
-                        data,
-                        ops: Vec::new(),
-                    },
-                    n,
-                )
+                pieces(data)
             };
-            {
-                // A `--bwlimit` pause holds the stream back like the peer's
-                // window does: sending, not waiting for the peer.
-                let _send = timed();
-                self.throttle(n).await;
-                write_msg_tapped(send, &frame, tap).await?;
-            }
-            if let Some(m) = meter {
-                m.add(Counter::BytesLiteral, n);
-            }
-            sent.fetch_add(n, Ordering::Relaxed);
-            if let Some(p) = self.progress.get() {
-                p(rel, SendProgress::Sent(n));
+            for (frame, n) in frames {
+                {
+                    // A `--bwlimit` pause holds the stream back like the peer's
+                    // window does: sending, not waiting for the peer.
+                    let _send = timed();
+                    self.throttle(n).await;
+                    write_msg_tapped(send, &frame, tap).await?;
+                }
+                if let Some(m) = meter {
+                    m.add(Counter::BytesLiteral, n);
+                }
+                sent.fetch_add(n, Ordering::Relaxed);
+                if let Some(p) = self.progress.get() {
+                    p(rel, SendProgress::Sent(n));
+                }
             }
         }
         {
@@ -649,14 +685,15 @@ fn stopped_not_receiving(e: &io::Error) -> bool {
         .is_some_and(|w| matches!(w, iroh::endpoint::WriteError::Stopped(c) if c.into_inner() == 0))
 }
 
-/// The frame for chunk `idx` given the receiver's basis for it: the
-/// operations when they are clearly smaller than the bytes, the bytes
-/// otherwise. With how many bytes it puts on the wire.
+/// The frames for chunk `idx` given the receiver's basis for it: the
+/// operations in one frame when they are clearly smaller than the bytes,
+/// the bytes in pieces otherwise. Each with how many bytes it puts on the
+/// wire.
 async fn payload(
     data: Vec<u8>,
     idx: u32,
     bases: Arc<HashMap<u32, Basis>>,
-) -> io::Result<(DataChunk, u64)> {
+) -> io::Result<Vec<(DataChunk, u64)>> {
     tokio::task::spawn_blocking(move || {
         let basis = &bases[&idx];
         let ops = encode(&data, basis);
@@ -666,20 +703,39 @@ async fn payload(
                 data: Vec::new(),
                 ops: ops.iter().map(Op::to_wire).collect(),
             };
-            (frame, n as u64)
+            vec![(frame, n as u64)]
         } else {
-            let n = data.len() as u64;
-            (
-                DataChunk {
-                    data,
-                    ops: Vec::new(),
-                },
-                n,
-            )
+            pieces(data)
         }
     })
     .await
     .map_err(io::Error::other)
+}
+
+/// A chunk's bytes (or the rest of them) as frames of at most
+/// [`DATA_PIECE`] bytes, each with its length.
+fn pieces(data: Vec<u8>) -> Vec<(DataChunk, u64)> {
+    if data.len() <= DATA_PIECE {
+        let n = data.len() as u64;
+        return vec![(
+            DataChunk {
+                data,
+                ops: Vec::new(),
+            },
+            n,
+        )];
+    }
+    data.chunks(DATA_PIECE)
+        .map(|p| {
+            (
+                DataChunk {
+                    data: p.to_vec(),
+                    ops: Vec::new(),
+                },
+                p.len() as u64,
+            )
+        })
+        .collect()
 }
 
 /// Reads chunk `idx` with `pread` and checks it still hashes to the digest.
@@ -789,7 +845,7 @@ mod tests {
     fn gap_starts_new_range() {
         let d = digest(&[10; 6]);
         assert_eq!(
-            spans(split_ranges(&[0, 1, 3, 4, 5], &d, 1000)),
+            spans(split_ranges(&[0, 1, 3, 4, 5], &d, &BTreeMap::new(), 1000)),
             [(0, 1), (3, 5)]
         );
     }
@@ -798,7 +854,7 @@ mod tests {
     fn oversize_chunk_goes_alone() {
         let d = digest(&[10, 50, 10]);
         assert_eq!(
-            spans(split_ranges(&[0, 1, 2], &d, 20)),
+            spans(split_ranges(&[0, 1, 2], &d, &BTreeMap::new(), 20)),
             [(0, 0), (1, 1), (2, 2)]
         );
     }
@@ -807,7 +863,7 @@ mod tests {
     fn exact_threshold_fits_one_more_does_not() {
         let d = digest(&[10; 5]);
         assert_eq!(
-            spans(split_ranges(&[0, 1, 2, 3, 4], &d, 20)),
+            spans(split_ranges(&[0, 1, 2, 3, 4], &d, &BTreeMap::new(), 20)),
             [(0, 1), (2, 3), (4, 4)]
         );
     }
@@ -819,6 +875,36 @@ mod tests {
         let mut idx = vec![3usize, 1, 0, 1, 3];
         idx.sort_unstable();
         idx.dedup();
-        assert_eq!(spans(split_ranges(&idx, &d, 1000)), [(0, 1), (3, 3)]);
+        assert_eq!(
+            spans(split_ranges(&idx, &d, &BTreeMap::new(), 1000)),
+            [(0, 1), (3, 3)]
+        );
+    }
+
+    /// A chunk the receiver holds part of starts a run of its own, from
+    /// where its bytes end; the chunks after it may join that run. A count
+    /// that is not less than the chunk is ignored.
+    #[test]
+    fn a_held_chunk_starts_its_own_range_after_its_held_bytes() {
+        let d = digest(&[10; 5]);
+        let held = BTreeMap::from([(2, 4), (4, 10)]);
+        let r = split_ranges(&[0, 1, 2, 3, 4], &d, &held, 1000);
+        let got: Vec<(usize, usize, u32)> = r.iter().map(|r| (r.first, r.last, r.skip)).collect();
+        assert_eq!(got, [(0, 1, 0), (2, 4, 4)]);
+        // The threshold counts only the bytes still to send.
+        let r = split_ranges(&[2, 3], &d, &BTreeMap::from([(2, 5)]), 15);
+        assert_eq!(spans(r), [(2, 3)]);
+    }
+
+    /// Bytes go out in pieces of at most `DATA_PIECE`, in order.
+    #[test]
+    fn a_chunk_goes_out_in_pieces() {
+        let data: Vec<u8> = (0..DATA_PIECE * 2 + 5).map(|i| i as u8).collect();
+        let frames = pieces(data.clone());
+        let lens: Vec<u64> = frames.iter().map(|(_, n)| *n).collect();
+        assert_eq!(lens, [DATA_PIECE as u64, DATA_PIECE as u64, 5]);
+        let joined: Vec<u8> = frames.into_iter().flat_map(|(f, _)| f.data).collect();
+        assert_eq!(joined, data);
+        assert_eq!(pieces(vec![1, 2, 3]).len(), 1);
     }
 }

@@ -378,6 +378,7 @@ mod tests {
                 msg: Some(control::Msg::Need(NeedChunks {
                     file_id,
                     chunk_idx: vec![1, 2, 3],
+                    ..Default::default()
                 })),
             })),
             ..Default::default()

@@ -402,6 +402,7 @@ mod tests {
             Msg::Need(v1::NeedChunks {
                 file_id: 2,
                 chunk_idx: vec![0, 1, 300, u32::MAX],
+                ..Default::default()
             }),
             Msg::Ack(v1::FileAck {
                 file_id: 3,
@@ -725,6 +726,7 @@ mod tests {
         let bytes = v1::NeedChunks {
             file_id: 0,
             chunk_idx: vec![0, 1, 300],
+            ..Default::default()
         }
         .encode_to_vec();
         let fields = walk(&desc("irsync.v1.NeedChunks"), &bytes);
@@ -1037,6 +1039,7 @@ mod tests {
         let need = v1::NeedChunks {
             file_id: 1,
             chunk_idx: (0..20).collect(),
+            ..Default::default()
         };
         let bytes = need.encode_to_vec();
         let fields = walk(&desc("irsync.v1.NeedChunks"), &bytes);
