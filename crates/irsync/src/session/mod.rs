@@ -840,7 +840,7 @@ pub struct SideHooks {
     #[cfg(feature = "test-hooks")]
     pub skip_place_stat: bool,
     /// Sender, `--paranoid`: make clone folders no higher than this folder
-    /// (see [`crate::fs::clone::Clones::within`]). Unset, a test build makes
+    /// (see [`crate::platform::clone::Clones::within`]). Unset, a test build makes
     /// no clones, so no test leaves a folder outside its own.
     #[cfg(feature = "test-hooks")]
     pub clones_within: Option<PathBuf>,

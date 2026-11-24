@@ -26,11 +26,11 @@ use tokio::task::JoinSet;
 use tokio::time::Instant;
 
 use crate::delta::{encode, encoded_len, Basis, Op};
-use crate::fs::clone::Cloned;
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed, Hasher};
 use crate::net::frame::write_msg_tapped;
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
+use crate::platform::clone::Cloned;
 use crate::scan::ScanItem;
 use crate::telemetry::meter::{Activity, Counter, Meter};
 

@@ -60,7 +60,7 @@ pub struct CloneSource<'a> {
     pub digest: &'a FileDigest,
 }
 
-pub use crate::fs::clone::reflink;
+pub use crate::platform::clone::reflink;
 
 /// Writes one file's chunks into its `.part` file and finalizes it atomically.
 pub struct FileWriter {

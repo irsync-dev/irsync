@@ -17,7 +17,6 @@ const BANNED: [&str; 7] = [
 /// Files not moved yet. Each task of this pull request removes the files it
 /// converts. Task 5 empties the list and deletes this constant.
 const PENDING: &[&str] = &[
-    "src/fs/clone.rs",
     "src/fs/private.rs",
     "src/fs/rlimit.rs",
     "src/identity.rs",

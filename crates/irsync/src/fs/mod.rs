@@ -1,4 +1,3 @@
-pub mod clone;
 pub mod ids;
 pub mod meta;
 pub mod paths;

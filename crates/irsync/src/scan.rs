@@ -279,10 +279,10 @@ fn sort_children<T, E>(
 }
 
 /// Whether a directory's name is that of a clone folder, never listed:
-/// [`crate::fs::clone::CLONE_DIR_PREFIX`] and a uid (one or more ASCII
+/// [`crate::platform::clone::CLONE_DIR_PREFIX`] and a uid (one or more ASCII
 /// digits). Any other name with that start is a user's and is synced.
 pub fn is_clone_dir(name: &[u8]) -> bool {
-    name.strip_prefix(crate::fs::clone::CLONE_DIR_PREFIX.as_bytes())
+    name.strip_prefix(crate::platform::clone::CLONE_DIR_PREFIX.as_bytes())
         .is_some_and(|uid| !uid.is_empty() && uid.iter().all(u8::is_ascii_digit))
 }
 

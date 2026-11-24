@@ -17,9 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use common::{Flow, Harness};
-use irsync::fs::clone::Clones;
 use irsync::fs::paths::RelPath;
 use irsync::hasher::HashHook;
+use irsync::platform::clone::Clones;
 use irsync::session::{EventLog, PartsFault};
 
 const MIB: usize = 1024 * 1024;
