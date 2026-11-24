@@ -216,6 +216,26 @@ type, mirroring the local command's arguments.
 2. Then this issue. Write its plan only after #284 is merged, so the
    clients and grants messages follow what #284 actually built (my call).
 
+## After #284 (checked against the merged code)
+
+- `admin` becomes the third entry of `config::clients::RIGHTS` (`Right::Admin`),
+  so the reader, writer, `client set`, `client list`, `grant list` and the
+  "still holds a right" note of `grant remove` pick it up. The two matches
+  that name each right (`Right::of`, `ClientEntry::from_message`) grow by
+  one arm each.
+- The daemon closes a connection whose key has no grants before the Hello
+  (`Grants::is_empty`). A client whose only right is `admin` must pass that
+  gate, so `Grants` gets `admin: Option<Access>` and `is_empty` counts it.
+- The daemon serves one control stream per connection. An admin session is
+  that stream, so there is one admin session per connection; a web interface
+  that wants two at once opens two connections (my call: the daemon's accept
+  path stays as it is).
+- An older daemon checks the protocol version before the direction, so it
+  answers `VERSION_MISMATCH` ("daemon speaks 5"). The CLI turns that into
+  "myserver runs an older irsync without remote admin: update it there".
+- `irsync remote` dials with the same code as `irsync list` (`connect_for`),
+  which never sets a server up.
+
 ## Left to the builder
 
 - The message names and layout in the proto files.
