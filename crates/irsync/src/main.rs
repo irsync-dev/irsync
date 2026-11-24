@@ -925,6 +925,14 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
         bail!("internal: a listing takes a remote operand");
     };
     let c = connect_for(&host, opts, log, Vec::new()).await?;
+    // Closed on every way out: an endpoint dropped open makes iroh log an
+    // error line before irsync's own message (#256).
+    let listed = list_exports_over(&c, operand).await;
+    c.endpoint.close().await;
+    listed
+}
+
+async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
         direction: hello::Direction::ListExports as i32,
@@ -957,14 +965,11 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
         }
     })?;
     irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
-    if let Err(e) = irsync::session::reconnect::check_pq_key_exchange(
+    irsync::session::reconnect::check_pq_key_exchange(
         &conn,
         pq_required(&c.opts, c.host_entry.as_ref(), &c.settings),
         &c.target.id,
-    ) {
-        c.endpoint.close().await;
-        return Err(e);
-    }
+    )?;
     let entries = list_exports(&conn, hello)
         .await
         .map_err(|e| explain(e, Some(&conn), operand, &client))?;
@@ -977,7 +982,6 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
         println!("{} {} {access}", escape_text(&e.name), escape_path(&e.path));
     }
     conn.close(0u32.into(), b"done");
-    c.endpoint.close().await;
     Ok(())
 }
 
@@ -1013,8 +1017,13 @@ async fn sync(
     // A saved ssh host that never answers is checked over ssh once per run;
     // a host set up over ssh just now counts as checked.
     let mut rechecked = conn.onboarded;
-    let filters =
-        Arc::new(FilterSet::from_rules(&conn.opts.filters).context("reading filter rules")?);
+    let filters = match FilterSet::from_rules(&conn.opts.filters).context("reading filter rules") {
+        Ok(f) => Arc::new(f),
+        Err(e) => {
+            conn.endpoint.close().await;
+            return Err(e);
+        }
+    };
 
     // One session per source; several sources only when pushing.
     let pairs: Vec<(&Location, &Location)> = srcs.iter().map(|s| (s, &dest)).collect();
