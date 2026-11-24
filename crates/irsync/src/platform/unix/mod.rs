@@ -815,6 +815,44 @@ pub fn group_id(name: &str) -> Option<u32> {
 }
 
 // ---------------------------------------------------------------------------
+// Default locations.
+
+/// The home directory: `HOME` from `env` when set and not empty, else the
+/// password database (through `dirs::home_dir`, which reads `HOME` itself
+/// first: given the process's own environment, as irsync always does, it
+/// then finds it unset too). Exactly what `dirs::home_dir()` gives.
+pub fn home_dir(env: &dyn Fn(&str) -> Option<OsString>) -> Option<std::path::PathBuf> {
+    env("HOME")
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(dirs::home_dir)
+}
+
+/// `~/.config/irsync/irsync.toml`; `$XDG_STATE_HOME/irsync` when that is
+/// an absolute path, else `~/.local/state/irsync` (on every Unix:
+/// `dirs::state_dir()` honours the variable only on Linux); the key ssh
+/// tries first, `~/.ssh/id_ed25519`. Without a home, `.` stands for it in
+/// the config path and the state (`./irsync`), and there is no key. Never
+/// `None` on Unix.
+pub fn default_locations(env: &dyn Fn(&str) -> Option<OsString>) -> Option<super::Locations> {
+    let home = home_dir(env);
+    let base = home
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let state = env("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.as_ref().map(|h| h.join(".local/state")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("irsync");
+    Some(super::Locations {
+        config: base.join(".config/irsync").join("irsync.toml"),
+        state,
+        key: home.map(|h| h.join(".ssh/id_ed25519")),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Time.
 
 /// `secs` since the epoch as local time, `YYYY-MM-DD HH:MM:SS`; `@secs`

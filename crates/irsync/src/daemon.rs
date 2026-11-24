@@ -163,7 +163,7 @@ impl Daemon {
         authz: Arc<dyn Authorizer>,
         endpoint: Endpoint,
     ) -> Result<Daemon> {
-        Self::with_home(settings, authz, endpoint, dirs::home_dir())
+        Self::with_home(settings, authz, endpoint, crate::config::paths::home_dir())
     }
 
     /// As [`Daemon::new`], with `home` as the directory relative remote

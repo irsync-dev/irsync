@@ -1251,6 +1251,34 @@ pub fn group_id(_name: &str) -> Option<u32> {
 }
 
 // ---------------------------------------------------------------------------
+// Default locations, from the environment variables only (not the Known
+// Folder API), so a process started with them redirected is redirected
+// wholly.
+
+/// `name` from `env` as a path, when set and not empty.
+fn env_path(env: &dyn Fn(&str) -> Option<OsString>, name: &str) -> Option<std::path::PathBuf> {
+    env(name)
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// The home directory: `%USERPROFILE%`.
+pub fn home_dir(env: &dyn Fn(&str) -> Option<OsString>) -> Option<std::path::PathBuf> {
+    env_path(env, "USERPROFILE")
+}
+
+/// `%APPDATA%\irsync\irsync.toml`, `%LOCALAPPDATA%\irsync` and
+/// `%USERPROFILE%\.irsync\id_ed25519` (`.ssh` is never looked in); `None`
+/// when one of the three variables is unset or empty.
+pub fn default_locations(env: &dyn Fn(&str) -> Option<OsString>) -> Option<super::Locations> {
+    Some(super::Locations {
+        config: env_path(env, "APPDATA")?.join("irsync").join("irsync.toml"),
+        state: env_path(env, "LOCALAPPDATA")?.join("irsync"),
+        key: Some(home_dir(env)?.join(".irsync").join("id_ed25519")),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Time.
 
 /// `secs` since the epoch as local time, `YYYY-MM-DD HH:MM:SS`, as on

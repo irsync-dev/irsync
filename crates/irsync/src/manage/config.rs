@@ -110,7 +110,7 @@ pub fn parse_key(key: &str) -> Result<Vec<String>, ManageError> {
 
 /// A default path as the file would hold it: the home directory as `~`.
 fn as_written(p: &std::path::Path) -> String {
-    match dirs::home_dir().and_then(|h| p.strip_prefix(h).ok()) {
+    match crate::config::paths::home_dir().and_then(|h| p.strip_prefix(h).ok()) {
         Some(rest) => format!("~/{}", rest.display()),
         None => p.display().to_string(),
     }

@@ -108,6 +108,18 @@ pub fn mode_of_kind(kind: Kind) -> u32 {
     }
 }
 
+/// Where irsync keeps its files by default (see `default_locations`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Locations {
+    /// The config file, `irsync.toml`; the default keys sit beside it.
+    pub config: std::path::PathBuf,
+    /// The state directory (indexes, locks, the daemon's log).
+    pub state: std::path::PathBuf,
+    /// The key tried when the config's own client key does not exist yet
+    /// (never generated); `None` without a home.
+    pub key: Option<std::path::PathBuf>,
+}
+
 /// This process's resource usage so far.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
