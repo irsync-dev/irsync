@@ -21,7 +21,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -44,7 +43,7 @@ use crate::fs::meta::{apply_metadata_at, create_special_at};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::Beneath;
 use crate::plan::{decide, itemize, merge_join, meta_differs, Decision, PlanOpts, Side};
-use crate::platform::{Dir, LinkKind};
+use crate::platform::{cause, Cause, Dir, Kind as FileKind, LinkKind};
 use crate::telemetry::meter::Activity;
 use crate::telemetry::PhaseKind;
 
@@ -211,20 +210,17 @@ fn place_via_temp(
     entry: &FileEntry,
     apply: &crate::fs::meta::ApplyOpts,
 ) -> io::Result<()> {
-    use crate::fs::safe::errno;
-    use nix::unistd::{unlinkat, UnlinkatFlags};
     let (dir, name) = at.parent()?;
-    let tmp_name = crate::recv::temp_name(&name, b".tmp");
-    let tmp = Path::new(std::ffi::OsStr::from_bytes(&tmp_name));
-    match unlinkat(&dir, tmp, UnlinkatFlags::NoRemoveDir) {
-        Err(e) if e != nix::Error::ENOENT => return Err(errno(e)),
+    let tmp = crate::recv::temp_name(&name, b".tmp");
+    match dir.remove_file(&tmp) {
+        Err(e) if cause(&e) != Cause::NotThere => return Err(e),
         _ => {}
     }
-    let res = make(&dir, &tmp_name)
-        .and_then(|()| apply_metadata_at(&dir, &tmp_name, entry, apply))
-        .and_then(|()| nix::fcntl::renameat(&dir, tmp, &dir, &name[..]).map_err(errno));
+    let res = make(&dir, &tmp)
+        .and_then(|()| apply_metadata_at(&dir, &tmp, entry, apply))
+        .and_then(|()| dir.rename(&tmp, &dir, &name));
     if res.is_err() {
-        let _ = unlinkat(&dir, tmp, UnlinkatFlags::NoRemoveDir);
+        let _ = dir.remove_file(&tmp);
     }
     res
 }
@@ -258,69 +254,72 @@ pub(super) fn place_hardlink(
     entry: &FileEntry,
     apply: &crate::fs::meta::ApplyOpts,
 ) -> io::Result<()> {
-    use crate::fs::safe::{errno, is_regular_mode, open_dir_beneath, split_last};
-    use nix::fcntl::{renameat, AtFlags, OFlag};
-    use nix::sys::stat::{fstatat, Mode};
-    use nix::unistd::{linkat, unlinkat, UnlinkatFlags};
-    use std::ffi::OsStr;
+    use crate::fs::safe::{open_dir_beneath, split_last};
+    use crate::platform::{Create, Open};
 
     let ctx = |what: &str, e: io::Error| io::Error::new(e.kind(), format!("{what}: {e}"));
     let (tdir, tname) = split_last(target)?;
     let (ldir, lname) = split_last(path)?;
-    let (tname, lname) = (OsStr::from_bytes(&tname), OsStr::from_bytes(&lname));
     let tfd = open_dir_beneath(root, &tdir).map_err(|e| ctx("hard link target", e))?;
     let lfd = open_dir_beneath(root, &ldir)?;
-    let tm = fstatat(&tfd, tname, AtFlags::AT_SYMLINK_NOFOLLOW)
-        .map_err(|e| ctx("hard link target", errno(e)))?;
-    if !is_regular_mode(tm.st_mode as u32) {
+    let tm = tfd.stat(&tname).map_err(|e| ctx("hard link target", e))?;
+    if tm.kind != FileKind::File {
         return Err(io::Error::other("hard link target is not a regular file"));
     }
-    let tmp = crate::recv::temp_name(lname.as_bytes(), b".tmp");
-    let tmp = OsStr::from_bytes(&tmp);
-    match unlinkat(&lfd, tmp, UnlinkatFlags::NoRemoveDir) {
-        Ok(()) | Err(nix::Error::ENOENT) => {}
-        Err(e) => return Err(errno(e)),
+    let tmp = crate::recv::temp_name(&lname, b".tmp");
+    match lfd.remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if cause(&e) == Cause::NotThere => {}
+        Err(e) => return Err(e),
     }
     let made = if link {
-        if let Ok(m) = fstatat(&lfd, lname, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        if let Ok(m) = lfd.stat(&lname) {
             // Already linked (renaming a link over itself would leave the temp).
-            if m.st_dev == tm.st_dev && m.st_ino == tm.st_ino {
+            if m.dev == tm.dev && m.ino == tm.ino {
                 return Ok(());
             }
         }
         // The link shares the target's inode and with it the target's
         // metadata; no flags: a symlink at the target name is never followed.
-        linkat(&tfd, tname, &lfd, tmp, AtFlags::empty()).map_err(errno)
+        lfd.hard_link(&tmp, &tfd, &tname)
     } else {
         (|| {
-            let nofollow = OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
-            let src = nix::fcntl::openat(&tfd, tname, OFlag::O_RDONLY | nofollow, Mode::empty())
-                .map_err(errno)?;
-            let mut src = std::fs::File::from(src);
-            crate::fs::safe::require_regular(&src, Path::new(tname))?;
-            let flags = OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | nofollow;
-            let dst = nix::fcntl::openat(&lfd, tmp, flags, Mode::from_bits_truncate(0o600))
-                .map_err(errno)?;
-            let mut dst = std::fs::File::from(dst);
+            let read = Open {
+                read: true,
+                write: false,
+                create: Create::No,
+                truncate: false,
+                nonblock: true,
+                mode: 0,
+            };
+            let mut src = tfd.open_file(&tname, read)?;
+            crate::fs::safe::require_regular(
+                &src,
+                Path::new(&crate::platform::bytes_to_os(&tname)?),
+            )?;
+            let new = Open {
+                read: false,
+                write: true,
+                create: Create::New,
+                truncate: false,
+                nonblock: true,
+                mode: 0o600,
+            };
+            let mut dst = lfd.open_file(&tmp, new)?;
             io::copy(&mut src, &mut dst)?;
             crate::fs::meta::apply_metadata_fd(&dst, entry, apply)
         })()
     };
-    let res = made.and_then(|()| renameat(&lfd, tmp, &lfd, lname).map_err(errno));
+    let res = made.and_then(|()| lfd.rename(&tmp, &lfd, &lname));
     if res.is_err() {
-        let _ = unlinkat(&lfd, tmp, UnlinkatFlags::NoRemoveDir);
+        let _ = lfd.remove_file(&tmp);
     }
     res
 }
 
 /// Makes the place `at` a directory, replacing a non-directory in the
 /// way. Its parent is reached without following a symlink below the root.
-// `st_mode` is narrower on macOS.
-#[allow(clippy::unnecessary_cast)]
 pub(super) fn mkdir_replacing(at: &Beneath) -> io::Result<()> {
-    use crate::fs::safe::errno;
-    use nix::sys::stat::{fstatat, mkdirat, Mode};
-    use nix::unistd::{unlinkat, UnlinkatFlags};
     if at.rel.as_bytes().is_empty() {
         // The root: a name this side trusts.
         return match std::fs::symlink_metadata(&at.root) {
@@ -335,15 +334,15 @@ pub(super) fn mkdir_replacing(at: &Beneath) -> io::Result<()> {
     }
     let (dir, name) = at.parent()?;
     let name = &name[..];
-    let mkdir = || mkdirat(&dir, name, Mode::from_bits_truncate(0o777)).map_err(errno);
-    match fstatat(&dir, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
-        Ok(st) if crate::fs::safe::is_dir_mode(st.st_mode as u32) => Ok(()),
+    let mkdir = || dir.create_dir(name, 0o777);
+    match dir.stat(name) {
+        Ok(st) if st.kind == FileKind::Dir => Ok(()),
         Ok(_) => {
-            unlinkat(&dir, name, UnlinkatFlags::NoRemoveDir).map_err(errno)?;
+            dir.remove_file(name)?;
             mkdir()
         }
-        Err(nix::Error::ENOENT) => mkdir(),
-        Err(e) => Err(errno(e)),
+        Err(e) if cause(&e) == Cause::NotThere => mkdir(),
+        Err(e) => Err(e),
     }
 }
 
@@ -1139,7 +1138,7 @@ async fn plan_listings(
 mod tests {
     use super::*;
     use crate::fs::meta::ApplyOpts;
-    use std::os::unix::fs::MetadataExt;
+    use crate::platform::testutil::symlink;
 
     #[test]
     fn inflight_cap_fits_the_open_file_limit() {
@@ -1160,14 +1159,9 @@ mod tests {
     /// there: no directory, no symlink, no FIFO, no mode.
     #[test]
     fn placing_never_goes_through_a_swapped_directory() {
-        use std::os::unix::fs::PermissionsExt;
         let (root, out) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         std::fs::write(out.path().join("victim"), b"keep").unwrap();
-        std::fs::set_permissions(
-            out.path().join("victim"),
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
+        crate::platform::set_mode_path(&out.path().join("victim"), 0o600).unwrap();
         let at = |p: &str| Beneath::new(root.path(), RelPath::new(p.as_bytes()).unwrap());
         let apply = ApplyOpts {
             perms: true,
@@ -1202,7 +1196,7 @@ mod tests {
         fifo(&at("d/p")).unwrap();
         std::fs::write(root.path().join("d/victim"), b"x").unwrap();
         apply_metadata_beneath(&at("d/victim"), &entry(0o100640), &apply).unwrap();
-        let mode = |p: &Path| std::fs::symlink_metadata(p).unwrap().mode() & 0o7777;
+        let mode = |p: &Path| crate::platform::lstat(p).unwrap().mode;
         assert_eq!(mode(&root.path().join("d/victim")), 0o640);
         assert!(root.path().join("d/sub").is_dir());
         assert_eq!(
@@ -1215,7 +1209,7 @@ mod tests {
 
         // `d` becomes a link to the outside directory.
         std::fs::rename(root.path().join("d"), root.path().join("moved")).unwrap();
-        std::os::unix::fs::symlink(out.path(), root.path().join("d")).unwrap();
+        symlink(out.path(), &root.path().join("d")).unwrap();
         assert!(mkdir_replacing(&at("d/sub")).is_err());
         assert!(mkdir_replacing(&at("d/victim")).is_err());
         assert!(link(&at("d/l")).is_err());
@@ -1231,7 +1225,7 @@ mod tests {
         assert_eq!(mode(&out.path().join("victim")), 0o600);
 
         // A link swapped in at the final name: its target keeps its mode.
-        std::os::unix::fs::symlink(out.path().join("victim"), root.path().join("f")).unwrap();
+        symlink(&out.path().join("victim"), &root.path().join("f")).unwrap();
         let _ = apply_metadata_beneath(&at("f"), &entry(0o100666), &apply);
         assert_eq!(mode(&out.path().join("victim")), 0o600);
     }
@@ -1242,7 +1236,7 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         std::fs::write(out.path().join("secret"), b"s").unwrap();
         std::fs::write(root.path().join("t"), b"t").unwrap();
-        std::os::unix::fs::symlink(out.path(), root.path().join("esc")).unwrap();
+        symlink(out.path(), &root.path().join("esc")).unwrap();
         let r = |s: &[u8]| RelPath::new(s).unwrap();
         let e = FileEntry::default();
         let none = ApplyOpts::default();
@@ -1257,27 +1251,139 @@ mod tests {
             assert!(!out.path().join("l").exists());
         }
         // A symlink as the target itself is not a regular file.
-        std::os::unix::fs::symlink(out.path().join("secret"), root.path().join("s")).unwrap();
+        symlink(&out.path().join("secret"), &root.path().join("s")).unwrap();
         assert!(place_hardlink(root.path(), &r(b"s"), &r(b"l"), true, &e, &none).is_err());
         assert_eq!(
-            std::fs::metadata(out.path().join("secret"))
+            crate::platform::lstat(&out.path().join("secret"))
                 .unwrap()
-                .nlink(),
+                .nlink,
             1
         );
         // The normal case links, and a second run keeps the link.
         place_hardlink(root.path(), &r(b"t"), &r(b"l"), true, &e, &none).unwrap();
         place_hardlink(root.path(), &r(b"t"), &r(b"l"), true, &e, &none).unwrap();
         let (a, b) = (
-            std::fs::metadata(root.path().join("t")).unwrap(),
-            std::fs::metadata(root.path().join("l")).unwrap(),
+            crate::platform::lstat(&root.path().join("t")).unwrap(),
+            crate::platform::lstat(&root.path().join("l")).unwrap(),
         );
-        assert_eq!(a.ino(), b.ino());
+        assert_eq!(a.ino, b.ino);
         place_hardlink(root.path(), &r(b"t"), &r(b"c"), false, &e, &none).unwrap();
         assert_eq!(std::fs::read(root.path().join("c")).unwrap(), b"t");
         assert_ne!(
-            std::fs::metadata(root.path().join("c")).unwrap().ino(),
-            a.ino()
+            crate::platform::lstat(&root.path().join("c")).unwrap().ino,
+            a.ino
         );
+    }
+
+    /// Every file and directory below `dir`, with each file's bytes.
+    fn snapshot(dir: &Path) -> Vec<(std::path::PathBuf, Option<Vec<u8>>)> {
+        let mut out = Vec::new();
+        let mut todo = vec![dir.to_path_buf()];
+        while let Some(d) = todo.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let path = e.unwrap().path();
+                let rel = path.strip_prefix(dir).unwrap().to_path_buf();
+                if std::fs::symlink_metadata(&path).unwrap().is_dir() {
+                    out.push((rel, None));
+                    todo.push(path);
+                } else {
+                    out.push((rel, Some(std::fs::read(&path).unwrap_or_default())));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// The race of `tests/containment.rs`'s attack tests, on the placement
+    /// only this module reaches: `a/b` is swapped for a link to a directory
+    /// outside while hard links are placed into it and copies made from it.
+    /// Runs until the link was met, a placement succeeded and one was
+    /// refused for the link; the outside directory must not change.
+    #[test]
+    fn place_hardlink_never_links_outside() {
+        use crate::platform::testutil::swap_for_link;
+        use std::time::{Duration, Instant};
+        const MIN_TRIES: usize = 500;
+        const LIMIT: Duration = Duration::from_secs(20);
+        let (root, out) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir_all(root.path().join("a/b")).unwrap();
+        std::fs::write(root.path().join("a/t"), b"target").unwrap();
+        std::fs::write(root.path().join("a/b/f"), b"inside").unwrap();
+        std::fs::write(out.path().join("f"), b"outside").unwrap();
+        std::fs::write(out.path().join("l0"), b"keep").unwrap();
+        let before = snapshot(out.path());
+        let r = |s: &str| RelPath::new(s.as_bytes()).unwrap();
+        let (e, none) = (FileEntry::default(), ApplyOpts::default());
+        /// What the tries came to: refused for the link, or otherwise.
+        #[derive(Debug, Default)]
+        struct Counts {
+            ok: usize,
+            link: usize,
+            other: usize,
+        }
+        impl Counts {
+            fn note(&mut self, res: io::Result<()>) -> io::Result<()> {
+                match &res {
+                    Ok(()) => self.ok += 1,
+                    Err(e)
+                        if e.kind() == io::ErrorKind::InvalidInput
+                            && e.to_string().contains("symlink") =>
+                    {
+                        self.link += 1
+                    }
+                    Err(_) => self.other += 1,
+                }
+                res
+            }
+        }
+        let mut n = Counts::default();
+        let start = Instant::now();
+        let (tries, swaps) = {
+            let swap = swap_for_link(&root.path().join("a/b"), out.path());
+            let mut i = 0;
+            loop {
+                let met = n.ok > 0 && n.link > 0 && swap.swaps() > 0;
+                if i >= MIN_TRIES && met {
+                    break;
+                }
+                assert!(
+                    start.elapsed() < LIMIT,
+                    "the attack was not met within {LIMIT:?}: {i} tries, {} swaps, {n:?}",
+                    swap.swaps()
+                );
+                // A link into the swapped directory.
+                let _ = n.note(place_hardlink(
+                    root.path(),
+                    &r("a/t"),
+                    &r(&format!("a/b/l{i}")),
+                    true,
+                    &e,
+                    &none,
+                ));
+                // A copy of a file in the swapped directory.
+                let copy = format!("a/c{i}");
+                if n.note(place_hardlink(
+                    root.path(),
+                    &r("a/b/f"),
+                    &r(&copy),
+                    false,
+                    &e,
+                    &none,
+                ))
+                .is_ok()
+                {
+                    let got = std::fs::read(root.path().join(&copy)).unwrap();
+                    assert_eq!(got, b"inside", "copied through the link");
+                }
+                i += 1;
+            }
+            (i, swap.swaps())
+        };
+        eprintln!("{tries} tries, {swaps} swaps, {n:?}");
+        assert_eq!(snapshot(out.path()), before);
+        assert!(std::fs::symlink_metadata(root.path().join("a/b"))
+            .unwrap()
+            .is_dir());
     }
 }

@@ -193,6 +193,21 @@ impl Dir {
             .map_err(errno_of)
     }
 
+    /// Opens `path` by name, like [`Dir::open_root`], but a link as its
+    /// final name is refused ([`Cause::LinkRefused`], or on Linux
+    /// [`Cause::NotADirectory`]). Links before it are followed: the caller
+    /// trusts them.
+    pub fn open_root_nofollow(path: &Path) -> io::Result<Dir> {
+        openat(
+            AT_FDCWD,
+            path,
+            dir_flags() | OFlag::O_NOFOLLOW,
+            Mode::empty(),
+        )
+        .map(Dir)
+        .map_err(errno_of)
+    }
+
     /// Opens the directory `name`. A link there is [`Cause::LinkRefused`],
     /// anything else that is not a directory [`Cause::NotADirectory`].
     // `st_mode` is narrower on macOS.
@@ -508,6 +523,50 @@ pub fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
 /// Writes at `offset` without moving the file's position.
 pub fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<usize> {
     std::os::unix::fs::FileExt::write_at(file, buf, offset)
+}
+
+/// Fills `buf` from `offset` without moving the file's position; a file
+/// that ends first is an `UnexpectedEof` error.
+pub fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
+}
+
+/// Writes all of `buf` at `offset` without moving the file's position.
+pub fn write_all_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+}
+
+/// Which file `m` describes: its device and inode numbers.
+pub fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (m.dev(), m.ino())
+}
+
+/// The owner and group (`(uid, gid)`) of the file `m` describes.
+pub fn owner_of(m: &std::fs::Metadata) -> (u32, u32) {
+    use std::os::unix::fs::MetadataExt;
+    (m.uid(), m.gid())
+}
+
+/// Adds owner read and write to the permissions of the open `file`, as
+/// its metadata gives them.
+pub fn make_owner_writable(file: &File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = file.metadata()?.permissions().mode();
+    file.set_permissions(std::fs::Permissions::from_mode(mode | 0o600))
+}
+
+/// Sets the permission bits of the open `file` as the standard library
+/// does (`fchmod`).
+pub fn set_permissions_file(file: &File, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(std::fs::Permissions::from_mode(mode))
+}
+
+/// The error a write gets on a full disk (`ENOSPC`), for a test that
+/// makes one fail as if it had.
+pub fn no_space_error() -> io::Error {
+    io::Error::from_raw_os_error(libc::ENOSPC)
 }
 
 /// Opens the file at `path` for reading. A link as the final name is

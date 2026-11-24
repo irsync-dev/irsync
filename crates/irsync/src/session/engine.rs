@@ -10,9 +10,7 @@
 //! plays which role follows `Hello.direction`.
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -214,7 +212,9 @@ impl RoleOpts {
             reuse_local: !(receives && hello.no_local_reuse),
             // Validated by `serve_daemon` before this is used.
             partial_dir: (receives && !hello.partial_dir.is_empty())
-                .then(|| PathBuf::from(OsStr::from_bytes(&hello.partial_dir))),
+                .then(|| crate::platform::bytes_to_os(&hello.partial_dir).ok())
+                .flatten()
+                .map(PathBuf::from),
             parallel: DEFAULT_PARALLEL,
             // The sending side paces the data: honoured when the daemon
             // sends. It only slows what this client is sent.
@@ -253,7 +253,7 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
         .partial_dir
         .as_deref()
         .filter(|p| p.is_relative())
-        .map(|p| p.as_os_str().as_bytes().to_vec())
+        .map(|p| crate::platform::os_to_bytes(p.as_os_str()))
         .unwrap_or_default();
     hello.filters = filters
         .rules()
@@ -313,7 +313,9 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
 pub fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
     if direction == Direction::ClientSends {
         if let Some(pd) = &o.partial_dir {
-            if pd.is_absolute() || RelPath::new(pd.as_os_str().as_bytes()).is_err() {
+            if pd.is_absolute()
+                || RelPath::new(&crate::platform::os_to_bytes(pd.as_os_str())).is_err()
+            {
                 bail!(
                     "--partial-dir {} is not supported when pushing: it would name a directory \
                      outside the destination on the daemon's side; use a relative path inside it",
@@ -500,13 +502,10 @@ pub(super) struct Privs {
 
 impl Privs {
     fn current() -> Privs {
-        use nix::unistd::{getegid, geteuid};
-        let mut groups: HashSet<u32> = crate::fs::meta::supplementary_groups()
-            .into_iter()
-            .collect();
-        groups.insert(getegid().as_raw());
+        // Supplementary and effective, as `platform::groups` reads them.
+        let groups: HashSet<u32> = crate::platform::groups().into_iter().collect();
         Privs {
-            root: geteuid().is_root(),
+            root: crate::platform::is_root(),
             groups,
         }
     }
@@ -904,24 +903,21 @@ pub(crate) fn prepare_root(
     rel: &RelPath,
     missing: Missing,
 ) -> io::Result<PathBuf> {
-    use crate::fs::safe::{errno, is_symlink_errno};
-    use nix::fcntl::{openat, OFlag, AT_FDCWD};
-    use nix::sys::stat::{mkdirat, Mode};
-    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-    let refused = |e: nix::Error, p: &Path| -> io::Error {
-        if is_symlink_errno(e) || e == nix::Error::ENOTDIR {
+    use crate::platform::{cause, Cause, Dir};
+    let refused = |e: io::Error, p: &Path| -> io::Error {
+        if matches!(cause(&e), Cause::LinkRefused | Cause::NotADirectory) {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("{} is not a directory", p.display()),
             )
         } else {
-            errno(e)
+            e
         }
     };
     let mut p = export_root.to_path_buf();
-    let mut dir = match openat(AT_FDCWD, export_root, flags, Mode::empty()) {
-        Ok(fd) => fd,
-        Err(nix::Error::ENOENT) => {
+    let mut dir = match Dir::open_root_nofollow(export_root) {
+        Ok(d) => d,
+        Err(e) if cause(&e) == Cause::NotThere => {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "export root is missing",
@@ -930,19 +926,19 @@ pub(crate) fn prepare_root(
         Err(e) => return Err(refused(e, &p)),
     };
     for c in rel.components() {
-        let name = OsStr::from_bytes(c);
-        p.push(name);
-        let next = match openat(&dir, name, flags, Mode::empty()) {
-            Err(nix::Error::ENOENT) => match missing {
+        p.push(crate::platform::bytes_to_os(c)?);
+        let next = match dir.open_dir(c) {
+            Err(e) if cause(&e) == Cause::NotThere => match missing {
                 Missing::Refuse => {
                     return Err(io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("{} does not exist", p.display()),
                     ))
                 }
-                Missing::Create => match mkdirat(&dir, name, Mode::from_bits_truncate(0o777)) {
+                Missing::Create => match dir.create_dir(c, 0o777) {
                     // Made by someone else meanwhile: fine, if it is a directory.
-                    Ok(()) | Err(nix::Error::EEXIST) => openat(&dir, name, flags, Mode::empty()),
+                    Ok(()) => dir.open_dir(c),
+                    Err(e) if cause(&e) == Cause::AlreadyThere => dir.open_dir(c),
                     Err(e) => Err(e),
                 },
                 Missing::Allow => {
@@ -1985,7 +1981,7 @@ mod tests {
     fn session_root_never_passes_through_a_symlink() {
         let m = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), m.path().join("link")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &m.path().join("link")).unwrap();
         let rel = |s: &[u8]| RelPath::new(s).unwrap();
         assert!(prepare_root(m.path(), &rel(b"link"), Missing::Create).is_err());
         assert!(prepare_root(m.path(), &rel(b"link/sub"), Missing::Create).is_err());

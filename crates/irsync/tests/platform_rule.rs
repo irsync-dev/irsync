@@ -18,8 +18,6 @@ const BANNED: [&str; 7] = [
 /// converts. Task 5 empties the list and deletes this constant.
 const PENDING: &[&str] = &[
     "benches/index.rs",
-    "src/daemon.rs",
-    "src/delete.rs",
     "src/fs/clone.rs",
     "src/fs/private.rs",
     "src/fs/rlimit.rs",
@@ -29,12 +27,9 @@ const PENDING: &[&str] = &[
     "src/main.rs",
     "src/manage/mod.rs",
     "src/net/tap/capture.rs",
-    "src/recv.rs",
     "src/scan.rs",
     "src/send.rs",
     "src/session/control.rs",
-    "src/session/engine.rs",
-    "src/session/planner.rs",
     "src/session/reconnect.rs",
     "src/session/recv_io.rs",
     "src/session/sender_role.rs",

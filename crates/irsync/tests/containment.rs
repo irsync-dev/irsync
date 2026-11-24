@@ -305,10 +305,13 @@ mod attack {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
+    use irsync::cli::DeleteMode;
+    use irsync::delete::DeletePass;
     use irsync::fs::paths::RelPath;
     use irsync::fs::safe::{create_dir_all_beneath, open_regular_beneath, Beneath, DirStack};
     use irsync::platform::testutil::swap_for_link;
     use irsync::platform::{Create, Open};
+    use irsync_proto::v1::file_entry::Kind;
 
     /// Tries of the operation per test at the least, each racing the
     /// swapping thread.
@@ -517,6 +520,69 @@ mod attack {
                 names.sort();
                 assert_eq!(names, want, "listed through the link");
             }
+        });
+    }
+
+    /// The receiver's deletion pass over the one candidate `path`, as an
+    /// `io::Result`: `Ok` when it was removed; an `InvalidInput` error
+    /// when the pass reports a symlink on the way (as `fs::safe` words
+    /// it); any other failure, or nothing there to remove, otherwise.
+    fn delete(rt: &tokio::runtime::Runtime, root: &Path, path: &str, kind: Kind) -> io::Result<()> {
+        let mut pass = DeletePass::new(DeleteMode::After, None, false, false, false);
+        pass.plan(rel(path), kind);
+        let rep = rt
+            .block_on(pass.execute(root.to_path_buf(), false))
+            .expect("a complete listing is not refused");
+        if !rep.deleted.is_empty() {
+            return Ok(());
+        }
+        Err(match rep.errors.first() {
+            Some((_, msg)) if msg.contains("symlink") => {
+                io::Error::new(io::ErrorKind::InvalidInput, msg.clone())
+            }
+            Some((_, msg)) => io::Error::other(msg.clone()),
+            None => io::Error::new(io::ErrorKind::NotFound, "nothing was removed"),
+        })
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// The deleter removes a file below the swapped directory; the file of
+    /// the same name outside stays.
+    #[test]
+    fn delete_remove_one_never_removes_outside() {
+        let t = Tree::new();
+        let rt = runtime();
+        let make = open(false, true, Create::IfMissing, false);
+        t.attack(|_, n| {
+            // Something to remove, made where it belongs.
+            let _ = t.at("a/b/gone").open(make);
+            let _ = n.note(delete(&rt, t.root.path(), "a/b/gone", Kind::Regular));
+        });
+    }
+
+    /// A directory the deleter removes holds only irsync's leftover
+    /// temporaries, which it clears first. Outside, a directory of the same
+    /// name holds a file named like one of them: it stays.
+    #[test]
+    fn clear_temporaries_never_removes_outside() {
+        let t = Tree::new();
+        fs::create_dir(t.outside.path().join("c")).unwrap();
+        fs::write(t.outside.path().join("c/.irsync.x.part"), b"outside part").unwrap();
+        fs::write(t.outside.path().join("c/.irsync.y.tmp"), b"outside tmp").unwrap();
+        let rt = runtime();
+        let make = open(false, true, Create::IfMissing, false);
+        t.attack(|_, n| {
+            // The leftovers, made where they belong.
+            let _ = create_dir_all_beneath(t.root.path(), &rel("a/b/c"), 0o755);
+            let _ = t.at("a/b/c/.irsync.x.part").open(make);
+            let _ = t.at("a/b/c/.irsync.y.tmp").open(make);
+            let _ = n.note(delete(&rt, t.root.path(), "a/b/c", Kind::Directory));
         });
     }
 }
