@@ -90,6 +90,22 @@ console = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["dir", "fs", "hostname", "resource", "user", "time", "signal", "process"] }
 
+# Only the platform module (src/platform/windows/) calls into the system;
+# the native calls (`Wdk`) are in src/platform/windows/native.rs.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # `test-util`: tests that pause tokio's clock and let it jump ahead.
 tokio = { workspace = true, features = ["test-util"] }

@@ -364,3 +364,6 @@ fn a_directory_swapped_for_a_link_is_never_left_through() {
         b"inside victim"
     );
 }
+
+#[cfg(windows)]
+mod windows;

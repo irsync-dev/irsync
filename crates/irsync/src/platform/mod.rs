@@ -6,11 +6,20 @@
 //! The interface is plain functions and [`Dir`], a directory held open
 //! that every operation below a root goes through by a single name; one
 //! implementation exists per build.
+//!
+//! Positional reads and writes (`read_at`, `write_at`, `read_exact_at`,
+//! `write_all_at`) take their offset and never rely on the file's
+//! position. On Unix they leave it as it was; on Windows they move it.
 
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
 pub use unix::*;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::*;
 
 /// The tests of [`Dir`], on every platform.
 #[cfg(test)]
