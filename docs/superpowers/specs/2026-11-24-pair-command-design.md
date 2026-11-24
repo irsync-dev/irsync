@@ -65,6 +65,11 @@ oddly for a restart) and `associate` (same meaning, longer).
   `--no-install` (and `ssh_install`), `--no-remote-dht`. `--ssh` is
   removed. No deprecation period: irsync has no users yet.
 
+- **Windows later.** A Windows port of irsync is under way in parallel.
+  Once the daemon works on Windows, `pair` should also register it as a
+  Windows service there. Out of scope for this change; the service code
+  should leave room for a third kind next to systemd and launchd.
+
 ## My calls (correct me)
 
 - `pair` only pairs; it does not sync. It accepts `myserver` and
