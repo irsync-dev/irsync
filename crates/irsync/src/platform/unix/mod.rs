@@ -76,20 +76,6 @@ pub fn no_space_error() -> io::Error {
     io::Error::from_raw_os_error(libc::ENOSPC)
 }
 
-/// TEMPORARY bridge for `fs/clone.rs`, the one caller not yet converted
-/// (removed by Task 4): a `nix` error as an `io::Error`.
-#[doc(hidden)]
-pub fn errno(e: nix::Error) -> io::Error {
-    errno_of(e)
-}
-
-/// TEMPORARY bridge (see [`errno`]): whether a `nix` error is
-/// [`Cause::LinkRefused`].
-#[doc(hidden)]
-pub fn is_symlink_errno(e: nix::Error) -> bool {
-    cause(&errno_of(e)) == Cause::LinkRefused
-}
-
 // ---------------------------------------------------------------------------
 // Names: stored bytes and the names the system takes.
 
@@ -460,17 +446,19 @@ pub fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
 }
 
 /// The modification time of the file `m` describes, `(seconds,
-/// nanoseconds)`.
-pub fn mtime_of(m: &std::fs::Metadata) -> (i64, i64) {
+/// nanoseconds)`, as [`Stat::mtime`] gives it.
+pub fn mtime_of(m: &std::fs::Metadata) -> (i64, u32) {
     use std::os::unix::fs::MetadataExt;
-    (m.mtime(), m.mtime_nsec())
+    // Below a second, so it fits, as in `stat_of`.
+    (m.mtime(), m.mtime_nsec() as u32)
 }
 
 /// The inode change time of the file `m` describes, `(seconds,
-/// nanoseconds)`.
-pub fn ctime_of(m: &std::fs::Metadata) -> (i64, i64) {
+/// nanoseconds)`, as [`Stat::ctime`] gives it.
+pub fn ctime_of(m: &std::fs::Metadata) -> (i64, u32) {
     use std::os::unix::fs::MetadataExt;
-    (m.ctime(), m.ctime_nsec())
+    // Below a second, so it fits, as in `stat_of`.
+    (m.ctime(), m.ctime_nsec() as u32)
 }
 
 /// The owner and group (`(uid, gid)`) of the file `m` describes.

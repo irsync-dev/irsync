@@ -341,8 +341,8 @@ async fn unchanged_file(ctx: &Ctx, key: &RelPath, old: &OldFile) -> Option<File>
         let file = crate::fs::safe::open_regular_beneath(&base, &local)?;
         let m = file.metadata()?;
         let same = m.len() == entry.size
-            && crate::platform::mtime_of(&m) == (entry.mtime_sec, i64::from(entry.mtime_nsec))
-            && crate::platform::ctime_of(&m) == (ctime.0, i64::from(ctime.1))
+            && crate::platform::mtime_of(&m) == (entry.mtime_sec, entry.mtime_nsec)
+            && crate::platform::ctime_of(&m) == ctime
             && crate::platform::file_id(&m) == (entry.dev, entry.inode);
         Ok(same.then_some(file))
     })

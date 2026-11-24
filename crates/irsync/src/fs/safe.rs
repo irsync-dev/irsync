@@ -10,10 +10,6 @@ use std::path::Path;
 use crate::fs::paths::RelPath;
 use crate::platform::{self, Cause, Dir, Kind, Open, Stat};
 
-/// TEMPORARY: `fs/clone.rs`, not yet moved to [`Dir`], still takes these
-/// from here (removed by Task 4, which moves it).
-pub(crate) use crate::platform::{errno, is_symlink_errno};
-
 /// Turns the error of an `O_NOFOLLOW` open of a symlink
 /// ([`Cause::LinkRefused`]) into one that says so.
 pub fn nofollow_error(e: io::Error, what: &Path) -> io::Error {

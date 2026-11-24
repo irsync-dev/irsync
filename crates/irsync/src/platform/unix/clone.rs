@@ -38,10 +38,10 @@ use nix::fcntl::{openat, AtFlags, OFlag, AT_FDCWD};
 use nix::sys::stat::{fstat, fstatat, mkdirat, Mode, SFlag};
 use nix::unistd::{access, unlinkat, AccessFlags, UnlinkatFlags};
 
+use super::errno_of as errno;
 use crate::fs::paths::RelPath;
-use crate::fs::safe::errno;
 use crate::hasher::Freshness;
-use crate::platform::Stat;
+use crate::platform::{cause, Cause, Stat};
 
 /// The start of a clone folder's name, followed by the uid; the walk
 /// prunes a directory with exactly that form of name
@@ -688,7 +688,7 @@ fn sweep_at(root: &OwnedFd) -> io::Result<usize> {
         let dir = match openat(root, name.as_os_str(), dir_flags(), Mode::empty()) {
             Ok(fd) => fd,
             Err(nix::Error::ENOENT | nix::Error::ENOTDIR) => continue,
-            Err(e) if crate::fs::safe::is_symlink_errno(e) => continue,
+            Err(e) if cause(&errno(e)) == Cause::LinkRefused => continue,
             Err(e) => return Err(errno(e)),
         };
         // Held while the folder goes, so no session takes it meanwhile;
