@@ -162,7 +162,7 @@ fn config_set_writes_the_key_as_a_boolean() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(
         std::fs::read_to_string(home.join(".config/irsync/irsync.toml")).unwrap(),
-        "[daemon]\nallow_root = true\n"
+        "config_version = 2\n\n[daemon]\nallow_root = true\n"
     );
     assert!(!set("yes").status.success());
 }

@@ -30,14 +30,18 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     use Kind::*;
     Some(match parts.as_slice() {
+        // Read-only: see [`writable`].
+        ["config_version"] => Int,
         ["unsafe_config_allowed"] => Bool,
         ["identity"] | ["state_dir"] => Path,
         ["client"]
         | ["daemon"]
         | ["daemon", "discovery"]
         | ["telemetry"]
-        | ["hosts"]
-        | ["hosts", _]
+        | ["servers"]
+        | ["servers", _]
+        | ["clients"]
+        | ["clients", _]
         | ["exports"]
         | ["exports", _]
         | ["all"]
@@ -59,20 +63,36 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["telemetry", "otlp_endpoint"] => Url,
         ["telemetry", "otlp_protocol"] => Str,
         ["daemon", "discovery", "dht" | "dns" | "mdns"] => Bool,
-        ["hosts", _, "endpoint_id" | "client_id"] => Id,
-        ["hosts", _, "relay"] => Url,
-        ["hosts", _, "relay_mode" | "congestion" | "pq_key_exchange" | "ssh"] => Str,
-        ["hosts", _, "address"] => AddrArray,
-        ["hosts", _, "ssh_aliases"] => StrArray,
-        ["hosts", _, "parallel"] => Int,
-        ["hosts", _, "reconnect"] => Duration,
-        ["hosts", _, "dial_retries"] => Int,
-        ["hosts", _, "dht" | "mdns"] => Bool,
+        ["servers", _, "endpoint_id"] | ["clients", _, "client_id"] => Id,
+        ["servers", _, "relay"] => Url,
+        ["servers", _, "relay_mode" | "congestion" | "pq_key_exchange" | "ssh"] => Str,
+        ["servers", _, "address"] => AddrArray,
+        ["servers", _, "ssh_aliases"] => StrArray,
+        ["servers", _, "parallel"] => Int,
+        ["servers", _, "reconnect"] => Duration,
+        ["servers", _, "dial_retries"] => Int,
+        ["servers", _, "dht" | "mdns"] => Bool,
         ["exports", _, "path"] => Path,
         ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => Bool,
         ["exports", _, "rw" | "ro"] | ["all", "rw" | "ro"] | ["immediate", "rw"] => StrArray,
         _ => return None,
     })
+}
+
+/// The error for a key the file does not know, `key` as typed. The keys
+/// of the old `[hosts]` table get a pointer to their new places.
+pub fn unknown_key(key: &str) -> ManageError {
+    ManageError::UnknownKey(key.to_string())
+}
+
+/// Refuses a key that only irsync sets: `config_version`.
+pub fn writable(path: &[String]) -> Result<(), ManageError> {
+    if path == ["config_version"] {
+        return Err(ManageError::BadValue(
+            "config_version is set by irsync".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// `KEY` with TOML's key grammar: `exports."www.example.com".path` is three
@@ -259,6 +279,7 @@ pub fn list(msg: &pb::Config) -> Vec<String> {
 /// A table key, an unknown key, or a value the key cannot hold is an
 /// error, and leaves the message as it was.
 pub fn set(msg: &mut pb::Config, path: &[String], value: Value) -> Result<(), ManageError> {
+    writable(path)?;
     match kind_of(path) {
         None => return Err(unknown(path)),
         Some(Kind::Table) => {
@@ -278,10 +299,11 @@ pub fn set(msg: &mut pb::Config, path: &[String], value: Value) -> Result<(), Ma
 
 /// Removes `path`: a key with its comments, or a whole table with its
 /// comments. A table the removal leaves without keys goes too, as an
-/// empty `[hosts.home]` would not load and an empty `[client]` is only
+/// empty `[servers.home]` would not load and an empty `[client]` is only
 /// noise. Absent: `NothingToRemove`.
 pub fn unset(msg: &mut pb::Config, path: &[String]) -> Result<(), ManageError> {
     let kind = kind_of(path).ok_or_else(|| unknown(path))?;
+    writable(path)?;
     let nothing = || ManageError::NothingToRemove(path.join("."));
     if kind == Kind::Table {
         if !remove_table(msg, path) {
@@ -300,7 +322,8 @@ pub fn unset(msg: &mut pb::Config, path: &[String]) -> Result<(), ManageError> {
 }
 
 fn unknown(path: &[String]) -> ManageError {
-    ManageError::UnknownKey(path.join("."))
+    let key: Vec<String> = path.iter().map(|s| writer::key(s)).collect();
+    unknown_key(&key.join("."))
 }
 
 /// One key's field in the message, by how it holds the value.
@@ -311,7 +334,8 @@ enum Field<'a> {
     /// A string, a path or a debug address, as written.
     Text(&'a mut Option<String>),
     Url(&'a mut Option<String>),
-    Id(&'a mut Option<Vec<u8>>),
+    /// An id's 32 bytes; empty is unset.
+    Id(&'a mut Vec<u8>),
     RelayMode(&'a mut Option<i32>),
     Congestion(&'a mut Option<i32>),
     PqKeyExchange(&'a mut Option<i32>),
@@ -338,19 +362,42 @@ fn table<T: Default>(t: &mut Option<T>, create: bool) -> Option<&mut T> {
     }
 }
 
-fn host<'a>(msg: &'a mut pb::Config, name: &str, create: bool) -> Option<&'a mut pb::Host> {
-    let i = match msg.hosts.iter().position(|h| h.name == name) {
+fn server<'a>(
+    msg: &'a mut pb::Config,
+    name: &str,
+    create: bool,
+) -> Option<&'a mut pb::ServerEntry> {
+    let i = match msg.servers.iter().position(|s| s.name == name) {
         Some(i) => i,
         None if create => {
-            msg.hosts.push(pb::Host {
+            msg.servers.push(pb::ServerEntry {
                 name: name.to_string(),
                 ..Default::default()
             });
-            msg.hosts.len() - 1
+            msg.servers.len() - 1
         }
         None => return None,
     };
-    Some(&mut msg.hosts[i])
+    Some(&mut msg.servers[i])
+}
+
+fn client<'a>(
+    msg: &'a mut pb::Config,
+    name: &str,
+    create: bool,
+) -> Option<&'a mut pb::ClientEntry> {
+    let i = match msg.clients.iter().position(|c| c.name == name) {
+        Some(i) => i,
+        None if create => {
+            msg.clients.push(pb::ClientEntry {
+                name: name.to_string(),
+                ..Default::default()
+            });
+            msg.clients.len() - 1
+        }
+        None => return None,
+    };
+    Some(&mut msg.clients[i])
 }
 
 fn export<'a>(msg: &'a mut pb::Config, name: &str, create: bool) -> Option<&'a mut pb::Export> {
@@ -377,6 +424,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
     let (field, comments) = match parts.as_slice() {
         [key] => {
             let pb::Config {
+                config_version,
                 unsafe_config_allowed,
                 identity,
                 state_dir,
@@ -384,6 +432,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 ..
             } = msg;
             let f = match *key {
+                "config_version" => Int(config_version),
                 "unsafe_config_allowed" => Bool(unsafe_config_allowed),
                 "identity" => Text(identity),
                 "state_dir" => Text(state_dir),
@@ -448,11 +497,10 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             };
             (f, &mut t.key_comments)
         }
-        ["hosts", name, key] => {
-            let h = host(msg, name, create)?;
+        ["servers", name, key] => {
+            let h = server(msg, name, create)?;
             let f = match *key {
                 "endpoint_id" => Id(&mut h.endpoint_id),
-                "client_id" => Id(&mut h.client_id),
                 "relay" => Url(&mut h.relay),
                 "relay_mode" => RelayMode(&mut h.relay_mode),
                 "congestion" => Congestion(&mut h.congestion),
@@ -468,6 +516,10 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 _ => return None,
             };
             (f, &mut h.key_comments)
+        }
+        ["clients", name, "client_id"] => {
+            let c = client(msg, name, create)?;
+            (Id(&mut c.client_id), &mut c.key_comments)
         }
         ["exports", name, key] => {
             let e = export(msg, name, create)?;
@@ -502,7 +554,12 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
 }
 
 /// The keys of each table, in the order the writer writes them.
-const TOP: &[&str] = &["unsafe_config_allowed", "identity", "state_dir"];
+const TOP: &[&str] = &[
+    "config_version",
+    "unsafe_config_allowed",
+    "identity",
+    "state_dir",
+];
 const CLIENT: &[&str] = &[
     "parallel",
     "reconnect",
@@ -532,9 +589,8 @@ const DAEMON: &[&str] = &[
 ];
 const DISCOVERY: &[&str] = &["dht", "dns", "mdns"];
 const TELEMETRY: &[&str] = &["otlp_endpoint", "otlp_protocol"];
-const HOST: &[&str] = &[
+const SERVER: &[&str] = &[
     "endpoint_id",
-    "client_id",
     "relay",
     "relay_mode",
     "congestion",
@@ -548,6 +604,7 @@ const HOST: &[&str] = &[
     "ssh",
     "ssh_aliases",
 ];
+const CLIENT_ENTRY: &[&str] = &["client_id"];
 const EXPORT: &[&str] = &[
     "path",
     "read_only",
@@ -573,8 +630,11 @@ fn key_paths(msg: &pb::Config) -> Vec<Vec<String>> {
     add(&["daemon"], DAEMON);
     add(&["daemon", "discovery"], DISCOVERY);
     add(&["telemetry"], TELEMETRY);
-    for h in &msg.hosts {
-        add(&["hosts", &h.name], HOST);
+    for s in &msg.servers {
+        add(&["servers", &s.name], SERVER);
+    }
+    for c in &msg.clients {
+        add(&["clients", &c.name], CLIENT_ENTRY);
     }
     for e in &msg.exports {
         add(&["exports", &e.name], EXPORT);
@@ -599,8 +659,8 @@ fn key_lines(msg: &pb::Config, prefix: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Whether the table `path` is in the message; `hosts` and `exports`
-/// are when they have an entry.
+/// Whether the table `path` is in the message; `servers`, `clients`
+/// and `exports` are when they have an entry.
 fn has_table(msg: &pb::Config, path: &[String]) -> bool {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     match parts.as_slice() {
@@ -608,8 +668,10 @@ fn has_table(msg: &pb::Config, path: &[String]) -> bool {
         ["daemon"] => msg.daemon.is_some(),
         ["daemon", "discovery"] => msg.daemon.as_ref().is_some_and(|d| d.discovery.is_some()),
         ["telemetry"] => msg.telemetry.is_some(),
-        ["hosts"] => !msg.hosts.is_empty(),
-        ["hosts", name] => msg.hosts.iter().any(|h| h.name == *name),
+        ["servers"] => !msg.servers.is_empty(),
+        ["servers", name] => msg.servers.iter().any(|s| s.name == *name),
+        ["clients"] => !msg.clients.is_empty(),
+        ["clients", name] => msg.clients.iter().any(|c| c.name == *name),
         ["exports"] => !msg.exports.is_empty(),
         ["exports", name] => msg.exports.iter().any(|e| e.name == *name),
         ["all"] => msg.all.is_some(),
@@ -629,11 +691,17 @@ fn remove_table(msg: &mut pb::Config, path: &[String]) -> bool {
             .as_mut()
             .is_some_and(|d| d.discovery.take().is_some()),
         ["telemetry"] => msg.telemetry.take().is_some(),
-        ["hosts"] => !std::mem::take(&mut msg.hosts).is_empty(),
-        ["hosts", name] => {
-            let before = msg.hosts.len();
-            msg.hosts.retain(|h| h.name != *name);
-            msg.hosts.len() < before
+        ["servers"] => !std::mem::take(&mut msg.servers).is_empty(),
+        ["servers", name] => {
+            let before = msg.servers.len();
+            msg.servers.retain(|s| s.name != *name);
+            msg.servers.len() < before
+        }
+        ["clients"] => !std::mem::take(&mut msg.clients).is_empty(),
+        ["clients", name] => {
+            let before = msg.clients.len();
+            msg.clients.retain(|c| c.name != *name);
+            msg.clients.len() < before
         }
         ["exports"] => !std::mem::take(&mut msg.exports).is_empty(),
         ["exports", name] => {
@@ -683,9 +751,12 @@ fn prune(msg: &mut pb::Config, path: &[String]) {
             drop_if(&mut msg.daemon, |d| keyless!(d, Daemon));
         }
         ["telemetry", _] => drop_if(&mut msg.telemetry, |t| keyless!(t, Telemetry)),
-        ["hosts", name, _] => msg
-            .hosts
-            .retain(|h| h.name != *name || !keyless!(h, Host, name)),
+        ["servers", name, _] => msg
+            .servers
+            .retain(|s| s.name != *name || !keyless!(s, ServerEntry, name)),
+        ["clients", name, _] => msg
+            .clients
+            .retain(|c| c.name != *name || !keyless!(c, ClientEntry, name)),
         ["exports", name, _] => msg
             .exports
             .retain(|e| e.name != *name || !keyless!(e, Export, name)),
@@ -727,7 +798,7 @@ fn shown(field: &Field) -> Option<Shown> {
         Field::Int(v) => v.map(|n| plain(n.to_string())),
         Field::Duration(v) => v.as_ref().map(|d| text(&writer::duration_text(d))),
         Field::Text(v) | Field::Url(v) => v.as_deref().map(text),
-        Field::Id(v) => v.as_deref().map(|b| text(&writer::id(b))),
+        Field::Id(v) => (!v.is_empty()).then(|| text(&writer::id(v))),
         Field::RelayMode(v) => v.and_then(writer::relay_mode).map(text),
         Field::Congestion(v) => v.and_then(writer::congestion).map(text),
         Field::PqKeyExchange(v) => v.and_then(writer::pq_key_exchange).map(text),
@@ -744,7 +815,7 @@ fn clear(field: Field) -> bool {
         Field::Int(v) => v.take().is_some(),
         Field::Duration(v) => v.take().is_some(),
         Field::Text(v) | Field::Url(v) => v.take().is_some(),
-        Field::Id(v) => v.take().is_some(),
+        Field::Id(v) => !std::mem::take(v).is_empty(),
         Field::RelayMode(v)
         | Field::Congestion(v)
         | Field::PqKeyExchange(v)
@@ -810,7 +881,7 @@ fn assign(field: Field, value: Value) -> Result<(), String> {
         }
         (Field::Id(f), Value::Text(s)) => {
             let id = crate::identity::parse_endpoint_id(&s).map_err(|e| e.to_string())?;
-            *f = Some(id_bytes(id));
+            *f = id_bytes(id);
         }
         (Field::RelayMode(f), Value::Text(s)) => {
             *f = Some(variant(

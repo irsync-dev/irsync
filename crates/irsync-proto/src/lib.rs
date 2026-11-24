@@ -37,13 +37,14 @@ mod tests {
     fn config_message_has_optional_keys_and_comments() {
         let c = config::Config::default();
         assert_eq!(c.unsafe_config_allowed, None);
-        assert!(c.hosts.is_empty() && c.header.is_empty());
-        let h = config::Host {
+        assert_eq!(c.config_version, None);
+        assert!(c.servers.is_empty() && c.clients.is_empty() && c.header.is_empty());
+        let s = config::ServerEntry {
             name: "nas".into(),
             ..Default::default()
         };
-        assert_eq!(h.endpoint_id, None);
-        assert_eq!(h.comment, None);
+        assert!(s.endpoint_id.is_empty());
+        assert_eq!(s.comment, None);
         let e = config::Entry {
             value: "laptop".into(),
             comment: None,

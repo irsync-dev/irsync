@@ -43,9 +43,6 @@ pub fn write(msg: &pb::Config) -> String {
     if let Some(t) = &msg.telemetry {
         sections.push(table(&["telemetry"], &t.comment, &t.tail, telemetry(t)));
     }
-    for h in &msg.hosts {
-        sections.push(table(&["hosts", &h.name], &h.comment, &h.tail, host(h)));
-    }
     for s in &msg.servers {
         sections.push(table(&["servers", &s.name], &s.comment, &s.tail, server(s)));
     }
@@ -165,28 +162,6 @@ fn telemetry(t: &pb::Telemetry) -> Keys<'_> {
     let mut k = Keys::new(&t.key_comments);
     k.string("otlp_endpoint", t.otlp_endpoint.as_deref());
     k.string("otlp_protocol", t.otlp_protocol.and_then(otlp_protocol));
-    k
-}
-
-fn host(h: &pb::Host) -> Keys<'_> {
-    let mut k = Keys::new(&h.key_comments);
-    k.string("endpoint_id", h.endpoint_id.as_deref().map(id).as_deref());
-    k.string("client_id", h.client_id.as_deref().map(id).as_deref());
-    k.string("relay", h.relay.as_deref());
-    k.string("relay_mode", h.relay_mode.and_then(relay_mode));
-    k.string("congestion", h.congestion.and_then(congestion));
-    k.string(
-        "pq_key_exchange",
-        h.pq_key_exchange.and_then(pq_key_exchange),
-    );
-    k.array("address", &h.address, h.address_set);
-    k.int("parallel", h.parallel);
-    k.duration("reconnect", h.reconnect.as_ref());
-    k.int("dial_retries", h.dial_retries);
-    k.bool("dht", h.dht);
-    k.bool("mdns", h.mdns);
-    k.string("ssh", h.ssh.as_deref());
-    k.array("ssh_aliases", &h.ssh_aliases, h.ssh_aliases_set);
     k
 }
 

@@ -1,12 +1,12 @@
-//! `irsync.toml` as one file: settings, host aliases, exports and grants.
+//! `irsync.toml` as one file: settings, servers, clients, exports and
+//! grants.
 //! A `hosts.toml` or `exports.toml` beside it, once read as part of it, is
 //! ignored with a warning.
 
 use super::clients::Clients;
 use super::exports::Exports;
-use super::hosts::Hosts;
 use super::paths::Paths;
-use super::reader::read_values;
+use super::reader::read;
 use super::servers::Servers;
 use super::settings::Settings;
 use super::{read_optional, ConfigError};
@@ -19,7 +19,6 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub settings: Settings,
-    pub hosts: Hosts,
     pub servers: Servers,
     pub clients: Clients,
     pub exports: Exports,
@@ -63,9 +62,9 @@ pub fn first_sighting(path: &Path) -> bool {
 }
 
 impl Config {
-    /// Parses the text of the config file (see [`read_values`]).
+    /// Parses the text of the config file, of any layout (see [`read`]).
     pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
-        Self::from_message(&read_values(text, path)?, path)
+        Self::from_message(&read(text, path)?.config, path)
     }
 
     /// The typed view of the message: the defaults for what it leaves
@@ -75,7 +74,6 @@ impl Config {
     pub fn from_message(msg: &pb::Config, path: &Path) -> Result<Config, ConfigError> {
         Ok(Config {
             settings: Settings::from_message(msg, path)?,
-            hosts: Hosts::from_message(&msg.hosts, path)?,
             servers: Servers::from_message(&msg.servers, path)?,
             clients: Clients::from_message(&msg.clients, path)?,
             exports: Exports::from_message(msg, path)?,

@@ -1,9 +1,8 @@
 //! The `[servers]` table of `irsync.toml`: aliases for daemons to dial.
 
-use super::hosts::endpoint_id_from;
 use super::names::{invalid_name, valid_alias};
 use super::settings::{addresses_from, duration_from, url_from};
-use super::{file_error, ConfigError};
+use super::{endpoint_id_from, file_error, ConfigError};
 use crate::config::settings::{Congestion, PqKeyExchange, RelayMode};
 use crate::net::addr::HostPort;
 use iroh::EndpointId;

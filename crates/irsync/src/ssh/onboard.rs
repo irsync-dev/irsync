@@ -11,7 +11,7 @@ use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupRepor
 use crate::build::LONG_VERSION;
 use crate::config::names::valid_alias;
 use crate::config::paths::Paths;
-use crate::manage::{self, hosts::HostFlags};
+use crate::manage::{self, servers::ServerFlags};
 use irsync_proto::config as pb;
 
 /// Why a root account is refused, on the client and by `ssh-setup` on the
@@ -214,7 +214,7 @@ pub fn onboard(
             anyhow::anyhow!("{e:#}\n  irsync was installed on {dest} before this; that stays")
         }
     })?;
-    let lock = manage::lock_config(&paths.config)?;
+    let mut lock = manage::lock_config(&paths.config)?;
     let mut msg = lock.load()?;
     let id = report.endpoint_id;
     let aliases = match alias {
@@ -236,15 +236,15 @@ pub fn onboard(
             .then(|| saved_ssh(&msg, &alias))
             .flatten()
             .filter(|old| old != dest && ip_of(old).is_none_or(|ip| Some(ip) == typed_ip));
-        let host_flags = HostFlags {
+        let server_flags = ServerFlags {
             ssh: kept_ssh.is_none().then(|| dest.to_string()),
-            ..HostFlags::default()
+            ..ServerFlags::default()
         };
-        let previous_id = manage::hosts::host_add(&mut msg, &alias, id, &host_flags)
+        let previous_id = manage::servers::server_add(&mut msg, &alias, id, &server_flags)
             .with_context(|| format!("saving host alias {alias}"))?;
         if kept_ssh.is_some() {
             // So that typing this address again finds the host without ssh.
-            manage::hosts::host_add_ssh_alias(&mut msg, &alias, dest);
+            manage::servers::server_add_ssh_alias(&mut msg, &alias, dest);
         }
         saved.push(SavedAlias {
             alias,
@@ -257,7 +257,7 @@ pub fn onboard(
     // names saved for that daemon through this ssh destination follow.
     if let (Some(_), Some(old)) = (alias, saved[0].previous_id) {
         for other in aliases_of(&msg, old, dest) {
-            manage::hosts::host_add(&mut msg, &other, id, &HostFlags::default())
+            manage::servers::server_add(&mut msg, &other, id, &ServerFlags::default())
                 .with_context(|| format!("saving host alias {other}"))?;
             saved.push(SavedAlias {
                 alias: other,
@@ -280,32 +280,27 @@ pub fn onboard(
     })
 }
 
-/// The host `alias` of `msg`.
-fn saved_host<'a>(msg: &'a pb::Config, alias: &str) -> Option<&'a pb::Host> {
-    msg.hosts.iter().find(|h| h.name == alias)
+/// The server `alias` of `msg`.
+fn saved_host<'a>(msg: &'a pb::Config, alias: &str) -> Option<&'a pb::ServerEntry> {
+    msg.servers.iter().find(|s| s.name == alias)
 }
 
-/// The id `[hosts.alias]` holds in `msg`.
+/// The id `[servers.alias]` holds in `msg`.
 fn saved_id(msg: &pb::Config, alias: &str) -> Option<EndpointId> {
-    saved_host(msg, alias)?
-        .endpoint_id
-        .as_deref()
-        .and_then(manage::id_of)
+    manage::id_of(&saved_host(msg, alias)?.endpoint_id)
 }
 
-/// The aliases in `msg` saved with the daemon `id` and `ssh = dest`.
+/// The names of the servers in `msg` saved with the daemon `id` and
+/// `ssh = dest`.
 fn aliases_of(msg: &pb::Config, id: EndpointId, dest: &str) -> Vec<String> {
-    msg.hosts
+    msg.servers
         .iter()
-        .filter(|h| {
-            h.endpoint_id.as_deref().and_then(manage::id_of) == Some(id)
-                && h.ssh.as_deref() == Some(dest)
-        })
-        .map(|h| h.name.clone())
+        .filter(|s| manage::id_of(&s.endpoint_id) == Some(id) && s.ssh.as_deref() == Some(dest))
+        .map(|s| s.name.clone())
         .collect()
 }
 
-/// The `ssh` value `[hosts.alias]` holds in `msg`.
+/// The `ssh` value `[servers.alias]` holds in `msg`.
 fn saved_ssh(msg: &pb::Config, alias: &str) -> Option<String> {
     saved_host(msg, alias)?.ssh.clone()
 }

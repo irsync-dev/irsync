@@ -1,9 +1,8 @@
 //! The `[clients]` table of `irsync.toml`: names for the peers that
 //! grants are given to.
 
-use super::hosts::endpoint_id_from;
 use super::names::{invalid_name, valid_alias};
-use super::{file_error, ConfigError};
+use super::{endpoint_id_from, file_error, ConfigError};
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
 use irsync_proto::config as pb;

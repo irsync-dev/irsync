@@ -1,8 +1,8 @@
 //! Authorisation: which endpoint may access which exports.
 
+use crate::config::clients::Clients;
 use crate::config::exports::{Export, Exports};
 use crate::config::file::Config;
-use crate::config::hosts::Hosts;
 use crate::config::paths::Paths;
 use crate::config::ConfigError;
 use crate::manage::ManageError;
@@ -90,16 +90,17 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Resolves every grant entry (an alias first, then a raw EndpointId).
+    /// Resolves every grant entry against `clients` (a client name first,
+    /// then a raw EndpointId).
     /// An entry that resolves to nobody is skipped with a warning. Within one
     /// list `rw` is applied before `ro`, so `ro` never downgrades a key.
-    pub fn from_files(hosts: &Hosts, exports: &Exports, immediate_enabled: bool) -> Snapshot {
+    pub fn from_files(clients: &Clients, exports: &Exports, immediate_enabled: bool) -> Snapshot {
         let mut grants: HashMap<EndpointId, Grants> = HashMap::new();
         let mut apply = |export: Option<&str>, rw: &[String], ro: &[String]| {
             let lists = [(rw, Access::ReadWrite), (ro, Access::ReadOnly)];
             for (list, access) in lists {
                 for entry in list {
-                    let Ok(id) = hosts.resolve_peer(entry) else {
+                    let Ok(id) = clients.resolve_peer(entry) else {
                         tracing::warn!(
                             entry = %entry,
                             export = export.unwrap_or("all"),
@@ -124,7 +125,7 @@ impl Snapshot {
         }
         if immediate_enabled {
             for entry in &exports.immediate_rw {
-                match hosts.resolve_peer(entry) {
+                match clients.resolve_peer(entry) {
                     Ok(id) => grants.entry(id).or_default().immediate = true,
                     Err(_) => {
                         tracing::warn!(entry = %entry, "immediate grant entry matches nobody")
@@ -191,7 +192,7 @@ impl Authorizer for FileAuthorizer {
     fn snapshot(&self) -> Result<Snapshot, AuthzError> {
         let config = Config::load(&self.paths)?;
         Ok(Snapshot::from_files(
-            &config.hosts,
+            &config.clients,
             &config.exports,
             config.settings.daemon.immediate,
         ))
@@ -205,7 +206,7 @@ impl Authorizer for FileAuthorizer {
     fn add_auto_export(&self, root: &Path, peer: EndpointId) -> Result<(), AuthzError> {
         use crate::manage::{exports, lock_config};
         let deadline = std::time::Instant::now() + LOCK_WAIT;
-        let lock = loop {
+        let mut lock = loop {
             match lock_config(&self.paths.config) {
                 Err(ManageError::Locked { .. }) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(20));

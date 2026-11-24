@@ -35,7 +35,6 @@ message Config {
   Client client = 8;
   Daemon daemon = 9;
   Telemetry telemetry = 10;
-  repeated Host hosts = 11;
   repeated Export exports = 12;
   GrantTable all = 13;
   GrantTable immediate = 14;   // only rw is used
@@ -88,27 +87,6 @@ message Telemetry {
   Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
   optional string otlp_endpoint = 4;
   optional OtlpProtocol otlp_protocol = 5;
-}
-
-message Host {
-  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
-  string name = 4;
-  optional bytes endpoint_id = 5;
-  optional bytes client_id = 6;
-  optional string relay = 7;
-  optional RelayMode relay_mode = 8;
-  optional Congestion congestion = 9;
-  optional PqKeyExchange pq_key_exchange = 10;
-  repeated Entry address = 11;
-  bool address_set = 12;
-  optional uint32 parallel = 13;
-  google.protobuf.Duration reconnect = 14;
-  optional uint32 dial_retries = 15;
-  optional bool dht = 16;
-  optional bool mdns = 17;
-  optional string ssh = 18;
-  repeated Entry ssh_aliases = 19;
-  bool ssh_aliases_set = 20;
 }
 
 // A daemon to dial.

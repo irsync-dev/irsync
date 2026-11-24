@@ -1,11 +1,10 @@
-//! Settings, host aliases and exports (TOML) configuration.
+//! Settings, servers, clients and exports (TOML) configuration.
 
 pub mod clients;
 mod comments;
 pub mod duration;
 pub mod exports;
 pub mod file;
-pub mod hosts;
 pub mod legacy_v1;
 pub mod names;
 pub mod paths;
@@ -46,12 +45,24 @@ pub enum ConfigError {
     /// and it does not set `unsafe_config_allowed`.
     #[error("{}: {problem}; run: chmod 600 {} (or set unsafe_config_allowed = true in it)", path.display(), path.display())]
     TooOpen { path: PathBuf, problem: String },
-    #[error("unknown host alias {alias:?} (and not an EndpointId); aliases are defined in {}", hosts.display())]
-    UnknownAlias { alias: String, hosts: PathBuf },
     #[error("unknown client {name:?} (and not an EndpointId); clients are defined in {}", path.display())]
     UnknownClient { name: String, path: PathBuf },
     #[error("bad peer {0:?}: expected a host alias or an EndpointId")]
     BadPeer(String),
+}
+
+/// An id of the message: 32 bytes that are a valid key.
+pub(crate) fn endpoint_id_from(
+    bytes: &[u8],
+) -> Result<iroh::EndpointId, crate::identity::IdentityError> {
+    <[u8; 32]>::try_from(bytes)
+        .ok()
+        .and_then(|b| iroh::EndpointId::from_bytes(&b).ok())
+        .ok_or_else(|| {
+            crate::identity::IdentityError::BadEndpointId(
+                bytes.iter().map(|b| format!("{b:02x}")).collect(),
+            )
+        })
 }
 
 /// Expand a leading `~` or `~/` using the user's home directory.

@@ -402,7 +402,7 @@ pub enum ConfigCmd {
     /// table's keys as `key = value` lines. An unset settings key prints
     /// its default; a key with no value and no default exits 1.
     Get {
-        /// A dotted path such as `daemon.listen` or `hosts.home.relay`;
+        /// A dotted path such as `daemon.listen` or `servers.home.relay`;
         /// quote a segment that has a dot: `exports."www.example.com".path`.
         key: String,
     },
@@ -414,7 +414,7 @@ pub enum ConfigCmd {
         #[arg(value_name = "VALUE")]
         values: Vec<String>,
     },
-    /// Remove a key, or a whole table (`config unset hosts.home`).
+    /// Remove a key, or a whole table (`config unset servers.home`).
     Unset { key: String },
     /// Every key the file sets, as `dotted.key = value`, file order.
     List,

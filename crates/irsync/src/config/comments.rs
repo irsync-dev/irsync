@@ -20,8 +20,8 @@
 //!   `footer`. In a file of comments only, all of it is the footer.
 //!
 //! A comment is the whole line from `#` on. The comments of a bare
-//! `[hosts]` or `[exports]` header, or of a top-level `hosts = { … }`
-//! key, go to its first entry, without blank lines. A comment with
+//! `[servers]`, `[clients]` or `[exports]` header, or of a top-level
+//! `servers = { … }` key, go to its first entry, without blank lines. A comment with
 //! no place in the message goes to the footer: none is dropped.
 
 use super::{line_of, ConfigError};
@@ -393,11 +393,6 @@ fn table<'a>(c: &'a mut pb::Config, path: &[String]) -> Option<Parts<'a>> {
         ["telemetry"] => parts!(c.telemetry.as_mut()?),
         ["all"] => parts!(c.all.as_mut()?, "rw" => rw, "ro" => ro),
         ["immediate"] => parts!(c.immediate.as_mut()?, "rw" => rw, "ro" => ro),
-        ["hosts", name] => parts!(
-            c.hosts.iter_mut().find(|h| h.name == name)?,
-            "address" => address,
-            "ssh_aliases" => ssh_aliases
-        ),
         ["servers", name] => parts!(
             c.servers.iter_mut().find(|s| s.name == name)?,
             "address" => address,
@@ -414,11 +409,11 @@ fn table<'a>(c: &'a mut pb::Config, path: &[String]) -> Option<Parts<'a>> {
 }
 
 /// A key whose value is a table, inline or dotted, has the comments of
-/// that table. A bare `[hosts]`, `[servers]`, `[clients]` or `[exports]` gives its comments to its
-/// first entry.
+/// that table. A bare `[servers]`, `[clients]` or `[exports]` gives its
+/// comments to its first entry.
 fn redirect(c: &mut pb::Config, place: Place) -> Place {
     let place = match place {
-        // `hosts = { … }` at the top level is the group's header.
+        // `servers = { … }` at the top level is the group's header.
         Place::Above(Spot::Key(p, k)) if p.is_empty() && is_group(&k) => {
             Place::Above(Spot::Table(vec![k]))
         }
@@ -438,7 +433,6 @@ fn redirect(c: &mut pb::Config, place: Place) -> Place {
         _ => return place,
     };
     let first = match group.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["hosts"] => c.hosts.first().map(|h| h.name.clone()),
         ["servers"] => c.servers.first().map(|s| s.name.clone()),
         ["clients"] => c.clients.first().map(|e| e.name.clone()),
         ["exports"] => c.exports.first().map(|e| e.name.clone()),
@@ -451,7 +445,7 @@ fn redirect(c: &mut pb::Config, place: Place) -> Place {
 }
 
 fn is_group(name: &str) -> bool {
-    matches!(name, "hosts" | "servers" | "clients" | "exports")
+    matches!(name, "servers" | "clients" | "exports")
 }
 
 enum Slot<'a> {

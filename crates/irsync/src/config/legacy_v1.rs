@@ -250,7 +250,7 @@ fn toml_err(text: &str, path: &Path, e: toml::de::Error) -> ConfigError {
 /// A file of layout 1 in the message of layout 2.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Converted {
-    /// The message: `config_version` is 2, `hosts` is empty.
+    /// The message, with `config_version` 2.
     pub config: pb::Config,
     /// One note for each `[hosts.N]` that had a `client_id`, no
     /// `endpoint_id` and keys that only apply to a server, which the
@@ -294,8 +294,7 @@ const SERVER_KEYS: [&str; 12] = [
 /// client `N` when there is no server. The comments of a bare `[hosts]`
 /// or of `hosts = { … }` go to the first entry made from the first host.
 pub fn read(text: &str, path: &Path) -> Result<Converted, ConfigError> {
-    let mut old = read_v1_values(text, path)?;
-    let hosts = std::mem::take(&mut old.hosts);
+    let (old, hosts) = read_v1_values(text, path)?;
     let granted = granted_names(&old);
     let doc = text.parse::<toml_edit::DocumentMut>().ok();
     let mut config = pb::Config {
@@ -357,7 +356,7 @@ fn granted_names(c: &pb::Config) -> BTreeSet<String> {
         .collect()
 }
 
-fn server(h: &pb::Host, endpoint_id: Vec<u8>) -> pb::ServerEntry {
+fn server(h: &Host, endpoint_id: Vec<u8>) -> pb::ServerEntry {
     pb::ServerEntry {
         name: h.name.clone(),
         endpoint_id,
@@ -473,9 +472,30 @@ fn moved(msg: &pb::Config, first: Option<&Vec<String>>, place: Place) -> Place {
     }
 }
 
-/// Reads the text of a file of layout 1 into the message as it was then,
-/// with `hosts` and without comments. `path` is the file named in errors.
-fn read_v1_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
+/// A `[hosts.N]` of layout 1, as the message of that layout held it.
+struct Host {
+    name: String,
+    endpoint_id: Option<Vec<u8>>,
+    client_id: Option<Vec<u8>>,
+    relay: Option<String>,
+    relay_mode: Option<i32>,
+    congestion: Option<i32>,
+    pq_key_exchange: Option<i32>,
+    address: Vec<pb::Entry>,
+    address_set: bool,
+    parallel: Option<u32>,
+    reconnect: Option<prost_types::Duration>,
+    dial_retries: Option<u32>,
+    dht: Option<bool>,
+    mdns: Option<bool>,
+    ssh: Option<String>,
+    ssh_aliases: Vec<pb::Entry>,
+    ssh_aliases_set: bool,
+}
+
+/// Reads the text of a file of layout 1 into the message, without its
+/// hosts and comments, and its hosts. `path` is the file named in errors.
+fn read_v1_values(text: &str, path: &Path) -> Result<(pb::Config, Vec<Host>), ConfigError> {
     let at = |offset: usize, message: String| ConfigError::File {
         path: path.to_path_buf(),
         line: Some(line_of(text, offset)),
@@ -493,7 +513,7 @@ fn read_v1_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
         telemetry: raw.telemetry.map(telemetry),
         ..Default::default()
     };
-    config.hosts = hosts(raw.hosts, &at)?;
+    let hosts = hosts(raw.hosts, &at)?;
     config.exports = exports(raw.exports, &at)?;
     config.all = raw.all.map(|g| {
         let (rw, rw_set) = entries(g.rw);
@@ -514,7 +534,7 @@ fn read_v1_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
             ..Default::default()
         }
     });
-    Ok(config)
+    Ok((config, hosts))
 }
 
 /// The shape pass over the top-level keys, with the old-layout hints.
@@ -662,7 +682,7 @@ fn telemetry(r: RawTelemetry) -> pb::Telemetry {
 fn hosts(
     raw: BTreeMap<String, Spanned<RawHost>>,
     at: &impl Fn(usize, String) -> ConfigError,
-) -> Result<Vec<pb::Host>, ConfigError> {
+) -> Result<Vec<Host>, ConfigError> {
     let mut hosts = Vec::new();
     for (alias, r) in raw {
         if !valid_alias(&alias) {
@@ -686,7 +706,7 @@ fn hosts(
         }
         let (address, address_set) = addresses(r.address);
         let (ssh_aliases, ssh_aliases_set) = entries(r.ssh_aliases);
-        let host = pb::Host {
+        let host = Host {
             name: alias,
             endpoint_id,
             client_id,
@@ -704,7 +724,6 @@ fn hosts(
             ssh: r.ssh,
             ssh_aliases,
             ssh_aliases_set,
-            ..Default::default()
         };
         hosts.push((start, host));
     }

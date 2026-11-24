@@ -279,7 +279,7 @@ fn first_push_sets_up_and_syncs() {
         "{err}"
     );
     let cfg = w.client_config();
-    assert!(cfg.contains("[hosts.myserver]"), "{cfg}");
+    assert!(cfg.contains("[servers.myserver]"), "{cfg}");
     assert!(cfg.contains("ssh = \"myserver\""), "{cfg}");
     assert_eq!(w.ssh_calls(), 3);
 }
@@ -332,7 +332,7 @@ fn user_at_host_saves_the_plain_name_too() {
     assert!(err.contains("saved host alias myserver"), "{err}");
     let cfg: toml::Table = w.client_config().parse().unwrap();
     for a in ["u@myserver", "myserver"] {
-        assert_eq!(cfg["hosts"][a]["ssh"].as_str(), Some("u@myserver"), "{a}");
+        assert_eq!(cfg["servers"][a]["ssh"].as_str(), Some("u@myserver"), "{a}");
     }
     let calls = w.ssh_calls();
     ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
@@ -352,10 +352,10 @@ fn ip_address_is_saved_under_the_server_name() {
     assert!(err.contains("saved host alias myserver"), "{err}");
     let cfg: toml::Table = w.client_config().parse().unwrap();
     assert_eq!(
-        cfg["hosts"]["myserver"]["ssh"].as_str(),
+        cfg["servers"]["myserver"]["ssh"].as_str(),
         Some("192.168.1.5")
     );
-    assert!(cfg["hosts"].get("192.168.1.5").is_none());
+    assert!(cfg["servers"].get("192.168.1.5").is_none());
     same_tree(w.src.path(), &dest);
     // Typed again, the address finds the saved host: no ssh.
     let calls = w.ssh_calls();
@@ -376,8 +376,8 @@ fn ip_address_is_saved_under_the_server_name() {
     let other = format!("u@192.168.1.5:{}", dest.display());
     ok(&w.irsync(&["-a", &w.src_arg(), &other]));
     let cfg: toml::Table = w.client_config().parse().unwrap();
-    assert_eq!(cfg["hosts"].as_table().unwrap().len(), 1, "{cfg}");
-    let h = &cfg["hosts"]["myserver"];
+    assert_eq!(cfg["servers"].as_table().unwrap().len(), 1, "{cfg}");
+    let h = &cfg["servers"]["myserver"];
     assert_eq!(h["ssh"].as_str(), Some("192.168.1.5"), "{cfg}");
     assert_eq!(h["ssh_aliases"][0].as_str(), Some("u@192.168.1.5"), "{cfg}");
     // From here on neither spelling needs ssh.
@@ -388,7 +388,9 @@ fn ip_address_is_saved_under_the_server_name() {
     }
     assert_eq!(w.ssh_calls(), calls);
     let cfg: toml::Table = w.client_config().parse().unwrap();
-    let also = cfg["hosts"]["myserver"]["ssh_aliases"].as_array().unwrap();
+    let also = cfg["servers"]["myserver"]["ssh_aliases"]
+        .as_array()
+        .unwrap();
     assert_eq!(also.len(), 1, "{cfg}");
 }
 
@@ -414,17 +416,17 @@ fn an_address_does_not_replace_a_saved_ssh_name() {
         "{err}"
     );
     let cfg: toml::Table = w.client_config().parse().unwrap();
-    assert_eq!(cfg["hosts"].as_table().unwrap().len(), 2, "{cfg}");
+    assert_eq!(cfg["servers"].as_table().unwrap().len(), 2, "{cfg}");
     for alias in ["myserver", "mike@myserver"] {
         assert_eq!(
-            cfg["hosts"][alias]["ssh"].as_str(),
+            cfg["servers"][alias]["ssh"].as_str(),
             Some("mike@myserver"),
             "{alias}"
         );
     }
     // The address is remembered beside the name: typed again, no ssh.
     assert_eq!(
-        cfg["hosts"]["myserver"]["ssh_aliases"][0].as_str(),
+        cfg["servers"]["myserver"]["ssh_aliases"][0].as_str(),
         Some("192.168.1.5"),
         "{cfg}"
     );
@@ -447,8 +449,8 @@ fn two_hosts_with_one_ssh_destination_are_refused() {
     let cfg = w.client.path().join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let text = format!(
-        "[hosts.a]\nendpoint_id = \"{}\"\nssh = \"192.168.1.5\"\n\
-         [hosts.b]\nendpoint_id = \"{}\"\nssh = \"192.168.1.5\"\n",
+        "[servers.a]\nendpoint_id = \"{}\"\nssh = \"192.168.1.5\"\n\
+         [servers.b]\nendpoint_id = \"{}\"\nssh = \"192.168.1.5\"\n",
         id(7),
         id(8)
     );
@@ -474,7 +476,7 @@ fn client_name_with_shell_characters_runs_nothing() {
     // And it arrived as it was sent: the server saved the client under it.
     let cfg: toml::Table = w.server_toml().parse().unwrap();
     assert_eq!(
-        cfg["hosts"][w.client_name.as_str()]["client_id"].as_str(),
+        cfg["clients"][w.client_name.as_str()]["client_id"].as_str(),
         Some(client_id(w.client.path()).as_str()),
         "{cfg}"
     );
@@ -534,7 +536,7 @@ fn immediate_off_still_saves_alias() {
     assert!(err.contains("immediate mode is off on myserver"), "{err}");
     same_tree(w.src.path(), &dest);
     let cfg = w.client_config();
-    assert!(cfg.contains("[hosts.myserver]"), "{cfg}");
+    assert!(cfg.contains("[servers.myserver]"), "{cfg}");
 }
 
 #[test]
@@ -552,7 +554,7 @@ fn other_platform_changes_nothing() {
     );
     assert!(err.contains("set the server up by hand"), "{err}");
     assert!(
-        !w.client_config().contains("[hosts"),
+        !w.client_config().contains("[servers"),
         "{}",
         w.client_config()
     );
@@ -618,7 +620,7 @@ impl World {
     /// The `endpoint_id` saved for `alias` in the client config.
     fn saved_id(&self, alias: &str) -> String {
         let doc: toml::Table = self.client_config().parse().unwrap();
-        doc["hosts"][alias]["endpoint_id"]
+        doc["servers"][alias]["endpoint_id"]
             .as_str()
             .unwrap()
             .to_string()
@@ -681,7 +683,7 @@ fn rebuilt_server_updates_every_alias_of_that_ssh_destination() {
     let before = w.saved_id("myserver");
     assert_eq!(w.saved_id("mike@myserver"), before);
     ok(&w.irsync_bare(&["host", "add", "elsewhere", &before]));
-    ok(&w.irsync_bare(&["config", "set", "hosts.elsewhere.ssh", "nas"]));
+    ok(&w.irsync_bare(&["config", "set", "servers.elsewhere.ssh", "nas"]));
     w.kill_daemon();
     for entry in std::fs::read_dir(w.server.path().join(".config/irsync")).unwrap() {
         let p = entry.unwrap().path();
@@ -752,13 +754,15 @@ fn refusal_never_uses_ssh() {
 }
 
 /// Whether the server config grants `id` immediate access, by its id or
-/// by a name its `[hosts]` has for it.
+/// by a name its `[clients]` has for it.
 fn immediate_granted(w: &World, id: &str) -> bool {
     let doc: toml::Table = w.server_toml().parse().unwrap();
     let named = |entry: &str| {
-        let host = doc.get("hosts").and_then(|h| h.get(entry));
-        let key = |k: &str| host.and_then(|h| h.get(k)).and_then(|v| v.as_str());
-        key("client_id").or(key("endpoint_id")) == Some(id)
+        let client = doc.get("clients").and_then(|c| c.get(entry));
+        client
+            .and_then(|c| c.get("client_id"))
+            .and_then(|v| v.as_str())
+            == Some(id)
     };
     doc.get("immediate")
         .and_then(|i| i.get("rw"))
@@ -778,7 +782,7 @@ fn server_knows_the_client_by_name() {
     assert!(err.contains("granted this client (myclient, "), "{err}");
     let t: toml::Table = w.server_toml().parse().unwrap();
     assert_eq!(
-        t["hosts"]["myclient"]["client_id"].as_str(),
+        t["clients"]["myclient"]["client_id"].as_str(),
         Some(&*client_id(w.client.path()))
     );
     assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"));
@@ -789,9 +793,10 @@ fn server_knows_the_client_by_name() {
     assert_eq!(e["rw"][0].as_str(), Some("myclient"), "{t}");
 }
 
-/// Two machines, each a client of the other. A machine has one entry on
-/// the other side, under its host name: its daemon's id to dial and its
-/// client id for grants. Neither direction gets in the other's way.
+/// Two machines, each a client of the other. A machine has a server and a
+/// client on the other side, both under its host name: its daemon's id to
+/// dial and its client id for grants. Neither direction gets in the
+/// other's way.
 #[test]
 fn two_machines_sync_in_both_directions() {
     let w = World::new();
@@ -806,7 +811,8 @@ fn two_machines_sync_in_both_directions() {
     let there = format!("myserver:{}", w.server.path().join("dest").display());
     ok(&w.irsync(&["-a", &w.src_arg(), &there]));
     let t = table(w.server.path());
-    assert!(t["hosts"]["myclient"].get("endpoint_id").is_none(), "{t}");
+    assert!(t.get("servers").is_none(), "{t}");
+    assert!(t["clients"]["myclient"]["client_id"].is_str(), "{t}");
 
     // myserver -> myclient: the name the server knows the client by is
     // the name typed to dial it. Its daemon is set up over ssh.
@@ -820,19 +826,22 @@ fn two_machines_sync_in_both_directions() {
     assert!(err.contains("saved host alias myclient"), "{err}");
     same_tree(w.src.path(), &back);
 
-    // One entry per machine, on both sides, with both ids.
+    // One server and one client per machine, on both sides.
     let (server, client) = (table(w.server.path()), table(w.client.path()));
     for (t, name) in [(&server, "myclient"), (&client, "myserver")] {
-        let hosts = t["hosts"].as_table().unwrap();
-        assert_eq!(hosts.len(), 1, "{t}");
-        let h = &hosts[name];
-        assert!(h["endpoint_id"].is_str() && h["client_id"].is_str(), "{t}");
-        assert_ne!(h["endpoint_id"], h["client_id"], "{t}");
-        assert_eq!(h["ssh"].as_str(), Some(name), "{t}");
+        let (servers, clients) = (
+            t["servers"].as_table().unwrap(),
+            t["clients"].as_table().unwrap(),
+        );
+        assert_eq!((servers.len(), clients.len()), (1, 1), "{t}");
+        let (s, c) = (&servers[name], &clients[name]);
+        assert!(s["endpoint_id"].is_str() && c["client_id"].is_str(), "{t}");
+        assert_ne!(s["endpoint_id"], c["client_id"], "{t}");
+        assert_eq!(s["ssh"].as_str(), Some(name), "{t}");
         assert_eq!(t["immediate"]["rw"][0].as_str(), Some(name), "{t}");
     }
     assert_eq!(
-        server["hosts"]["myclient"]["client_id"].as_str(),
+        server["clients"]["myclient"]["client_id"].as_str(),
         Some(&*client_id(w.client.path()))
     );
 
@@ -859,8 +868,8 @@ fn config_in(home: &Path) -> toml::Table {
 }
 
 /// A machine known as a client only, dialled as `user@host` or by its
-/// address: the first run adds its daemon to the entry it already has,
-/// and the grants that name the entry stay with its client id.
+/// address: the first run saves its daemon as a server beside the client
+/// of that name, and the grants that name the client stay with its id.
 #[test]
 fn a_first_run_joins_a_client_only_entry() {
     for back_host in ["mike@myclient", "192.168.1.9"] {
@@ -879,11 +888,11 @@ fn a_first_run_joins_a_client_only_entry() {
         same_tree(w.src.path(), &back);
 
         let t = config_in(w.server.path());
-        let h = &t["hosts"]["myclient"];
-        assert_eq!(h["client_id"].as_str(), Some(&*client), "{t}");
-        assert!(h["endpoint_id"].is_str(), "{t}");
-        assert_ne!(h["endpoint_id"], h["client_id"], "{t}");
-        assert_eq!(h["ssh"].as_str(), Some(back_host), "{t}");
+        let (s, c) = (&t["servers"]["myclient"], &t["clients"]["myclient"]);
+        assert_eq!(c["client_id"].as_str(), Some(&*client), "{t}");
+        assert!(s["endpoint_id"].is_str(), "{t}");
+        assert_ne!(s["endpoint_id"], c["client_id"], "{t}");
+        assert_eq!(s["ssh"].as_str(), Some(back_host), "{t}");
         assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"), "{t}");
         // The client still gets in.
         std::fs::write(w.src.path().join("a.txt"), "again\n").unwrap();
@@ -908,14 +917,14 @@ fn force_ssh_sets_up_a_client_only_host() {
     );
     same_tree(w.src.path(), &back);
     let t = config_in(w.server.path());
-    assert!(t["hosts"]["myclient"]["endpoint_id"].is_str(), "{t}");
+    assert!(t["servers"]["myclient"]["endpoint_id"].is_str(), "{t}");
     // A first run, not a recheck: the server machine is granted there.
     let t = config_in(w.client.path());
     assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myserver"), "{t}");
 }
 
-/// A machine that syncs to itself has one entry for itself: its daemon's
-/// id to dial, its client id for the grant.
+/// A machine that syncs to itself has a server and a client for itself:
+/// its daemon's id to dial, its client id for the grant.
 #[test]
 fn a_machine_syncs_to_itself() {
     let w = World::new();
@@ -928,11 +937,12 @@ fn a_machine_syncs_to_itself() {
     ok(&w.run(home, home, "myclient", &args));
     same_tree(w.src.path(), &dest);
     let t = config_in(home);
-    assert_eq!(t["hosts"].as_table().unwrap().len(), 1, "{t}");
-    let h = &t["hosts"]["myclient"];
-    assert_eq!(h["client_id"].as_str(), Some(&*client_id(home)), "{t}");
-    assert!(h["endpoint_id"].is_str(), "{t}");
-    assert_ne!(h["endpoint_id"], h["client_id"], "{t}");
+    assert_eq!(t["servers"].as_table().unwrap().len(), 1, "{t}");
+    assert_eq!(t["clients"].as_table().unwrap().len(), 1, "{t}");
+    let (s, c) = (&t["servers"]["myclient"], &t["clients"]["myclient"]);
+    assert_eq!(c["client_id"].as_str(), Some(&*client_id(home)), "{t}");
+    assert!(s["endpoint_id"].is_str(), "{t}");
+    assert_ne!(s["endpoint_id"], c["client_id"], "{t}");
     assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"), "{t}");
     // Again: no ssh.
     let calls = ssh_calls_in(home);
@@ -973,8 +983,11 @@ fn an_address_takes_ssh_and_no_remote_dht() {
     let doc: toml::Table = w.server_toml().parse().unwrap();
     assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
     let t = config_in(w.client.path());
-    assert_eq!(t["hosts"].as_table().unwrap().len(), 1, "{t}");
-    assert_eq!(t["hosts"]["myserver"]["ssh"].as_str(), Some("192.168.1.5"));
+    assert_eq!(t["servers"].as_table().unwrap().len(), 1, "{t}");
+    assert_eq!(
+        t["servers"]["myserver"]["ssh"].as_str(),
+        Some("192.168.1.5")
+    );
 }
 
 /// A daemon that died is started again when the host is typed as its
@@ -1000,7 +1013,7 @@ fn a_dead_daemon_found_by_address_is_restarted() {
         "changed\n"
     );
     let t = config_in(w.client.path());
-    assert_eq!(t["hosts"].as_table().unwrap().len(), 1, "{t}");
+    assert_eq!(t["servers"].as_table().unwrap().len(), 1, "{t}");
 }
 
 /// The ssh calls made by the irsync that ran in `home`.
@@ -1014,12 +1027,15 @@ fn ssh_calls_in(home: &Path) -> usize {
 fn a_taken_client_name_is_refused_and_changes_no_configuration() {
     let w = World::new();
     let other = iroh::SecretKey::from_bytes(&[9; 32]).public();
-    w.server_config("", &format!("[hosts.myclient]\nclient_id = \"{other}\"\n"));
+    w.server_config(
+        "",
+        &format!("[clients.myclient]\nclient_id = \"{other}\"\n"),
+    );
     let before = w.server_toml();
     let out = w.irsync(&["-a", &w.src_arg(), "myserver:dest"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("[hosts.myclient]"), "{err}");
+    assert!(err.contains("[clients.myclient]"), "{err}");
     assert_eq!(w.server_toml(), before);
     assert!(
         probe(&w.server.path().join("xdg/irsync")).is_none(),
@@ -1035,7 +1051,7 @@ fn a_taken_client_name_is_refused_and_changes_no_configuration() {
     let out = w.irsync(&["-a", &w.src_arg(), "myserver:dest"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("[hosts.myclient]"), "{err}");
+    assert!(err.contains("[clients.myclient]"), "{err}");
     assert!(!err.contains(note), "{err}");
     assert_eq!(w.server_toml(), before);
 }
@@ -1172,7 +1188,9 @@ fn fallback_updates_the_alias_not_its_ssh_name() {
     let dest = w.server.path().join("dest");
     ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
     let path = w.client.path().join(".config/irsync/irsync.toml");
-    let cfg = w.client_config().replace("[hosts.myserver]", "[hosts.nas]");
+    let cfg = w
+        .client_config()
+        .replace("[servers.myserver]", "[servers.nas]");
     std::fs::write(&path, cfg).unwrap();
     let before = w.saved_id("nas");
     w.kill_daemon();
@@ -1194,7 +1212,7 @@ fn fallback_updates_the_alias_not_its_ssh_name() {
     assert!(err.contains("updated host alias nas:"), "{err}");
     assert_ne!(w.saved_id("nas"), before);
     let cfg = w.client_config();
-    assert!(!cfg.contains("[hosts.myserver]"), "{cfg}");
+    assert!(!cfg.contains("[servers.myserver]"), "{cfg}");
     assert!(cfg.contains("ssh = \"myserver\""), "{cfg}");
     same_tree(w.src.path(), &dest);
 }
@@ -1292,7 +1310,7 @@ fn assert_stopped_by_no_install(w: &World, o: &Output) {
     assert!(err.contains("--no-install"), "{err}");
     assert!(err.contains("Nothing was changed."), "{err}");
     assert!(
-        !w.client_config().contains("[hosts"),
+        !w.client_config().contains("[servers"),
         "{}",
         w.client_config()
     );
@@ -1366,7 +1384,7 @@ fn a_root_account_is_refused_before_anything_is_installed() {
     );
     assert_eq!(w.ssh_calls(), 1, "only the probe");
     assert!(
-        !w.client_config().contains("[hosts"),
+        !w.client_config().contains("[servers"),
         "{}",
         w.client_config()
     );
@@ -1401,7 +1419,7 @@ fn ssh_setup_itself_refuses_root_and_grants_nothing() {
         .join(".config/irsync/daemon_ed25519")
         .exists());
     assert!(
-        !w.client_config().contains("[hosts"),
+        !w.client_config().contains("[servers"),
         "{}",
         w.client_config()
     );

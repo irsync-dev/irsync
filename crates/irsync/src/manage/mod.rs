@@ -7,13 +7,14 @@ pub mod clients;
 pub mod config;
 pub mod exports;
 pub mod grants;
-pub mod hosts;
 pub mod servers;
 pub mod show;
 
+use crate::config::clients::Clients;
 use crate::config::file::Config;
-use crate::config::hosts::Hosts;
-use crate::config::{reader, writer, ConfigError};
+use crate::config::reader::{self, CONFIG_VERSION};
+use crate::config::servers::Servers;
+use crate::config::{writer, ConfigError};
 use crate::identity::{endpoint_id_of_public_key, parse_endpoint_id};
 use iroh::EndpointId;
 use irsync_proto::config as pb;
@@ -35,10 +36,6 @@ pub enum ManageError {
     Exists(String),
     #[error("no such entry {0:?}")]
     NotFound(String),
-    #[error("host {0:?} already exists")]
-    HostExists(String),
-    #[error("host {alias:?} is named by grants in {}: remove those grants first, or pass --force", lists.join(", "))]
-    HostInUse { alias: String, lists: Vec<String> },
     #[error("server {0:?} already exists")]
     ServerExists(String),
     #[error("client {0:?} already exists")]
@@ -55,6 +52,9 @@ pub enum ManageError {
     BadAlias(String),
     #[error("no open access: a peer must be named (an alias, an EndpointId, a public key line or a .pub file)")]
     NoOpenAccess,
+    /// Grants name clients: a name that is only a server's names nobody.
+    #[error("{0:?} is a server here, not a client; to grant that machine, add it as a client: irsync client add {0} ID")]
+    NotAClient(String),
     #[error("{}: not a directory", .0.display())]
     NotADirectory(PathBuf),
     #[error("nothing to remove for {0:?}")]
@@ -69,10 +69,21 @@ pub enum ManageError {
     Locked { path: PathBuf, lock: PathBuf },
     #[error("invalid key {0:?}")]
     BadKey(String),
-    #[error("unknown key {0:?}")]
+    #[error("{}", unknown_key_text(.0))]
     UnknownKey(String),
     #[error("{0}")]
     BadValue(String),
+}
+
+/// The message for a key `config` does not know, with a pointer for the
+/// keys of the old `[hosts]` table.
+fn unknown_key_text(key: &str) -> String {
+    match reader::dotted_key(key) {
+        Some(path) if path.first().is_some_and(|p| p == "hosts") => {
+            format!("unknown key {key:?}; hosts are now servers.NAME and clients.NAME")
+        }
+        _ => format!("unknown key {key:?}"),
+    }
 }
 
 /// A comment kept in a config file must be one line of printable text.
@@ -97,8 +108,14 @@ pub fn id_of(bytes: &[u8]) -> Option<EndpointId> {
 /// Load the config file for editing; a missing file is the empty message.
 /// A file open to other users is refused as it is for use (see
 /// [`Config::load`]), and a file the reader refuses is that error, with
-/// its line.
+/// its line. A file of an older layout is converted (see [`reader::read`]).
 pub fn load_message(path: &Path) -> Result<pb::Config, ManageError> {
+    Ok(read_file(path)?.config)
+}
+
+/// The config file at `path` as [`reader::read`] reads it; see
+/// [`load_message`].
+fn read_file(path: &Path) -> Result<reader::Read, ManageError> {
     let text = match crate::config::read_optional(path) {
         Ok(t) => t.unwrap_or_default(),
         Err(ConfigError::Io { path, source }) => return Err(ManageError::Io { path, source }),
@@ -131,35 +148,35 @@ fn typed(msg: &pb::Config, path: &Path) -> Result<Config, ManageError> {
 }
 
 /// Puts the grants of `msg` into their canonical form (see
-/// [`grants::canonicalize`]) with the hosts of `msg` itself, so an alias
+/// [`grants::canonicalize`]) with the clients of `msg` itself, so a name
 /// added in the same edit already counts. True when `msg` changed. A
 /// message that would not load is an error naming `path`.
 pub fn canonicalize_doc(msg: &mut pb::Config, path: &Path) -> Result<bool, ManageError> {
     let config = typed(msg, path)?;
-    Ok(grants::canonicalize(msg, &config.hosts))
+    Ok(grants::canonicalize(msg, &config.clients))
 }
 
-/// As [`canonicalize_doc`], for a message that the host `alias` is about
-/// to leave. When another alias has the same EndpointId, `alias` is not
-/// counted: an id written in a grant is then written as that other alias
-/// and so does not stand in the way of the removal. An id that only
-/// `alias` names is written as `alias`, and is found as a grant naming it.
+/// As [`canonicalize_doc`], for a message that the client `name` is
+/// about to leave. When another client has the same EndpointId, `name` is
+/// not counted: an id written in a grant is then written as that other
+/// name and so does not stand in the way of the removal. An id that only
+/// `name` names is written as `name`, and is found as a grant naming it.
 pub fn canonicalize_without(
     msg: &mut pb::Config,
     path: &Path,
-    alias: &str,
+    name: &str,
 ) -> Result<bool, ManageError> {
-    let mut hosts = typed(msg, path)?.hosts;
-    let shared = hosts.get(alias).map(|e| e.peer_id()).is_some_and(|id| {
-        hosts
+    let mut clients = typed(msg, path)?.clients;
+    let shared = clients.get(name).map(|e| e.client_id).is_some_and(|id| {
+        clients
             .entries
             .iter()
-            .any(|(other, e)| other != alias && e.peer_id() == id)
+            .any(|(other, e)| other != name && e.client_id == id)
     });
     if shared {
-        hosts.entries.remove(alias);
+        clients.entries.remove(name);
     }
-    Ok(grants::canonicalize(msg, &hosts))
+    Ok(grants::canonicalize(msg, &clients))
 }
 
 /// Exclusive right to edit a config file, held from [`ConfigLock::load`] to
@@ -173,6 +190,11 @@ pub struct ConfigLock {
     path: PathBuf,
     lock: PathBuf,
     file: Option<std::fs::File>,
+    /// The layout of the file as [`ConfigLock::load`] read it; `None`
+    /// before a load.
+    version: Option<u32>,
+    /// What converting the file left out (see [`reader::Read::dropped`]).
+    dropped: Vec<String>,
 }
 
 /// Takes the lock of `path`, creating its directory if needed.
@@ -197,6 +219,8 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
             path: path.to_path_buf(),
             lock,
             file: Some(file),
+            version: None,
+            dropped: Vec::new(),
         }),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(ManageError::Locked {
             path: path.to_path_buf(),
@@ -208,18 +232,26 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
 
 impl ConfigLock {
     /// The file as it is now (empty when missing); see [`load_message`].
-    pub fn load(&self) -> Result<pb::Config, ManageError> {
+    /// Records the layout it was in, and what a conversion left out, for
+    /// [`ConfigLock::save`].
+    pub fn load(&mut self) -> Result<pb::Config, ManageError> {
         // An edit must not pass a split file by in silence either.
         crate::config::file::warn_ignored_split_files(&self.path);
-        load_message(&self.path)
+        let read = read_file(&self.path)?;
+        self.version = Some(read.version);
+        self.dropped = read.dropped;
+        Ok(read.config)
     }
 
-    /// Writes `msg` over the file, in the writer's form, and releases the
-    /// lock. Peers that the hosts have an alias for are written by it
+    /// Writes `msg` over the file, in the writer's form and the current
+    /// layout (`config_version` [`CONFIG_VERSION`]), and releases the
+    /// lock. Peers that the clients have a name for are written by it
     /// first (see [`canonicalize_doc`]), so every save leaves the file in
     /// one form. A message that would not load is refused and the file
-    /// left as it was.
+    /// left as it was. When the file loaded was of layout 1, each thing
+    /// its conversion left out is noted on stderr once the file is saved.
     pub fn save(mut self, msg: &mut pb::Config) -> Result<(), ManageError> {
+        msg.config_version = Some(CONFIG_VERSION);
         if canonicalize_doc(msg, &self.path)? {
             // The rewrite only renames and drops entries; checked all the same.
             typed(msg, &self.path)?;
@@ -235,6 +267,11 @@ impl ConfigLock {
         std::fs::rename(&self.lock, &self.path).map_err(io)?;
         // Renamed away: nothing to remove on drop.
         self.file = None;
+        if self.version == Some(1) {
+            for note in &self.dropped {
+                eprintln!("irsync: note: {note}");
+            }
+        }
         Ok(())
     }
 }
@@ -258,12 +295,18 @@ pub enum PeerSpec {
 }
 
 impl PeerSpec {
-    pub fn parse(who: &str, hosts: &Hosts) -> Result<PeerSpec, ManageError> {
+    /// `who` as a client name of `clients`, a public key (a line or a
+    /// `.pub` file) or an EndpointId. A name that only `servers` has is
+    /// refused: grants name clients.
+    pub fn parse(who: &str, clients: &Clients, servers: &Servers) -> Result<PeerSpec, ManageError> {
         if who == "all" || who == "*" {
             return Err(ManageError::NoOpenAccess);
         }
-        if hosts.get(who).is_some() {
+        if clients.get(who).is_some() {
             return Ok(PeerSpec::Alias(who.to_string()));
+        }
+        if servers.get(who).is_some() {
+            return Err(ManageError::NotAClient(who.to_string()));
         }
         let bad = || ManageError::Config(ConfigError::BadPeer(who.to_string()));
         if let Ok(text) = std::fs::read_to_string(who) {
@@ -305,11 +348,11 @@ impl PeerSpec {
         Ok(Some(PeerSpec::Id { id, comment }))
     }
 
-    /// What a save writes for this peer: the alias, also for an id that
-    /// `hosts` has an alias for; else the id in hex.
-    pub fn written(&self, hosts: &Hosts) -> String {
+    /// What a save writes for this peer: the name, also for an id that
+    /// `clients` has a name for; else the id in hex.
+    pub fn written(&self, clients: &Clients) -> String {
         match self {
-            PeerSpec::Id { id, .. } => hosts
+            PeerSpec::Id { id, .. } => clients
                 .alias_of(id)
                 .map_or_else(|| id.to_string(), str::to_string),
             PeerSpec::Alias(a) => a.clone(),

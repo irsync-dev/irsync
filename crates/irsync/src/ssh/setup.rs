@@ -296,27 +296,26 @@ impl SetupReport {
     }
 }
 
-/// Whether `name` may stand for `client` in the server config `doc` (the
-/// file at `path`). A host entry is a machine: `endpoint_id` is its daemon,
-/// `client_id` the machine as a client. The name may be:
+/// Whether `name` may stand for `client` in the server config `msg` (the
+/// file at `path`): the name of the client in `[clients]`. The name may be
+/// free, and the client entry is made; a server of that name does not
+/// stand in the way.
 ///
-/// - free: the entry is made, with `client_id` only;
-/// - an entry with no `client_id` that no grant names: this server dials
-///   that machine's daemon by the name, and the client joins the entry.
-///
-/// It is refused when it is not a valid alias, when the entry already has
-/// another client, and when grants name it without it being this client:
-/// they are for a peer named by hand, or left from a client that was
-/// removed, and must not pass to whoever has the name now. A client the
-/// server already has a name for keeps that one, whatever it calls itself.
+/// It is refused when it is not a valid name, when another client has it,
+/// and when grants name it without it being this client: they are for a
+/// peer named by hand, or left from a client that was removed, and must
+/// not pass to whoever has the name now. A client the server already has
+/// a name for keeps that one, whatever it calls itself.
 pub fn check_client_name(
     msg: &pb::Config,
     path: &Path,
     client: EndpointId,
     name: &str,
 ) -> anyhow::Result<()> {
-    let hosts = Config::from_message(msg, path)?.hosts;
-    if hosts.alias_of(&client).is_some() {
+    let Config {
+        servers, clients, ..
+    } = Config::from_message(msg, path)?;
+    if clients.alias_of(&client).is_some() {
         return Ok(());
     }
     // The same rule the client applies to its own name before it sends it.
@@ -328,35 +327,34 @@ pub fn check_client_name(
              rename the client machine"
         );
     }
-    let entry = hosts.get(name);
-    if let Some((h, other)) = entry.and_then(|h| Some((h, h.client_id?))) {
-        // The entry may also be how this server dials that machine: then
-        // only its client id is to be replaced, not the host removed.
-        let fix = if h.endpoint_id.is_some() {
-            format!("replace it there with `irsync config set hosts.{name}.client_id {client}`")
+    if let Some(other) = clients.get(name) {
+        // The name may also be how this server dials that machine: then
+        // only its client id is to be replaced, not the server removed.
+        let fix = if servers.get(name).is_some() {
+            format!("replace it there with `irsync config set clients.{name}.client_id {client}`")
         } else {
-            format!("remove it there with `irsync host remove {name} -f`")
+            format!("remove it there with `irsync client remove {name} -f`")
         };
         bail!(
-            "the name {name:?} is already used on this server, as [hosts.{name}] \
+            "the name {name:?} is already used on this server, as [clients.{name}] \
              for the client {}. If that client is gone, {fix}; else rename this machine",
-            other.fmt_short()
+            other.client_id.fmt_short()
         );
     }
     let lists = manage::grants::lists_naming(msg, name);
     if !lists.is_empty() {
         let lists: Vec<String> = lists.iter().map(|l| format!("[{l}]")).collect();
         let lists = lists.join(", ");
-        match entry {
-            Some(h) => bail!(
-                "grants on this server ({lists}) name {name:?}, which is [hosts.{name}] \
-                 there, for {}. Those grants stay with that id. Rename this machine, \
-                 or rename that entry there with `irsync host rename`",
-                h.peer_id().fmt_short()
+        match servers.get(name) {
+            Some(s) => bail!(
+                "grants on this server ({lists}) name {name:?}, which is [servers.{name}] \
+                 there, for {}, and no client. Rename this machine, or rename that \
+                 entry there",
+                s.endpoint_id.fmt_short()
             ),
             None => bail!(
                 "grants on this server still name {name:?} ({lists}), and no \
-                 [hosts.{name}] says who that is. They are left from a client that \
+                 [clients.{name}] says who that is. They are left from a client that \
                  was removed; take {name:?} out of those lists there, or rename \
                  this machine"
             ),
@@ -365,12 +363,12 @@ pub fn check_client_name(
     Ok(())
 }
 
-/// Saves `client` as the `client_id` of `[hosts.name]` (unless it has a
-/// name there already) and grants that name immediate access, after
+/// Saves `client` as `[clients.name]` (unless it has a name there
+/// already) and grants that name immediate access, after
 /// [`check_client_name`] on `msg` itself. False when the client was
-/// already granted, by a name or by its id; the `[hosts]` entry is written
-/// all the same. The name is only ever a label: the daemon decides access
-/// by the id it stands for.
+/// already granted, by a name or by its id; the `[clients]` entry is
+/// written all the same. The name is only ever a label: the daemon decides
+/// access by the id it stands for.
 pub fn grant_client(
     msg: &mut pb::Config,
     path: &Path,
@@ -378,11 +376,11 @@ pub fn grant_client(
     name: &str,
 ) -> anyhow::Result<bool> {
     check_client_name(msg, path, client, name)?;
-    let hosts = Config::from_message(msg, path)?.hosts;
-    let alias = match hosts.alias_of(&client) {
+    let clients = Config::from_message(msg, path)?.clients;
+    let alias = match clients.alias_of(&client) {
         Some(a) => a.to_string(),
         None => {
-            manage::hosts::host_set_client(msg, name, client)?;
+            manage::clients::client_add(msg, name, client)?;
             name.to_string()
         }
     };
@@ -390,7 +388,7 @@ pub fn grant_client(
         if s == alias {
             return Some(client);
         }
-        hosts.get(s).map(|h| h.peer_id())
+        clients.get(s).map(|c| c.client_id)
     };
     let spec = PeerSpec::Alias(alias.clone());
     Ok(manage::grants::grant_immediate(msg, &spec, &resolve)?)
@@ -449,7 +447,7 @@ pub fn run(
 
     // 2. The grant.
     let grant = if settings.daemon.immediate {
-        let lock = manage::lock_config(&paths.config)?;
+        let mut lock = manage::lock_config(&paths.config)?;
         let mut msg = lock.load()?;
         let before = msg.clone();
         // Checked again on the locked message: it may have changed.
@@ -479,7 +477,7 @@ pub fn run(
     let dht = if !settings.daemon.discovery.dht {
         Dht::Off
     } else if no_dht {
-        let lock = manage::lock_config(&paths.config)?;
+        let mut lock = manage::lock_config(&paths.config)?;
         let mut msg = lock.load()?;
         let key = ["daemon", "discovery", "dht"].map(String::from);
         manage::config::set(&mut msg, &key, manage::config::Value::Bool(false))

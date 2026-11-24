@@ -4,9 +4,9 @@ use std::path::Path;
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
-fn snap(hosts: &str, exports: &str) -> Snapshot {
+fn snap(clients: &str, exports: &str) -> Snapshot {
     Snapshot::from_files(
-        &parse_hosts(hosts, Path::new("h")).unwrap(),
+        &parse_clients(clients, Path::new("h")).unwrap(),
         &parse_exports(exports, Path::new("e")).unwrap(),
         true,
     )
@@ -15,7 +15,7 @@ fn snap(hosts: &str, exports: &str) -> Snapshot {
 #[test]
 fn alias_and_raw_id_entries_both_grant() {
     let s = snap(
-        &format!("[hosts.laptop]\nendpoint_id = \"{}\"\n", id(1)),
+        &format!("[clients.laptop]\nclient_id = \"{}\"\n", id(1)),
         &format!(
             "[exports.photos]\npath = \"/p\"\nrw = [\"laptop\"]\nro = [\"{}\"]\n",
             id(2)
@@ -31,7 +31,7 @@ fn alias_and_raw_id_entries_both_grant() {
 fn a_named_machine_is_granted_as_a_client() {
     let s = snap(
         &format!(
-            "[hosts.laptop]\nendpoint_id = \"{}\"\nclient_id = \"{}\"\n",
+            "[servers.laptop]\nendpoint_id = \"{}\"\n[clients.laptop]\nclient_id = \"{}\"\n",
             id(1),
             id(2)
         ),
@@ -77,7 +77,7 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     irsync::fs::private::write(
         &e,
         format!(
-            "[exports.x]\npath = \"/x\"\nrw = [\"lap\"]\n[hosts.lap]\nendpoint_id = \"{}\"\n",
+            "[exports.x]\npath = \"/x\"\nrw = [\"lap\"]\n[clients.lap]\nclient_id = \"{}\"\n",
             id(1)
         ),
     )
@@ -88,7 +88,7 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
 #[test]
 fn immediate_grant_reaches() {
     let s = Snapshot::from_files(
-        &parse_hosts("", Path::new("h")).unwrap(),
+        &parse_clients("", Path::new("h")).unwrap(),
         &parse_exports(
             &format!("[immediate]\nrw = [\"{}\"]\n", id(1)),
             Path::new("e"),
@@ -103,7 +103,7 @@ fn immediate_grant_reaches() {
 #[test]
 fn immediate_off_ignores_grant() {
     let s = Snapshot::from_files(
-        &parse_hosts("", Path::new("h")).unwrap(),
+        &parse_clients("", Path::new("h")).unwrap(),
         &parse_exports(
             &format!("[immediate]\nrw = [\"{}\"]\n", id(1)),
             Path::new("e"),
@@ -132,16 +132,16 @@ fn auto_export_grant_needs_the_immediate_grant() {
         }
         parse_exports(&t, Path::new("e")).unwrap()
     };
-    let hosts = parse_hosts("", Path::new("h")).unwrap();
-    let on = Snapshot::from_files(&hosts, &exports(true), true);
+    let clients = parse_clients("", Path::new("h")).unwrap();
+    let on = Snapshot::from_files(&clients, &exports(true), true);
     assert!(on.grants(&id(1)).allows("home-auto", true));
     for (s, why) in [
         (
-            Snapshot::from_files(&hosts, &exports(false), true),
+            Snapshot::from_files(&clients, &exports(false), true),
             "no grant",
         ),
         (
-            Snapshot::from_files(&hosts, &exports(true), false),
+            Snapshot::from_files(&clients, &exports(true), false),
             "immediate off",
         ),
     ] {
@@ -152,11 +152,11 @@ fn auto_export_grant_needs_the_immediate_grant() {
     }
 }
 
-fn parse_hosts(
+fn parse_clients(
     text: &str,
     path: &std::path::Path,
-) -> Result<irsync::config::hosts::Hosts, irsync::config::ConfigError> {
-    irsync::config::file::Config::parse(text, path).map(|c| c.hosts)
+) -> Result<irsync::config::clients::Clients, irsync::config::ConfigError> {
+    irsync::config::file::Config::parse(text, path).map(|c| c.clients)
 }
 
 fn parse_exports(

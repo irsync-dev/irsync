@@ -10,17 +10,14 @@
 //! `EXPORT=ro` for each export it has its own grant for, in export order,
 //! then `all=rw` or `all=ro` for its `[all]` grant and `immediate` for
 //! its immediate grant, when it has them. `all` and `immediate` are no
-//! export names. An id with no grant is alone on its line. Run the tests
-//! with `IRSYNC_WRITE_GRANTS=1` to write the `.grants` files from the
-//! stage 1 code again.
+//! export names. An id with no grant is alone on its line. The stage 1
+//! code that wrote them is gone: they are the record of what it granted.
 
 use iroh::EndpointId;
 use irsync::authz::{Access, Grants, Snapshot};
 use irsync::config::clients::Clients;
 use irsync::config::file::Config;
-use irsync::config::hosts::Hosts;
 use irsync::config::legacy_v1;
-use irsync::config::reader::read_values;
 use irsync::config::writer::write;
 use irsync::identity::parse_endpoint_id;
 use irsync_proto::config as pb;
@@ -71,49 +68,38 @@ fn comment_lines(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Every id `text` names: those of its hosts and those in grant lists.
-fn ids_named(old: &pb::Config) -> BTreeSet<EndpointId> {
+/// Every id a converted message names: those of its servers and clients
+/// (the ids of the old hosts) and those in grant lists.
+fn ids_named(msg: &pb::Config) -> BTreeSet<EndpointId> {
     let key =
         |b: &Vec<u8>| EndpointId::from_bytes(&<[u8; 32]>::try_from(b.as_slice()).unwrap()).unwrap();
-    let hosts = old
-        .hosts
-        .iter()
-        .flat_map(|h| [h.endpoint_id.as_ref(), h.client_id.as_ref()])
-        .flatten()
-        .map(key);
-    let lists = old
+    let servers = msg.servers.iter().map(|s| key(&s.endpoint_id));
+    let clients = msg.clients.iter().map(|c| key(&c.client_id));
+    let lists = msg
         .all
         .iter()
-        .chain(&old.immediate)
+        .chain(&msg.immediate)
         .flat_map(|g| [&g.rw, &g.ro])
-        .chain(old.exports.iter().flat_map(|e| [&e.rw, &e.ro]))
+        .chain(msg.exports.iter().flat_map(|e| [&e.rw, &e.ro]))
         .flatten()
         .filter_map(|e| parse_endpoint_id(&e.value).ok());
-    hosts.chain(lists).collect()
-}
-
-/// The access as the stage 1 code reads the old file.
-fn old_snapshot(text: &str) -> Snapshot {
-    let c = Config::parse(text, p()).unwrap();
-    Snapshot::from_files(&c.hosts, &c.exports, true)
+    servers.chain(clients).chain(lists).collect()
 }
 
 /// The access of the converted message: grants resolve against its
-/// clients only. Until `Snapshot` takes clients, each client is a host
-/// with only a `client_id`.
+/// clients only.
 fn new_snapshot(msg: &pb::Config) -> Snapshot {
     let c = Config::from_message(msg, p()).unwrap();
-    let hosts: Vec<pb::Host> = msg
-        .clients
-        .iter()
-        .map(|c| pb::Host {
-            name: c.name.clone(),
-            client_id: Some(c.client_id.clone()),
-            ..Default::default()
-        })
-        .collect();
-    let hosts = Hosts::from_message(&hosts, p()).unwrap();
-    Snapshot::from_files(&hosts, &c.exports, true)
+    Snapshot::from_files(&c.clients, &c.exports, true)
+}
+
+/// The pinned lines of `NAME.grants`.
+fn pinned(name: &str) -> Vec<String> {
+    std::fs::read_to_string(dir().join(format!("{name}.grants")))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn access(a: Access) -> &'static str {
@@ -153,7 +139,6 @@ fn v1_corpus_converts_to_its_v2_text() {
         let want = std::fs::read_to_string(dir().join(format!("{name}.v2.toml"))).unwrap();
         let c = converted(&text);
         assert_eq!(c.config.config_version, Some(2), "{name}");
-        assert!(c.config.hosts.is_empty(), "{name}");
         assert_eq!(write(&c.config), want, "{name}");
     }
 }
@@ -172,27 +157,24 @@ fn conversion_keeps_every_comment() {
     }
 }
 
-/// The grants of each old file, read the stage 1 way, equal those of the
-/// converted file, and those in its `.grants` file.
+/// The grants of each converted file, read through its clients, are those
+/// the stage 1 code gave the old file: its `.grants` file. The same holds
+/// for the file as `Config::parse` reads it, and for the file the
+/// conversion writes.
 #[test]
 fn conversion_keeps_the_access() {
-    let rewrite = std::env::var_os("IRSYNC_WRITE_GRANTS").is_some();
     for (name, text) in corpus() {
-        let ids = ids_named(&read_values(&text, p()).unwrap());
+        let msg = converted(&text).config;
+        let ids = ids_named(&msg);
         assert!(!ids.is_empty(), "{name}");
-        let old = old_snapshot(&text);
-        let new = new_snapshot(&converted(&text).config);
-        for id in &ids {
-            assert_eq!(new.grants(id), old.grants(id), "{name}: {id}");
-        }
-        assert_eq!(new.exports, old.exports, "{name}");
-        let lines = grants_lines(&old, &ids);
-        let file = dir().join(format!("{name}.grants"));
-        if rewrite {
-            std::fs::write(&file, lines.join("\n") + "\n").unwrap();
-        }
-        let pinned = std::fs::read_to_string(&file).unwrap();
-        assert_eq!(pinned.lines().collect::<Vec<_>>(), lines, "{name}");
+        let lines = grants_lines(&new_snapshot(&msg), &ids);
+        assert_eq!(lines, pinned(&name), "{name}");
+        let parsed = Config::parse(&text, p()).unwrap();
+        let snap = Snapshot::from_files(&parsed.clients, &parsed.exports, true);
+        assert_eq!(grants_lines(&snap, &ids), lines, "{name}: parsed");
+        let rewritten = Config::parse(&write(&msg), p()).unwrap();
+        let snap = Snapshot::from_files(&rewritten.clients, &rewritten.exports, true);
+        assert_eq!(grants_lines(&snap, &ids), lines, "{name}: rewritten");
     }
 }
 
@@ -208,10 +190,9 @@ fn shared_id_keeps_its_grants() {
     assert_eq!(clients.resolve_peer("a").unwrap(), x);
     assert_eq!(clients.resolve_peer("b").unwrap(), x);
     assert_eq!(clients.alias_of(&x), Some("a"));
-    let old = Config::parse(&text, p()).unwrap();
-    assert_eq!(old.hosts.alias_of(&x), Some("a"));
-    let (old, new) = (old_snapshot(&text), new_snapshot(&c));
-    assert_eq!(new.grants(&x), old.grants(&x));
+    let new = new_snapshot(&c);
+    let line = grants_lines(&new, &BTreeSet::from([x]));
+    assert!(pinned("shared_id").contains(&line[0]), "{line:?}");
     assert_eq!(new.grants(&x).access("photos"), Some(Access::ReadWrite));
 }
 
@@ -220,14 +201,15 @@ fn shared_id_keeps_its_grants() {
 #[test]
 fn every_grant_list_counts_for_keep_the_access() {
     let host = format!("[hosts.lap]\nendpoint_id = \"{}\"\n", id(1));
+    // What the stage 1 code granted the host's one id for each list.
     let lists = [
-        "[all]\nrw = [\"lap\"]\n",
-        "[all]\nro = [\"lap\"]\n",
-        "[immediate]\nrw = [\"lap\"]\n",
-        "[exports.p]\npath = \"/p\"\nrw = [\"lap\"]\n",
-        "[exports.p]\npath = \"/p\"\nro = [\"lap\"]\n",
+        ("[all]\nrw = [\"lap\"]\n", " all=rw"),
+        ("[all]\nro = [\"lap\"]\n", " all=ro"),
+        ("[immediate]\nrw = [\"lap\"]\n", " immediate"),
+        ("[exports.p]\npath = \"/p\"\nrw = [\"lap\"]\n", " p=rw"),
+        ("[exports.p]\npath = \"/p\"\nro = [\"lap\"]\n", " p=ro"),
     ];
-    for list in lists {
+    for (list, granted) in lists {
         let text = format!("{host}{list}");
         let c = converted(&text).config;
         let names: Vec<_> = c
@@ -236,9 +218,12 @@ fn every_grant_list_counts_for_keep_the_access() {
             .map(|e| (e.name.as_str(), e.client_id.as_slice()))
             .collect();
         assert_eq!(names, [("lap", id(1).as_bytes().as_slice())], "{list}");
-        let (old, new) = (old_snapshot(&text), new_snapshot(&c));
-        assert!(!old.grants(&id(1)).is_empty(), "{list}");
-        assert_eq!(new.grants(&id(1)), old.grants(&id(1)), "{list}");
+        let new = new_snapshot(&c);
+        assert_eq!(
+            grants_lines(&new, &BTreeSet::from([id(1)])),
+            [format!("{}{granted}", id(1))],
+            "{list}"
+        );
     }
     let text = format!("{host}[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n");
     assert!(converted(&text).config.clients.is_empty());
@@ -295,33 +280,80 @@ fn dial_keys_of_a_client_only_host_are_named() {
 }
 
 /// A bad file of layout 1 fails as the stage 1 reader failed it: same
-/// message, same line.
+/// message, same line. The messages are those that reader gave.
 #[test]
 fn errors_are_those_of_the_stage_1_reader() {
     let bad = [
-        "[hosts.\"a:b\"]\nendpoint_id = \"x\"\n".to_string(),
-        "[hosts.nas]\nssh = \"me@nas\"\n".to_string(),
-        "[hosts.nas]\n\nendpoint_id = \"not an id\"\n".to_string(),
-        "[hosts.nas]\nendpoint_id = 1\n".to_string(),
-        format!("[hosts.nas]\nendpoint_id = \"{}\"\nport = 1\n", id(1)),
-        format!("[nas]\nendpoint_id = \"{}\"\n", id(1)),
-        "[photos]\npath = \"/p\"\n".to_string(),
-        "rw = [\"a\"]\n".to_string(),
-        "[immediate]\nro = [\"a\"]\n".to_string(),
-        "[exports.p]\npath = \"rel\"\n".to_string(),
-        "[exports.all]\npath = \"/p\"\n".to_string(),
-        "[client]\nrelay = \"not a url\"\n".to_string(),
-        "[daemon]\nidle_timeout = \"5x\"\n".to_string(),
-        "[servers.nas]\nendpoint_id = \"x\"\n".to_string(),
-        "\n[clients.lap]\nclient_id = \"x\"\n".to_string(),
-        "servers = 1\n".to_string(),
-        "hosts = 1\n".to_string(),
-        "[hosts\n".to_string(),
+        (
+            "[hosts.\"a:b\"]\nendpoint_id = \"x\"\n".to_string(),
+            "1: invalid host alias \"a:b\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId",
+        ),
+        (
+            "[hosts.nas]\nssh = \"me@nas\"\n".to_string(),
+            "1: host \"nas\": needs an endpoint_id (its daemon), a client_id, or both",
+        ),
+        (
+            "[hosts.nas]\n\nendpoint_id = \"not an id\"\n".to_string(),
+            "3: host \"nas\": invalid endpoint id: not an id",
+        ),
+        (
+            "[hosts.nas]\nendpoint_id = 1\n".to_string(),
+            "2: invalid type: integer `1`, expected a string",
+        ),
+        (
+            format!("[hosts.nas]\nendpoint_id = \"{}\"\nport = 1\n", id(1)),
+            "3: unknown field `port`, expected one of `endpoint_id`, `client_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`",
+        ),
+        (
+            format!("[nas]\nendpoint_id = \"{}\"\n", id(1)),
+            "1: unknown table \"nas\"; hosts live under [hosts.nas]",
+        ),
+        (
+            "[photos]\npath = \"/p\"\n".to_string(),
+            "1: unknown table \"photos\"; exports live under [exports.photos]",
+        ),
+        (
+            "rw = [\"a\"]\n".to_string(),
+            "1: unknown key \"rw\"; grants for every export live under [all]",
+        ),
+        (
+            "[immediate]\nro = [\"a\"]\n".to_string(),
+            "1: [immediate]: unknown key \"ro\"; only `rw` is allowed (immediate grants are read-write)",
+        ),
+        (
+            "[exports.p]\npath = \"rel\"\n".to_string(),
+            "1: [exports.p]: path \"rel\" must be absolute",
+        ),
+        (
+            "[exports.all]\npath = \"/p\"\n".to_string(),
+            "1: \"all\" is reserved: it is the word `grant add all WHO` uses for every export",
+        ),
+        (
+            "[client]\nrelay = \"not a url\"\n".to_string(),
+            "2: relative URL without a base: \"not a url\"",
+        ),
+        (
+            "[daemon]\nidle_timeout = \"5x\"\n".to_string(),
+            "2: bad duration \"5x\": expected <number>[s|m|h|d]",
+        ),
+        (
+            "[servers.nas]\nendpoint_id = \"x\"\n".to_string(),
+            "1: unknown table \"servers\"; hosts live under [hosts.servers], exports under [exports.servers]",
+        ),
+        (
+            "\n[clients.lap]\nclient_id = \"x\"\n".to_string(),
+            "2: unknown table \"clients\"; hosts live under [hosts.clients], exports under [exports.clients]",
+        ),
+        ("servers = 1\n".to_string(), "1: unknown key \"servers\""),
+        (
+            "hosts = 1\n".to_string(),
+            "1: hosts: expected a table, found integer",
+        ),
+        ("[hosts\n".to_string(), "1: unclosed table, expected `]`"),
     ];
-    for text in bad {
-        let want = read_values(&text, p()).unwrap_err().to_string();
+    for (text, want) in bad {
         let got = legacy_v1::read(&text, p()).unwrap_err().to_string();
-        assert_eq!(got, want, "{text}");
+        assert_eq!(got, format!("irsync.toml:{want}"), "{text}");
     }
 }
 
@@ -336,4 +368,113 @@ fn config_version_is_ignored() {
     let c = converted(&text).config;
     assert_eq!(c.config_version, Some(2));
     assert_eq!(c.servers.len(), 1);
+}
+
+/// `reader::read` picks the reader by the top-level keys: one case per
+/// row of the table in the plan.
+#[test]
+fn reader_choice() {
+    use irsync::config::reader::{read, CONFIG_VERSION};
+    assert_eq!(CONFIG_VERSION, 2);
+    let server = format!("[servers.nas]\nendpoint_id = \"{}\"\n", id(1));
+    let host = format!("[hosts.box]\nendpoint_id = \"{}\"\n", id(2));
+    let error = |text: &str| read(text, p()).unwrap_err().to_string();
+
+    // config_version 2 with [hosts]: an error at [hosts].
+    assert_eq!(
+        error(&format!("config_version = 2\n\n{server}\n{host}")),
+        "irsync.toml:6: [hosts] is not read since config_version 2: hosts are now [servers.NAME] (to connect to) and [clients.NAME] (to let in)"
+    );
+    // config_version 2 without [hosts]: the current reader.
+    let r = read(&format!("config_version = 2\n\n{server}"), p()).unwrap();
+    assert_eq!((r.version, r.config.config_version), (2, Some(2)));
+    assert_eq!(r.config.servers[0].name, "nas");
+    assert!(r.dropped.is_empty());
+    // config_version 1: legacy_v1, whatever else the file has.
+    let r = read(&format!("config_version = 1\n\n{host}"), p()).unwrap();
+    assert_eq!((r.version, r.config.config_version), (1, Some(2)));
+    assert_eq!(r.config.servers[0].name, "box");
+    let e = error(&format!("config_version = 1\n\n{server}"));
+    assert_eq!(
+        e,
+        legacy_v1::read(&format!("config_version = 1\n\n{server}"), p())
+            .unwrap_err()
+            .to_string()
+    );
+    // No config_version, [hosts] and nothing new: legacy_v1.
+    let r = read(&host, p()).unwrap();
+    assert_eq!(r.version, 1);
+    assert_eq!(r.config, legacy_v1::read(&host, p()).unwrap().config);
+    let r = read(
+        &format!(
+            "[hosts.phone]\nclient_id = \"{}\"\naddress = [\"p:1\"]\n",
+            id(3)
+        ),
+        p(),
+    )
+    .unwrap();
+    assert_eq!(
+        r.dropped,
+        ["[hosts.phone] had a client_id and no endpoint_id: dropped address (they only apply to a server)"]
+    );
+    // No config_version, [hosts] and [servers] or [clients]: an error at [hosts].
+    let both = "this file has [hosts] and also [servers] or [clients]: move each [hosts.NAME] into [servers.NAME] (its endpoint_id and how to reach it) or [clients.NAME] (its client_id)";
+    assert_eq!(
+        error(&format!("{server}\n{host}")),
+        format!("irsync.toml:4: {both}")
+    );
+    assert_eq!(
+        error(&format!(
+            "# top\n{host}\n[clients.lap]\nclient_id = \"{}\"\n",
+            id(4)
+        )),
+        format!("irsync.toml:2: {both}")
+    );
+    // No config_version and no [hosts]: the current reader.
+    for text in [
+        String::new(),
+        server.clone(),
+        "[daemon]\nportmap = false\n".into(),
+    ] {
+        let r = read(&text, p()).unwrap();
+        assert_eq!((r.version, r.config.config_version), (2, None), "{text}");
+    }
+    // Above 2, or not 1 or 2: an error at the key.
+    assert_eq!(
+        error(&format!("\nconfig_version = 3\n{server}")),
+        "irsync.toml:2: config_version 3: this file was written by a newer irsync, which reads up to config_version 2; upgrade irsync"
+    );
+    assert_eq!(
+        error(&format!("config_version = \"x\"\n{host}")),
+        "irsync.toml:1: config_version: expected 1 or 2, found string"
+    );
+    assert_eq!(
+        error("config_version = 0\n"),
+        "irsync.toml:1: config_version: expected 1 or 2, found 0"
+    );
+}
+
+/// Review Focus 4: a `config_version` of the wrong type or value is an
+/// error at its line, never a silent fallback to `legacy_v1`.
+#[test]
+fn bad_config_version_values() {
+    use irsync::config::reader::read;
+    let host = format!("[hosts.box]\nendpoint_id = \"{}\"\n", id(2));
+    for (value, want) in [
+        ("\"2\"", "config_version: expected 1 or 2, found string"),
+        ("2.0", "config_version: expected 1 or 2, found float"),
+        ("0", "config_version: expected 1 or 2, found 0"),
+        ("-1", "config_version: expected 1 or 2, found -1"),
+        ("true", "config_version: expected 1 or 2, found boolean"),
+        (
+            "3",
+            "config_version 3: this file was written by a newer irsync, which reads up to config_version 2; upgrade irsync",
+        ),
+    ] {
+        for rest in [String::new(), host.clone()] {
+            let text = format!("# the version\nconfig_version = {value}\n{rest}");
+            let e = read(&text, p()).unwrap_err().to_string();
+            assert_eq!(e, format!("irsync.toml:2: {want}"), "{text}");
+        }
+    }
 }
