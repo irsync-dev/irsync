@@ -1499,17 +1499,29 @@ impl World {
     /// install left it, and waits until it holds the lock.
     fn start_old_daemon(&self) -> OldDaemon {
         self.plant_old_bin();
-        let child = Command::new(self.old_bin())
-            .args(["daemon", "-vv"])
-            .env("HOME", self.server.path())
-            .env("XDG_STATE_HOME", self.server.path().join("xdg"))
-            .env_remove("IRSYNC_PASSPHRASE")
-            .env_remove("RUST_LOG")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut tries = 0;
+        let child = loop {
+            let spawned = Command::new(self.old_bin())
+                .args(["daemon", "-vv"])
+                .env("HOME", self.server.path())
+                .env("XDG_STATE_HOME", self.server.path().join("xdg"))
+                .env_remove("IRSYNC_PASSPHRASE")
+                .env_remove("RUST_LOG")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            match spawned {
+                // A child another test thread forked while the copy was
+                // open for writing holds it open until it runs its own
+                // program: wait for that.
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                r => break r.unwrap(),
+            }
+        };
         let mut d = OldDaemon(child);
         let state = self.server.path().join("xdg/irsync");
         let deadline = Instant::now() + Duration::from_secs(30);
