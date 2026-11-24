@@ -13,6 +13,8 @@
 //! export names. An id with no grant is alone on its line. The stage 1
 //! code that wrote them is gone: they are the record of what it granted.
 
+mod common;
+
 use iroh::EndpointId;
 use irsync::authz::{Access, Grants, Snapshot};
 use irsync::config::clients::Clients;
@@ -477,4 +479,112 @@ fn bad_config_version_values() {
             assert_eq!(e, format!("irsync.toml:2: {want}"), "{text}");
         }
     }
+}
+
+/// A daemon started on a file of layout 1 adds an automatic export, which
+/// saves the file in layout 2; its clients keep their access, and the
+/// converted file grants what the old one did.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_daemon_on_a_v1_file_converts_it_and_still_lets_clients_in() {
+    use common::{archive_opts, Flow, Harness};
+    use irsync::authz::{Authorizer, FileAuthorizer};
+    use irsync::config::paths::Paths;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::Arc;
+
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let opts = archive_opts();
+        let client = common::client_endpoint().await;
+        let other = id(77);
+        let config_dir = tempfile::tempdir().unwrap();
+        let config = config_dir.path().join("irsync.toml");
+        let shared = tempfile::tempdir().unwrap();
+        let old = format!(
+            "# who may push anywhere\n[immediate]\nrw = [\"laptop\"]\n\n\
+             [daemon]\nimmediate = true\n\n\
+             # the laptop\n[hosts.laptop]\nclient_id = \"{}\"\n\n\
+             # the nas\n[hosts.nas]\nendpoint_id = \"{}\"\n\n\
+             [exports.shared]\npath = \"{}\"\nrw = [\"nas\"]\n",
+            client.id(),
+            other,
+            shared.path().display()
+        );
+        irsync::fs::private::write(&config, &old).unwrap();
+
+        // What the old file grants, read before the daemon touches it.
+        let before_dir = tempfile::tempdir().unwrap();
+        let before_path = before_dir.path().join("irsync.toml");
+        irsync::fs::private::write(&before_path, &old).unwrap();
+        let before = FileAuthorizer::new(Paths::resolve(Some(&before_path)))
+            .snapshot()
+            .unwrap();
+        assert!(
+            before.grants(&client.id()).immediate,
+            "the old file grants the client immediate access"
+        );
+
+        let authz = Arc::new(FileAuthorizer::new(Paths::resolve(Some(&config))));
+        let h = Harness {
+            daemon: common::spawn_daemon_with(authz).await,
+            client,
+            export: tempfile::tempdir().unwrap(),
+            local: tempfile::tempdir().unwrap(),
+            client_state: tempfile::tempdir().unwrap(),
+        };
+        std::fs::write(h.local.path().join("a.txt"), b"hello").unwrap();
+        let mut hello = Harness::hello(Flow::Push);
+        hello.path = h.export.path().as_os_str().as_bytes().to_vec();
+
+        let first = h
+            .run_hello(&opts, hello.clone(), h.local_side())
+            .await
+            .unwrap();
+        assert!(first.errors.is_empty(), "{:?}", first.errors);
+        assert_eq!(
+            std::fs::read(h.export.path().join("a.txt")).unwrap(),
+            b"hello"
+        );
+
+        let written = std::fs::read_to_string(&config).unwrap();
+        assert!(written.starts_with("config_version = 2\n"), "{written}");
+        for want in [
+            "[clients.laptop]",
+            "[servers.nas]",
+            "[clients.nas]",
+            "auto = true",
+            "# the laptop",
+            "# the nas",
+            "# who may push anywhere",
+        ] {
+            assert!(written.contains(want), "no {want} in\n{written}");
+        }
+        // (A generated comment names `[hosts.nas]`; no table is left.)
+        assert!(!written.contains("\n[hosts."), "{written}");
+
+        let second = h.run_hello(&opts, hello, h.local_side()).await.unwrap();
+        assert!(second.errors.is_empty(), "{:?}", second.errors);
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            written,
+            "the second push changed the file"
+        );
+
+        // The same access for both ids, the automatic export aside.
+        let after = FileAuthorizer::new(Paths::resolve(Some(&config)))
+            .snapshot()
+            .unwrap();
+        for who in [h.client.id(), other] {
+            let (b, a) = (before.grants(&who), after.grants(&who));
+            assert_eq!(b.exports.get("shared"), a.exports.get("shared"));
+            assert_eq!(b.all, a.all);
+            assert_eq!(b.immediate, a.immediate);
+        }
+        assert_eq!(
+            after.grants(&other).access("shared"),
+            Some(Access::ReadWrite)
+        );
+        h.daemon.shutdown.cancel();
+    })
+    .await
+    .expect("test timed out");
 }
