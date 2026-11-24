@@ -695,11 +695,52 @@ fn immediate_table_parses() {
 }
 
 #[test]
+fn client_rights_are_read_and_written_back() {
+    use irsync::authz::Access;
+    use irsync::config::reader::read;
+    use irsync::config::writer::write;
+    let text = format!(
+        "config_version = 2\n\n[clients.laptop]\nclient_id = \"{}\"\nall_exports = \"ro\"\nall_paths = \"rw\" # for the backup\n",
+        id(1)
+    );
+    let c = Config::parse(&text, Path::new("c")).unwrap();
+    let laptop = c.clients.get("laptop").unwrap();
+    assert_eq!(laptop.all_exports, Some(Access::ReadOnly));
+    assert_eq!(laptop.all_paths, Some(Access::ReadWrite));
+    let msg = read(&text, Path::new("c")).unwrap().config;
+    assert_eq!(write(&msg), text);
+}
+
+#[test]
+fn a_client_right_other_than_rw_or_ro_is_refused() {
+    let text = format!(
+        "[clients.laptop]\nclient_id = \"{}\"\nall_paths = \"yes\"\n",
+        id(1)
+    );
+    let e = Config::parse(&text, Path::new("c"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains("client \"laptop\": all_paths must be \"rw\" or \"ro\""),
+        "{e}"
+    );
+    assert!(e.contains(":3:") || e.contains("line 3"), "{e}");
+}
+
+#[test]
+fn allow_all_paths_defaults_to_on() {
+    let c = Config::parse("", Path::new("c")).unwrap();
+    assert!(c.settings.daemon.allow_all_paths);
+    let c = Config::parse("[daemon]\nallow_all_paths = false\n", Path::new("c")).unwrap();
+    assert!(!c.settings.daemon.allow_all_paths);
+}
+
+#[test]
 fn daemon_immediate_defaults_on() {
     let c = Config::parse("", Path::new("c")).unwrap();
-    assert!(c.settings.daemon.immediate);
+    assert!(c.settings.daemon.allow_all_paths);
     let c = Config::parse("[daemon]\nimmediate = false\n", Path::new("c")).unwrap();
-    assert!(!c.settings.daemon.immediate);
+    assert!(!c.settings.daemon.allow_all_paths);
 }
 
 #[test]

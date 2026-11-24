@@ -441,6 +441,25 @@ fn unset_removes_tables_it_leaves_empty() {
 }
 
 #[test]
+fn config_set_takes_client_rights() {
+    let mut m = base();
+    let key = p("clients.nas.all_paths");
+    assert_eq!(kind_of(&key), Some(Kind::Str));
+    set(
+        &mut m,
+        &key,
+        parse_value(Kind::Str, &strings(&["ro"])).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(get(&m, &key).unwrap(), lines(&["ro"]));
+    assert!(write(&m).contains("all_paths = \"ro\"\n"));
+    let before = m.clone();
+    let e = set(&mut m, &key, Value::Text("maybe".into())).unwrap_err();
+    assert!(matches!(e, ManageError::BadValue(_)), "{e}");
+    assert_eq!(m, before);
+}
+
+#[test]
 fn set_telemetry_endpoint() {
     let mut m = pb::Config::default();
     let key = p("telemetry.otlp_endpoint");
@@ -484,6 +503,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("daemon.congestion", &["cubic"]),
     ("daemon.pq_key_exchange", &["require"]),
     ("daemon.debug_addr", &["127.0.0.1:9000"]),
+    ("daemon.allow_all_paths", &["false"]),
     ("daemon.immediate", &["true"]),
     ("daemon.allow_root", &["true"]),
     ("daemon.discovery.dht", &["false"]),
@@ -505,6 +525,8 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("servers.nas.ssh", &["me@nas"]),
     ("servers.nas.ssh_aliases", &["box"]),
     ("clients.nas.client_id", &[ID5]),
+    ("clients.nas.all_exports", &["ro"]),
+    ("clients.nas.all_paths", &["rw"]),
     ("exports.p.path", &["/srv/q"]),
     ("exports.p.read_only", &["true"]),
     ("exports.p.warm_index", &["true"]),

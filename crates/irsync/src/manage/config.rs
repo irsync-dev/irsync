@@ -3,6 +3,8 @@
 //! saving belong to the caller.
 
 use super::{id_bytes, ManageError};
+use crate::authz::Access;
+use crate::config::clients::RIGHTS;
 use crate::config::settings::{RelayMode, Settings};
 use crate::config::{duration, reader, writer};
 use crate::net::addr::HostPort;
@@ -56,7 +58,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
         ["daemon", "max_dormant_sessions_per_key"] => Int,
         ["daemon", "listen"] => AddrArray,
-        ["daemon", "portmap"] | ["daemon", "immediate"] | ["daemon", "allow_root"] => Bool,
+        ["daemon", "portmap" | "allow_all_paths" | "immediate" | "allow_root"] => Bool,
         ["daemon", "relay"] => Url,
         ["daemon", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "debug_addr"] => Str,
@@ -72,6 +74,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["servers", _, "reconnect"] => Duration,
         ["servers", _, "dial_retries"] => Int,
         ["servers", _, "dht" | "mdns"] => Bool,
+        ["clients", _, key] if RIGHTS.iter().any(|r| r.key() == *key) => Str,
         ["exports", _, "path"] => Path,
         ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => Bool,
         ["exports", _, "rw" | "ro"] | ["all", "rw" | "ro"] | ["immediate", "rw"] => StrArray,
@@ -341,6 +344,8 @@ enum Field<'a> {
     Congestion(&'a mut Option<i32>),
     PqKeyExchange(&'a mut Option<i32>),
     OtlpProtocol(&'a mut Option<i32>),
+    /// A client's right: `rw` or `ro`.
+    Right(&'a mut Option<i32>),
     /// A string array and whether its key is in the file.
     List(&'a mut Vec<pb::Entry>, &'a mut bool),
     Addresses(&'a mut Vec<pb::Entry>, &'a mut bool),
@@ -483,6 +488,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "congestion" => Congestion(&mut d.congestion),
                 "pq_key_exchange" => PqKeyExchange(&mut d.pq_key_exchange),
                 "debug_addr" => Text(&mut d.debug_addr),
+                "allow_all_paths" => Bool(&mut d.allow_all_paths),
                 "immediate" => Bool(&mut d.immediate),
                 "allow_root" => Bool(&mut d.allow_root),
                 _ => return None,
@@ -521,6 +527,12 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
         ["clients", name, "client_id"] => {
             let c = client(msg, name, create)?;
             (Id(&mut c.client_id), &mut c.key_comments)
+        }
+        ["clients", name, key] => {
+            let right = RIGHTS.into_iter().find(|r| r.key() == *key)?;
+            let c = client(msg, name, create)?;
+            let (field, comments) = right.field_mut(c);
+            (Right(field), comments)
         }
         ["exports", name, key] => {
             let e = export(msg, name, create)?;
@@ -585,6 +597,7 @@ const DAEMON: &[&str] = &[
     "congestion",
     "pq_key_exchange",
     "debug_addr",
+    "allow_all_paths",
     "immediate",
     "allow_root",
 ];
@@ -635,7 +648,12 @@ fn key_paths(msg: &pb::Config) -> Vec<Vec<String>> {
         add(&["servers", &s.name], SERVER);
     }
     for c in &msg.clients {
-        add(&["clients", &c.name], CLIENT_ENTRY);
+        let keys: Vec<&str> = CLIENT_ENTRY
+            .iter()
+            .copied()
+            .chain(RIGHTS.iter().map(|r| r.key()))
+            .collect();
+        add(&["clients", &c.name], &keys);
     }
     for e in &msg.exports {
         add(&["exports", &e.name], EXPORT);
@@ -804,6 +822,7 @@ fn shown(field: &Field) -> Option<Shown> {
         Field::Congestion(v) => v.and_then(writer::congestion).map(text),
         Field::PqKeyExchange(v) => v.and_then(writer::pq_key_exchange).map(text),
         Field::OtlpProtocol(v) => v.and_then(writer::otlp_protocol).map(text),
+        Field::Right(v) => v.and_then(Access::from_message).map(|a| text(a.as_str())),
         Field::List(v, set) | Field::Addresses(v, set) => list(v, **set),
         Field::ExportPath(p) => (!p.is_empty()).then(|| text(p)),
     }
@@ -820,7 +839,8 @@ fn clear(field: Field) -> bool {
         Field::RelayMode(v)
         | Field::Congestion(v)
         | Field::PqKeyExchange(v)
-        | Field::OtlpProtocol(v) => v.take().is_some(),
+        | Field::OtlpProtocol(v)
+        | Field::Right(v) => v.take().is_some(),
         Field::List(v, set) | Field::Addresses(v, set) => {
             let was = *set || !v.is_empty();
             v.clear();
@@ -911,6 +931,10 @@ fn assign(field: Field, value: Value) -> Result<(), String> {
                 ("grpc", pb::OtlpProtocol::Grpc as i32),
                 ("http", pb::OtlpProtocol::Http as i32),
             )?);
+        }
+        (Field::Right(f), Value::Text(s)) => {
+            let access = Access::parse(&s).ok_or("expected \"rw\" or \"ro\"")?;
+            *f = Some(pb::Access::from(access) as i32);
         }
         (Field::List(v, set), Value::List(items)) => {
             *v = entries(items);

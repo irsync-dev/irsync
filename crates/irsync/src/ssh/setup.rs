@@ -53,7 +53,7 @@ pub enum Created {
 pub enum GrantOutcome {
     Added,
     Already,
-    /// `daemon.immediate` is off: nothing was granted.
+    /// `daemon.allow_all_paths` is off: nothing was granted.
     ImmediateOff,
     /// A recheck found no immediate grant for the client and did not add
     /// one: the owner removed it.
@@ -438,7 +438,7 @@ pub fn run(
 
     // Before anything is changed: with immediate mode off nothing is
     // granted and the client is not named.
-    if settings.daemon.immediate {
+    if settings.daemon.allow_all_paths {
         let msg = manage::lock_config(&paths.config)?.load()?;
         check_client_name(&msg, &paths.config, client, client_name)
             .with_context(|| format!("in {}", paths.config.display()))?;
@@ -492,7 +492,7 @@ pub fn run(
     };
 
     // 2. The grant.
-    let grant = if settings.daemon.immediate {
+    let grant = if settings.daemon.allow_all_paths {
         let mut lock = manage::lock_config(&paths.config)?;
         lock.restarting(restart);
         let mut msg = lock.load()?;

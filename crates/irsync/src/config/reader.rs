@@ -6,10 +6,12 @@
 //! nothing more: a key that is not in the file stays unset, defaults are
 //! applied later, and paths stay as written (`~` is not expanded).
 
+use super::clients::{Right, RIGHTS};
 use super::exports::{name_problem, not_absolute};
 use super::names::{invalid_name, valid_alias};
 use super::settings::{listen_problem, parse_debug_addr};
 use super::{duration, expand_tilde, line_of, ConfigError};
+use crate::authz::Access;
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
@@ -80,6 +82,7 @@ struct RawDaemon {
     discovery: Option<RawDiscovery>,
     #[serde(default, deserialize_with = "de_opt_debug_addr")]
     debug_addr: Option<String>,
+    allow_all_paths: Option<bool>,
     immediate: Option<bool>,
     allow_root: Option<bool>,
 }
@@ -123,6 +126,18 @@ struct RawServer {
 #[serde(deny_unknown_fields)]
 struct RawClientEntry {
     client_id: Option<Spanned<String>>,
+    all_exports: Option<Spanned<String>>,
+    all_paths: Option<Spanned<String>>,
+}
+
+impl RawClientEntry {
+    /// The right's value as written, with its place in the file.
+    fn right(&self, right: Right) -> Option<&Spanned<String>> {
+        match right {
+            Right::AllExports => self.all_exports.as_ref(),
+            Right::AllPaths => self.all_paths.as_ref(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -518,6 +533,7 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
             ..Default::default()
         }),
         debug_addr: r.debug_addr,
+        allow_all_paths: r.allow_all_paths,
         immediate: r.immediate,
         allow_root: r.allow_root,
         ..Default::default()
@@ -610,14 +626,30 @@ fn clients(
             return Err(at(start, invalid_name(&name)));
         }
         let what = format!("client {name:?}");
-        let Some(client_id) = id_bytes(r.into_inner().client_id, &what, at)? else {
+        let r = r.into_inner();
+        let mut rights = Vec::new();
+        for right in RIGHTS {
+            if let Some(v) = r.right(right) {
+                let Some(access) = Access::parse(v.get_ref()) else {
+                    return Err(at(
+                        v.span().start,
+                        format!("{what}: {}", right.not_an_access()),
+                    ));
+                };
+                rights.push((right, access));
+            }
+        }
+        let Some(client_id) = id_bytes(r.client_id, &what, at)? else {
             return Err(at(start, format!("{what}: needs a client_id")));
         };
-        let client = pb::ClientEntry {
+        let mut client = pb::ClientEntry {
             name,
             client_id,
             ..Default::default()
         };
+        for (right, access) in rights {
+            right.set(&mut client, Some(access));
+        }
         clients.push((start, client));
     }
     clients.sort_by_key(|(start, _)| *start);
