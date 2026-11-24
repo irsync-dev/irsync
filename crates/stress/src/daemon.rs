@@ -647,13 +647,20 @@ mod tests {
         std::fs::write(&fake, "#!/bin/sh\necho 'config error' >&2\nexit 3\n").unwrap();
         chmod_755(&fake);
         let log = DaemonLog::create(&t.path().join("d.log")).unwrap();
+        // Reported as an exit, not as the timeout running out. How long the
+        // shell takes to start and exit is up to the machine (seconds on a
+        // loaded one), so the time is measured against the timeout, not
+        // against a fixed bound.
+        let timeout = Duration::from_secs(60);
         let started = Instant::now();
-        let err = Daemon::start(&fake, &dev_null(), log, "debug", Duration::from_secs(15))
+        let err = Daemon::start(&fake, &dev_null(), log, "debug", timeout)
             .unwrap_err()
             .to_string();
-        assert!(started.elapsed() < Duration::from_secs(5));
+        let took = started.elapsed();
+        assert!(took < timeout / 2, "took {took:?}");
         assert!(
-            err.contains("exit") && err.contains("config error"),
+            err.contains("daemon exited before startup (exit status: 3)")
+                && err.contains("config error"),
             "{err}"
         );
         assert!(
