@@ -244,6 +244,33 @@ pub const WRONG_ID_HINT: &str = "if you copied this host's ID by hand, it must b
      daemon's EndpointId: on the server, irsync id show --daemon prints it (plain \
      irsync id show prints the client's). Also check that the daemon is running there";
 
+/// A name that is neither a saved server nor an EndpointId.
+pub fn not_paired(host: &str) -> String {
+    format!(
+        "{host} is not a saved server or an EndpointId. To set it up over ssh: \
+         irsync pair {host}. To add it by hand: irsync server add {host} <daemon-id>"
+    )
+}
+
+/// A name saved as a client only, with no server of that name.
+pub fn client_only(host: &str) -> String {
+    format!(
+        "{host} is saved as a client only: this machine has never dialled its \
+         daemon. To set it up over ssh: irsync pair {host}"
+    )
+}
+
+/// A saved server with an `ssh` value that never answered.
+pub fn not_answering(alias: &str) -> String {
+    format!(
+        "{alias} did not answer. On {alias}, check that the daemon is running: \
+         systemctl --user status irsync (Linux) or launchctl print \
+         gui/$(id -u)/org.irsync.daemon (macOS). Its log: journalctl --user -u \
+         irsync, or ~/.local/state/irsync/daemon.log for a daemon started in the \
+         background. To start it again from here: irsync pair {alias}"
+    )
+}
+
 /// `err` with [`WRONG_ID_HINT`] after it, unless it already points at
 /// `irsync id show --daemon` (as a dial that found no address does).
 pub fn with_wrong_id_hint(err: anyhow::Error) -> anyhow::Error {

@@ -75,15 +75,15 @@ const HELP_TEMPLATE: &str = "{name} {version}\n{about-with-newline}\n\
 /// A first sync, from nothing to a push and a pull: over ssh, or by hand.
 const AFTER_HELP: &str = "\
 Quick start over ssh (irsync installed on the client only):
-  If `ssh myserver` logs you in, push to any path your account there can reach:
+  If `ssh myserver` logs you in, set the server up once:
+    irsync pair myserver
+  This installs irsync on the server (same OS and CPU), grants this client
+  access to any path (immediate mode), starts the daemon and saves `myserver`
+  as a server. Then push and pull over iroh:
     irsync -av ~/Photos/ myserver:/srv/photos/
-  The first run installs irsync on the server (same OS and CPU), grants this
-  client access to any path (immediate mode), starts the daemon and saves
-  `myserver` as a server. Later runs go over iroh without ssh:
     irsync -av myserver:/srv/photos/ ~/Photos/  # pull them back
-    irsync -av --ssh ~/Photos/ myserver:/srv/photos/   # update the server first
-  To share only named directories instead of any path, set the server up by
-  hand as below.
+  Only `irsync pair` uses ssh; a sync never does. To share only named
+  directories instead of any path, set the server up by hand as below.
 
 Getting started by hand (irsync installed on both sides):
   On the client, print its id (the last line):
@@ -1002,26 +1002,6 @@ pub struct SyncArgs {
     /// else id_ed25519 in the config directory; generated if missing).
     #[arg(long, value_name = "FILE")]
     pub identity: Option<PathBuf>,
-    /// The remote shell for SSH onboarding (default: IRSYNC_RSH, else `ssh`);
-    /// split on whitespace like rsync's `-e`.
-    #[arg(long, value_name = "CMD")]
-    pub rsh: Option<String>,
-    /// Go through ssh even for a saved host: install or update irsync there,
-    /// check the daemon and the grant, then sync. Uses the host's `ssh`
-    /// destination, else its alias.
-    #[arg(long)]
-    pub ssh: bool,
-    /// When setting the server up over ssh, turn its DHT publishing off
-    /// (`[daemon.discovery] dht = false`). Goes through ssh for a saved host
-    /// too, like `--ssh`. Without it the server's setting is left alone.
-    #[arg(long)]
-    pub no_remote_dht: bool,
-    /// When going through ssh, copy nothing to the server: use the irsync
-    /// already at `~/.local/bin/irsync` there, and stop if it is missing or
-    /// another version. Default: `ssh_install` in the config file, else
-    /// install.
-    #[arg(long)]
-    pub no_install: bool,
     /// Start a fresh plan instead of resuming a dormant session (partial
     /// files are still picked up).
     #[arg(long)]
@@ -1162,12 +1142,6 @@ pub struct SyncOptions {
     pub state_dir: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     pub passphrase_file: Option<PathBuf>,
-    pub rsh: Option<String>,
-    /// `--ssh`.
-    pub force_ssh: bool,
-    pub no_remote_dht: bool,
-    /// `--no-install`.
-    pub no_install: bool,
     pub no_resume: bool,
     pub no_rename_detection: bool,
     pub inplace: bool,
@@ -1236,10 +1210,6 @@ impl SyncOptions {
             state_dir: None,
             identity: a.identity.clone(),
             passphrase_file: args.files.passphrase_file.clone(),
-            rsh: a.rsh.clone(),
-            force_ssh: a.ssh,
-            no_remote_dht: a.no_remote_dht,
-            no_install: a.no_install,
             no_resume: a.no_resume,
             no_rename_detection: a.no_rename_detection,
             inplace: a.inplace,

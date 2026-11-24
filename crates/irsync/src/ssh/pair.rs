@@ -35,27 +35,38 @@ pub struct PairTarget {
     pub found_as: Option<String>,
 }
 
+/// The saved server whose `ssh` value is `typed`, when `typed` is neither
+/// a server or client name nor an id: a saved server may have been set up
+/// by this very ssh destination (an address, say). Then it is that server.
+pub fn saved_by_ssh(
+    servers: &Servers,
+    clients: &Clients,
+    typed: &str,
+) -> anyhow::Result<Option<String>> {
+    if servers.get(typed).is_some()
+        || clients.get(typed).is_some()
+        || parse_endpoint_id(typed).is_ok()
+    {
+        return Ok(None);
+    }
+    match servers.by_ssh(typed) {
+        Ok(alias) => Ok(alias.map(str::to_string)),
+        Err(aliases) => bail!(
+            "{typed} is the ssh destination of several saved servers with \
+             different ids ({}); name one of them, or change an `ssh` \
+             value in {}",
+            aliases.join(", "),
+            servers.path.display()
+        ),
+    }
+}
+
 /// Decides what `pair` does for `host` as typed. One trailing `:` is
 /// dropped (`myserver:` is a habit from `HOST:`).
 pub fn target(servers: &Servers, clients: &Clients, host: &str) -> anyhow::Result<PairTarget> {
     let typed = host.strip_suffix(':').unwrap_or(host);
     let is_id = parse_endpoint_id(typed).is_ok();
-    // Not a name and not an id: a saved server may have been set up by
-    // this very ssh destination (an address, say). Then it is that server.
-    let by_ssh = if servers.get(typed).is_none() && clients.get(typed).is_none() && !is_id {
-        match servers.by_ssh(typed) {
-            Ok(alias) => alias.map(str::to_string),
-            Err(aliases) => bail!(
-                "{typed} is the ssh destination of several saved servers with \
-                 different ids ({}); name one of them, or change an `ssh` \
-                 value in {}",
-                aliases.join(", "),
-                servers.path.display()
-            ),
-        }
-    } else {
-        None
-    };
+    let by_ssh = saved_by_ssh(servers, clients, typed)?;
     let found_as = by_ssh.as_ref().map(|_| typed.to_string());
     let name = by_ssh.as_deref().unwrap_or(typed);
     let saved = servers.get(name);

@@ -537,122 +537,31 @@ struct Connected {
     alias: Option<String>,
     /// `opts` with the per-host and settings defaults filled in.
     opts: SyncOptions,
-    /// The host was set up over ssh just now, by this call.
-    onboarded: bool,
 }
 
 /// Resolves `host`, the direct addresses, the client identity and the
 /// endpoint, the same way for a sync and for a listing.
-/// `hints`: where a host just checked over ssh said its daemon is, dialled
-/// alongside the lookups.
-async fn connect_for(
-    host: &str,
-    opts: &SyncOptions,
-    log: &LogWriter,
-    mut hints: Vec<TransportAddr>,
-) -> anyhow::Result<Connected> {
+async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow::Result<Connected> {
     let paths = Paths::resolve(opts.config.as_deref());
-    let mut config = Config::load(&paths)?;
+    let config = Config::load(&paths)?;
     let pass = PassphraseSource::from_env(
         opts.passphrase_file.clone(),
         config.settings.unsafe_config_allowed,
     );
-    // An unknown host is an ssh destination: set it up and save the alias.
-    // `--ssh` and `--no-remote-dht` go through ssh for a saved host too.
-    // Not an alias and not an id: a saved host may have been set up by
-    // this very ssh destination (an address, say). Then it is that host.
-    let by_ssh = if config.servers.get(host).is_none()
-        && config.clients.get(host).is_none()
-        && parse_endpoint_id(host).is_err()
-    {
-        match config.servers.by_ssh(host) {
-            Ok(alias) => alias.map(str::to_string),
-            Err(aliases) => bail!(
-                "{host} is the ssh destination of several saved servers with \
-                 different ids ({}); name one of them, or change an `ssh` \
-                 value in {}",
-                aliases.join(", "),
-                paths.config.display()
-            ),
-        }
-    } else {
-        None
-    };
+    // An address that is the `ssh` value of a saved server finds that
+    // server: no ssh is needed for that.
+    let by_ssh = irsync::ssh::pair::saved_by_ssh(&config.servers, &config.clients, host)?;
     if let Some(alias) = &by_ssh {
         log.eprintln(&format!("irsync: {host} is saved as {alias}"));
     }
     let host = by_ssh.as_deref().unwrap_or(host);
-    let mut onboarded_with = None;
-    let mut saved_as = None;
-    let saved = config.servers.get(host);
-    let unknown = saved.is_none() && parse_endpoint_id(host).is_err();
-    // Saved here as a client only (it synced to this machine): its daemon
-    // was never set up from here. That is a first run, and the server is
-    // saved under the same name, beside the client.
-    let client_only = unknown && config.clients.get(host).is_some();
-    let first = unknown;
-    let forced = opts.force_ssh || opts.no_remote_dht;
-    if forced && saved.is_none() && !unknown {
-        let flag = if opts.force_ssh {
-            "--ssh"
-        } else {
-            "--no-remote-dht"
-        };
-        bail!("{flag} needs a server name or an ssh destination, not an EndpointId");
-    }
-    if first || forced {
-        // A saved host: its `ssh` destination, else the alias itself.
-        let dest = saved
-            .and_then(|h| h.ssh.clone())
-            .unwrap_or_else(|| host.to_string());
-        // A first run picks the aliases itself, once the server answered;
-        // a client only keeps its name.
-        let alias = (saved.is_some() || client_only).then_some(host);
-        // No ssh call yet: these errors need no "over ssh failed" context.
-        match alias {
-            Some(a) => irsync::ssh::onboard::check(a, &dest)?,
-            None => irsync::ssh::onboard::check_dest(&dest)?,
+    // A sync never sets a server up: it says how to.
+    if config.servers.get(host).is_none() && parse_endpoint_id(host).is_err() {
+        if config.clients.get(host).is_some() {
+            bail!(irsync::session::reconnect::client_only(host));
         }
-        let secret = load_client_key(opts, &config.settings, &pass)?;
-        let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
-        log.eprintln(&if client_only {
-            format!("irsync: {host} is saved as a client only; setting it up over ssh")
-        } else if unknown {
-            format!("irsync: {host} is not a saved server; setting it up over ssh")
-        } else {
-            format!("irsync: checking {host} over ssh")
-        });
-        let flags = SetupFlags {
-            recheck: !first,
-            no_dht: opts.no_remote_dht,
-            no_install: opts.no_install || config.settings.client.ssh_install == Some(false),
-        };
-        let o = irsync::ssh::onboard::onboard(&paths, &rsh, alias, &dest, secret.public(), flags)
-            .with_context(|| {
-            if client_only {
-                format!(
-                    "{host} is saved in {} as a client only; setting its daemon \
-                         up over ssh failed",
-                    paths.config.display()
-                )
-            } else if unknown {
-                format!(
-                    "{host:?} is not a server in {} and not an EndpointId; \
-                     setting it up over ssh failed",
-                    paths.config.display()
-                )
-            } else {
-                format!("checking {host} over ssh failed")
-            }
-        })?;
-        report_onboarded(log, &o);
-        hints = o.hints();
-        config = Config::load(&paths)?;
-        onboarded_with = Some(secret);
-        saved_as = Some(o.alias);
+        bail!(irsync::session::reconnect::not_paired(host));
     }
-    // What a first run saved the host as: its name from here on.
-    let host = saved_as.as_deref().unwrap_or(host);
     let Config {
         settings,
         servers,
@@ -693,11 +602,7 @@ async fn connect_for(
         }
         resolved.extend(addrs);
     }
-    let onboarded = onboarded_with.is_some();
-    let secret = match onboarded_with {
-        Some(s) => s,
-        None => load_client_key(&opts, &settings, &pass)?,
-    };
+    let secret = load_client_key(&opts, &settings, &pass)?;
     if !addresses.is_empty() {
         tracing::info!(
             addresses = ?resolved,
@@ -724,7 +629,7 @@ async fn connect_for(
     // Direct addresses replace everything; else the daemon's own report,
     // when there is one, goes along with the lookups.
     let target = if addresses.is_empty() {
-        EndpointAddr::from_parts(target, hints)
+        EndpointAddr::from_parts(target, Vec::<TransportAddr>::new())
     } else {
         EndpointAddr::from_parts(target, dial_addrs(resolved)?)
     };
@@ -735,13 +640,8 @@ async fn connect_for(
         alias: host_entry.is_some().then(|| host.to_string()),
         host_entry,
         opts,
-        onboarded,
     })
 }
-
-/// How long the first dial to a host with `ssh` may take before the host
-/// is checked over ssh.
-const SSH_HOST_FIRST_DIAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The bound on each dial until the server has answered once: `usual`
 /// (`None`: iroh's own handshake timeout, about 60 s). A test-hooks build
@@ -767,57 +667,6 @@ fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
     for line in irsync::ssh::onboard::howto(o) {
         log.eprintln(&line);
     }
-}
-
-/// What checking a silent host over ssh came to.
-enum Recheck {
-    /// The host has no `ssh`: nothing was done.
-    NotSsh,
-    /// Set up again: dial it afresh, with where the daemon said it is.
-    Done(Vec<TransportAddr>),
-    /// The owner removed this client's immediate grant; it was not added
-    /// back. The daemon's refusal hint, final.
-    GrantRemoved(anyhow::Error),
-    /// The ssh step itself failed.
-    Failed(anyhow::Error),
-}
-
-/// A saved host with `ssh` that never answered: set it up over ssh again
-/// (it restarts a dead daemon and updates the alias `host` if the id
-/// changed). `remote` is the operand as typed, for the refusal hint.
-fn recheck_over_ssh(
-    host: &str,
-    entry: Option<&ServerEntry>,
-    client: iroh::EndpointId,
-    remote: &str,
-    opts: &SyncOptions,
-    ssh_install: Option<bool>,
-    log: &LogWriter,
-) -> Recheck {
-    let Some(dest) = entry.and_then(|h| h.ssh.as_deref()) else {
-        return Recheck::NotSsh;
-    };
-    log.eprintln(&format!(
-        "irsync: {host} did not answer; checking it over ssh"
-    ));
-    let paths = Paths::resolve(opts.config.as_deref());
-    let rsh = irsync::ssh::client::Rsh::from_opts(opts.rsh.as_deref());
-    let flags = SetupFlags {
-        recheck: true,
-        no_dht: opts.no_remote_dht,
-        no_install: opts.no_install || ssh_install == Some(false),
-    };
-    let alias = Some(host);
-    let o = match irsync::ssh::onboard::onboard(&paths, &rsh, alias, dest, client, flags) {
-        Ok(o) => o,
-        Err(e) => return Recheck::Failed(e),
-    };
-    report_onboarded(log, &o);
-    if o.report.grant == irsync::ssh::setup::GrantOutcome::Missing {
-        let hint = irsync::session::reconnect::no_access_hint(remote, &client);
-        return Recheck::GrantRemoved(anyhow::anyhow!(hint));
-    }
-    Recheck::Done(o.hints())
 }
 
 /// `irsync pair HOST`: sets the server up over ssh and saves it.
@@ -1003,7 +852,7 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
     let Location::Remote { host, .. } = Location::parse(operand)? else {
         bail!("internal: a listing takes a remote operand");
     };
-    let c = connect_for(&host, opts, log, Vec::new()).await?;
+    let c = connect_for(&host, opts, log).await?;
     // Closed on every way out: an endpoint dropped open makes iroh log an
     // error line before irsync's own message (#256).
     let listed = list_exports_over(&c, operand).await;
@@ -1038,9 +887,14 @@ async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
     let conn = dialled.map_err(|msg| {
         let err = anyhow::anyhow!(msg);
         // A host set up over ssh is not one whose ID was copied by hand.
-        match c.host_entry.as_ref().and_then(|h| h.ssh.as_ref()) {
-            Some(_) => err,
-            None => with_wrong_id_hint(err),
+        match (c.host_entry.as_ref().and_then(|h| h.ssh.as_ref()), &c.alias) {
+            (Some(_), Some(alias)) => {
+                anyhow::anyhow!(
+                    "{err:#}; {}",
+                    irsync::session::reconnect::not_answering(alias)
+                )
+            }
+            _ => with_wrong_id_hint(err),
         }
     })?;
     irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
@@ -1085,17 +939,7 @@ async fn sync(
         Direction::DaemonSends => args.sync_args().src()[0].clone(),
     };
 
-    let mut conn = connect_for(host, opts, log, Vec::new()).await?;
-    // `--ssh` and `--no-remote-dht` are done with once the first connect
-    // went through ssh: a reconnect after a recheck must not go again.
-    let cli_opts = &SyncOptions {
-        force_ssh: false,
-        no_remote_dht: false,
-        ..opts.clone()
-    };
-    // A saved ssh host that never answers is checked over ssh once per run;
-    // a host set up over ssh just now counts as checked.
-    let mut rechecked = conn.onboarded;
+    let conn = connect_for(host, opts, log).await?;
     let filters = match FilterSet::from_rules(&conn.opts.filters).context("reading filter rules") {
         Ok(f) => Arc::new(f),
         Err(e) => {
@@ -1179,23 +1023,7 @@ async fn sync(
         };
         sessions += 1;
         let started = Instant::now();
-        // Why checking the host over ssh failed, while the daemon is tried
-        // once more.
-        let mut ssh_failed: Option<anyhow::Error> = None;
-        let result = loop {
-            // A host set up over ssh gets one short dial first: if it does
-            // not answer, checking it over ssh is quicker than waiting out
-            // the retries. `--dial-retries` still sets the count.
-            let ssh_host = conn.host_entry.as_ref().is_some_and(|h| h.ssh.is_some());
-            let ropts = if ssh_host && !rechecked {
-                ReconnectOpts {
-                    dial_retries: cli_opts.dial_retries.unwrap_or(0),
-                    first_dial_timeout: first_dial_limit(Some(SSH_HOST_FIRST_DIAL)),
-                    ..ropts
-                }
-            } else {
-                ropts
-            };
+        let result = {
             let res = async {
                 let plan = match direction {
                     Direction::ClientSends => {
@@ -1226,50 +1054,22 @@ async fn sync(
                 .await
             }
             .await;
-            // Only a host that was never reached; a refusal is final.
+            // A host that was never reached: a saved host set up over ssh
+            // is told how to start its daemon again; a refusal is final.
             match res {
-                Err(e) if !rechecked && e.downcast_ref::<NeverReached>().is_some() => {
-                    rechecked = true;
-                    let client = conn.endpoint.id();
-                    let entry = conn.host_entry.as_ref();
-                    // The saved alias, when the operand named the host
-                    // another way (an address it was first set up by).
-                    let name = conn.alias.clone().unwrap_or_else(|| host.to_string());
-                    match recheck_over_ssh(
-                        &name,
-                        entry,
-                        client,
-                        &remote_text,
-                        cli_opts,
-                        conn.settings.client.ssh_install,
-                        log,
+                Err(e) if e.downcast_ref::<NeverReached>().is_some() => {
+                    match (
+                        conn.host_entry.as_ref().and_then(|h| h.ssh.as_ref()),
+                        &conn.alias,
                     ) {
-                        Recheck::Done(hints) => {
-                            conn.endpoint.close().await;
-                            conn = connect_for(&name, cli_opts, log, hints).await?;
-                        }
-                        Recheck::NotSsh => break Err(with_wrong_id_hint(e)),
-                        Recheck::GrantRemoved(refused) => break Err(refused),
-                        // The daemon may only have been slow: one more
-                        // try, with the usual settings.
-                        Recheck::Failed(ssh) => {
-                            log.eprintln(&format!(
-                                "irsync: checking {host} over ssh failed: {ssh:#}; \
-                                 trying the daemon again"
-                            ));
-                            ssh_failed = Some(ssh);
-                        }
+                        (Some(_), Some(alias)) => Err(anyhow::anyhow!(
+                            "{e:#}; {}",
+                            irsync::session::reconnect::not_answering(alias)
+                        )),
+                        _ => Err(with_wrong_id_hint(e)),
                     }
                 }
-                Err(e) => match ssh_failed.take() {
-                    Some(ssh) => {
-                        break Err(anyhow::anyhow!(
-                            "{e:#}; checking {host} over ssh had failed too: {ssh:#}"
-                        ))
-                    }
-                    None => break Err(e),
-                },
-                res => break res,
+                res => res,
             }
         };
         let mut summary = SessionSummary {
@@ -2658,8 +2458,8 @@ mod tests {
         filter_enables(spec, "irsync::session")
     }
 
-    /// A host saved as a client only cannot be dialled. A sync sets such
-    /// a host up over ssh first, so this is the error for a config that
+    /// A name saved as a client only cannot be dialled. A sync stops before
+    /// this and names `irsync pair`, so this is the error for a config that
     /// changed in between.
     #[test]
     fn a_client_only_host_is_no_target() {

@@ -915,7 +915,7 @@ mod tests {
         assert!(howto(&o).is_empty());
     }
 
-    /// `--no-remote-dht` on a running daemon: the setting line, then the
+    /// `pair --no-dht` on a running daemon: the setting line, then the
     /// reload; no how-to, since the daemon kept running.
     #[test]
     fn dht_turned_off_and_reloaded() {
