@@ -132,6 +132,7 @@ class CiScriptTests(unittest.TestCase):
         self.assertIn(["irsync", "--test", "sub_chunk"], args)
         self.assertIn(["fileset", "--lib", "--", "compare::", "escape::", "glob::"], args)
         self.assertIn(["fileset", "--lib", "wtf8::"], args)
+        self.assertIn(["irsync", "--lib", "wtf8::"], args)
 
     def test_miri_only_when_named(self):
         # Slow: never part of a run of every job.

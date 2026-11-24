@@ -369,6 +369,7 @@ job_fuzz() {
 #   fileset --lib -- ...    fileset's comparison, escaping and wildcards
 #   fileset --lib wtf8::    its name conversion for Windows, which is plain
 #                           code and is tested on every platform
+#   irsync --lib wtf8::     irsync's own copy of that conversion
 # A test here that is too slow under Miri is marked
 # #[cfg_attr(miri, ignore = "reason")]: those that chunk megabytes, and
 # the delta tests on hundreds of KiB. With them, this takes about three
@@ -383,6 +384,7 @@ miri_packages=(
     "irsync --test sub_chunk"
     "fileset --lib -- compare:: escape:: glob::"
     "fileset --lib wtf8::"
+    "irsync --lib wtf8::"
 )
 
 # The tests of each entry in miri_packages under Miri, with the nightly in
