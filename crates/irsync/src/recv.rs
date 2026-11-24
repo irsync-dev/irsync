@@ -1243,7 +1243,7 @@ impl Verified {
                 ))
             };
             let placed = mode
-                .and_then(|()| apply_metadata_fd_owned(&*file, &entry, &opts, held_owner))
+                .and_then(|()| apply_metadata_fd_owned(&file, &entry, &opts, held_owner))
                 .and_then(|()| still_same_file(held_id, &part))
                 .and_then(|()| {
                     if inplace {
