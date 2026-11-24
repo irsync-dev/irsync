@@ -68,13 +68,19 @@ pub struct Grants {
     /// The client's right over any path (`all_paths`), when the daemon
     /// allows it (`allow_all_paths`).
     pub all_paths: Option<Access>,
+    /// The client's right over the admin service (`admin`): `rw` reads and
+    /// changes the configuration, `ro` reads it.
+    pub admin: Option<Access>,
 }
 
 impl Grants {
     /// True when the grants cover nothing at all (no entries, no
-    /// `all_exports`, no `all_paths`).
+    /// `all_exports`, no `all_paths`, no `admin`).
     pub fn is_empty(&self) -> bool {
-        self.exports.is_empty() && self.all_exports.is_none() && self.all_paths.is_none()
+        self.exports.is_empty()
+            && self.all_exports.is_none()
+            && self.all_paths.is_none()
+            && self.admin.is_none()
     }
 
     /// The access this key has to `export`, named `name`: its own entry,
@@ -142,12 +148,13 @@ impl Snapshot {
         let mut grants: HashMap<EndpointId, Grants> = HashMap::new();
         for c in clients.entries.values() {
             let all_paths = c.all_paths.filter(|_| allow_all_paths);
-            if c.all_exports.is_none() && all_paths.is_none() {
+            if c.all_exports.is_none() && all_paths.is_none() && c.admin.is_none() {
                 continue;
             }
             let g = grants.entry(c.client_id).or_default();
             raise(&mut g.all_exports, c.all_exports);
             raise(&mut g.all_paths, all_paths);
+            raise(&mut g.admin, c.admin);
         }
         for (name, e) in &exports.exports {
             let lists = [(&e.rw, Access::ReadWrite), (&e.ro, Access::ReadOnly)];
@@ -189,6 +196,11 @@ impl Snapshot {
             exports: exports.exports.clone(),
             grants,
         }
+    }
+
+    /// The admin right of `id`; none when it has none.
+    pub fn admin(&self, id: &EndpointId) -> Option<Access> {
+        self.grants.get(id).and_then(|g| g.admin)
     }
 
     /// The grants of `id`; empty when it is granted nothing.

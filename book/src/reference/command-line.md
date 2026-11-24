@@ -124,7 +124,7 @@ sync, push, pull or listing never does. `HOST` is an ssh destination, such as
 - installs `irsync`, `fileset` and the manual pages on the server (the same
   files as `install.sh`, in `~/.local/bin`) when the server has no matching
   build;
-- gives this client `all_paths = "rw"`, access to any path;
+- gives this client `all_paths = "rw"`, access to any path, and `admin = "rw"`, the right to manage the server remotely;
 - starts the daemon and makes it a user service: a systemd service on Linux, a
   launchd agent on macOS;
 - saves `HOST` as a server with `ssh = "HOST"`.

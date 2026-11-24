@@ -385,7 +385,7 @@ fn right_block(right: Right, clients: &Clients) -> String {
 }
 
 /// Every grant: one block per right of [`RIGHTS`] (`all_exports:`,
-/// `all_paths:`), then one block per export in name order.
+/// `all_paths:`, `admin:`), then one block per export in name order.
 pub fn list_all(exports: &Exports, clients: &Clients) -> String {
     let mut out: String = RIGHTS.iter().map(|r| right_block(*r, clients)).collect();
     for (name, e) in &exports.exports {
@@ -420,6 +420,9 @@ pub fn list_peer(
     let mut out = format!("{label}:\n");
     if let Some(a) = grants.all_paths {
         let _ = writeln!(out, "    all_paths: {}", a.as_str());
+    }
+    if let Some(a) = grants.admin {
+        let _ = writeln!(out, "    admin: {}", a.as_str());
     }
     for (name, e) in &exports.exports {
         let Some(access) = grants.access_to(name, e) else {

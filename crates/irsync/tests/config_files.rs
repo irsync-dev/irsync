@@ -909,3 +909,30 @@ fn parse_reads_values_only_with_the_same_view_and_errors() {
         );
     }
 }
+
+#[test]
+fn admin_is_read_and_written_back() {
+    use irsync::authz::Access;
+    use irsync::config::reader::read;
+    use irsync::config::writer::write;
+    let text = format!(
+        "config_version = 2\n\n[clients.laptop]\nclient_id = \"{}\"\nall_paths = \"rw\"\nadmin = \"ro\"\n",
+        id(1)
+    );
+    let c = Config::parse(&text, Path::new("c")).unwrap();
+    assert_eq!(
+        c.clients.get("laptop").unwrap().admin,
+        Some(Access::ReadOnly)
+    );
+    let msg = read(&text, Path::new("c")).unwrap().config;
+    assert_eq!(write(&msg), text);
+    let bad = format!(
+        "[clients.laptop]\nclient_id = \"{}\"\nadmin = \"yes\"\n",
+        id(1)
+    );
+    let e = Config::parse(&bad, Path::new("c")).unwrap_err().to_string();
+    assert!(
+        e.contains("client \"laptop\": admin must be \"rw\" or \"ro\""),
+        "{e}"
+    );
+}

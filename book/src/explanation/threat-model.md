@@ -30,6 +30,7 @@ detail. This page builds on it.
 | A client with a read-only grant | Requests for files in an export | To read that export |
 | A client with a read-write grant | File names, contents and metadata pushed into an export | To change that export, and nothing else |
 | A client with `all_paths = "rw"` | The same, for any path | As much as the daemon's account itself |
+| A client with `admin = "rw"` | Changes to the exports, clients and grants | To change who may reach what on this server, and so to give itself any path |
 | The daemon a client talks to | The listing and the data on a pull; the answers on a push | To hold the files you give it, and to supply the files you ask for |
 | Whoever made a tree you sync | File names, symlinks, permissions, and any `.fileset` manifest in it | Not at all, beyond the content you chose to copy |
 | Other users of the same machine | Files in directories they can write | Not at all |
@@ -142,6 +143,10 @@ client's session, or exhaust the daemon.
   bound single messages, queues and stored sessions, not a client that works
   at being expensive. irsync does not treat a granted key as hostile to the daemon's
   uptime.
+- **`admin = "rw"` is the whole account too.** Such a key can add an export
+  for any directory and grant itself read-write access to it, so it can do
+  what `all_paths = "rw"` can. Give it with the same care. `admin = "ro"`
+  only reads the exports, clients and grants: names, paths and ids.
 - **`all_paths = "rw"` is the whole account.** Such a key can reach any
   path the daemon's account can. Give it only to machines you would give
   ssh access to. `all_paths = "ro"` is smaller, but it still reads the whole

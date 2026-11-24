@@ -293,6 +293,7 @@ fn recheck_does_not_regrant() {
     // Still granted: nothing to say.
     let other = client_id();
     common::set_all_paths(home.path(), &other.to_string(), Some(Access::ReadWrite));
+    common::set_admin(home.path(), &other.to_string(), Some(Access::ReadWrite));
     assert_eq!(
         home.setup_named(&other, "other", &["--recheck"]).grant,
         GrantOutcome::Already
@@ -591,14 +592,21 @@ fn names_that_need_quoting_round_trip() {
 }
 
 #[test]
-fn an_existing_all_paths_rw_counts() {
+fn an_existing_all_paths_and_admin_rw_count() {
     let text = format!(
-        "[clients.laptop]\nclient_id = \"{}\"\nall_paths = \"rw\"\n",
+        "[clients.laptop]\nclient_id = \"{}\"\nall_paths = \"rw\"\nadmin = \"rw\"\n",
         id(1)
     );
     let mut doc = read(&text, cfg()).unwrap();
     assert!(!grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
     assert_eq!(doc, read(&text, cfg()).unwrap());
+    // all_paths alone is not enough: admin is added.
+    let text = format!(
+        "[clients.laptop]\nclient_id = \"{}\"\nall_paths = \"rw\"\n",
+        id(1)
+    );
+    let mut doc = read(&text, cfg()).unwrap();
+    assert!(grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
 }
 
 /// A name that belongs to another client is refused before anything on
@@ -666,4 +674,23 @@ fn recheck_does_not_revive_a_leftover_grant() {
         assert_eq!(std::fs::read_to_string(home.config()).unwrap(), text);
         assert!(probe(&home.state()).is_none());
     }
+}
+
+#[test]
+fn setup_sets_admin_with_all_paths() {
+    let home = Home::new("");
+    let client = client_id();
+    assert_eq!(home.setup(&client).grant, GrantOutcome::Added);
+    let doc = read_config(&home);
+    assert_eq!(doc["clients"]["myclient"]["all_paths"].as_str(), Some("rw"));
+    assert_eq!(doc["clients"]["myclient"]["admin"].as_str(), Some("rw"));
+    assert_eq!(home.setup(&client).grant, GrantOutcome::Already);
+    // A recheck of a client that lost admin reports it and saves nothing.
+    common::set_admin(home.path(), &client.to_string(), None);
+    let bytes = std::fs::read(home.config()).unwrap();
+    assert_eq!(
+        home.setup_with(&client, &["--recheck"]).grant,
+        GrantOutcome::Missing
+    );
+    assert_eq!(std::fs::read(home.config()).unwrap(), bytes);
 }

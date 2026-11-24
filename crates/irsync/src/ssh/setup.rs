@@ -57,8 +57,8 @@ pub enum GrantOutcome {
     Already,
     /// `daemon.allow_all_paths` is off: nothing was granted.
     AllPathsOff,
-    /// A recheck found no `all_paths = "rw"` for the client and did not set
-    /// it: the owner lowered or removed it.
+    /// A recheck found no `all_paths = "rw"` or no `admin = "rw"` for the
+    /// client and did not set it: the owner lowered or removed it.
     Missing,
 }
 
@@ -384,9 +384,9 @@ pub fn check_client_name(
 }
 
 /// Saves `client` as `[clients.name]` (unless it has a name there
-/// already) and gives it `all_paths = "rw"`, after
-/// [`check_client_name`] on `msg` itself. False when the client was
-/// already `"rw"`; the message is not changed then. The name
+/// already) and gives it `all_paths = "rw"` and `admin = "rw"`, after
+/// [`check_client_name`] on `msg` itself. False when the client had both
+/// already; the message is not changed then. The name
 /// is only ever a label: the daemon decides access by the id it stands for.
 pub fn grant_client(
     msg: &mut pb::Config,
@@ -408,10 +408,11 @@ pub fn grant_client(
         .iter()
         .find(|c| c.name == alias)
         .context("the client entry just found is gone")?;
-    if Right::AllPaths.get(c) == Some(Access::ReadWrite) {
+    let rw = Some(Access::ReadWrite);
+    if Right::AllPaths.get(c) == rw && Right::Admin.get(c) == rw {
         return Ok(false);
     }
-    manage::clients::client_set(msg, &alias, &[(Right::AllPaths, Some(Access::ReadWrite))])?;
+    manage::clients::client_set(msg, &alias, &[(Right::AllPaths, rw), (Right::Admin, rw)])?;
     Ok(true)
 }
 
@@ -505,7 +506,8 @@ pub fn run(
             .with_context(|| format!("in {}", paths.config.display()))?;
         match (added, recheck && !generated) {
             (false, _) => {
-                // The client already had `all_paths = "rw"`: nothing changed.
+                // The client already had `all_paths = "rw"` and `admin = "rw"`:
+                // nothing changed.
                 debug_assert_eq!(msg, before);
                 GrantOutcome::Already
             }

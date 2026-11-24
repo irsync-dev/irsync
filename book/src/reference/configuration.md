@@ -89,6 +89,7 @@ ssh = "myserver"             # set by irsync pair
 client_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
 all_exports = "ro"           # every hand-made export
 all_paths = "rw"             # any path this account can
+admin = "rw"                 # manage this server remotely
 
 # What the daemon shares and with whom. Entries in rw and ro are
 # names from [clients.*] or EndpointIds.
@@ -242,8 +243,9 @@ an `EndpointId`.
 | `client_id` | required | The machine's `EndpointId` as a client: the key it signs in with. A grant that names `NAME` is for this id. |
 | `all_exports` | none | `"rw"` or `"ro"`: this client reaches every export you made by hand, read-write or read-only. See [Rights on a client](#rights-on-a-client). |
 | `all_paths` | none | `"rw"` or `"ro"`: this client reaches any path the daemon's account can, with automatic exports. `"ro"` reads any path and writes none. |
+| `admin` | none | `"rw"` or `"ro"`: this client may manage this server remotely. `"rw"` reads and changes exports, clients and grants; `"ro"` only reads. See [Rights on a client](#rights-on-a-client). |
 
-Only a named client holds `all_exports` or `all_paths`. A key you did not
+Only a named client holds `all_exports`, `all_paths` or `admin`. A key you did not
 name as a client cannot have them. A value left out means no right.
 `irsync client set` sets them; see [Management commands](management.md#client).
 
@@ -324,7 +326,7 @@ The `OTEL_EXPORTER_OTLP_*` environment variables take precedence.
 
 `[exports.NAME]` shares a directory under `NAME`. The name is the first
 segment of a `HOST:PATH`, so it may not be empty or contain `/`, and it may not
-be `all`, `immediate`, `all_exports` or `all_paths`. Those words are reserved.
+be `all`, `immediate`, `all_exports`, `all_paths` or `admin`. Those words are reserved.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -338,8 +340,8 @@ be `all`, `immediate`, `all_exports` or `all_paths`. Those words are reserved.
 
 ### Rights on a client
 
-Two keys of `[clients.NAME]` reach more than one export. Each is `"rw"` or
-`"ro"`. Left out, the client has no such right.
+Three keys of `[clients.NAME]` are rights over the whole server. Each is
+`"rw"` or `"ro"`. Left out, the client has no such right.
 
 - `all_exports` reaches every export you made by hand, now and later. An
   export's own `rw` or `ro` entry for the client wins over it. It never
@@ -348,6 +350,10 @@ Two keys of `[clients.NAME]` reach more than one export. Each is `"rw"` or
   writes; `"ro"` reads any path and writes none. `irsync client set NAME
   all_paths=rw` sets it, and `irsync pair` sets `all_paths = "rw"` on its
   client.
+- `admin` lets the client manage this server from afar. `"rw"` reads the
+  exports, clients and grants and changes them; `"ro"` only reads. It gives
+  no access to any file. `irsync client set NAME admin=rw` sets it, and
+  `irsync pair` sets `admin = "rw"` together with `all_paths = "rw"`.
 
 When a client with `all_paths` uses a path that no export covers, the daemon
 adds an automatic export for it, `auto = true`, named `auto-` and the path

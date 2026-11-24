@@ -125,6 +125,7 @@ struct RawClientEntry {
     client_id: Option<Spanned<String>>,
     all_exports: Option<Spanned<String>>,
     all_paths: Option<Spanned<String>>,
+    admin: Option<Spanned<String>>,
 }
 
 impl RawClientEntry {
@@ -133,6 +134,7 @@ impl RawClientEntry {
         match right {
             Right::AllExports => self.all_exports.as_ref(),
             Right::AllPaths => self.all_paths.as_ref(),
+            Right::Admin => self.admin.as_ref(),
         }
     }
 }

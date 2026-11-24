@@ -618,7 +618,7 @@ fn list_all_names_the_rights_then_every_export() {
     assert_eq!(
         s,
         format!(
-            "all_exports:\n    rw: laptop ({l})\nall_paths:\nbackups:\ndocs:\n    rw: laptop ({l})\nphotos:\n    ro: {o}\n",
+            "all_exports:\n    rw: laptop ({l})\nall_paths:\nadmin:\nbackups:\ndocs:\n    rw: laptop ({l})\nphotos:\n    ro: {o}\n",
             l = id(1),
             o = id(2)
         )
@@ -655,7 +655,7 @@ fn grant_list_shows_all_paths_rights() {
     assert_eq!(
         list_all(&e, &h),
         format!(
-            "all_exports:\n    ro: other ({o})\nall_paths:\n    rw: laptop ({l})\nauto-h:\n    rw: laptop ({l})\n",
+            "all_exports:\n    ro: other ({o})\nall_paths:\n    rw: laptop ({l})\nadmin:\nauto-h:\n    rw: laptop ({l})\n",
             l = id(1),
             o = id(2)
         )

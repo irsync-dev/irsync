@@ -1039,7 +1039,20 @@ pub fn spawn_daemon_binary_env(
 /// in the config under `home`, as `irsync client set` does. A client the
 /// config does not know yet is saved as `[clients.granted]` first.
 pub fn set_all_paths(home: &std::path::Path, id: &str, access: Option<irsync::authz::Access>) {
-    use irsync::config::clients::Right;
+    set_right(home, id, irsync::config::clients::Right::AllPaths, access);
+}
+
+/// Like [`set_all_paths`], for the `admin` right.
+pub fn set_admin(home: &std::path::Path, id: &str, access: Option<irsync::authz::Access>) {
+    set_right(home, id, irsync::config::clients::Right::Admin, access);
+}
+
+fn set_right(
+    home: &std::path::Path,
+    id: &str,
+    right: irsync::config::clients::Right,
+    access: Option<irsync::authz::Access>,
+) {
     let path = home.join(".config/irsync/irsync.toml");
     let mut lock = irsync::manage::lock_config(&path).unwrap();
     let mut msg = lock.load().unwrap();
@@ -1055,6 +1068,6 @@ pub fn set_all_paths(home: &std::path::Path, id: &str, access: Option<irsync::au
             "granted".to_string()
         }
     };
-    irsync::manage::clients::client_set(&mut msg, &name, &[(Right::AllPaths, access)]).unwrap();
+    irsync::manage::clients::client_set(&mut msg, &name, &[(right, access)]).unwrap();
     lock.save(&mut msg).unwrap();
 }

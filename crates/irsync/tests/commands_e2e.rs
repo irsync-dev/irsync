@@ -657,7 +657,7 @@ fn grant_list_by_export_by_peer_and_for_an_unknown_name() {
     };
     let all = run(&["grant", "list"]);
     assert!(
-        all.starts_with("all_exports:\nall_paths:\n")
+        all.starts_with("all_exports:\nall_paths:\nadmin:\n")
             && all.contains("p:\n    rw: laptop (")
             && all.contains("q:\n    rw: laptop ("),
         "{all}"
@@ -995,7 +995,7 @@ fn grant_list_lines_appear_verbatim_in_show() {
     assert_eq!(grant_lines, 2, "{list}");
     assert!(
         list.starts_with(&format!(
-            "all_exports:\n    ro: laptop ({id})\nall_paths:\n"
+            "all_exports:\n    ro: laptop ({id})\nall_paths:\nadmin:\n"
         )),
         "{list}"
     );
@@ -2880,7 +2880,7 @@ fn client_set_sets_reports_and_lists_the_rights() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(
         String::from_utf8_lossy(&o.stderr),
-        "laptop: all_exports=rw all_paths=ro\n"
+        "laptop: all_exports=rw all_paths=ro admin=none\n"
     );
     assert_eq!(
         ok(&home, &["client", "list"]),
@@ -2889,7 +2889,7 @@ fn client_set_sets_reports_and_lists_the_rights() {
     let o = irsync(&home, &["client", "set", "laptop", "all_paths=none"]);
     assert_eq!(
         String::from_utf8_lossy(&o.stderr),
-        "laptop: all_exports=rw all_paths=none\n"
+        "laptop: all_exports=rw all_paths=none admin=none\n"
     );
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(!text.contains("all_paths"), "{text}");
@@ -2904,7 +2904,7 @@ fn client_set_with_a_bad_pair_changes_nothing() {
     let (home, file) = home_with(&d, "");
     ok(&home, &["client", "add", "laptop", &peer_id(5)]);
     let before = std::fs::read(&file).unwrap();
-    for pair in ["all_paths=yes", "admin=rw", "all_paths"] {
+    for pair in ["all_paths=yes", "admin=yes", "all_paths"] {
         let o = irsync(&home, &["client", "set", "laptop", "all_exports=rw", pair]);
         assert!(!o.status.success(), "{pair}");
         assert_eq!(std::fs::read(&file).unwrap(), before, "{pair}");
