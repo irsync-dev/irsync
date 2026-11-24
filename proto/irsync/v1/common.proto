@@ -20,6 +20,9 @@ message Hello {
     // may reach, then closes. `path` and `name` are empty.
     LIST_EXPORTS = 2;
     PROBE = 3; // no session: the daemon answers with PathInfo for path, then closes
+    // The control stream becomes an admin session (AdminRequest in,
+    // AdminReply out). `path` is empty.
+    ADMIN = 4;
   }
   Direction direction = 5;
   uint32 chunk_min = 6;

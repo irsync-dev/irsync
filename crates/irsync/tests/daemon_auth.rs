@@ -268,6 +268,16 @@ async fn ro_grant_can_pull() {
     }
 }
 
+/// Until the admin service is served, an ADMIN Hello is refused plainly.
+#[tokio::test]
+async fn admin_hello_is_refused_for_now() {
+    let (code, message) = reply(exchange(Access::ReadWrite, hello(b"", Direction::Admin)).await);
+    assert_eq!(
+        (code, message.as_str()),
+        (Code::Unauthorized as i32, "not allowed")
+    );
+}
+
 #[tokio::test]
 async fn wrong_protocol_version_rejected() {
     let mut h = hello(b"rw", Direction::ClientSends);

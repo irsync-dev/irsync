@@ -548,10 +548,24 @@ async fn handle(
     #[cfg(feature = "test-hooks")]
     if hello.direction != Direction::ListExports as i32
         && hello.direction != Direction::Probe as i32
+        && hello.direction != Direction::Admin as i32
     {
         shared
             .hellos
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    if hello.direction == Direction::Admin as i32 {
+        // Not served yet: every ADMIN Hello gets the plain refusal.
+        tracing::warn!(peer = %id.fmt_short(), "refusing an admin session");
+        return reject(
+            &conn,
+            &mut send,
+            &tap,
+            Code::Unauthorized,
+            "not allowed".into(),
+        )
+        .await;
     }
 
     if hello.direction == Direction::ListExports as i32 {
@@ -882,7 +896,9 @@ fn admit<'a>(
         Ok(Direction::DaemonSends | Direction::Probe) => {}
         // A listing never reaches here; no dedicated code for a malformed
         // direction either: UNKNOWN is the honest answer.
-        Ok(Direction::ListExports) | Err(_) => return Err((Code::Unknown, "bad direction".into())),
+        Ok(Direction::ListExports | Direction::Admin) | Err(_) => {
+            return Err((Code::Unknown, "bad direction".into()))
+        }
     }
     Ok((resolved, rel))
 }
