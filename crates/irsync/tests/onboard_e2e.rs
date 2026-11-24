@@ -217,9 +217,8 @@ impl World {
     /// irsync run in `home` as the machine `name`, with a fake ssh that
     /// lands in `remote`.
     fn run(&self, home: &Path, remote: &Path, name: &str, args: &[&str]) -> Output {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_irsync"));
+        let mut cmd = common::irsync_command(home);
         cmd.args(args)
-            .env("HOME", home)
             .env("XDG_STATE_HOME", home.join("xdg"))
             .env("IRSYNC_RSH", fake_ssh())
             .env("FAKE_SSH_HOME", remote)

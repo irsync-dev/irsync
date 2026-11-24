@@ -1,7 +1,8 @@
 //! The built `irsync` for tests, never with the real home or profile.
 //!
 //! Every test starts the binary through [`irsync_command`], which points
-//! every default location at a temporary home: `HOME` (Unix), and
+//! every default location at a temporary home: `HOME` and `XDG_STATE_HOME`
+//! (Unix), and
 //! `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` (Windows, where `HOME` means
 //! nothing to irsync). The Windows ones are laid out as the Unix ones are,
 //! so a test sees the same files on both: `APPDATA` is `<home>/.config`,
@@ -15,19 +16,24 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
-/// The built `irsync` binary.
-pub const IRSYNC_EXE: &str = env!("CARGO_BIN_EXE_irsync");
+/// The built `irsync` binary. Private: a test starts it only through
+/// [`irsync_command`] (`tests/home_rule.rs`).
+const IRSYNC_EXE: &str = env!("CARGO_BIN_EXE_irsync");
 
 /// `irsync` with every default location under `home` (see the module doc).
 /// Panics if `home` is not in the temporary directory or holds the real
 /// home or profile.
 pub fn irsync_command(home: impl AsRef<Path>) -> Command {
     let home = isolated(home.as_ref());
+    let state = home.join(".local").join("state");
     let mut cmd = Command::new(IRSYNC_EXE);
+    // `XDG_STATE_HOME` too, where the default without it would be, so a
+    // developer's own one never reaches the child.
     cmd.env("HOME", &home)
+        .env("XDG_STATE_HOME", &state)
         .env("USERPROFILE", &home)
         .env("APPDATA", home.join(".config"))
-        .env("LOCALAPPDATA", home.join(".local").join("state"));
+        .env("LOCALAPPDATA", &state);
     cmd
 }
 
@@ -48,8 +54,14 @@ impl StateHome for Command {
 /// `p`, made absolute, if it lies inside the temporary directory and holds
 /// neither the real home nor the real profile folders; else a panic that
 /// says why. The real ones come from the system (`dirs`: the Known Folder
-/// API on Windows), not from this process's environment.
+/// API on Windows), not from this process's environment. A `..` anywhere is
+/// refused: on Unix `absolute` keeps it, so it could climb out unseen.
 fn isolated(p: &Path) -> PathBuf {
+    assert!(
+        !p.components().any(|c| c == std::path::Component::ParentDir),
+        "refusing to run irsync with {} as a home or state directory: it holds `..`",
+        p.display()
+    );
     let p = std::path::absolute(p).unwrap();
     let tmp = std::path::absolute(std::env::temp_dir()).unwrap();
     assert!(
