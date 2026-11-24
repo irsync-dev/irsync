@@ -53,6 +53,15 @@ The config shape was settled in #203 and the issue. For setting the values:
 - Reader, writer and `client set` are shaped so a third key of the same form
   is a small addition.
 
+- `grant remove all WHO` keeps meaning "every export's own list".
+- A layout-2 file that still has `[all]`, `[immediate]` or `[daemon] immediate`
+  is refused with a hint. The layout-1 upgrade (`legacy_v1.rs`) converts
+  them onto the clients; an id with no client becomes a client named
+  `client-` plus its first 10 hex digits.
+- Access through an automatic export is always the client's current
+  `all_paths` level, whatever the export lists, so lowering and raising both
+  apply at once.
+
 ## Left to the builder
 
 Proto layout of the new fields, the exact wording of listings and hints, how
