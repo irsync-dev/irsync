@@ -373,14 +373,14 @@ fn sync_generates_the_client_identity_on_first_run() {
 
 #[test]
 fn an_unreadable_daemon_key_is_named_in_the_error() {
-    use std::os::unix::fs::PermissionsExt;
+    use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     assert!(irsync(&home, &["id", "generate", "--daemon"])
         .status
         .success());
     let key = home.join(".config/irsync/daemon_ed25519");
-    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
+    set_mode(&key, 0o000).unwrap();
     if std::fs::read(&key).is_ok() {
         eprintln!("skipping: running as root, mode 0o000 does not stop reads");
         return;
@@ -441,12 +441,12 @@ fn id_list_prints_the_client_and_the_daemon_when_there_is_one() {
 /// file, not a daemon quietly left out.
 #[test]
 fn id_list_names_a_daemon_key_it_cannot_read() {
-    use std::os::unix::fs::PermissionsExt;
+    use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     ok(&home, &["id", "generate", "--daemon"]);
     let key = home.join(".config/irsync/daemon_ed25519");
-    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
+    set_mode(&key, 0o000).unwrap();
     if std::fs::read(&key).is_ok() {
         eprintln!("skipping: running as root, mode 0o000 does not stop reads");
         return;
@@ -1451,7 +1451,7 @@ fn a_bare_noun_changes_nothing_and_takes_no_list_arguments() {
 /// daemon out.
 #[test]
 fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
-    use std::os::unix::fs::PermissionsExt;
+    use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let locked = d.path().join("locked");
@@ -1464,10 +1464,10 @@ fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
     .unwrap();
     ok(&home, &["id", "generate", "--daemon"]);
     assert!(key.exists());
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    set_mode(&locked, 0o000).unwrap();
     let skip = key.symlink_metadata().is_ok();
     let o = irsync(&home, &["id", "list"]);
-    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    set_mode(&locked, 0o700).unwrap();
     if skip {
         eprintln!("skipping: running as root, mode 0o000 does not stop lookups");
         return;
@@ -2427,7 +2427,7 @@ fn host_add_takes_a_client_id() {
 /// users can read or change it: nothing is made, changed or contacted.
 #[test]
 fn a_config_open_to_other_users_stops_every_command_at_once() {
-    use std::os::unix::fs::PermissionsExt;
+    use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let cfg = home.join(".config/irsync");
@@ -2437,7 +2437,7 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
     let id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1";
     let text = format!("[hosts.nas]\nendpoint_id = \"{id}\"\n");
     std::fs::write(&file, &text).unwrap();
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    set_mode(&file, 0o644).unwrap();
     let src = home.join("src");
     let src = src.to_str().unwrap();
     let commands: &[&[&str]] = &[
@@ -2486,7 +2486,7 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
     );
     // Closing the file works as well, and the key is then not needed.
     std::fs::write(&file, &text).unwrap();
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    set_mode(&file, 0o600).unwrap();
     assert!(ok(&home, &["host", "list"]).contains("nas"));
     assert_eq!(
         ok(&home, &["config", "get", "unsafe_config_allowed"]),
@@ -2498,16 +2498,13 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
 /// command that needs it, unless the config allows it.
 #[test]
 fn a_key_or_passphrase_file_open_to_other_users_stops_the_command() {
-    use std::os::unix::fs::PermissionsExt;
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let pf = home.join("pf");
     irsync::fs::private::write(&pf, "hunter2\n").unwrap();
     let pf_s = pf.to_str().unwrap();
-    let chmod = |p: &Path, mode: u32| {
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
-    };
+    let chmod = |p: &Path, mode: u32| irsync::platform::testutil::set_mode(p, mode).unwrap();
     let cfg = home.join(".config/irsync");
     let key = cfg.join("id_ed25519");
     let config = cfg.join("irsync.toml");

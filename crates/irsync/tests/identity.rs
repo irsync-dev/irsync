@@ -3,17 +3,17 @@ use irsync::identity::{
     load_identity_interactive, load_or_generate, load_secret_key, parse_endpoint_id,
     public_key_line, read_passphrase_file, write_new, IdentityError, KeySource, PassphraseSource,
 };
+use irsync::platform::{mode_of, testutil::set_mode};
 use ssh_key::getrandom::SysRng;
 use ssh_key::rand_core::UnwrapErr;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
-use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn generated_key_loads_and_public_matches_ssh_pub() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("id_ed25519");
     let generated = generate_openssh(&path, "test@irsync").unwrap();
-    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    let mode = mode_of(&std::fs::metadata(&path).unwrap()) & 0o777;
     assert_eq!(mode, 0o600);
 
     let loaded = load_secret_key(&path, None).unwrap();
@@ -360,10 +360,7 @@ fn load_or_generate_creates_once_then_loads_same_key() {
     assert!(gen1 && !gen2);
     assert_eq!(k1.public(), k2.public());
     assert!(d.path().join("deep/dir/id_ed25519.pub").exists());
-    assert_eq!(
-        std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    assert_eq!(mode_of(&std::fs::metadata(&p).unwrap()) & 0o777, 0o600);
 }
 
 #[test]
@@ -390,10 +387,7 @@ fn write_new_never_replaces_an_existing_file() {
     let e = write_new(&p, b"second", 0o600).unwrap_err();
     assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{e}");
     assert_eq!(std::fs::read(&p).unwrap(), b"first");
-    assert_eq!(
-        std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    assert_eq!(mode_of(&std::fs::metadata(&p).unwrap()) & 0o777, 0o600);
     // No temporary file is left behind.
     assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
 }
@@ -403,7 +397,7 @@ fn load_or_generate_in_a_read_only_directory_names_the_path() {
     let d = tempfile::tempdir().unwrap();
     let dir = d.path().join("ro");
     std::fs::create_dir(&dir).unwrap();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    set_mode(&dir, 0o555).unwrap();
     if std::fs::write(dir.join("probe"), b"").is_ok() {
         eprintln!("skipping: running as root, mode 0o555 does not stop writes");
         return;
@@ -414,7 +408,7 @@ fn load_or_generate_in_a_read_only_directory_names_the_path() {
         e.to_string().contains(p.to_str().unwrap()),
         "the error does not name the key file"
     );
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&dir, 0o755).unwrap();
 }
 
 #[test]
@@ -494,10 +488,7 @@ fn generate_with_a_passphrase_writes_an_encrypted_key_that_unlocks() {
     // The .pub file is the public half of the same key.
     let line = std::fs::read_to_string(d.path().join("id_ed25519.pub")).unwrap();
     assert_eq!(line.trim(), public_key_line(&secret, "irsync"));
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    assert_eq!(mode_of(&std::fs::metadata(&path).unwrap()) & 0o777, 0o600);
 }
 
 #[test]
@@ -619,13 +610,12 @@ fn a_key_made_with_one_line_ending_unlocks_with_the_other() {
 /// A new key is for its owner only; one that was opened up is noticed.
 #[test]
 fn a_key_other_users_can_read_is_noticed() {
-    use std::os::unix::fs::PermissionsExt;
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("id");
     generate_openssh(&p, "test@irsync").unwrap();
     assert!(!irsync::identity::open_to_others(&p));
     for open in [0o640, 0o604, 0o620] {
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(open)).unwrap();
+        set_mode(&p, open).unwrap();
         assert!(irsync::identity::open_to_others(&p), "{open:o}");
     }
     assert!(!irsync::identity::open_to_others(&d.path().join("missing")));
@@ -636,11 +626,8 @@ fn a_key_other_users_can_read_is_noticed() {
 /// config allows it.
 #[test]
 fn a_key_or_passphrase_file_open_to_other_users_is_refused() {
-    use std::os::unix::fs::PermissionsExt;
     let d = tempfile::tempdir().unwrap();
-    let chmod = |p: &std::path::Path, mode: u32| {
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
-    };
+    let chmod = |p: &std::path::Path, mode: u32| set_mode(p, mode).unwrap();
     let strict = PassphraseSource::default();
     let allowed = PassphraseSource {
         allow_open: true,

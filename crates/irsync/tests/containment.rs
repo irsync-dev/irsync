@@ -5,11 +5,11 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{symlink, MetadataExt};
 use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, Flow, Harness};
+use irsync::platform::{nlink_of, testutil::symlink};
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
@@ -102,7 +102,7 @@ async fn hardlink_target_outside_root_rejected() {
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("secret"), b"private key").unwrap();
     // A symlink inside the export leading out of it.
-    symlink(outside.path(), h.export.path().join("esc")).unwrap();
+    symlink(outside.path(), &h.export.path().join("esc")).unwrap();
     fs::write(h.local.path().join("a"), b"a").unwrap();
     let out = push_with(
         &h,
@@ -113,7 +113,7 @@ async fn hardlink_target_outside_root_rejected() {
     assert!(has_error(&out, b"b", "hard link"), "{:?}", out.errors);
     assert!(fs::symlink_metadata(h.export.path().join("b")).is_err());
     assert_eq!(
-        fs::metadata(outside.path().join("secret")).unwrap().nlink(),
+        nlink_of(&fs::metadata(outside.path().join("secret")).unwrap()),
         1
     );
 }

@@ -287,9 +287,9 @@ fn written_is_the_alias_of_an_id_that_has_one() {
 /// owner closed. A new config is for the owner only.
 #[test]
 fn save_keeps_the_files_mode_and_a_new_file_is_private() {
-    use std::os::unix::fs::PermissionsExt;
+    use irsync::platform::{mode_of, testutil::set_mode};
     let d = tempfile::tempdir().unwrap();
-    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    let mode = |p: &std::path::Path| mode_of(&std::fs::metadata(p).unwrap()) & 0o7777;
 
     let fresh = d.path().join("new.toml");
     let mut m = load_message(&fresh).unwrap();
@@ -307,7 +307,7 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     // A file open to other users loads only when it says so itself.
     m.unsafe_config_allowed = Some(true);
     for kept in [0o640, 0o644, 0o600] {
-        std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(kept)).unwrap();
+        set_mode(&fresh, kept).unwrap();
         m.client.as_mut().unwrap().parallel = Some(kept);
         save_config(&fresh, &mut m).unwrap();
         assert_eq!(mode(&fresh), kept, "save_config");

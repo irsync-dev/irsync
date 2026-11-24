@@ -676,7 +676,7 @@ fn push_unreadable_with(tmp: &Path, report: Option<&Path>, flags: &[&str]) -> st
     std::fs::write(tmp.join("src/ok.txt"), b"fine").unwrap();
     let bad = tmp.join("src/bad.bin");
     std::fs::write(&bad, bytes(4096)).unwrap();
-    std::fs::set_permissions(&bad, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    irsync::platform::testutil::set_mode(&bad, 0o000).unwrap();
     let d = start_daemon(tmp);
     let address = format!("localhost:{}", d.listen.port());
     let src = format!("{}/", tmp.join("src").display());
@@ -701,7 +701,7 @@ fn push_unreadable_with(tmp: &Path, report: Option<&Path>, flags: &[&str]) -> st
 
 fn running_as_root() -> bool {
     // Mode 000 does not stop root from reading.
-    nix::unistd::geteuid().is_root()
+    irsync::platform::is_root()
 }
 
 #[test]

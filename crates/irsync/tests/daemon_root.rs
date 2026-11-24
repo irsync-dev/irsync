@@ -81,7 +81,7 @@ fn daemon(home: &Path, as_root: bool, args: &[&str]) -> Run {
 }
 
 fn really_root() -> bool {
-    nix::unistd::geteuid().is_root()
+    irsync::platform::is_root()
 }
 
 #[test]

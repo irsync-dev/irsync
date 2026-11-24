@@ -732,13 +732,12 @@ fn export_named_immediate_is_reserved() {
 /// itself sets `unsafe_config_allowed = true`.
 #[test]
 fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
-    use std::os::unix::fs::PermissionsExt;
     let d = tempfile::tempdir().unwrap();
     let paths = Paths::resolve(Some(&d.path().join("irsync.toml")));
     let set = |text: &str, mode: u32| {
         let _ = std::fs::remove_file(&paths.config);
         std::fs::write(&paths.config, text).unwrap();
-        std::fs::set_permissions(&paths.config, std::fs::Permissions::from_mode(mode)).unwrap();
+        irsync::platform::testutil::set_mode(&paths.config, mode).unwrap();
         Config::load(&paths)
     };
     // No file at all is still the defaults.

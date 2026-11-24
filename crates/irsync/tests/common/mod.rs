@@ -8,8 +8,8 @@
 /// set: the runners' filesystem takes such names, so a skip there would hide
 /// the tests.
 pub fn try_create_non_utf8(dir: &std::path::Path, name: &[u8]) -> Option<std::path::PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let p = dir.join(std::ffi::OsStr::from_bytes(name));
+    use irsync::platform::testutil::{errno, name_from_bytes};
+    let p = dir.join(name_from_bytes(name));
     match std::fs::write(&p, b"x") {
         Ok(()) => Some(p),
         Err(e)
@@ -19,15 +19,13 @@ pub fn try_create_non_utf8(dir: &std::path::Path, name: &[u8]) -> Option<std::pa
                     std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData
                 ) || matches!(
                     e.raw_os_error(),
-                    Some(x) if x == nix::libc::EILSEQ || x == nix::libc::EINVAL
+                    Some(x) if x == errno::EILSEQ || x == errno::EINVAL
                 )) =>
         {
             eprintln!("skipping non-UTF-8 name: filesystem refused");
             None
         }
-        Err(e)
-            if e.raw_os_error() == Some(nix::libc::EILSEQ) && std::env::var_os("CI").is_none() =>
-        {
+        Err(e) if e.raw_os_error() == Some(errno::EILSEQ) && std::env::var_os("CI").is_none() => {
             eprintln!("skipping non-UTF-8 name: filesystem refused (ZFS with utf8only=on?)");
             None
         }
@@ -693,10 +691,9 @@ impl Harness {
     ) -> anyhow::Result<irsync::session::Outcome> {
         use irsync::session::single::{place_file, split_last};
         use irsync_proto::v1::path_info::Kind;
-        use std::os::unix::ffi::OsStrExt;
         let kind = self.probe(remote_path).await?;
         anyhow::ensure!(kind == Kind::File, "remote path is {kind:?}, not a file");
-        let remote = std::path::Path::new(std::ffi::OsStr::from_bytes(remote_path));
+        let remote = std::path::Path::new(irsync::platform::testutil::name_from_bytes(remote_path));
         let (_, basename) = split_last(remote);
         let placed = place_file(dest, contents_only, &basename, true)?;
         let mut hello = Self::hello(Flow::Pull);
@@ -792,7 +789,7 @@ pub fn assert_trees_equal(
     b: &std::path::Path,
     preserve: &irsync::cli::Preserve,
 ) {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use irsync::platform::{mode_of, mtime_of, testutil::is_fifo};
     let (ma, mb) = (
         std::fs::symlink_metadata(a).unwrap(),
         std::fs::symlink_metadata(b).unwrap(),
@@ -805,7 +802,7 @@ pub fn assert_trees_equal(
             "symlink"
         } else if t.is_file() {
             "file"
-        } else if t.is_fifo() {
+        } else if is_fifo(t) {
             "fifo"
         } else {
             "other"
@@ -820,15 +817,15 @@ pub fn assert_trees_equal(
         );
     } else if preserve.perms {
         assert_eq!(
-            ma.mode() & 0o7777,
-            mb.mode() & 0o7777,
+            mode_of(&ma) & 0o7777,
+            mode_of(&mb) & 0o7777,
             "mode differs: {a:?}"
         );
     }
     if preserve.times {
         assert_eq!(
-            (ma.mtime(), ma.mtime_nsec()),
-            (mb.mtime(), mb.mtime_nsec()),
+            mtime_of(&ma),
+            mtime_of(&mb),
             "mtime differs: {a:?} vs {b:?}"
         );
     }

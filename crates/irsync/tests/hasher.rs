@@ -2,23 +2,14 @@ use irsync::fs::meta::lstat_entry_with_ctime;
 use irsync::fs::paths::RelPath;
 use irsync::hasher::Hasher;
 use irsync::index::Index;
+use irsync::platform::testutil::{set_times, symlink};
 use irsync::scan::ScanItem;
-use nix::sys::stat::{utimensat, UtimensatFlags};
-use nix::sys::time::TimeSpec;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::Ordering::Relaxed;
 
 fn set_mtime(path: &Path, sec: i64, nsec: i64) {
-    let t = TimeSpec::new(sec, nsec);
-    utimensat(
-        nix::fcntl::AT_FDCWD,
-        path,
-        &t,
-        &t,
-        UtimensatFlags::FollowSymlink,
-    )
-    .unwrap();
+    set_times(path, sec, nsec, true).unwrap();
 }
 
 fn item(root: &Path, name: &[u8]) -> ScanItem {
@@ -118,7 +109,7 @@ async fn hasher_refuses_symlink() {
     let it = item(root.path(), b"f");
     // Swapped for a symlink after the walk saw a regular file.
     fs::remove_file(root.path().join("f")).unwrap();
-    std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join("f")).unwrap();
+    symlink(&outside.path().join("secret"), &root.path().join("f")).unwrap();
     let e = h.digest(&it).await.unwrap_err();
     assert!(e.to_string().contains("refusing to follow symlink"), "{e}");
     assert_eq!(h.stats().files_hashed.load(Relaxed), 0);

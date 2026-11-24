@@ -250,7 +250,7 @@ async fn slow_planner(flow: Flow) {
         for i in 0..2000 {
             let target = format!("{}/t{i:05}", "x".repeat(3500 / SHORTER as usize));
             let link = h.src(flow).join(format!("d{:02}/l{i:05}", i % 50));
-            std::os::unix::fs::symlink(target, link).unwrap();
+            irsync::platform::testutil::symlink(Path::new(&target), &link).unwrap();
         }
         let peak = Arc::new(AtomicUsize::new(0));
         let waits = Arc::new(AtomicU64::new(0));
@@ -457,13 +457,13 @@ fn deep_tree(root: &Path, dirs: u32) -> std::path::PathBuf {
 
 /// Sets the mode of every directory and file below `base`.
 fn chmod_all(base: &Path, dirs: u32, files: u32) {
-    use std::os::unix::fs::PermissionsExt;
+    use irsync::platform::testutil::set_mode;
     for d in fs::read_dir(base).unwrap() {
         let dir = d.unwrap().path();
         for f in fs::read_dir(&dir).unwrap() {
-            fs::set_permissions(f.unwrap().path(), fs::Permissions::from_mode(files)).unwrap();
+            set_mode(&f.unwrap().path(), files).unwrap();
         }
-        fs::set_permissions(&dir, fs::Permissions::from_mode(dirs)).unwrap();
+        set_mode(&dir, dirs).unwrap();
     }
 }
 
@@ -1556,7 +1556,7 @@ async fn a_sender_failing_before_its_listing_reports_its_own_error() {
 /// is still made.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn link_checks_wait_on_the_receiver_not_in_the_sender() {
-    use std::os::unix::fs::MetadataExt;
+    use irsync::platform::file_id;
     const LINKS: usize = 3000;
     const LIMIT: usize = 4 * 1024;
     within120(async {
@@ -1578,10 +1578,10 @@ async fn link_checks_wait_on_the_receiver_not_in_the_sender() {
             .await
             .unwrap_or_else(|e| panic!("{e:#}"));
         assert!(out.errors.is_empty(), "{:?}", out.errors);
-        let ino = fs::metadata(h.dst(flow).join("f0000")).unwrap().ino();
+        let ino = file_id(&fs::metadata(h.dst(flow).join("f0000")).unwrap()).1;
         for i in 1..LINKS {
             let m = fs::metadata(h.dst(flow).join(format!("f{i:04}"))).unwrap();
-            assert_eq!(m.ino(), ino, "f{i:04}");
+            assert_eq!(file_id(&m).1, ino, "f{i:04}");
         }
         // One ask may take the count past the limit, no more: a name here
         // counts for under 200 bytes.

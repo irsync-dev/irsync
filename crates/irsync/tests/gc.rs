@@ -6,9 +6,8 @@ use irsync::daemon::gc;
 use irsync::fs::paths::RelPath;
 use irsync::identity::endpoint_id_of_public_key;
 use irsync::index::{Index, Partial, SessionRow};
+use irsync::platform::testutil::{set_mode, set_times, symlink};
 use irsync_proto::v1::{plan_item::Action, PlanEntry, RangeSet, SessionPlan};
-use nix::sys::stat::{utimensat, UtimensatFlags};
-use nix::sys::time::TimeSpec;
 use prost::Message;
 
 const DAY: u64 = 86400;
@@ -21,15 +20,7 @@ fn now() -> i64 {
 }
 
 fn touch_ago(path: &Path, days: i64) {
-    let t = TimeSpec::new(now() - days * DAY as i64, 0);
-    utimensat(
-        nix::fcntl::AT_FDCWD,
-        path,
-        &t,
-        &t,
-        UtimensatFlags::NoFollowSymlink,
-    )
-    .unwrap();
+    set_times(path, now() - days * DAY as i64, 0, false).unwrap();
 }
 
 fn rel(s: &str) -> RelPath {
@@ -164,8 +155,8 @@ async fn gc_never_follows_symlinks() {
     let r = f.root.path();
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("victim"), b"v").unwrap();
-    std::os::unix::fs::symlink(outside.path().join("victim"), r.join(".irsync.link.part")).unwrap();
-    std::os::unix::fs::symlink(outside.path(), r.join("dirlink")).unwrap();
+    symlink(&outside.path().join("victim"), &r.join(".irsync.link.part")).unwrap();
+    symlink(outside.path(), &r.join("dirlink")).unwrap();
     std::fs::write(outside.path().join(".irsync.out.part"), b"v").unwrap();
     touch_ago(&outside.path().join(".irsync.out.part"), 30);
     gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), false)
@@ -190,7 +181,7 @@ async fn gc_never_follows_a_symlinked_directory_of_a_record() {
         .put_partial(&rel("swapped/x"), &partial(now() - 9 * DAY as i64))
         .unwrap();
     std::fs::remove_dir(r.join("swapped")).unwrap();
-    std::os::unix::fs::symlink(outside.path(), r.join("swapped")).unwrap();
+    symlink(outside.path(), &r.join("swapped")).unwrap();
     let rep = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), false)
         .await
         .unwrap();
@@ -277,8 +268,7 @@ fn id_daemon_prints_the_key_line_and_the_id_of_the_configured_identity() {
 
 #[tokio::test]
 async fn gc_continues_after_one_removal_failure() {
-    use std::os::unix::fs::PermissionsExt;
-    if nix::unistd::geteuid().is_root() {
+    if irsync::platform::is_root() {
         return;
     }
     let f = fixture();
@@ -286,7 +276,7 @@ async fn gc_continues_after_one_removal_failure() {
     std::fs::create_dir(r.join("ro")).unwrap();
     std::fs::write(r.join("ro/.irsync.stuck.part"), b"x").unwrap();
     touch_ago(&r.join("ro/.irsync.stuck.part"), 8);
-    std::fs::set_permissions(r.join("ro"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    set_mode(&r.join("ro"), 0o555).unwrap();
     f.ix.lock()
         .unwrap()
         .save_session(&session(9, "gone", 9))
@@ -294,7 +284,7 @@ async fn gc_continues_after_one_removal_failure() {
     let rep = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), false)
         .await
         .unwrap();
-    std::fs::set_permissions(r.join("ro"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&r.join("ro"), 0o755).unwrap();
     assert_eq!(rep.errors.len(), 1, "{rep:?}");
     assert_eq!(rep.errors[0].0, rel("ro/.irsync.stuck.part"));
     assert!(!r.join("d/.irsync.old.part").exists());
@@ -519,8 +509,7 @@ async fn gc_prunes_entries_of_files_gone_or_replaced() {
     std::fs::write(r.join("new"), b"content").unwrap();
     std::fs::rename(r.join("new"), r.join("replaced")).unwrap();
     // A directory the walk cannot read hides its files; they stay indexed.
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(r.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    set_mode(&r.join("locked"), 0o000).unwrap();
 
     let dry = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), true)
         .await
@@ -537,7 +526,7 @@ async fn gc_prunes_entries_of_files_gone_or_replaced() {
     let report = gc(f.ix.clone(), r, Duration::from_secs(7 * DAY), false)
         .await
         .unwrap();
-    std::fs::set_permissions(r.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&r.join("locked"), 0o755).unwrap();
     assert_eq!(report.entries_removed, 2);
     let ix = f.ix.lock().unwrap();
     assert!(ix.get_entry(&rel("gone")).unwrap().is_none());

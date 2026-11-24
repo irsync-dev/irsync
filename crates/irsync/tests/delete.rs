@@ -6,7 +6,6 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,6 +14,7 @@ use common::{assert_trees_equal, Flow, Harness};
 use irsync::cli::{Args, SyncOptions};
 use irsync::filter::FilterSet;
 use irsync::fs::paths::RelPath;
+use irsync::platform::testutil::{set_mode, symlink};
 use irsync::session::{LocalSide, Outcome};
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
@@ -32,7 +32,7 @@ fn opts(extra: &[&str]) -> SyncOptions {
 }
 
 fn is_root() -> bool {
-    nix::unistd::geteuid().is_root()
+    irsync::platform::is_root()
 }
 
 /// The client's side with the CLI's filters and an event log.
@@ -140,7 +140,7 @@ async fn delete_removes_extraneous_after_transfer() {
             fs::create_dir_all(dst.join("gone/deep")).unwrap();
             fs::write(dst.join("gone/deep/x.txt"), b"x").unwrap();
             // A symlink to a directory outside: removed, never followed.
-            symlink(outside.path(), dst.join("gone/link")).unwrap();
+            symlink(outside.path(), &dst.join("gone/link")).unwrap();
 
             let (out, events) = run(&h, &o, flow).await;
             assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
@@ -314,13 +314,12 @@ async fn delete_during_stops_at_a_gap_in_the_source_listing() {
                 fs::write(dst.join("a/old.txt"), b"o").unwrap();
                 fs::write(dst.join("locked/secret.txt"), b"s").unwrap();
                 fs::write(dst.join("z/old.txt"), b"o").unwrap();
-                fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+                set_mode(&src.join("locked"), 0o000).unwrap();
 
                 let (out, _) = run(&h, &o, flow).await;
                 // `-a` copied the mode too: open both up to look inside.
                 for d in [src, dst] {
-                    fs::set_permissions(d.join("locked"), fs::Permissions::from_mode(0o755))
-                        .unwrap();
+                    set_mode(&d.join("locked"), 0o755).unwrap();
                 }
                 // Before the gap: deleted. The gap itself is never deleted into.
                 assert!(!dst.join("a/old.txt").exists(), "{flow:?} {extra:?}");
@@ -425,7 +424,7 @@ async fn delete_refused_when_listing_incomplete() {
             fs::create_dir(dst.join("locked")).unwrap();
             fs::write(dst.join("locked/secret.txt"), b"s").unwrap();
             fs::write(dst.join("extra.txt"), b"x").unwrap();
-            fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+            set_mode(&src.join("locked"), 0o000).unwrap();
 
             let (out, events) = run(&h, &opts(&["--delete"]), flow).await;
             assert!(dst.join("extra.txt").exists(), "{flow:?}");
@@ -442,7 +441,7 @@ async fn delete_refused_when_listing_incomplete() {
 
             // The destination copy of `locked` got mode 000 too; reopen it so
             // only the source listing is incomplete.
-            fs::set_permissions(dst.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+            set_mode(&dst.join("locked"), 0o755).unwrap();
             assert!(dst.join("locked/secret.txt").exists(), "{flow:?}");
             let (out, _) = run(&h, &opts(&["--delete", "--ignore-errors"]), flow).await;
             assert!(
@@ -451,8 +450,8 @@ async fn delete_refused_when_listing_incomplete() {
                 out.errors
             );
             assert!(paths(&out.deleted).contains(&"extra.txt".to_string()));
-            fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
-            let _ = fs::set_permissions(dst.join("locked"), fs::Permissions::from_mode(0o755));
+            set_mode(&src.join("locked"), 0o755).unwrap();
+            let _ = set_mode(&dst.join("locked"), 0o755);
         }
     })
     .await;

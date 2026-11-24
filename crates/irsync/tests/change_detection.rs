@@ -6,7 +6,6 @@ mod common;
 
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -15,6 +14,7 @@ use std::time::{Duration, SystemTime};
 use common::{archive_opts, Flow, Harness};
 use irsync::fs::paths::RelPath;
 use irsync::hasher::HashHook;
+use irsync::platform::write_all_at;
 use irsync::session::reconnect::ReconnectOpts;
 use irsync::session::{FirstChunkHook, FrameHook, PartsFault, SideHooks, StreamKind};
 use irsync_proto::v1::control::Msg;
@@ -65,9 +65,8 @@ fn seed(h: &Harness, flow: Flow) -> Vec<u8> {
 /// sets its mtime to 1e9 + `n` seconds (`n` differs per tear).
 fn tear(path: &Path, seed: u32, n: u32) {
     let f = fs::File::options().write(true).open(path).unwrap();
-    f.write_all_at(&data(TEAR, seed), 0).unwrap();
-    f.write_all_at(&data(TEAR, seed + 1), (SIZE - TEAR) as u64)
-        .unwrap();
+    write_all_at(&f, &data(TEAR, seed), 0).unwrap();
+    write_all_at(&f, &data(TEAR, seed + 1), (SIZE - TEAR) as u64).unwrap();
     // Coarse timestamps (kernels before 6.13) may not show the write itself.
     f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000 + u64::from(n)))
         .unwrap();
@@ -232,7 +231,7 @@ fn seed_delta(h: &Harness, flow: Flow) -> Vec<u8> {
 /// mtime to 1e9 + `n` seconds.
 fn rewrite_head(path: &Path, seed: u32, n: u32) {
     let f = fs::File::options().write(true).open(path).unwrap();
-    f.write_all_at(&data(TEAR, seed), 0).unwrap();
+    write_all_at(&f, &data(TEAR, seed), 0).unwrap();
     f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000 + u64::from(n)))
         .unwrap();
 }
@@ -579,7 +578,7 @@ async fn paranoid_append_catches_a_same_size_tail_rewrite() {
                 if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
                     let n = asked.fetch_add(1, Ordering::SeqCst) + 1;
                     let f = fs::File::options().write(true).open(&src).unwrap();
-                    f.write_all_at(&data(64 * KIB, 400 + n), (4 * MIB + 128 * KIB) as u64)
+                    write_all_at(&f, &data(64 * KIB, 400 + n), (4 * MIB + 128 * KIB) as u64)
                         .unwrap();
                 }
                 vec![m]
@@ -1006,7 +1005,7 @@ fn frame_counter(count: fn(&Msg) -> bool, n: Arc<AtomicU32>) -> FrameHook {
 /// new inode at the destination, and `n.txt` must be linked to it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn paranoid_recheck_relinks_hard_links() {
-    use std::os::unix::fs::MetadataExt;
+    use irsync::platform::file_id;
     within30(async {
         let flow = Flow::Push;
         let h = Harness::new().await;
@@ -1060,8 +1059,8 @@ async fn paranoid_recheck_relinks_hard_links() {
         assert_eq!(fs::read(&m).unwrap(), Y_NEW);
         assert_eq!(fs::read(&n).unwrap(), Y_NEW);
         assert_eq!(
-            fs::metadata(&m).unwrap().ino(),
-            fs::metadata(&n).unwrap().ino(),
+            file_id(&fs::metadata(&m).unwrap()).1,
+            file_id(&fs::metadata(&n).unwrap()).1,
             "the hard link is lost"
         );
     })
@@ -1195,11 +1194,11 @@ enum ModeChange {
 /// was hashed, not the walk's: the source never held its new content (or
 /// its current state) with the old mode.
 async fn hashed_mode_is_placed_for(flow: Flow, change: ModeChange) {
-    use std::os::unix::fs::PermissionsExt;
+    use irsync::platform::{mode_of, testutil::set_mode};
     let h = Harness::new().await;
     seed(&h, flow);
     let src = h.src(flow).join("x.bin");
-    fs::set_permissions(&src, fs::Permissions::from_mode(0o644)).unwrap();
+    set_mode(&src, 0o644).unwrap();
     let first = Arc::new(AtomicBool::new(false));
     let hook: HashHook = {
         let (src, first) = (src.clone(), first.clone());
@@ -1211,11 +1210,11 @@ async fn hashed_mode_is_placed_for(flow: Flow, change: ModeChange) {
                 ModeChange::RenameOver => {
                     let tmp = src.with_file_name("x.bin.new");
                     fs::write(&tmp, data(SIZE, 8)).unwrap();
-                    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).unwrap();
+                    set_mode(&tmp, 0o600).unwrap();
                     fs::rename(&tmp, &src).unwrap();
                 }
                 ModeChange::Chmod => {
-                    fs::set_permissions(&src, fs::Permissions::from_mode(0o600)).unwrap();
+                    set_mode(&src, 0o600).unwrap();
                 }
             }
         })
@@ -1235,7 +1234,7 @@ async fn hashed_mode_is_placed_for(flow: Flow, change: ModeChange) {
     assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
     let dst = h.dst(flow).join("x.bin");
     assert!(fs::read(&dst).unwrap() == fs::read(&src).unwrap());
-    let mode = fs::metadata(&dst).unwrap().permissions().mode() & 0o7777;
+    let mode = mode_of(&fs::metadata(&dst).unwrap()) & 0o7777;
     assert_eq!(mode, 0o600, "placed with mode {mode:o}");
     let again = h.run(&archive_opts(), flow).await.unwrap();
     assert_eq!(again.exit_code(), 0, "{:?}", again.errors);
@@ -1273,7 +1272,7 @@ async fn chmod_before_hash_places_the_new_mode_on_pull() {
 /// A group of ours other than the effective one, if any: an owner may move
 /// a file to it without root.
 fn other_group() -> Option<u32> {
-    let egid = nix::unistd::getegid().as_raw();
+    let egid = irsync::platform::egid();
     irsync::fs::meta::supplementary_groups()
         .into_iter()
         .find(|&g| g != egid)
@@ -1282,7 +1281,7 @@ fn other_group() -> Option<u32> {
 /// The source's group changes after the walk and before the hash pass:
 /// the file is placed with the group it had when it was hashed.
 async fn hashed_group_is_placed_for(flow: Flow) {
-    use std::os::unix::fs::MetadataExt;
+    use irsync::platform::{owner_of, testutil::chown};
     let Some(g2) = other_group() else {
         eprintln!("skipped: this user is in only one group");
         return;
@@ -1295,7 +1294,7 @@ async fn hashed_group_is_placed_for(flow: Flow) {
         let (src, first) = (src.clone(), first.clone());
         Arc::new(move |p: &RelPath, bytes: u64| {
             if p.as_bytes() == b"x.bin" && bytes == 0 && !first.swap(true, Ordering::SeqCst) {
-                std::os::unix::fs::chown(&src, None, Some(g2)).unwrap();
+                chown(&src, None, Some(g2)).unwrap();
             }
         })
     };
@@ -1312,7 +1311,7 @@ async fn hashed_group_is_placed_for(flow: Flow) {
     let out = h.run_side(&archive_opts(), flow, local).await.unwrap();
     assert!(first.load(Ordering::SeqCst), "the hook never fired");
     assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
-    let gid = fs::metadata(h.dst(flow).join("x.bin")).unwrap().gid();
+    let gid = owner_of(&fs::metadata(h.dst(flow).join("x.bin")).unwrap()).1;
     assert_eq!(gid, g2, "placed with the walk's group");
 }
 
@@ -1342,7 +1341,7 @@ enum LinkChange {
 /// in the same run; gone, it fails (exit 23). Either way the next run
 /// leaves an exact copy.
 async fn changed_link_is_not_linked_for(flow: Flow, change: LinkChange) {
-    use std::os::unix::fs::MetadataExt;
+    use irsync::platform::file_id;
     let h = Harness::new().await;
     let (a, b) = (h.src(flow).join("a.bin"), h.src(flow).join("b.bin"));
     fs::write(&a, data(SIZE, 21)).unwrap();
@@ -1363,12 +1362,12 @@ async fn changed_link_is_not_linked_for(flow: Flow, change: LinkChange) {
                 LinkChange::Gone => fs::rename(&b, b.with_file_name("c.bin")).unwrap(),
             }
             // In place: only `a.bin` names this file now.
-            fs::File::options()
-                .write(true)
-                .open(&a)
-                .unwrap()
-                .write_all_at(&data(TEAR, 23), 0)
-                .unwrap();
+            write_all_at(
+                &fs::File::options().write(true).open(&a).unwrap(),
+                &data(TEAR, 23),
+                0,
+            )
+            .unwrap();
         })
     };
     let mut local = h.local_side();
@@ -1386,8 +1385,8 @@ async fn changed_link_is_not_linked_for(flow: Flow, change: LinkChange) {
             assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
             assert_eq!(fs::read(&db).unwrap(), data(1000, 22));
             assert_ne!(
-                fs::metadata(&da).unwrap().ino(),
-                fs::metadata(&db).unwrap().ino()
+                file_id(&fs::metadata(&da).unwrap()).1,
+                file_id(&fs::metadata(&db).unwrap()).1
             );
         }
         LinkChange::Gone => {
@@ -1443,7 +1442,7 @@ async fn link_renamed_away_is_not_linked_on_pull() {
 /// `CheckLink` each) and made.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unchanged_links_are_checked_and_made() {
-    use std::os::unix::fs::MetadataExt;
+    use irsync::platform::file_id;
     within30(async {
         let flow = Flow::Pull;
         let h = Harness::new().await;
@@ -1463,11 +1462,8 @@ async fn unchanged_links_are_checked_and_made() {
         assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
         assert_eq!(checks.load(Ordering::SeqCst), 6);
         for i in 0..3u32 {
-            let ino = |n: &str| {
-                fs::metadata(h.dst(flow).join(format!("{n}{i}")))
-                    .unwrap()
-                    .ino()
-            };
+            let ino =
+                |n: &str| file_id(&fs::metadata(h.dst(flow).join(format!("{n}{i}"))).unwrap()).1;
             assert_eq!(ino("f"), ino("g"));
             assert_eq!(ino("f"), ino("h"));
         }
