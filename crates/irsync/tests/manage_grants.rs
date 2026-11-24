@@ -4,8 +4,8 @@ use irsync::config::file::Config;
 use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::grants::{
-    canonicalize, grant_add, grant_immediate, grant_remove, grant_remove_immediate, list_all,
-    list_export, list_peer, lists_naming, remove_named, rename_named,
+    canonicalize, grant_add, grant_remove, list_all, list_export, list_peer, lists_naming,
+    remove_named, rename_named,
 };
 use irsync::manage::{ManageError, PeerSpec};
 use irsync_proto::config as pb;
@@ -156,9 +156,6 @@ fn grant_add_refuses_a_comment_with_control_characters_and_leaves_the_message() 
         let r = grant_add(&mut m, Some("p"), &evil, false, &none);
         assert!(matches!(r, Err(ManageError::BadComment(_))), "{c:?}: {r:?}");
         assert_eq!(m, before);
-        let r = grant_immediate(&mut m, &evil, &none);
-        assert!(matches!(r, Err(ManageError::BadComment(_))), "{c:?}: {r:?}");
-        assert_eq!(m, before);
     }
 }
 
@@ -260,33 +257,6 @@ fn grant_edits_reach_inline_tables() {
             .to_string(),
         "nothing to remove for \"all\""
     );
-}
-
-#[test]
-fn grant_immediate_adds_once() {
-    let mut m = pb::Config::default();
-    let resolve = |_: &str| None;
-    assert!(grant_immediate(&mut m, &peer(1), &resolve).unwrap());
-    assert!(!grant_immediate(&mut m, &peer(1), &resolve).unwrap());
-    assert_eq!(m.immediate.as_ref().unwrap().rw.len(), 1);
-    assert_eq!(write(&m), format!("[immediate]\nrw = [\"{}\"]\n", id(1)));
-    assert_eq!(
-        grant_remove_immediate(&mut m, Some(&peer(1)), &resolve).unwrap(),
-        1
-    );
-    assert_eq!(write(&m), "[immediate]\nrw = []\n");
-    assert!(matches!(
-        grant_remove_immediate(&mut m, None, &resolve),
-        Err(ManageError::NothingToRemove(w)) if w == "immediate"
-    ));
-}
-
-#[test]
-fn grant_immediate_knows_the_other_spelling() {
-    let mut m = msg("[immediate]\nrw = [\"lap\"]\n");
-    let resolve = |s: &str| (s == "lap").then(|| id(1));
-    assert!(!grant_immediate(&mut m, &peer(1), &resolve).unwrap());
-    assert_eq!(grant_remove_immediate(&mut m, None, &resolve).unwrap(), 1);
 }
 
 /// Grants that name `box` in three tables.

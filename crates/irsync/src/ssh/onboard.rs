@@ -365,12 +365,12 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
         )),
         GrantOutcome::Already => {}
         GrantOutcome::Missing => out.push(format!(
-            "  this client ({}) has no immediate grant on {dest} any more; \
+            "  this client ({}) has no all_paths right on {dest} any more; \
              left it that way",
             short(&o.client)
         )),
-        GrantOutcome::ImmediateOff => out.push(format!(
-            "  immediate mode is off on {dest}: only exports granted to this client are reachable"
+        GrantOutcome::AllPathsOff => out.push(format!(
+            "  allow_all_paths is off on {dest}: only exports granted to this client are reachable"
         )),
     }
     if r.dht == Dht::TurnedOff {

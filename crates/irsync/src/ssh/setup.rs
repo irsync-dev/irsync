@@ -1,6 +1,6 @@
 //! `irsync ssh-setup`: every server-side step of SSH onboarding in one
 //! command, run as the SSH user. It makes sure the daemon identity exists,
-//! grants the client immediate access, turns DHT publishing off when asked,
+//! gives the client `all_paths = "rw"`, turns DHT publishing off when asked,
 //! and gets this copy of irsync's daemon running, then reports what it did
 //! as `key=value` lines.
 //!
@@ -17,14 +17,16 @@ use anyhow::{bail, Context};
 use iroh::{EndpointId, RelayUrl};
 use std::net::SocketAddr;
 
+use crate::authz::Access;
 use crate::build::LONG_VERSION;
+use crate::config::clients::Right;
 use crate::config::file::Config;
 use crate::config::names::short_host_name;
 use crate::config::paths::Paths;
 use crate::config::settings::RelayMode;
 use crate::daemon_lock::{probe, LockInfo};
 use crate::identity::{load_or_generate, parse_endpoint_id, IdentityError, PassphraseSource};
-use crate::manage::{self, PeerSpec};
+use crate::manage;
 use irsync_proto::config as pb;
 
 use super::client::OLD_REMOTE_BIN;
@@ -54,9 +56,9 @@ pub enum GrantOutcome {
     Added,
     Already,
     /// `daemon.allow_all_paths` is off: nothing was granted.
-    ImmediateOff,
-    /// A recheck found no immediate grant for the client and did not add
-    /// one: the owner removed it.
+    AllPathsOff,
+    /// A recheck found no `all_paths = "rw"` for the client and did not set
+    /// it: the owner lowered or removed it.
     Missing,
 }
 
@@ -145,7 +147,7 @@ impl SetupReport {
                 match self.grant {
                     GrantOutcome::Added => "added",
                     GrantOutcome::Already => "already",
-                    GrantOutcome::ImmediateOff => "immediate_off",
+                    GrantOutcome::AllPathsOff => "all_paths_off",
                     GrantOutcome::Missing => "missing",
                 }
             ),
@@ -253,7 +255,7 @@ impl SetupReport {
         let grant = match get("grant")?.as_str() {
             "added" => GrantOutcome::Added,
             "already" => GrantOutcome::Already,
-            "immediate_off" => GrantOutcome::ImmediateOff,
+            "all_paths_off" => GrantOutcome::AllPathsOff,
             "missing" => GrantOutcome::Missing,
             v => return Err(bad("grant", v)),
         };
@@ -382,11 +384,10 @@ pub fn check_client_name(
 }
 
 /// Saves `client` as `[clients.name]` (unless it has a name there
-/// already) and grants that name immediate access, after
+/// already) and gives it `all_paths = "rw"`, after
 /// [`check_client_name`] on `msg` itself. False when the client was
-/// already granted, by a name or by its id; the `[clients]` entry is
-/// written all the same. The name is only ever a label: the daemon decides
-/// access by the id it stands for.
+/// already `"rw"`; the `[clients]` entry is written all the same. The name
+/// is only ever a label: the daemon decides access by the id it stands for.
 pub fn grant_client(
     msg: &mut pb::Config,
     path: &Path,
@@ -402,14 +403,16 @@ pub fn grant_client(
             name.to_string()
         }
     };
-    let resolve = |s: &str| {
-        if s == alias {
-            return Some(client);
-        }
-        clients.get(s).map(|c| c.client_id)
-    };
-    let spec = PeerSpec::Alias(alias.clone());
-    Ok(manage::grants::grant_immediate(msg, &spec, &resolve)?)
+    let c = msg
+        .clients
+        .iter()
+        .find(|c| c.name == alias)
+        .context("the client entry just found is gone")?;
+    if Right::AllPaths.get(c) == Some(Access::ReadWrite) {
+        return Ok(false);
+    }
+    manage::clients::client_set(msg, &alias, &[(Right::AllPaths, Some(Access::ReadWrite))])?;
+    Ok(true)
 }
 
 /// Does every server-side step for `client`: identity, grant, daemon.
@@ -417,7 +420,7 @@ pub fn grant_client(
 /// under; refused, before anything is changed, when it cannot be a name
 /// here or belongs to another client.
 /// With `recheck` (a client checking a saved host that did not answer) a
-/// missing immediate grant is added only when the daemon identity was just
+/// missing `all_paths` right is set only when the daemon identity was just
 /// generated, a rebuilt server; otherwise the owner removed it, and it is
 /// reported as [`GrantOutcome::Missing`] instead.
 /// With `no_dht`, `[daemon.discovery] dht` is set to `false` when it is on;
@@ -436,7 +439,7 @@ pub fn run(
 ) -> anyhow::Result<SetupReport> {
     let Config { settings, .. } = Config::load(paths)?;
 
-    // Before anything is changed: with immediate mode off nothing is
+    // Before anything is changed: with `allow_all_paths` off nothing is
     // granted and the client is not named.
     if settings.daemon.allow_all_paths {
         let msg = manage::lock_config(&paths.config)?.load()?;
@@ -517,7 +520,7 @@ pub fn run(
             }
         }
     } else {
-        GrantOutcome::ImmediateOff
+        GrantOutcome::AllPathsOff
     };
 
     // 3. DHT publishing: only ever turned off here, never back on.

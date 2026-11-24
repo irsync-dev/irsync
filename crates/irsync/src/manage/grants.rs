@@ -317,53 +317,6 @@ pub fn grant_add(
     Ok(())
 }
 
-/// Grant `who` immediate access (`[immediate].rw`). False when the peer
-/// was already granted, under either spelling.
-pub fn grant_immediate(
-    msg: &mut pb::Config,
-    who: &PeerSpec,
-    resolve: &dyn Fn(&str) -> Option<EndpointId>,
-) -> Result<bool, ManageError> {
-    let entry = grant_entry(who)?;
-    let mut lists = Lists::of_table(msg.immediate.get_or_insert_with(Default::default));
-    let id = who_id(who, resolve);
-    if lists
-        .rw
-        .iter()
-        .any(|e| entry_matches(&e.value, who, id, resolve))
-    {
-        return Ok(false);
-    }
-    lists.push(false, entry);
-    Ok(true)
-}
-
-/// Remove `who` from `[immediate].rw` (`None`: everyone); the count.
-pub fn grant_remove_immediate(
-    msg: &mut pb::Config,
-    who: Option<&PeerSpec>,
-    resolve: &dyn Fn(&str) -> Option<EndpointId>,
-) -> Result<usize, ManageError> {
-    let n = match msg.immediate.as_mut() {
-        Some(t) => {
-            let mut lists = Lists::of_table(t);
-            match who {
-                None => lists.remove_where_in(false, &|_| true),
-                Some(w) => {
-                    let id = who_id(w, resolve);
-                    lists.remove_where_in(false, &|s| entry_matches(s, w, id, resolve))
-                }
-            }
-        }
-        None => 0,
-    };
-    if n == 0 {
-        let what = who.map_or_else(|| "immediate".to_string(), PeerSpec::entry);
-        return Err(ManageError::NothingToRemove(what));
-    }
-    Ok(n)
-}
-
 /// Removes the grants of `who` (`None`: everyone) from both lists.
 fn remove_in(lists: &mut Lists, who: Option<&PeerSpec>, resolve: Resolve) -> usize {
     match who {

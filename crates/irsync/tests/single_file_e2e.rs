@@ -6,6 +6,7 @@
 mod common;
 
 use common::{irsync_bin as irsync, irsync_bin_in, spawn_daemon_binary};
+use irsync::authz::Access;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -127,7 +128,7 @@ fn names(dir: &Path) -> Vec<std::ffi::OsString> {
 fn immediate_push_of_one_file() {
     for case in ["missing", "dir", "file", "no_parent"] {
         let s = setup();
-        common::edit_immediate(&s.server, &s.client_id, true);
+        common::set_all_paths(&s.server, &s.client_id, Some(Access::ReadWrite));
         let home = s.server.canonicalize().unwrap();
         let tmp = home.join("tmp");
         fs::write(s.work.join("f.iso"), b"image").unwrap();

@@ -1014,30 +1014,26 @@ pub fn spawn_daemon_binary_env(
     }
 }
 
-/// Edits the `[immediate]` table of the config under `home` the way
-/// `irsync grant add|remove immediate` once did. The command is gone (a
-/// client's `all_paths` replaced the table); ssh setup still writes the
-/// table, and these tests need to change what it wrote.
-pub fn edit_immediate(home: &std::path::Path, id: &str, add: bool) {
-    use irsync::manage::grants::{grant_immediate, grant_remove_immediate};
-    use irsync::manage::PeerSpec;
+/// Sets (or, with `None`, removes) `all_paths` of the client with id `id`
+/// in the config under `home`, as `irsync client set` does. A client the
+/// config does not know yet is saved as `[clients.granted]` first.
+pub fn set_all_paths(home: &std::path::Path, id: &str, access: Option<irsync::authz::Access>) {
+    use irsync::config::clients::Right;
     let path = home.join(".config/irsync/irsync.toml");
     let mut lock = irsync::manage::lock_config(&path).unwrap();
     let mut msg = lock.load().unwrap();
-    let names: Vec<(String, Option<iroh::EndpointId>)> = msg
+    let id = irsync::identity::parse_endpoint_id(id).unwrap();
+    let name = match msg
         .clients
         .iter()
-        .map(|c| (c.name.clone(), irsync::manage::id_of(&c.client_id)))
-        .collect();
-    let resolve = |s: &str| names.iter().find(|(n, _)| n == s).and_then(|(_, id)| *id);
-    let spec = PeerSpec::Id {
-        id: irsync::identity::parse_endpoint_id(id).unwrap(),
-        comment: None,
+        .find(|c| irsync::manage::id_of(&c.client_id) == Some(id))
+    {
+        Some(c) => c.name.clone(),
+        None => {
+            irsync::manage::clients::client_add(&mut msg, "granted", id).unwrap();
+            "granted".to_string()
+        }
     };
-    if add {
-        grant_immediate(&mut msg, &spec, &resolve).unwrap();
-    } else {
-        grant_remove_immediate(&mut msg, Some(&spec), &resolve).unwrap();
-    }
+    irsync::manage::clients::client_set(&mut msg, &name, &[(Right::AllPaths, access)]).unwrap();
     lock.save(&mut msg).unwrap();
 }
