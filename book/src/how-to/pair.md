@@ -108,10 +108,11 @@ irsync pair myserver
 For a saved server it runs the same setup again. It never adds back an
 immediate grant you removed on the server.
 
-A sync never does this for you. When the daemon does not answer for about
+A sync never does this for you. When the daemon does not answer within
 15 seconds, the sync stops and says `myserver did not answer`. It names what
 to check on the server and the command to start the daemon again:
-`irsync pair myserver`. A daemon that answers but refuses the client is
+`irsync pair myserver`. The sync dials only once, unless you pass
+`--dial-retries N`, which tries N more times first. A daemon that answers but refuses the client is
 "fixed" by no one: that refusal is on purpose, and the sync stops with the
 "rejected this client's key" message.
 

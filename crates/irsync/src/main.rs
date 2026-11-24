@@ -34,8 +34,8 @@ use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{
-    describe_dial, explain, probe_path, run_with_reconnect, with_wrong_id_hint, ConnState,
-    NeverReached, ReconnectOpts,
+    describe_dial, explain, never_reached, probe_path, run_with_reconnect, ConnState, NeverReached,
+    ReconnectOpts, PAIRED_FIRST_DIAL,
 };
 use irsync::session::single::{
     is_one_component, place_file, source_is_single, split_last, PlaceError,
@@ -541,6 +541,22 @@ struct Connected {
     opts: SyncOptions,
 }
 
+impl Connected {
+    /// The name of a server `irsync pair` saved (one with an `ssh` value).
+    fn paired(&self) -> Option<&str> {
+        self.host_entry
+            .as_ref()
+            .filter(|h| h.ssh.is_some())
+            .and(self.alias.as_deref())
+    }
+
+    /// The bound on each dial before the daemon has answered: see
+    /// [`PAIRED_FIRST_DIAL`] for a paired server, else iroh's own.
+    fn first_dial(&self) -> Option<std::time::Duration> {
+        first_dial_limit(self.paired().map(|_| PAIRED_FIRST_DIAL))
+    }
+}
+
 /// Resolves `host`, the direct addresses, the client identity and the
 /// endpoint, the same way for a sync and for a listing.
 async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow::Result<Connected> {
@@ -875,8 +891,7 @@ async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
     };
     let client = c.endpoint.id();
     let dial = c.endpoint.connect(c.target.clone(), irsync_proto::ALPN);
-    // No limit of its own, except in a test (see `first_dial_limit`).
-    let dialled = match first_dial_limit(None) {
+    let dialled = match c.first_dial() {
         Some(limit) => match tokio::time::timeout(limit, dial).await {
             Ok(r) => r.map_err(|e| describe_dial(&c.target.id, &e)),
             Err(_) => Err(format!(
@@ -887,19 +902,7 @@ async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
         },
         None => dial.await.map_err(|e| describe_dial(&c.target.id, &e)),
     };
-    let conn = dialled.map_err(|msg| {
-        let err = anyhow::anyhow!(msg);
-        // A host set up over ssh is not one whose ID was copied by hand.
-        match (c.host_entry.as_ref().and_then(|h| h.ssh.as_ref()), &c.alias) {
-            (Some(_), Some(alias)) => {
-                anyhow::anyhow!(
-                    "{err:#}; {}",
-                    irsync::session::reconnect::not_answering(alias)
-                )
-            }
-            _ => with_wrong_id_hint(err),
-        }
-    })?;
+    let conn = dialled.map_err(|msg| never_reached(anyhow::anyhow!(msg), c.paired()))?;
     irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
     irsync::session::reconnect::check_pq_key_exchange(
         &conn,
@@ -1014,13 +1017,18 @@ async fn sync(
                 .or(host_entry.and_then(|h| h.reconnect))
                 .or(settings.client.reconnect)
                 .unwrap_or(ReconnectOpts::default().max),
-            dial_retries: opts
-                .dial_retries
-                .or(host_entry.and_then(|h| h.dial_retries))
-                .or(settings.client.dial_retries)
-                .unwrap_or(ReconnectOpts::default().dial_retries),
+            // A paired server is dialled once (see `PAIRED_FIRST_DIAL`), unless
+            // the command line asks for retries.
+            dial_retries: match conn.paired() {
+                Some(_) => opts.dial_retries.unwrap_or(0),
+                None => opts
+                    .dial_retries
+                    .or(host_entry.and_then(|h| h.dial_retries))
+                    .or(settings.client.dial_retries)
+                    .unwrap_or(ReconnectOpts::default().dial_retries),
+            },
             source_index: index,
-            first_dial_timeout: first_dial_limit(None),
+            first_dial_timeout: conn.first_dial(),
             require_pq: pq_required(opts, host_entry, settings),
             ..ReconnectOpts::default()
         };
@@ -1057,20 +1065,10 @@ async fn sync(
                 .await
             }
             .await;
-            // A host that was never reached: a saved host set up over ssh
-            // is told how to start its daemon again; a refusal is final.
+            // A server that was never reached (a refusal is final).
             match res {
                 Err(e) if e.downcast_ref::<NeverReached>().is_some() => {
-                    match (
-                        conn.host_entry.as_ref().and_then(|h| h.ssh.as_ref()),
-                        &conn.alias,
-                    ) {
-                        (Some(_), Some(alias)) => Err(anyhow::anyhow!(
-                            "{e:#}; {}",
-                            irsync::session::reconnect::not_answering(alias)
-                        )),
-                        _ => Err(with_wrong_id_hint(e)),
-                    }
+                    Err(never_reached(e, conn.paired()))
                 }
                 res => res,
             }

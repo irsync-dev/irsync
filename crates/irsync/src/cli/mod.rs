@@ -981,7 +981,7 @@ pub struct SyncArgs {
     /// How often to retry a server that has not answered yet, with growing
     /// waits (1s, 2s, 4s, ...), before giving up; 0 gives up on the first
     /// failure (default: `dial_retries` from the host entry or the client
-    /// settings, else 4).
+    /// settings, else 4; 0 for a server `irsync pair` saved).
     #[arg(long, value_name = "N")]
     pub dial_retries: Option<u32>,
     /// Use this relay server instead of the host entry's, the client

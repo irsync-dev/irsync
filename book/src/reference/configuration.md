@@ -179,7 +179,7 @@ built-in default.
 | --- | --- | --- |
 | `parallel` | `128` | Data streams a push keeps open at once. Flag: `--parallel`. |
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
-| `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. Flag: `--dial-retries`. |
+| `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. Not used for a server `irsync pair` saved: that is dialled once, unless `--dial-retries` is given. Flag: `--dial-retries`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
 | `ssh_install` | `true` | Copy irsync to the server when `irsync pair` sets it up. `false` copies nothing: `pair` uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
 | `mdns` | `true` | Look daemons up with mDNS on the local network. |
@@ -231,7 +231,7 @@ an `EndpointId`.
 | `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. Cannot be combined with `--relay`. |
 | `parallel` | `[client]`'s | Data streams a push to this server keeps open at once. |
 | `reconnect` | `[client]`'s | How long to keep redialling. |
-| `dial_retries` | `[client]`'s | How often to retry this server before it has answered. |
+| `dial_retries` | `[client]`'s | How often to retry this server before it has answered. Not used when the server has `ssh`: see `--dial-retries`. |
 | `dht` | `[client]`'s | Look this server up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this server up with mDNS. |
 | `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. It is what `irsync pair` logs in to. A sync never uses it, except to find the server when you type that address. `irsync pair` for a saved server checks it again, and never adds back an immediate grant that was removed on the server. |

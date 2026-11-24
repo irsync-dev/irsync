@@ -131,7 +131,7 @@ This is rsync's command line, with `irsync` in place of `rsync`. `irsync list my
 `irsync pair` sets the server up over SSH: it installs irsync there
 (with fileset and the manual pages), gives this client's key access, starts the daemon as a user service and saves `myserver` as a server. It prints what it did.
 Only `pair` uses SSH. Syncs connect over iroh directly. If the daemon stops
-answering, a sync waits about 15 seconds, then stops and says what to check.
+answering, a sync waits 15 seconds, then stops and says what to check.
 `irsync pair myserver` starts it again.
 
 Without SSH, set the server up by hand:

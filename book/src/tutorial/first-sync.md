@@ -90,7 +90,7 @@ rsync. Add `-P` to see a live block at the bottom of the screen that shows
 the transfer as it runs.
 
 Syncs use the saved server and never touch ssh. If the daemon has stopped, a sync
-waits about 15 seconds for an answer, then stops and says
+waits 15 seconds for an answer, then stops and says
 `myserver did not answer`. It names what to check on the server. To start the
 daemon again, run `irsync pair myserver`. A sync to a name irsync does not
 know stops too, and tells you to run `irsync pair`.

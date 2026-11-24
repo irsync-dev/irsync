@@ -42,16 +42,19 @@ Then check that `irsync daemon` is running on the server.
 
 ## A server paired with irsync pair did not answer
 
+The sync's error ends like this, after what it tried:
+
 ```text
-irsync: myserver did not answer. On myserver, check that the daemon is running: systemctl --user status irsync (Linux) or launchctl print gui/$(id -u)/org.irsync.daemon (macOS). Its log: journalctl --user -u irsync, or ~/.local/state/irsync/daemon.log for a daemon started in the background. To start it again from here: irsync pair myserver
+irsync: ...; myserver did not answer. On myserver, check that the daemon is running: systemctl --user status irsync (Linux) or launchctl list org.irsync.daemon (macOS). Its log: journalctl --user -u irsync for a systemd service, else ~/.local/state/irsync/daemon.log. To start it again from here: irsync pair myserver
 ```
 
 **Cause.** The daemon is not running or cannot be reached. A sync never uses
 ssh, so it cannot start the daemon for you.
 
 **Fix.** Do what the message says. On the server, check the service. Its log is
-in `journalctl --user -u irsync` when a service runs the daemon, and in
-`~/.local/state/irsync/daemon.log` when `pair` started it in the background.
+in `journalctl --user -u irsync` when a systemd service runs the daemon, and
+in `~/.local/state/irsync/daemon.log` for the launchd agent on macOS and when
+`pair` started it in the background.
 A background daemon does not survive a reboot. To start the daemon again from
 the client, run:
 

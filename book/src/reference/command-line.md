@@ -147,10 +147,11 @@ is left alone. With no service manager, a foreign service file or
 For a saved server, `pair` checks it again: it updates irsync, starts the
 daemon if it has stopped and updates the server's `endpoint_id` if it
 changed. It never adds back an immediate grant removed on the server. A sync
-to a saved server dials once and waits at most 15
-seconds (`--dial-retries` sets how often it retries first). When the daemon
-does not answer, the sync stops and names `irsync pair` as the way to start it
-again. See [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
+to a server `pair` saved dials once and waits at most 15 seconds for the
+daemon to answer. It retries only when you give `--dial-retries N` on the
+command line: then it tries N more times first. When the daemon does not
+answer, the sync stops and names `irsync pair` as the way to start it again.
+See [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
 
 | Flag | Meaning |
 | --- | --- |
@@ -295,7 +296,7 @@ These have no rsync counterpart.
 | --- | --- |
 | `--parallel N` | Data streams a push keeps open at once, across all files. Default: `parallel` from the server entry, else from `[client]`, else 128. A pull uses the daemon's 128. See [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams). |
 | `--reconnect DUR` | How long to keep redialling after a dropped connection, as `N[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the server entry, else from `[client]`, else 24h. This window applies only once the server has answered; before that, `--dial-retries` applies. |
-| `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[client]`, else 4. |
+| `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[client]`, else 4. For a server `irsync pair` saved (one with `ssh`), the default is 0 and only this flag changes it; each try there waits at most 15 seconds. |
 | `--relay URL` | Use this relay server instead of the server entry's, `[client]`'s or n0's default. Cannot be combined with `--no-relay` or `--address`. |
 | `--no-relay` | Direct connections only: never fall back to a relay. The address lookups stay on. Default: `relay_mode` from the server entry, else from `[client]`. |
 | `--pq-key-exchange prefer\|require` | `require`: refuse a daemon that does not offer the post-quantum key exchange, such as an older irsync; nothing is sent to it. `prefer`: use that key exchange when the daemon offers it. Default: `pq_key_exchange` from the server entry, else from `[client]`, else `prefer`. See [Post-quantum key exchange](configuration.md#post-quantum-key-exchange). |
