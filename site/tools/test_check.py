@@ -61,6 +61,32 @@ class LinkTests(TmpCase):
         problems = check_links(self.d)
         self.assertEqual(problems, ["a.html: c: no such file"])
 
+    def test_links_to_the_two_sites_are_checked_against_the_build(self):
+        write(self.d, "index.html",
+              '<a href="https://irsync.org/book/b#here">b</a>'
+              '<a href="https://irsync.org/">home</a>'
+              '<a href="https://dev.irsync.org/dev/c">c</a>'
+              '<a href="https://irsync.org/book/gone">gone</a>'
+              '<a href="https://dev.irsync.org/dev/c#gone">no id</a>')
+        write(self.d, "book/b.html", '<h1 id="here">b</h1>')
+        write(self.d, "dev/c.html", "<p>c</p>")
+        problems = check_links(self.d)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("https://irsync.org/book/gone: no such file", problems[0])
+        self.assertIn("no id #gone", problems[1])
+
+    def test_dev_book_is_only_on_dev_irsync_org(self):
+        # The promote leaves dev/ out of irsync.org.
+        write(self.d, "index.html",
+              '<a href="https://irsync.org/dev/c">abs</a><a href="dev/c">rel</a>')
+        write(self.d, "book/b.html", '<a href="../dev/c">rel</a>')
+        write(self.d, "dev/c.html", '<a href="../dev/c">self</a><a href="../book/b">book</a>')
+        problems = check_links(self.d)
+        self.assertEqual(len(problems), 3, problems)
+        self.assertIn("book/b.html: ../dev/c: dev/ is only on dev.irsync.org", problems[0])
+        self.assertIn("index.html: https://irsync.org/dev/c: irsync.org has no /dev/", problems[1])
+        self.assertIn("index.html: dev/c: dev/ is only on dev.irsync.org", problems[2])
+
     def test_html_addresses_are_reported(self):
         write(self.d, "a.html", '<a href="b.html">b</a><a href="b">b</a>'
                                 '<a href="https://x.org/b.html">x</a>')

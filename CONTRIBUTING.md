@@ -1,7 +1,7 @@
 # Contributing to irsync
 
 Thanks for helping. The full guide is in the book, under
-[Contributing](https://irsync.org/dev/contributing/setup). This page is
+[Contributing](https://dev.irsync.org/dev/contributing/setup). This page is
 the short version.
 
 ## Report a bug
@@ -25,7 +25,7 @@ git config core.hooksPath .githooks   # checks formatting before each push
 
 Some tests compare irsync with rsync and need GNU rsync 3.1 or newer on your
 `PATH`. On macOS, install it with `brew install rsync`. See
-[Requirements](https://irsync.org/dev/contributing/setup#requirements).
+[Requirements](https://dev.irsync.org/dev/contributing/setup#requirements).
 
 ## Before you open a pull request
 
@@ -44,7 +44,7 @@ cargo test -q --workspace --all-features --no-fail-fast
 ```
 
 More on the tests, the stress tools and the design records is in
-[Testing](https://irsync.org/dev/contributing/testing) and the other
+[Testing](https://dev.irsync.org/dev/contributing/testing) and the other
 Contributing pages of the book.
 
 ## License

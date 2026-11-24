@@ -15,13 +15,14 @@ root=$(cd "$(dirname "$0")/.." && pwd -P)
 port=${1:-9999}
 cd "$root"
 
-site/build.sh
+# --local: the version switcher links to the books here, not on irsync.org.
+site/build.sh --local
 
 # The build writes site/tokens.css and book/theme/tokens.css and may
 # refresh site/node_modules; watching them would rebuild forever.
 npx -y "chokidar-cli@$CHOKIDAR_VERSION" 'book/**' 'site/**' \
   -i '{site/tokens.css,book/theme/tokens.css,**/__pycache__/**,site/node_modules/**}' \
-  -c site/build.sh &
+  -c 'site/build.sh --local' &
 
 npx -y "browser-sync@$BROWSER_SYNC_VERSION" start --server target/site \
   --extensions html --port "$port" --files target/site --no-notify --no-ui --no-open &

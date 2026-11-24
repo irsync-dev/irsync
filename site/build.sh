@@ -2,10 +2,20 @@
 # Build the site: the landing page at /, and the book once per release
 # channel: /book/ (the main version), /stable/, /beta/, /alpha/ and /dev/
 # (this working tree). See "The books" in book/src/contributing/website.md.
-# Usage: site/build.sh [OUT]   (default: target/site)
+# Usage: site/build.sh [--local] [OUT]   (default: target/site)
+#
+# The version switcher links each book on the site that serves it: Dev on
+# dev.irsync.org, the others on irsync.org (site/tools/switcher.py). With
+# --local, for site/serve.sh, it links inside the build instead; site/tools/
+# check.py refuses such a build, so do not deploy one.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
+local_links=
+if [ "${1:-}" = --local ]; then
+  local_links=--local
+  shift
+fi
 out=${1:-"$root/target/site"}
 
 # OUT is emptied below, so it must be a directory under target/.
@@ -91,7 +101,8 @@ python3 "$root/site/tools/versions.py" render "$root" "$root/site/index.html" "$
 # The version switcher in every book's top bar and on the landing page. It
 # needs every book built: each link goes to the same page in the other book
 # if that book has it. The landing page opens it with the books' script.
-python3 "$root/site/tools/switcher.py" "$out"
+# shellcheck disable=SC2086 # empty, or the one word --local
+python3 "$root/site/tools/switcher.py" $local_links "$out"
 cp "$root/book/theme/switcher.js" "$out/"
 
 # Its stylesheet: Tailwind CSS and daisyUI, at the versions pinned in

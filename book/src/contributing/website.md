@@ -2,7 +2,10 @@
 
 irsync.org has two parts, built from this repository into one directory: a
 landing page at `/` and this book. The book is there several times, once
-per release channel: see [The books](#the-books).
+per release channel: see [The books](#the-books). The book as on `main`
+lives on [dev.irsync.org/dev/](https://dev.irsync.org/dev/), which is
+deployed on every push; irsync.org holds the releases and changes only when
+someone promotes.
 
 ## Layout
 
@@ -134,6 +137,12 @@ reads the documentation of that release:
 | `/alpha/` | The newest alpha |
 | `/dev/` | The working tree: `main` on the site, your edits when you build locally |
 
+The build holds all five, and dev.irsync.org serves them all. irsync.org
+serves all but `/dev/`: the promote leaves it out. So the dev book is
+always `https://dev.irsync.org/dev/`, up to date with `main` within
+minutes of a push, and irsync.org changes only when someone promotes, at a
+release or for a change to the landing page.
+
 A channel's book is there whenever the channel has a version, also when the
 landing page hides that version as obsolete. A channel with no version has
 no directory. `/book/` is a full copy of its channel's book, not a
@@ -162,8 +171,11 @@ channel (`Beta`), which opens the list of the books, Stable, Beta and Alpha
 with their versions (those that exist), then Dev. `/book/` is not in the
 list; there, the channel it copies is ticked. Each link is written for the
 page it is on: the same page in the other book if that book has it, else
-that book's title page. So `check.py` checks every one of them, like any
-other link. `book/theme/switcher.js` only opens and closes the list, and
+that book's title page. Each names the site that serves its book: Stable,
+Beta and Alpha link to `https://irsync.org/…`, Dev to
+`https://dev.irsync.org/dev/…`, from either site. So the dev book always
+opens on dev.irsync.org, and a release book on irsync.org. `check.py`
+checks every one of these links against the build, like any other link. `book/theme/switcher.js` only opens and closes the list, and
 keeps the `#anchor` when the link stays on the same page. A plain
 `mdbook build book` or `mdbook serve book` has no switcher.
 
@@ -192,11 +204,14 @@ branch that was built, `main` on staging.
 
 The landing page is built from `main`, and `/book/` from a release. Link
 to `book/…` as before. If the released book does not have the page or the
-heading yet, the checker fails and names the link. Then link to `dev/…`
-until the release has it, or wait for the release.
+heading yet, the checker fails and names the link. Then link to
+`https://dev.irsync.org/dev/…` until the release has it, or wait for the
+release. Never link to `dev/…` from outside the dev book: irsync.org has
+no `/dev/`, and the checker refuses such a link.
 
-The contributor guide is linked at `dev/`, from the landing page's footer
-and from `CONTRIBUTING.md`: contributors work on `main`.
+The contributor guide is linked at `https://dev.irsync.org/dev/`, from the
+landing page's footer and from `CONTRIBUTING.md`: contributors work on
+`main`.
 
 ## Building
 
@@ -307,9 +322,12 @@ It enforces five things:
 
 - **Links and anchors.** Every relative `href` and `src` in the built HTML
   resolves to a file (`x` to `x.html`, as Cloudflare serves it), and every
-  `#fragment` to an `id` on the target page.
-  External links are not fetched. This covers the landing page and all
-  five books.
+  `#fragment` to an `id` on the target page. A link to
+  `https://irsync.org/…` or `https://dev.irsync.org/…` is checked the same
+  way, against the build: both sites serve it. Because irsync.org has no
+  `/dev/`, a link to `https://irsync.org/dev/…` is refused, and so is a
+  relative link into `dev/` from a page outside it. Other external links
+  are not fetched. This covers the landing page and all five books.
 - **No `.html` addresses.** No link inside the built site ends in `.html`
   (see [Addresses without `.html`](#addresses-without-html)).
 - **No fonts but the site's own.** No font file and no `fonts/` directory
@@ -336,7 +354,7 @@ It enforces five things:
 site/serve.sh
 ```
 
-It builds the site, serves `target/site/` at `http://localhost:9999/` and
+It builds the site with `site/build.sh --local`, serves `target/site/` at `http://localhost:9999/` and
 rebuilds whenever a file under `book/` or `site/` changes; open pages reload
 on their own. `site/serve.sh PORT` serves on another port. It needs Node.js:
 it runs `chokidar-cli` (the watcher) and `browser-sync` (the server) through
@@ -345,6 +363,12 @@ it runs `chokidar-cli` (the watcher) and `browser-sync` (the server) through
 The local server ignores `_headers`; the headers apply on Cloudflare only.
 Like Cloudflare, it serves `x.html` at `x` (browser-sync's `--extensions
 html`).
+
+`--local` makes the version switcher link to the books in the build
+instead of on irsync.org and dev.irsync.org, so you can move between
+your local books. The checker refuses such a build, because its links
+into `dev/` would break on irsync.org; never deploy one. The landing
+page's "Contributor guide" link still goes to dev.irsync.org.
 
 ## Staging and production
 
@@ -357,7 +381,9 @@ code. Both are deployed with the settings in `site/wrangler.jsonc`:
 | `irsync-pub` | [irsync.org](https://irsync.org/) | Production. Changes only when a staging build is promoted. |
 
 Promotion ships the files staging served: the staging build's output is
-kept and uploaded to `irsync-pub` unchanged, nothing is rebuilt. Each build
+kept and uploaded to `irsync-pub` unchanged, nothing is rebuilt, except
+that `dev/` is left out. The dev book is served from dev.irsync.org only
+(see [The books](#the-books)). Each build
 carries a `BUILD` file at its root holding the commit it was built from, so
 `https://irsync.org/BUILD` and `https://dev.irsync.org/BUILD` show what each
 one serves.
@@ -421,13 +447,19 @@ It takes the newest push run on `main` and stops if that run is still going
 or failed: it does not fall back to the run before it. It downloads that
 run's `site` artifact, refuses it if it holds a version that is not
 published (see [Promoting to irsync.org](#promoting-to-irsyncorg)),
-deploys it to `irsync-pub` and writes its `BUILD` to the job summary.
+deletes its `dev/`, deploys the rest to `irsync-pub` and writes its
+`BUILD` to the job summary.
 
 The repository secrets `CLOUDFLARE_API_TOKEN_DEV`, `CLOUDFLARE_API_TOKEN_PUB`
 and `CLOUDFLARE_ACCOUNT_ID` hold the credentials; each deploy step sees only
 its own Worker's token.
 
 ### Promoting to irsync.org
+
+Promote when a release is published, so that irsync.org's books and the
+landing page's versions show it, and after a change to the landing page.
+Nothing else needs it: the dev book is on dev.irsync.org, which every push
+updates.
 
 Look over [dev.irsync.org](https://dev.irsync.org/) first, then start the
 `promote` job, either in the browser (Actions, Site, Run workflow) or with:
@@ -450,6 +482,7 @@ answers an unknown URL with a 404, and is not marked `noindex`:
 curl https://irsync.org/BUILD                    # the same commit as the next line
 curl https://dev.irsync.org/BUILD
 curl -sI https://irsync.org/nope | head -1       # HTTP/2 404
+curl -sI https://irsync.org/dev/ | head -1       # HTTP/2 404: the dev book is on dev.irsync.org
 curl -sI https://irsync.org/ | grep -i x-robots  # prints nothing
 ```
 
@@ -528,7 +561,7 @@ builds irsync (`cargo build -p irsync`), runs the tool tests and the checker,
 and refuses to deploy when either fails. Then it deploys to `irsync-dev` and
 copies the build to `target/site-staging/`.
 
-`promote` deploys `target/site-staging/` to `irsync-pub` and prints its
+`promote` deploys `target/site-staging/`, less its `dev/`, to `irsync-pub` and prints its
 `BUILD`. Like the job, it refuses a build that holds a version which is not
 published; `site/deploy.sh promote --allow-unpublished` skips that. It
 refuses without a `target/site-staging/BUILD`, and when that
@@ -564,7 +597,16 @@ hosts; `_headers` marks those `noindex` too, in case one is turned on.
 Of the five books only `/book/` is indexed. `/stable/`, `/beta/`,
 `/alpha/` and `/dev/` carry `X-Robots-Tag: noindex` on every host: each is
 a copy of `/book/`, an older channel or unreleased, and must not outrank
-it in a search.
+it in a search. `/dev/` is on dev.irsync.org only, which is `noindex` as a
+whole anyway; so the contributor guide is not in search results.
+
+| Site | Path | Indexed |
+| --- | --- | --- |
+| irsync.org | `/` (landing page) and the files next to it | yes |
+| irsync.org | `/book/` | yes |
+| irsync.org | `/stable/`, `/beta/`, `/alpha/` | no |
+| irsync.org | `/dev/` | not served (404) |
+| dev.irsync.org | everything, `/dev/` included | no |
 
 There is no staging-only `robots.txt`. Promotion uploads staging's files
 unchanged, and identical files cannot carry a different `robots.txt` per
