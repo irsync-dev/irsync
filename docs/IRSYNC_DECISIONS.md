@@ -309,7 +309,7 @@ cross-referenced from commit messages and review notes.
   list to its finalize, while the sender streams only 32 files at a time,
   so thousands of descriptors were held and a receiver under the common
   soft limit of 1024 failed files with `EMFILE`. The process now raises its
-  soft `RLIMIT_NOFILE` to the hard limit at startup (`fs::rlimit`), and the
+  soft `RLIMIT_NOFILE` to the hard limit at startup (`platform::raise_handle_limit`), and the
   window is the smaller of 4096 and what the limit leaves after a reserve
   of 256, at two descriptors per file (`planner::inflight_for_limit`).
   Also, a fresh `.part` (nothing to adopt, nothing to clone) is created
