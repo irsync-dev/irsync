@@ -2112,6 +2112,7 @@ dependencies = [
  "iroh-mdns-address-lookup",
  "irsync-glob",
  "irsync-proto",
+ "jiff",
  "jwalk",
  "metrics",
  "metrics-exporter-prometheus",

@@ -47,11 +47,11 @@ use windows_sys::Wdk::Storage::FileSystem::{
 use windows_sys::Wdk::System::SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION;
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_CANT_RESOLVE_FILENAME, ERROR_DELETE_PENDING,
-    ERROR_DIRECTORY, ERROR_DIRECTORY_NOT_SUPPORTED, ERROR_DIR_NOT_EMPTY, ERROR_FILE_EXISTS,
-    ERROR_FILE_NOT_FOUND, ERROR_INVALID_FUNCTION, ERROR_LOCK_VIOLATION, ERROR_NOT_A_REPARSE_POINT,
-    ERROR_NOT_SAME_DEVICE, ERROR_NOT_SUPPORTED, ERROR_NO_SYSTEM_RESOURCES, ERROR_PATH_NOT_FOUND,
-    ERROR_REPARSE_POINT_ENCOUNTERED, ERROR_SHARING_VIOLATION, ERROR_STOPPED_ON_SYMLINK,
-    ERROR_TOO_MANY_OPEN_FILES,
+    ERROR_DIRECTORY, ERROR_DIRECTORY_NOT_SUPPORTED, ERROR_DIR_NOT_EMPTY, ERROR_DISK_FULL,
+    ERROR_FILE_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_INVALID_FUNCTION, ERROR_LOCK_VIOLATION,
+    ERROR_NOT_A_REPARSE_POINT, ERROR_NOT_SAME_DEVICE, ERROR_NOT_SUPPORTED,
+    ERROR_NO_SYSTEM_RESOURCES, ERROR_PATH_NOT_FOUND, ERROR_REPARSE_POINT_ENCOUNTERED,
+    ERROR_SHARING_VIOLATION, ERROR_STOPPED_ON_SYMLINK, ERROR_TOO_MANY_OPEN_FILES,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -648,8 +648,17 @@ impl Dir {
 /// [`Cause::LinkRefused`] for a directory link), so what opens is a
 /// regular file.
 pub fn open_read_nofollow(path: &Path) -> io::Result<File> {
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    open_nofollow(options, path)
+}
+
+/// Opens `path` as `options` say (std's default sharing: read, write and
+/// delete), as [`open_read_nofollow`] does: a final link is opened itself
+/// and refused, a directory refused, links before it followed. `options`
+/// must not truncate: a truncating open of a link would change the link.
+fn open_nofollow(mut options: std::fs::OpenOptions, path: &Path) -> io::Result<File> {
+    let file = match options
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
     {
@@ -774,6 +783,30 @@ pub fn lstat(path: &Path) -> io::Result<Stat> {
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
     stat_of(file.as_handle())
+}
+
+/// What the open `file` is: [`fstat`], read by handle (`std::fs::Metadata`
+/// has no file index, volume serial, change time or link count on Windows).
+pub fn file_metadata(file: &File) -> io::Result<Stat> {
+    fstat(file)
+}
+
+/// What is at `path`, a final link described, not followed: [`lstat`].
+pub fn symlink_metadata(path: &Path) -> io::Result<Stat> {
+    lstat(path)
+}
+
+/// The modification time of the file `m` describes, `(seconds,
+/// nanoseconds)`, as [`Stat::mtime`] gives it: the same `LastWriteTime`.
+pub fn mtime_of(m: &std::fs::Metadata) -> (i64, u32) {
+    use std::os::windows::fs::MetadataExt;
+    // A file time is below `i64::MAX` steps (year 30828).
+    unix_time(m.last_write_time() as i64)
+}
+
+/// The mode of the file `m` describes: always 0, Windows has none.
+pub fn mode_of(_m: &std::fs::Metadata) -> u32 {
+    0
 }
 
 /// Reads at `offset`. Never relies on the file's position, but on Windows
@@ -1052,6 +1085,208 @@ fn parse_reparse(b: &[u8]) -> io::Result<Vec<u16>> {
         substitute
     })
 }
+
+// ---------------------------------------------------------------------------
+// Errors that no `Cause` names, and links by path.
+
+/// Whether `e` is a momentary shortage worth waiting out that no [`Cause`]
+/// names. None is known on Windows: running out of handles is
+/// [`Cause::OutOfHandles`] already.
+pub fn is_transient_extra(_e: &io::Error) -> bool {
+    false
+}
+
+/// The error a write gets on a full disk (`ERROR_DISK_FULL`), for a test
+/// that makes one fail as if it had.
+pub fn no_space_error() -> io::Error {
+    io::Error::from_raw_os_error(ERROR_DISK_FULL as i32)
+}
+
+/// Makes `link` a symlink to `target`, both paths the caller trusts: a
+/// directory symlink if `target` (from `link`'s directory) is a directory
+/// now, else a file symlink. Needs the symlink privilege or Developer Mode.
+pub fn symlink_path(target: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
+    let (target, link) = (target.as_ref(), link.as_ref());
+    let base = link.parent().unwrap_or(Path::new("."));
+    if base.join(target).is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Metadata setters by open file and by path. Windows keeps only the
+// modification time: a mode or an owner cannot be set (`Unsupported`, as
+// [`Dir::set_mode`]), except where a caller only means "as a new file has
+// it" and must not fail (said at each).
+
+/// Sets `LastWriteTime` of the open `h` (which needs
+/// `FILE_WRITE_ATTRIBUTES`), as [`Dir::set_mtime`] does.
+fn set_mtime_handle(h: BorrowedHandle<'_>, mtime: (i64, u32)) -> io::Result<()> {
+    native::set(
+        h,
+        &FILE_BASIC_INFORMATION {
+            LastWriteTime: file_time(mtime)?,
+            ..Default::default()
+        },
+    )
+}
+
+/// Sets the modification time of the open `file`, as [`Dir::set_mtime`]
+/// does.
+pub fn set_mtime_file(file: &File, mtime: (i64, u32)) -> io::Result<()> {
+    set_mtime_handle(file.as_handle(), mtime)
+}
+
+/// [`Dir::set_mtime`] of a path the caller trusts; a final link's own
+/// time is set.
+pub fn set_mtime_path(path: &Path, mtime: (i64, u32)) -> io::Result<()> {
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+        .share_mode(SHARE_ALL)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    set_mtime_handle(file.as_handle(), mtime)
+}
+
+/// Not on Windows ([`Cause::NotSupported`]).
+pub fn set_mode_file(_file: &File, _mode: u32) -> io::Result<()> {
+    Err(unsupported("a file mode"))
+}
+
+/// Not on Windows ([`Cause::NotSupported`]).
+pub fn set_owner_file(_file: &File, _uid: Option<u32>, _gid: Option<u32>) -> io::Result<()> {
+    Err(unsupported("a Unix owner"))
+}
+
+/// Not on Windows ([`Cause::NotSupported`]).
+pub fn set_mode_path(_path: &Path, _mode: u32) -> io::Result<()> {
+    Err(unsupported("a file mode"))
+}
+
+/// Not on Windows ([`Cause::NotSupported`]).
+pub fn set_owner_path(_path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> io::Result<()> {
+    Err(unsupported("a Unix owner"))
+}
+
+/// Not on Windows ([`Cause::NotSupported`]).
+pub fn make_device_path(_path: &Path, _kind: Kind, _mode: u32, _rdev: u64) -> io::Result<()> {
+    Err(unsupported("a device node"))
+}
+
+/// Not on Windows ([`Cause::NotSupported`]); the one caller, which makes
+/// its own `.part` writable again after a failed finalize, takes that as
+/// "could not".
+pub fn make_owner_writable(_file: &File) -> io::Result<()> {
+    Err(unsupported("a file mode"))
+}
+
+/// Does nothing on Windows: a file keeps the access its directory gives
+/// it. The callers give a file the mode a new file has, or keep it private,
+/// and must not fail for it.
+pub fn set_permissions_file(_file: &File, _mode: u32) -> io::Result<()> {
+    Ok(())
+}
+
+/// Does nothing on Windows: a file keeps the access its directory gives
+/// it. The caller makes a directory of irsync's own state private, inside
+/// the user's profile, and must not fail for it.
+pub fn set_mode_path_following(_path: &Path, _mode: u32) -> io::Result<()> {
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Process identity, user and group names: Windows has no Unix ids. The
+// process is never root, its ids are 0 and no name has an id.
+
+/// The process's umask: none on Windows.
+pub fn umask() -> u32 {
+    0
+}
+
+/// No Unix user id on Windows: 0.
+pub fn euid() -> u32 {
+    0
+}
+
+/// No Unix group id on Windows: 0.
+pub fn egid() -> u32 {
+    0
+}
+
+/// Never on Windows.
+pub fn is_root() -> bool {
+    false
+}
+
+/// No Unix groups on Windows.
+pub fn supplementary_groups() -> Vec<u32> {
+    Vec::new()
+}
+
+/// No Unix groups on Windows.
+pub fn groups() -> Vec<u32> {
+    Vec::new()
+}
+
+/// No Unix user names on Windows.
+pub fn user_name(_uid: u32) -> Option<String> {
+    None
+}
+
+/// No Unix group names on Windows.
+pub fn group_name(_gid: u32) -> Option<String> {
+    None
+}
+
+/// No Unix user ids on Windows.
+pub fn user_id(_name: &str) -> Option<u32> {
+    None
+}
+
+/// No Unix group ids on Windows.
+pub fn group_id(_name: &str) -> Option<u32> {
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Time.
+
+/// `secs` since the epoch as local time, `YYYY-MM-DD HH:MM:SS`, as on
+/// Unix; `@secs` when it cannot be converted. The time zone is the
+/// system's, as `jiff` reads it.
+pub fn local_time(secs: i64) -> String {
+    let Ok(t) = jiff::Timestamp::from_second(secs) else {
+        return format!("@{secs}");
+    };
+    let z = t.to_zoned_datetime(jiff::tz::TimeZone::system());
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        z.year(),
+        z.month(),
+        z.day(),
+        z.hour(),
+        z.minute(),
+        z.second()
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Private files (`private.rs`); limits, process usage, the host name and
+// signals (`process.rs`); reflink clones, which Windows does not make
+// (`clone.rs`); a daemon started in the background, not yet on Windows
+// (`daemonize.rs`).
+
+mod private;
+pub use private::*;
+
+mod process;
+pub use process::*;
+
+pub mod clone;
+
+pub mod daemonize;
 
 // ---------------------------------------------------------------------------
 // Test helpers.
