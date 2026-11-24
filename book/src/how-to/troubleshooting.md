@@ -40,15 +40,51 @@ irsync server add myserver <daemon-id>
 
 Then check that `irsync daemon` is running on the server.
 
-## ssh setup stops: the server runs another OS or CPU
+## A server paired with irsync pair did not answer
 
 ```text
-irsync: myserver is not a saved server; setting it up over ssh
+irsync: myserver did not answer. On myserver, check that the daemon is running: systemctl --user status irsync (Linux) or launchctl print gui/$(id -u)/org.irsync.daemon (macOS). Its log: journalctl --user -u irsync, or ~/.local/state/irsync/daemon.log for a daemon started in the background. To start it again from here: irsync pair myserver
+```
+
+**Cause.** The daemon is not running or cannot be reached. A sync never uses
+ssh, so it cannot start the daemon for you.
+
+**Fix.** Do what the message says. On the server, check the service. Its log is
+in `journalctl --user -u irsync` when a service runs the daemon, and in
+`~/.local/state/irsync/daemon.log` when `pair` started it in the background.
+A background daemon does not survive a reboot. To start the daemon again from
+the client, run:
+
+```sh
+irsync pair myserver
+```
+
+On a Mac, the agent starts after a reboot only once someone logs in there.
+
+## A sync names a server irsync does not know
+
+```text
+irsync: myserver is not a saved server or an EndpointId (saved servers are in ~/.config/irsync/irsync.toml). To set it up over ssh: irsync pair myserver. To add it by hand: irsync server add myserver <daemon-id>
+```
+
+**Cause.** A sync, push, pull or listing never uses ssh, so it does not set a
+server up. `myserver` is not in your saved servers, or it was mistyped.
+
+**Fix.** Check the spelling. If the name is right and `ssh myserver` works, run
+`irsync pair myserver`. Otherwise add the server by hand, as in
+[Your first sync](../tutorial/first-sync.md#set-the-server-up-by-hand). A name
+saved as a client only gets a similar message: this machine has never dialled
+its daemon, so run `irsync pair` for it.
+
+## pair stops: the server runs another OS or CPU
+
+```text
+irsync: pairing with myserver over ssh
 irsync: "myserver" is not a server in ~/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64 and a development build (0.1.0-beta.1 (1a2b3c4, dirty)). Only release builds install on another OS or CPU. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync#set-the-server-up-by-hand
 ```
 
-**Cause.** When the server's OS or CPU differs from the client's, the ssh
-setup installs the release binary of the client's own version. That needs a
+**Cause.** When the server's OS or CPU differs from the client's, `irsync pair`
+installs the release binary of the client's own version. That needs a
 client that is itself a release: a build from source has no matching release
 binary. The same stop, worded "there is no release binary for that
 platform", comes for a server no release is built for, such as an Intel Mac.
@@ -57,8 +93,8 @@ platform", comes for a server no release is built for, such as an Intel Mac.
 ([Install](../introduction.md#install)), or install irsync on the server
 yourself and
 [set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
-Installing it on the server does not make the ssh setup work, unless you run
-with `--no-install`: the setup otherwise uses its own copy of the client's
+Installing it on the server does not make `pair` work, unless you run
+with `--no-install`: `pair` otherwise uses its own copy of the client's
 exact build.
 
 Other messages from this step:
@@ -89,7 +125,7 @@ Other messages from this step:
 
 Nothing on the server is changed in any of these cases.
 
-## ssh setup says there are no release files for this build
+## pair says there are no release files for this build
 
 ```text
 irsync: downloading irsync v0.1.0-beta.1 for macos aarch64
@@ -102,7 +138,7 @@ setup sends the client's own files instead. The setup goes on. `fileset` and
 the manual pages come along only if they sit beside the client's `irsync`;
 the summary says when they did not.
 
-## ssh setup stops on the server
+## pair stops on the server
 
 These stop the setup after the files reached the server:
 
@@ -116,7 +152,7 @@ These stop the setup after the files reached the server:
   before, says why, for example a `~/.local/bin` you cannot write to. Fix
   that and run again.
 
-## ssh setup stops: --no-install
+## pair stops: --no-install
 
 ```text
 irsync: … setting it up over ssh failed: --no-install: myserver has no irsync 0.1.0-beta.1 (ae5ebe5) at ~/.local/bin/irsync (found none). Install that version there, or run without --no-install (or set ssh_install = true in the config). Nothing was changed.
@@ -148,7 +184,7 @@ names:
 irsync grant add photos <client-id>
 ```
 
-A host set up over ssh is not "fixed" over ssh when this happens. The refusal
+`irsync pair` does not fix this. Pairing again never changes the grants a client has lost. The refusal
 is on purpose, and irsync never adds back an immediate grant you removed. See
 [Identity and trust](../explanation/identity-and-trust.md).
 

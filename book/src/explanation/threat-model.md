@@ -271,10 +271,11 @@ symlink while a sync runs in a tree they can write.
 - irsync's state directory holds the names and hashes of the files it
   synced. Protect it as you protect the files.
 
-## Setting up over ssh, and installing
+## Pairing over ssh, and installing
 
-- [The setup over ssh](../how-to/ssh-setup.md) trusts ssh: the server you
-  log in to is the one irsync installs on and grants access to. It gives
+- [`irsync pair`](../how-to/pair.md) trusts ssh: the server you
+  log in to is the one irsync installs on and grants access to. Only `pair`
+  uses ssh; a sync never does. It gives
   this client the immediate grant on that server.
 - Releases are signed. [Verify a download](../how-to/verify-a-download.md)
   shows how to check one, and

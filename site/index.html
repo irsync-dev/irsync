@@ -205,11 +205,12 @@
               >
               <h3 class="font-condensed text-label leading-7">Sync</h3>
               <div class="cmd mt-2">
-                <pre><span class="prompt">$</span> <span class="copy">irsync <span class="whitespace-nowrap">-av</span> ~/Photos/ myserver:/srv/photos/</span></pre>
+                <pre><span class="prompt">$</span> <span class="copy">irsync pair myserver</span>
+<span class="prompt">$</span> <span class="copy">irsync <span class="whitespace-nowrap">-av</span> ~/Photos/ myserver:/srv/photos/</span></pre>
               </div>
               <p class="mt-2 text-small text-muted">
-                If <code>ssh myserver</code> logs you in, the first run sets the
-                server up too; later runs connect over iroh, not ssh. No ssh?
+                If <code>ssh myserver</code> logs you in, <code>irsync pair</code> sets
+                the server up once; syncs connect over iroh, not ssh. No ssh?
                 <a
                   href="book/tutorial/first-sync.html#set-the-server-up-by-hand"
                   >Set the server up by hand</a

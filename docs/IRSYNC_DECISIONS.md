@@ -334,16 +334,20 @@ cross-referenced from commit messages and review notes.
 
 ### 1.12 SSH onboarding
 
-- **R44 — Ad-hoc mode over ssh installs a daemon that stays** (2026-11-10).
-  rsync's ssh mode spawns a server per run; irsync's first run to a host
-  goes through ssh, copies the binary over when needed, sets up and starts
-  a daemon, grants the client, and later runs connect to that daemon
-  directly. Such daemons publish to the DHT by default, since later runs
-  must find them without ssh; `--no-remote-dht` turns that off, and
-  `--ssh` forces the ssh step. When the remote version differs and the
+- **R44 — Ad-hoc mode over ssh installs a daemon that stays** (2026-11-10;
+  amended 2026-11-24: only `irsync pair HOST` uses ssh, see
+  `superpowers/specs/2026-11-24-pair-command-design.md`).
+  rsync's ssh mode spawns a server per run; `irsync pair` goes through ssh
+  once, copies the binary over when needed, sets up and starts a daemon
+  (as a systemd or launchd user service when it can), grants the client, and
+  syncs connect to that daemon directly, never through ssh. A sync to an
+  unknown server stops and names `irsync pair`; one to a daemon that does not
+  answer stops and says how to check it and to pair again. Such daemons
+  publish to the DHT by default, since syncs must find them without ssh;
+  `pair --no-dht` turns that off (`--ssh`, `--rsh`, `--no-install` and
+  `--no-remote-dht` are gone from sync). When the remote version differs and the
   remote has the same OS and CPU, onboarding copies the client's binary
-  over. Only runs that go through ssh (first sync, `--ssh`, or the
-  fallback when the daemon can't be reached) update it; updating a
+  over. Only `irsync pair` updates it; updating a
   reachable older daemon is open (`TODO.md`). Design:
   `superpowers/specs/2026-11-10-ssh-onboarding-design.md`. Amended
   2026-11-14: when the remote has another OS or CPU, a release build
@@ -365,7 +369,7 @@ cross-referenced from commit messages and review notes.
   OS and CPU match; if the download fails or the server rejects the
   tarball's `irsync`, and the OS and CPU match, it installs this
   machine's own files instead. The server still needs no internet access.
-  `--no-install` (`ssh_install = false`) copies nothing and uses the
+  `pair --no-install` (`ssh_install = false`) copies nothing and uses the
   server's `~/.local/bin/irsync`. Design:
   `superpowers/specs/2026-11-17-ssh-install-matches-installer-design.md`.
 

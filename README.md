@@ -97,7 +97,7 @@ Release binaries cover Linux on x86_64 and arm64, and macOS on Apple Silicon.
 Other Linux and macOS machines can build from source. All of these are
 supported, as client and as daemon.
 
-With ssh, the client is enough: the first sync installs irsync, fileset and
+With ssh, the client is enough: `irsync pair` installs irsync, fileset and
 the manual pages on the server. A released irsync downloads the release files
 for the server's platform on this machine, also when it differs from this one.
 If the download fails and the server has the same OS and CPU, it sends this
@@ -119,19 +119,20 @@ cargo install --git https://github.com/irsync-dev/irsync fileset
 ## Example
 
 Push a photo library from a client to a server you can already reach with
-`ssh myserver`:
+`ssh myserver`. Set the server up once, then push:
 
 ```sh
+irsync pair myserver
 irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
 This is rsync's command line, with `irsync` in place of `rsync`. `irsync list myserver` lists the exports the server shares with this client.
 
-The first time, irsync sets the server up over SSH: it installs irsync there
-(with fileset and the manual pages), gives this client's key access, starts the daemon and saves `myserver` as a host alias. It prints what it did.
-Later runs connect over iroh directly and do not use SSH. If the daemon stops
-answering, irsync waits about 15 seconds, then checks it over SSH and starts it
-again.
+`irsync pair` sets the server up over SSH: it installs irsync there
+(with fileset and the manual pages), gives this client's key access, starts the daemon as a user service and saves `myserver` as a server. It prints what it did.
+Only `pair` uses SSH. Syncs connect over iroh directly. If the daemon stops
+answering, a sync waits about 15 seconds, then stops and says what to check.
+`irsync pair myserver` starts it again.
 
 Without SSH, set the server up by hand:
 

@@ -229,10 +229,10 @@ class BuildManTests(unittest.TestCase):
                 self.assertNotIn(phrase, text, page)
 
     def test_same_page_links_name_the_section(self):
-        # "Setup over ssh" is a subsection of OPERANDS; "Copying one file"
+        # "irsync pair" is a subsection of OPERANDS; "Copying one file"
         # one of REMOTE ADDRESSES, which comes from another chapter.
         operands = section(render(self.irsync), "OPERANDS", subsections=False)
-        self.assertIn("Setup over ssh", operands)
+        self.assertIn("see irsync pair", operands)
         self.assertIn("Copying one file", operands)
         self.assertIn("COMPARISON TIERS", section(render(self.fileset), "OPTIONS"))
         # A link to a chapter of another page names that page.

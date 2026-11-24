@@ -91,19 +91,35 @@ make that choice, start it with `--run-as-root-i-know-what-i-am-doing`, or
 set `allow_root = true` under `[daemon]` in its config file. It then logs a
 warning at every start.
 
-The [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) never
+`irsync pair` (see [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh)) never
 starts a daemon as root. When the ssh account is root it stops before it
 installs or changes anything, whatever the server's config says. Use another
 account, or set the daemon up by hand as described above.
 
-## Keep a daemon started over ssh running
+## Run the daemon as a user service
 
-When the [ssh setup](../tutorial/first-sync.md#the-quick-way-over-ssh) starts
-the daemon, it runs in the background under your account until the server
-reboots. When a later sync gets no answer within about 15 seconds, it starts
-the daemon again over ssh, but only when you sync. To keep it running all the
-time, make it a user service. The setup prints these steps for the server's
-system; they are the same here.
+`irsync pair` makes the daemon a user service, so it keeps running and starts
+again after a reboot. It writes one of these files, each marked
+`Written by irsync pair`:
+
+- On Linux, `~/.config/systemd/user/irsync.service`. `pair` also turns on
+  `loginctl enable-linger`, so the service runs when you are not logged in.
+- On macOS, `~/Library/LaunchAgents/org.irsync.daemon.plist`, a launchd
+  agent. After a reboot it starts only once someone logs in on the Mac.
+
+A service file that irsync did not write is left alone. `pair` then starts the
+daemon in the background, and prints the steps below. So does a server with no
+systemd or launchd user session, and so does `irsync pair --no-service`, which
+you pass for a daemon you run your own way. A background daemon runs under your
+account until the server reboots. Nothing starts it again: run
+`irsync pair myserver` from the client when it has stopped.
+
+Where the daemon writes its log depends on how it runs. As a service, its output
+goes to the service manager: `journalctl --user -u irsync` on Linux. A daemon
+that `pair` started in the background writes
+`~/.local/state/irsync/daemon.log`.
+
+To make the service yourself, the steps are these.
 
 On Linux, put this in `~/.config/systemd/user/irsync.service`:
 
@@ -153,7 +169,7 @@ while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
 launchctl load -w ~/Library/LaunchAgents/org.irsync.daemon.plist
 ```
 
-If the state directory is not the default one, the setup prints the path of
+If the state directory is not the default one, `pair` prints the path of
 `daemon.lock` to use instead. The kill is needed because the lock lets only
 one daemon run at a time: the service cannot start while the first daemon
 holds it, so the loop waits until that daemon has exited. These lines are sh
@@ -162,11 +178,11 @@ syntax; from fish or tcsh, run them under `sh`.
 ### Service files from an older irsync
 
 An older irsync installed itself in `~/.local/share/irsync/bin`, and a service
-file written from its steps names `~/.local/share/irsync/bin/irsync`. The ssh
-setup warns when it finds such a file (at the two places above). A daemon that
+file written from its steps names `~/.local/share/irsync/bin/irsync`. `irsync
+pair` warns when it finds such a file (at the two places above). A daemon that
 such a service runs is left alone. It stays on the old version, and it does
 not pick up a grant the setup adds for a new client. Change the path in the
-service file to `~/.local/bin/irsync`, then restart the service. The setup
+service file to `~/.local/bin/irsync`, then restart the service. `pair`
 removes the old copy only when no service file names it. A service file the
 setup cannot read gets the same warning, since it cannot tell what it names.
 

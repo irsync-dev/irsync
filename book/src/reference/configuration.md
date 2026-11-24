@@ -82,7 +82,7 @@ reconnect = "1h"
 dial_retries = 2
 dht = false
 mdns = false
-ssh = "myserver"             # set by the SSH setup
+ssh = "myserver"             # set by irsync pair
 
 # One [clients.NAME] table per machine this one's daemon lets in.
 [clients.myclient]
@@ -106,7 +106,7 @@ read_only = true
 ro = ["myclient"]
 
 # Peers that may reach any path this account can, read-write.
-# The SSH setup adds the client here, under its host name.
+# irsync pair adds the client here, under its host name.
 [immediate]
 rw = ["myclient"]
 
@@ -181,7 +181,7 @@ built-in default.
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
 | `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. Flag: `--dial-retries`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
-| `ssh_install` | `true` | Copy irsync to the server when setting it up over ssh. `false` copies nothing: the setup uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
+| `ssh_install` | `true` | Copy irsync to the server when `irsync pair` sets it up. `false` copies nothing: `pair` uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
 | `mdns` | `true` | Look daemons up with mDNS on the local network. |
 | `relay` | n0's relays | The relay server to use, for a self-hosted relay. Flag: `--relay`. |
 | `relay_mode` | `default` | `disabled`: direct connections only, never through a relay; the lookups stay on. Flag: `--no-relay`. |
@@ -217,8 +217,8 @@ a key without one is turned away as before.
 
 `[servers.NAME]` names a machine this one connects to. The name is what you
 type before the colon in `NAME:PATH`. The
-[SSH setup](../how-to/ssh-setup.md#the-names-the-setup-saves) writes the entry
-for you. A name may not be empty, contain `:` or `/`, be `all` or `*`, or be
+[`irsync pair`](../how-to/pair.md#the-names-pair-saves) command writes the
+entry for you. A name may not be empty, contain `:` or `/`, be `all` or `*`, or be
 an `EndpointId`.
 
 | Key | Default | Meaning |
@@ -234,8 +234,8 @@ an `EndpointId`.
 | `dial_retries` | `[client]`'s | How often to retry this server before it has answered. |
 | `dht` | `[client]`'s | Look this server up in the mainline DHT. |
 | `mdns` | `[client]`'s | Look this server up with mDNS. |
-| `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. The [SSH setup](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a sync to a server with `ssh` gets no answer within about 15 seconds, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. It does not add back an immediate grant that was removed on the server. The export listing, `irsync NAME:`, is not checked this way. A server without `ssh` is never touched over ssh. |
-| `ssh_aliases` | none | Other ssh destinations that were typed for this server, such as its address: `["192.168.1.5"]`. Typing one of them finds this server, as typing its `ssh` value does. The SSH setup adds to it; nothing is ever dialled through it. These are not server names: they do not work with `irsync server`. |
+| `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a sync to a server with `ssh` gets no answer within about 15 seconds, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. It does not add back an immediate grant that was removed on the server. The export listing, `irsync NAME:`, is not checked this way. A server without `ssh` is never touched over ssh. |
+| `ssh_aliases` | none | Other ssh destinations that were typed for this server, such as its address: `["192.168.1.5"]`. Typing one of them finds this server, as typing its `ssh` value does. `irsync pair` adds to it; nothing is ever dialled through it. These are not server names: they do not work with `irsync server`. |
 
 `--address` on the command line replaces the server's `address` list.
 
@@ -251,7 +251,7 @@ servers. The name has the same rules as a server's.
 
 A server and a client may have the same name. They are two entries, for the
 two ids a machine has: its daemon's, which you dial, and its own as a client,
-which grants are for. The SSH setup writes both sides: the server's name on the
+which grants are for. `irsync pair` writes both sides: the server's name on the
 client, and the client's host name on the server.
 
 ## Config versions
@@ -262,7 +262,7 @@ it saves the file. You do not set it, and `irsync config set` refuses it.
 Version 1 had one table, `[hosts.NAME]`, for servers and clients alike. An old
 file works as it is. irsync reads it as before, and it grants the same access.
 The first change rewrites it as version 2. That change is any `irsync` command
-that edits the file, the SSH setup, or the daemon adding an automatic export.
+that edits the file, `irsync pair`, or the daemon adding an automatic export.
 Comments stay.
 
 The rewrite splits each `[hosts.NAME]`:
@@ -346,7 +346,7 @@ automatic ones (`auto = true`).
 `[immediate]` has one key, `rw`: peers that may reach any path the daemon's
 account can, read-write. There is no read-only form. `irsync grant add
 immediate WHO` adds a peer, `irsync grant remove immediate WHO` takes it out,
-and the SSH setup adds its client here, by the host name it saved the client
+and `irsync pair` adds its client here, by the host name it saved the client
 under in `[clients]`.
 
 When such a peer uses a path that no export covers, the daemon adds an
