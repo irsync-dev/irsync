@@ -42,6 +42,13 @@ oddly for a restart) and `associate` (same meaning, longer).
   update irsync on the server, grant this client, start the daemon, save
   the alias. `HOST` takes the forms the setup takes now: an alias, an ssh
   destination, `user@host`, an IP address, `[ipv6]`.
+- **`pair` makes the daemon a user service** when the server has systemd
+  (Linux) or launchd (macOS), so it survives reboots and logouts. This
+  replaces today's background start plus printed instructions. On Linux it
+  writes the unit from "Run the daemon", runs `systemctl --user enable
+  --now irsync` and `loginctl enable-linger`. On macOS it writes the
+  LaunchAgent plist and loads it. A daemon that irsync started in the
+  background earlier is stopped first, so the service can take the lock.
 - **Running it again** for a saved host does what `--ssh` does today
   (check, update, restart; never adds back an immediate grant the owner
   removed). This also covers a host saved as a client only (the reverse
@@ -63,8 +70,20 @@ oddly for a restart) and `associate` (same meaning, longer).
 - `pair` only pairs; it does not sync. It accepts `myserver` and
   `myserver:` alike.
 - `pair` ends with a line that says ssh is done, for example
-  `irsync: paired with myserver; syncs go over iroh, not ssh`, then the
-  user-service hint it prints today.
+  `irsync: paired with myserver; syncs go over iroh, not ssh`, and says
+  how the daemon runs (as a systemd or launchd user service, or in the
+  background until the next reboot).
+- **No service manager, or it fails** (no systemd, no user session bus,
+  linger refused): start the daemon in the background as today, warn, and
+  print the manual steps. Without linger a systemd user service would stop
+  when the ssh session ends, so linger counts as part of the service.
+- `--no-service` skips the service and starts the daemon in the
+  background, for people who run it their own way (a system unit, say).
+- A service file irsync did not write is never overwritten: `pair` uses
+  it if it starts `~/.local/bin/irsync daemon`, and otherwise warns and
+  leaves it alone.
+- Running `pair` again after an update restarts the service, so the new
+  binary runs.
 - `--no-remote-dht` becomes `--no-dht` on `pair`: there is only one
   remote side there. Its help says it is the server's DHT publishing.
 - The daemon-not-answering stop applies before the first connection only.
@@ -74,6 +93,11 @@ oddly for a restart) and `associate` (same meaning, longer).
 ## Left to the builder
 
 - The exact wording of the two stop messages, in the book's style.
+- How to load the LaunchAgent over ssh when nobody is logged in on the
+  Mac's screen (`launchctl bootstrap` into the `gui/UID` or `user/UID`
+  domain). It must survive a reboot without a screen login; if it can't,
+  that falls under "service fails" above.
+- How the setup recognises a service file it wrote (a marker comment, say).
 - Moving the setup code out of the sync path in `main.rs`
   (`recheck_over_ssh`, the `first || forced` branch) into the `pair`
   command.
@@ -81,4 +105,4 @@ oddly for a restart) and `associate` (same meaning, longer).
   the docs that describe ssh in a sync: the `--help` quick start, the
   tutorial, "Set a server up over ssh" (to become "Pair with a server over
   ssh"), the command-line and remote-address references, troubleshooting,
-  the threat model, and the man page sources.
+  the threat model, "Run the daemon", and the man page sources.
