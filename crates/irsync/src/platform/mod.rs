@@ -12,6 +12,10 @@ mod unix;
 #[cfg(unix)]
 pub use unix::*;
 
+/// The tests of [`Dir`], on every platform.
+#[cfg(test)]
+mod dir_tests;
+
 /// The kind of system a build runs on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
