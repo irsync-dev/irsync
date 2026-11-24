@@ -391,24 +391,6 @@ fn kind_of_mode(mode: u32) -> Kind {
     }
 }
 
-/// The `st_mode` bits of a kind; none for [`Kind::Other`]. With
-/// [`Stat::mode`] they make the whole `st_mode` a listing carries.
-// `mode_t` is narrower on macOS and FreeBSD.
-#[allow(clippy::unnecessary_cast)]
-pub fn mode_of_kind(kind: Kind) -> u32 {
-    let fmt = match kind {
-        Kind::File => SFlag::S_IFREG,
-        Kind::Dir => SFlag::S_IFDIR,
-        Kind::Symlink => SFlag::S_IFLNK,
-        Kind::Fifo => SFlag::S_IFIFO,
-        Kind::CharDev => SFlag::S_IFCHR,
-        Kind::BlockDev => SFlag::S_IFBLK,
-        Kind::Socket => SFlag::S_IFSOCK,
-        Kind::Other => SFlag::empty(),
-    };
-    fmt.bits() as u32
-}
-
 // The `stat` field types differ by platform; some casts are no-ops here.
 #[allow(clippy::unnecessary_cast)]
 fn stat_of(st: &FileStat) -> Stat {
@@ -445,6 +427,44 @@ pub fn lstat(path: &Path) -> io::Result<Stat> {
         .map_err(errno_of)
 }
 
+/// [`Stat`] of what `m` describes, field for field as [`stat_of`] reads
+/// a `stat` (`MetadataExt` gives the same `stat` fields).
+// `MetadataExt` gives every field as the widest type; the nanoseconds are
+// below a second, so they fit.
+fn stat_of_metadata(m: &std::fs::Metadata) -> Stat {
+    use std::os::unix::fs::MetadataExt;
+    let kind = kind_of_mode(m.mode());
+    Stat {
+        kind,
+        mode: m.mode() & 0o7777,
+        uid: m.uid(),
+        gid: m.gid(),
+        size: m.size(),
+        nlink: m.nlink(),
+        ino: m.ino(),
+        dev: m.dev(),
+        rdev: m.rdev(),
+        mtime: (m.mtime(), m.mtime_nsec() as u32),
+        ctime: (m.ctime(), m.ctime_nsec() as u32),
+        // As `stat_of` computes it.
+        sparse: kind == Kind::File && (m.blocks() as i64) * 512 < m.size() as i64,
+    }
+}
+
+/// What the open `file` is, read as the standard library reads it
+/// (`file.metadata()`: `statx` on Linux, `fstat` elsewhere).
+pub fn file_metadata(file: &File) -> io::Result<Stat> {
+    file.metadata().map(|m| stat_of_metadata(&m))
+}
+
+/// What is at `path`, a final link described, not followed, read as the
+/// standard library reads it (`std::fs::symlink_metadata`: `statx` on
+/// Linux, `lstat` elsewhere). Links before it are followed: the caller
+/// trusts them.
+pub fn symlink_metadata(path: &Path) -> io::Result<Stat> {
+    std::fs::symlink_metadata(path).map(|m| stat_of_metadata(&m))
+}
+
 /// Which file `m` describes: its device and inode numbers.
 pub fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;
@@ -457,14 +477,6 @@ pub fn mtime_of(m: &std::fs::Metadata) -> (i64, u32) {
     use std::os::unix::fs::MetadataExt;
     // Below a second, so it fits, as in `stat_of`.
     (m.mtime(), m.mtime_nsec() as u32)
-}
-
-/// The inode change time of the file `m` describes, `(seconds,
-/// nanoseconds)`, as [`Stat::ctime`] gives it.
-pub fn ctime_of(m: &std::fs::Metadata) -> (i64, u32) {
-    use std::os::unix::fs::MetadataExt;
-    // Below a second, so it fits, as in `stat_of`.
-    (m.ctime(), m.ctime_nsec() as u32)
 }
 
 /// The owner and group (`(uid, gid)`) of the file `m` describes.
@@ -902,6 +914,28 @@ mod tests {
             assert!(!is_transient_extra(&io::Error::from_raw_os_error(n)), "{n}");
         }
         assert!(!is_transient_extra(&io::Error::other("x")));
+    }
+
+    /// `mode_of_kind` (platform-neutral, part of the wire format) gives
+    /// this system's own `S_IF*` bits.
+    // `mode_t` is narrower on macOS and FreeBSD.
+    #[allow(clippy::unnecessary_cast)]
+    #[test]
+    fn kind_bits_are_the_systems_own() {
+        let cases = [
+            (Kind::File, libc::S_IFREG),
+            (Kind::Dir, libc::S_IFDIR),
+            (Kind::Symlink, libc::S_IFLNK),
+            (Kind::Fifo, libc::S_IFIFO),
+            (Kind::CharDev, libc::S_IFCHR),
+            (Kind::BlockDev, libc::S_IFBLK),
+            (Kind::Socket, libc::S_IFSOCK),
+        ];
+        for (kind, bits) in cases {
+            assert_eq!(crate::platform::mode_of_kind(kind), bits as u32, "{kind:?}");
+            assert_eq!(kind_of_mode(bits as u32), kind, "{kind:?}");
+        }
+        assert_eq!(crate::platform::mode_of_kind(Kind::Other), 0);
     }
 
     #[test]

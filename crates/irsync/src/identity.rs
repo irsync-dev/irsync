@@ -182,10 +182,9 @@ pub fn write_new(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<()>
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".irsync-new")
-        .permissions(crate::platform::permissions_of_mode(mode))
-        .tempfile_in(dir)?;
+    let mut tmp =
+        crate::platform::set_temp_file_mode(tempfile::Builder::new().prefix(".irsync-new"), mode)
+            .tempfile_in(dir)?;
     tmp.write_all(contents)?;
     tmp.as_file().sync_all()?;
     tmp.persist_noclobber(path).map_err(|e| e.error)?;

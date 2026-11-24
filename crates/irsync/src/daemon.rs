@@ -1610,10 +1610,10 @@ fn prune_entries(
         {
             continue;
         }
-        let here = std::fs::symlink_metadata(root.join(path.to_os()))
+        let here = crate::platform::symlink_metadata(&root.join(path.to_os()))
             .ok()
-            .filter(|m| m.is_file())
-            .map(|m| (crate::platform::file_id(&m).1, m.len()));
+            .filter(|m| m.kind == crate::platform::Kind::File)
+            .map(|m| (m.ino, m.size));
         if here == Some((inode, size)) {
             continue;
         }

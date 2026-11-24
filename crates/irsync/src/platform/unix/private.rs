@@ -78,14 +78,18 @@ pub fn key_file_open_to_others(meta: &std::fs::Metadata) -> bool {
     meta.permissions().mode() & 0o066 != 0
 }
 
-/// The permissions a saved file gets: those the file at `path` has, so a
-/// save never opens up a file its owner closed; 0600 for a new file.
-pub fn saved_file_permissions(path: &Path) -> std::fs::Permissions {
+/// Gives the file `to`, about to replace the file at `path`, the
+/// permissions a saved file gets: those the file at `path` has, so a save
+/// never opens up a file its owner closed; 0600 for a new file.
+pub fn set_saved_permissions(to: &Path, path: &Path) -> io::Result<()> {
     let mode = std::fs::metadata(path).map_or(0o600, |m| m.permissions().mode() & 0o777);
-    std::fs::Permissions::from_mode(mode)
+    std::fs::set_permissions(to, std::fs::Permissions::from_mode(mode))
 }
 
-/// Permissions with the mode bits `mode`.
-pub fn permissions_of_mode(mode: u32) -> std::fs::Permissions {
-    std::fs::Permissions::from_mode(mode)
+/// Makes the temporary files `builder` creates with the mode bits `mode`.
+pub fn set_temp_file_mode<'a, 'b, 'c>(
+    builder: &'c mut tempfile::Builder<'a, 'b>,
+    mode: u32,
+) -> &'c mut tempfile::Builder<'a, 'b> {
+    builder.permissions(std::fs::Permissions::from_mode(mode))
 }

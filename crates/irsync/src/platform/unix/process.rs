@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use nix::sys::resource::{getrlimit, getrusage, rlim_t, setrlimit, Resource, UsageWho};
 
+use crate::platform::Usage;
+
 // ---------------------------------------------------------------------------
 // Limits: the open-file limit (`RLIMIT_NOFILE`). The receiver holds a
 // descriptor per file in flight (two for a `DELTA`), so the soft limit is
@@ -61,17 +63,6 @@ pub fn handle_limit() -> u64 {
 
 // ---------------------------------------------------------------------------
 // Process usage.
-
-/// This process's resource usage so far.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Usage {
-    /// CPU time in user mode.
-    pub cpu_user: Duration,
-    /// CPU time in the kernel.
-    pub cpu_sys: Duration,
-    /// The peak resident memory, in bytes.
-    pub max_rss: u64,
-}
 
 /// Converts `ru_maxrss` (KiB on Linux, bytes on macOS) to bytes.
 fn rss_bytes(raw: i64) -> u64 {
