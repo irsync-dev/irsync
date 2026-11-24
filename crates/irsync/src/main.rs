@@ -1850,8 +1850,16 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
         GrantCmd::Add { export, who, ro } => finish(
             "grant add",
             (|| {
-                if export == "immediate" && *ro {
-                    bail!("immediate grants are read-write only: drop --ro");
+                if export == "all" {
+                    bail!(
+                        "\"all\" is not an export: give a client every export with: irsync client set NAME all_exports={}",
+                        if *ro { "ro" } else { "rw" }
+                    );
+                }
+                if export == "immediate" {
+                    bail!(
+                        "\"immediate\" is not an export: give a client any path with: irsync client set NAME all_paths=rw"
+                    );
                 }
                 let Config {
                     servers, clients, ..
@@ -1860,26 +1868,11 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                if export == "immediate" {
-                    let added = manage::grants::grant_immediate(&mut msg, &spec, &resolve)
-                        .with_context(|| format!("in {}", paths.config.display()))?;
-                    lock.save(&mut msg)?;
-                    if added {
-                        eprintln!("{}: immediate access", spec.written(&clients));
-                    } else {
-                        eprintln!("{}: already has immediate access", spec.written(&clients));
-                    }
-                    return Ok(());
-                }
-                let target = (export != "all").then_some(export.as_str());
-                manage::grants::grant_add(&mut msg, target, &spec, *ro, &resolve)
+                manage::grants::grant_add(&mut msg, export, &spec, *ro, &resolve)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
                 let mode = if *ro { "ro" } else { "rw" };
-                match target {
-                    Some(e) => eprintln!("{}: {mode} on {e}", spec.written(&clients)),
-                    None => eprintln!("{}: {mode} on all exports", spec.written(&clients)),
-                }
+                eprintln!("{}: {mode} on {export}", spec.written(&clients));
                 Ok(())
             })(),
         ),
@@ -1896,7 +1889,11 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                         if export == "all" { "in the file".to_string() } else { format!("on {export}") }
                     );
                 }
-                let is_immediate = export == "immediate";
+                if export == "immediate" {
+                    bail!(
+                        "\"immediate\" is not an export: take a client's any-path right away with: irsync client set NAME all_paths=none"
+                    );
+                }
                 let export = (export != "all").then_some(export.as_str());
                 let who = (who != "all").then_some(who.as_str());
                 // Text that names no known peer still matches entries literally
@@ -1915,14 +1912,25 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 };
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                let n = if is_immediate {
-                    manage::grants::grant_remove_immediate(&mut msg, spec.as_ref(), &resolve)
-                } else {
-                    manage::grants::grant_remove(&mut msg, export, spec.as_ref(), &resolve)
-                }
-                .with_context(|| format!("in {}", paths.config.display()))?;
+                let removed =
+                    manage::grants::grant_remove(&mut msg, export, spec.as_ref(), &resolve);
+                let held =
+                    manage::grants::rights_still_held(&clients, export, spec.as_ref(), &resolve);
+                let n = match removed {
+                    Ok(n) => n,
+                    Err(e) => {
+                        for line in &held {
+                            eprintln!("{line}");
+                        }
+                        return Err(anyhow::Error::from(e)
+                            .context(format!("in {}", paths.config.display())));
+                    }
+                };
                 lock.save(&mut msg)?;
                 eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
+                for line in &held {
+                    eprintln!("{line}");
+                }
                 Ok(())
             })(),
         ),
@@ -1930,7 +1938,10 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
             "grant list",
             (|| {
                 let Config {
-                    clients, exports, ..
+                    clients,
+                    exports,
+                    settings,
+                    ..
                 } = Config::load(&paths)?;
                 let text = match target.as_deref() {
                     None => manage::grants::list_all(&exports, &clients),
@@ -1948,7 +1959,13 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                             } else {
                                 id.to_string()
                             };
-                            manage::grants::list_peer(&exports, &clients, &label, &id)
+                            manage::grants::list_peer(
+                                &exports,
+                                &clients,
+                                settings.daemon.allow_all_paths,
+                                &label,
+                                &id,
+                            )
                         }
                     },
                 };
@@ -2100,6 +2117,26 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                     "renamed client {old} to {new}{also} in {}",
                     paths.config.display()
                 );
+                Ok(())
+            })(),
+        ),
+        ClientCmd::Set { name, settings } => finish(
+            "client set",
+            (|| {
+                // Every pair is read before anything changes.
+                let settings: Vec<_> = settings
+                    .iter()
+                    .map(|s| manage::clients::parse_setting(s))
+                    .collect::<Result<_, _>>()?;
+                load_first(&paths)?;
+                let mut lock = manage::lock_config(&paths.config)?;
+                let mut msg = lock.load()?;
+                manage::clients::client_set(&mut msg, name, &settings)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                lock.save(&mut msg)?;
+                if let Some(c) = msg.clients.iter().find(|c| c.name == *name) {
+                    eprintln!("{name}: {}", manage::clients::rights_summary(c));
+                }
                 Ok(())
             })(),
         ),

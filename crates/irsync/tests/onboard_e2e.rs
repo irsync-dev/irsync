@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use irsync::authz::Access;
 use irsync::daemon_lock::probe;
 
 fn fake_ssh() -> PathBuf {
@@ -471,19 +472,21 @@ fn pair_again_does_not_regrant() {
     let w = World::new();
     ok(&w.irsync_bare(&["pair", "myserver"]));
     let id = client_id(w.client.path());
-    let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
-    assert!(out.status.success(), "{out:?}");
+    common::set_all_paths(w.server.path(), &id, None);
     w.kill_daemon();
     let o = w.irsync_bare(&["pair", "myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.contains("has no immediate grant"), "{err}");
+    assert!(
+        err.contains("all_paths on myserver was lowered or removed"),
+        "{err}"
+    );
     assert!(
         err.contains("the daemon rejected this client's key"),
         "{err}"
     );
     assert!(!err.contains("paired with"), "{err}");
-    assert!(!immediate_granted(&w, &id), "{}", w.server_toml());
+    assert!(!all_paths_granted(&w, &id), "{}", w.server_toml());
 }
 
 #[test]
@@ -620,8 +623,8 @@ fn client_name_with_shell_characters_runs_nothing() {
         "{cfg}"
     );
     assert_eq!(
-        cfg["immediate"]["rw"][0].as_str(),
-        Some(w.client_name.as_str())
+        cfg["clients"][w.client_name.as_str()]["all_paths"].as_str(),
+        Some("rw")
     );
 }
 
@@ -649,7 +652,7 @@ fn ipv6_without_a_server_name_changes_nothing() {
 }
 
 #[test]
-fn immediate_off_still_saves_alias() {
+fn all_paths_off_still_saves_alias() {
     let w = World::new();
     // The client identity first, so the export can be granted to it.
     let out = common::irsync_bin(w.client.path(), &["id", "generate"]);
@@ -664,7 +667,7 @@ fn immediate_off_still_saves_alias() {
     let dest = w.server.path().join("dest");
     std::fs::create_dir(&dest).unwrap();
     w.server_config(
-        "immediate = false\n",
+        "allow_all_paths = false\n",
         &format!(
             "[exports.dest]\npath = {:?}\nrw = [\"{id}\"]\n",
             dest.display()
@@ -672,7 +675,7 @@ fn immediate_off_still_saves_alias() {
     );
 
     let err = w.pair("myserver");
-    assert!(err.contains("immediate mode is off on myserver"), "{err}");
+    assert!(err.contains("allow_all_paths is off on myserver"), "{err}");
     ok(&w.irsync(&["-a", &w.src_arg(), "myserver:dest"]));
     same_tree(w.src.path(), &dest);
     let cfg = w.client_config();
@@ -879,8 +882,7 @@ fn refusal_never_uses_ssh() {
     w.pair("myserver");
     let calls = w.ssh_calls();
     let id = client_id(w.client.path());
-    let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
-    assert!(out.status.success(), "{out:?}");
+    common::set_all_paths(w.server.path(), &id, None);
     let other = w.server.path().join("other");
     let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", other.display())]);
     let err = String::from_utf8_lossy(&o.stderr);
@@ -891,33 +893,19 @@ fn refusal_never_uses_ssh() {
     );
     assert!(!err.contains("over ssh"), "{err}");
     assert_eq!(w.ssh_calls(), calls);
-    let doc: toml::Table = w.server_toml().parse().unwrap();
-    let granted = doc
-        .get("immediate")
-        .and_then(|i| i.get("rw"))
-        .and_then(|rw| rw.as_array())
-        .is_some_and(|rw| rw.iter().any(|v| v.as_str() == Some(id.as_str())));
-    assert!(!granted, "{}", w.server_toml());
+    assert!(!all_paths_granted(&w, &id), "{}", w.server_toml());
 }
 
-/// Whether the server config grants `id` immediate access, by its id or
-/// by a name its `[clients]` has for it.
-fn immediate_granted(w: &World, id: &str) -> bool {
+/// Whether the server config gives the client `id` `all_paths = "rw"`.
+fn all_paths_granted(w: &World, id: &str) -> bool {
     let doc: toml::Table = w.server_toml().parse().unwrap();
-    let named = |entry: &str| {
-        let client = doc.get("clients").and_then(|c| c.get(entry));
-        client
-            .and_then(|c| c.get("client_id"))
-            .and_then(|v| v.as_str())
-            == Some(id)
-    };
-    doc.get("immediate")
-        .and_then(|i| i.get("rw"))
-        .and_then(|rw| rw.as_array())
-        .is_some_and(|rw| {
-            rw.iter()
-                .filter_map(|v| v.as_str())
-                .any(|e| e == id || named(e))
+    doc.get("clients")
+        .and_then(|c| c.as_table())
+        .is_some_and(|clients| {
+            clients.values().any(|c| {
+                c.get("client_id").and_then(|v| v.as_str()) == Some(id)
+                    && c.get("all_paths").and_then(|v| v.as_str()) == Some("rw")
+            })
         })
 }
 
@@ -932,7 +920,7 @@ fn server_knows_the_client_by_name() {
         t["clients"]["myclient"]["client_id"].as_str(),
         Some(&*client_id(w.client.path()))
     );
-    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"));
+    assert_eq!(t["clients"]["myclient"]["all_paths"].as_str(), Some("rw"));
     ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
     let t: toml::Table = w.server_toml().parse().unwrap();
     // The automatic export the daemon made for the push names it too.
@@ -990,7 +978,7 @@ fn two_machines_sync_in_both_directions() {
         assert!(s["endpoint_id"].is_str() && c["client_id"].is_str(), "{t}");
         assert_ne!(s["endpoint_id"], c["client_id"], "{t}");
         assert_eq!(s["ssh"].as_str(), Some(name), "{t}");
-        assert_eq!(t["immediate"]["rw"][0].as_str(), Some(name), "{t}");
+        assert_eq!(c["all_paths"].as_str(), Some("rw"), "{t}");
     }
     assert_eq!(
         server["clients"]["myclient"]["client_id"].as_str(),
@@ -1046,7 +1034,7 @@ fn a_first_run_joins_a_client_only_entry() {
         assert!(s["endpoint_id"].is_str(), "{t}");
         assert_ne!(s["endpoint_id"], c["client_id"], "{t}");
         assert_eq!(s["ssh"].as_str(), Some(back_host), "{t}");
-        assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"), "{t}");
+        assert_eq!(c["all_paths"].as_str(), Some("rw"), "{t}");
         // The client still gets in.
         std::fs::write(w.src.path().join("a.txt"), "again\n").unwrap();
         ok(&w.irsync(&["-a", &w.src_arg(), &there]));
@@ -1070,7 +1058,11 @@ fn pair_sets_up_a_client_only_host() {
     assert!(t["servers"]["myclient"]["endpoint_id"].is_str(), "{t}");
     // A first run, not a recheck: the server machine is granted there.
     let t = config_in(w.client.path());
-    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myserver"), "{t}");
+    assert_eq!(
+        t["clients"]["myserver"]["all_paths"].as_str(),
+        Some("rw"),
+        "{t}"
+    );
 }
 
 /// A machine that syncs to itself has a server and a client for itself:
@@ -1094,7 +1086,7 @@ fn a_machine_syncs_to_itself() {
     assert_eq!(c["client_id"].as_str(), Some(&*client_id(home)), "{t}");
     assert!(s["endpoint_id"].is_str(), "{t}");
     assert_ne!(s["endpoint_id"], c["client_id"], "{t}");
-    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"), "{t}");
+    assert_eq!(c["all_paths"].as_str(), Some("rw"), "{t}");
     // Again: no ssh.
     let calls = ssh_calls_in(home);
     std::fs::write(w.src.path().join("a.txt"), "again\n").unwrap();
@@ -1438,7 +1430,7 @@ fn ssh_setup_itself_refuses_root_and_grants_nothing() {
         "{err}"
     );
     assert!(
-        !w.server_toml().contains("[immediate]"),
+        !w.server_toml().contains("all_paths"),
         "{}",
         w.server_toml()
     );
@@ -1556,15 +1548,14 @@ impl World {
         self.server.path().canonicalize().unwrap().join(rel)
     }
 
-    /// Grants the client immediate access on the server before any daemon
+    /// Gives the client `all_paths = "rw"` on the server before any daemon
     /// starts: a daemon `ssh-setup` leaves running reads its config only
     /// at the start.
     fn grant_client(&self) {
         let out = common::irsync_bin(self.client.path(), &["id", "generate"]);
         assert!(out.status.success(), "{out:?}");
         let id = client_id(self.client.path());
-        let out = common::irsync_bin(self.server.path(), &["grant", "add", "immediate", &id]);
-        assert!(out.status.success(), "{out:?}");
+        common::set_all_paths(self.server.path(), &id, Some(Access::ReadWrite));
     }
 }
 

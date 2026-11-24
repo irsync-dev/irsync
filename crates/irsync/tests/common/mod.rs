@@ -517,7 +517,7 @@ impl Harness {
         let export = tmp();
         seed(export.path());
         let grants = Grants {
-            all: Some(Access::ReadWrite),
+            all_exports: Some(Access::ReadWrite),
             ..Grants::default()
         };
         let authz = MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants);
@@ -1012,4 +1012,28 @@ pub fn spawn_daemon_binary_env(
         log,
         stdout: rx,
     }
+}
+
+/// Sets (or, with `None`, removes) `all_paths` of the client with id `id`
+/// in the config under `home`, as `irsync client set` does. A client the
+/// config does not know yet is saved as `[clients.granted]` first.
+pub fn set_all_paths(home: &std::path::Path, id: &str, access: Option<irsync::authz::Access>) {
+    use irsync::config::clients::Right;
+    let path = home.join(".config/irsync/irsync.toml");
+    let mut lock = irsync::manage::lock_config(&path).unwrap();
+    let mut msg = lock.load().unwrap();
+    let id = irsync::identity::parse_endpoint_id(id).unwrap();
+    let name = match msg
+        .clients
+        .iter()
+        .find(|c| irsync::manage::id_of(&c.client_id) == Some(id))
+    {
+        Some(c) => c.name.clone(),
+        None => {
+            irsync::manage::clients::client_add(&mut msg, "granted", id).unwrap();
+            "granted".to_string()
+        }
+    };
+    irsync::manage::clients::client_set(&mut msg, &name, &[(Right::AllPaths, access)]).unwrap();
+    lock.save(&mut msg).unwrap();
 }

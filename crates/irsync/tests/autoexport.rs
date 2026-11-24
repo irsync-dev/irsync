@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use irsync::authz::{Authorizer, FileAuthorizer};
+use irsync::authz::{Access, Authorizer, FileAuthorizer};
 use irsync::autoexport::{auto_root, check_root, AutoRootError};
 use irsync::config::paths::Paths;
 
@@ -96,7 +96,7 @@ fn file_authorizer_waits_for_the_config_lock() {
     irsync::fs::private::write(
         &config,
         format!(
-            "{}[immediate]\nrw = [\"{}\"]\n",
+            "{}[clients.c]\nclient_id = \"{}\"\nall_paths = \"rw\"\n",
             state_line(dir.path()),
             id(1)
         ),
@@ -115,7 +115,7 @@ fn file_authorizer_waits_for_the_config_lock() {
     let root = dir.path().join("data");
     std::fs::create_dir(&root).unwrap();
     authz
-        .add_auto_export(&root, id(1))
+        .add_auto_export(&root, id(1), Access::ReadWrite)
         .expect("add after the lock is released");
     release.join().unwrap();
     let snap = authz.snapshot().unwrap();
@@ -156,7 +156,7 @@ fn auto_export_names_the_peer_by_its_alias() {
     irsync::fs::private::write(
         &config,
         format!(
-            "{}[clients.laptop]\nclient_id = \"{}\"\n[immediate]\nrw = [\"laptop\"]\n",
+            "{}[clients.laptop]\nclient_id = \"{}\"\nall_paths = \"rw\"\n",
             state_line(dir.path()),
             id(1)
         ),
@@ -165,7 +165,9 @@ fn auto_export_names_the_peer_by_its_alias() {
     let authz = FileAuthorizer::new(Paths::resolve(Some(&config)));
     let root = dir.path().join("data");
     std::fs::create_dir(&root).unwrap();
-    authz.add_auto_export(&root, id(1)).unwrap();
+    authz
+        .add_auto_export(&root, id(1), Access::ReadWrite)
+        .unwrap();
     let snap = authz.snapshot().unwrap();
     let auto: Vec<_> = snap.exports.values().filter(|e| e.auto).collect();
     assert_eq!(auto.len(), 1, "{:?}", snap.exports);

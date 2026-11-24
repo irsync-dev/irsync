@@ -27,7 +27,7 @@ relay_mode = "disabled"
 congestion = "cubic"
 pq_key_exchange = "require"
 debug_addr = "127.0.0.1:9000"
-immediate = false
+allow_all_paths = false
 allow_root = true
 
 [daemon.discovery]
@@ -56,6 +56,8 @@ ssh_aliases = ["10.0.0.2", "nas.local"]
 
 [clients.nas]
 client_id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"
+all_exports = "ro"
+all_paths = "rw"
 
 [exports.photos]
 path = "/srv/photos"
@@ -65,10 +67,3 @@ fsync = true
 auto = true
 rw = ["nas"]
 ro = ["92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"]
-
-[all]
-rw = ["nas"]
-ro = ["92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"]
-
-[immediate]
-rw = ["nas"]

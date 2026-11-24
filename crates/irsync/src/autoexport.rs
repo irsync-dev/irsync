@@ -1,5 +1,5 @@
 //! Where the daemon puts the automatic export for a path a client with the
-//! immediate grant reached.
+//! `all_paths` right reached.
 
 use std::path::{Path, PathBuf};
 

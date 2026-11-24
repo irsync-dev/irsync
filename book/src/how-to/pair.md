@@ -61,9 +61,7 @@ as a client, and grants that name:
 ```toml
 [clients.myclient]
 client_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
-
-[immediate]
-rw = ["myclient"]
+all_paths = "rw"
 ```
 
 The name is a label. The daemon decides access by the `EndpointId` the name
@@ -106,7 +104,7 @@ irsync pair myserver
 ```
 
 For a saved server it runs the same setup again. It never adds back an
-immediate grant you removed on the server.
+`all_paths` you removed on the server.
 
 A sync never does this for you. When the daemon does not answer within
 15 seconds, the sync stops and says `myserver did not answer`. It names what
@@ -142,15 +140,15 @@ ssh is used only by `pair`, never for the data.
 ## Share only named directories
 
 By default `pair` lets the client reach any path your account on the
-server can (an [immediate grant](../reference/configuration.md#immediate-grants)).
+server can (`all_paths = "rw"`, see [Rights on a client](../reference/configuration.md#rights-on-a-client)).
 If the client should not reach every path, set this on the server before you
 pair:
 
 ```sh
-irsync config set daemon.immediate false
+irsync config set daemon.allow_all_paths false
 ```
 
-`pair` then grants nothing, and you grant exports by hand as in
+The daemon then ignores `all_paths`, and you grant exports by hand as in
 [Your first sync](../tutorial/first-sync.md#3-grant-the-client-access).
 
 ## What gets installed, and from where

@@ -31,9 +31,10 @@ The terms used on this page:
 - An **export** is a directory the daemon shares under a name.
 - A **grant** lets a client use an export, read-write or read-only. The daemon
   refuses every client that no grant names.
-- An **immediate grant** lets a client reach any path the daemon's account
-  can, read-write. The daemon then makes an export for each new path the
-  client uses.
+- The **`all_paths` right** lets a client reach any path the daemon's account
+  can, read-write or read-only. The daemon then makes an export for each new
+  path the client uses. `all_exports` reaches every export you made by hand.
+  Both are set with `irsync client set`.
 
 The last two lines of the synopsis above are the rsync-compatible shorthand:
 a command written for rsync works with `irsync` in its place. The named forms
@@ -123,7 +124,7 @@ sync, push, pull or listing never does. `HOST` is an ssh destination, such as
 - installs `irsync`, `fileset` and the manual pages on the server (the same
   files as `install.sh`, in `~/.local/bin`) when the server has no matching
   build;
-- grants this client access to any path (`[immediate]`);
+- gives this client `all_paths = "rw"`, access to any path;
 - starts the daemon and makes it a user service: a systemd service on Linux, a
   launchd agent on macOS;
 - saves `HOST` as a server with `ssh = "HOST"`.
@@ -146,7 +147,7 @@ is left alone. With no service manager, a foreign service file or
 
 For a saved server, `pair` checks it again: it updates irsync, starts the
 daemon if it has stopped and updates the server's `endpoint_id` if it
-changed. It never adds back an immediate grant removed on the server. A sync
+changed. It never adds back `all_paths` removed on the server. A sync
 to a server `pair` saved dials once and waits at most 15 seconds for the
 daemon to answer. It retries only when you give `--dial-retries N` on the
 command line: then it tries N more times first. When the daemon does not
@@ -324,7 +325,7 @@ table, then `[client]`, then the built-in default. See
 | `irsync daemon` | Run the daemon. Its flags are under [irsync daemon](#irsync-daemon). |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions and stale index entries. See [Clean up state](../how-to/clean-up.md). |
-| `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync grant add immediate WHO` lets `WHO` reach any path, read-write; it is what `irsync pair` grants. |
+| `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync client set NAME all_paths=rw` lets a client reach any path, read-write; it is what `irsync pair` sets. |
 
 ### Flags every command takes
 

@@ -5,16 +5,19 @@
 //! and its own messages, so that an old file fails as it always did. It
 //! shares only the parsers of single values. [`read`] then splits each
 //! `[hosts.N]` into a server, a client or both, so that every id keeps
-//! the grants it had; see [`read`] for how.
+//! the grants it had; see [`read`] for how. The grants of `[all]` and
+//! `[immediate]` become rights of the clients they name.
 //!
 //! The rule "a host's `client_id`, else its `endpoint_id`" lives only
 //! here.
 
+use super::clients::Right;
 use super::comments::{attach_doc_with, document, Place, Spot};
 use super::exports::{name_problem, not_absolute};
 use super::names::valid_alias;
 use super::settings::{listen_problem, parse_debug_addr};
 use super::{duration, expand_tilde, line_of, ConfigError};
+use crate::authz::Access;
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
@@ -254,7 +257,8 @@ pub struct Converted {
     pub config: pb::Config,
     /// One note for each `[hosts.N]` that had a `client_id`, no
     /// `endpoint_id` and keys that only apply to a server, which the
-    /// conversion dropped.
+    /// conversion dropped; then one for each entry of `[all]` or
+    /// `[immediate]` that named nobody.
     pub dropped: Vec<String>,
 }
 
@@ -288,13 +292,21 @@ const SERVER_KEYS: [&str; 12] = [
 /// - with only a `client_id`: the keys of a server are dropped, and
 ///   named in [`Converted::dropped`].
 ///
+/// Then the grants of `[all]` and `[immediate]` become rights of the
+/// clients they name (see [`rights_onto_clients`]), and `[daemon]
+/// immediate` becomes `allow_all_paths`.
+///
 /// The comments of `[hosts.N]` and its tail go to server `N` when there
 /// is one, else to client `N`; those of `client_id` to client `N`; those
 /// of the other keys with their key to server `N`, or to the tail of
 /// client `N` when there is no server. The comments of a bare `[hosts]`
 /// or of `hosts = { … }` go to the first entry made from the first host.
 pub fn read(text: &str, path: &Path) -> Result<Converted, ConfigError> {
-    let (mut config, hosts) = convert(text, path)?;
+    let Conversion {
+        mut config,
+        hosts,
+        not_converted,
+    } = convert(text, path)?;
     let doc = document(text, path)?;
     let mut dropped = Vec::new();
     for (name, _) in hosts.iter().filter(|(_, server)| !server) {
@@ -306,6 +318,7 @@ pub fn read(text: &str, path: &Path) -> Result<Converted, ConfigError> {
             ));
         }
     }
+    dropped.extend(not_converted);
     let first = hosts
         .first()
         .map(|(name, server)| table_path(if *server { "servers" } else { "clients" }, name));
@@ -318,14 +331,29 @@ pub fn read(text: &str, path: &Path) -> Result<Converted, ConfigError> {
 /// Reads the text of a file of layout 1 into the message of layout 2, as
 /// [`read`] does, without its comments and the notes of what it left out.
 pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
-    Ok(convert(text, path)?.0)
+    Ok(convert(text, path)?.config)
 }
 
-/// The message of layout 2 of a file of layout 1, without comments, and
-/// its hosts in file order: each name, and whether it became a server.
-fn convert(text: &str, path: &Path) -> Result<(pb::Config, Vec<(String, bool)>), ConfigError> {
-    let (old, hosts) = read_v1_values(text, path)?;
-    let granted = granted_names(&old);
+/// The grant tables of layout 1 that layout 2 has no table for.
+struct OldGrants {
+    all: Option<RawGrants>,
+    immediate: Option<RawImmediate>,
+}
+
+/// What [`convert`] makes of a file of layout 1.
+struct Conversion {
+    /// The message of layout 2, without comments.
+    config: pb::Config,
+    /// The hosts in file order: each name, and whether it became a server.
+    hosts: Vec<(String, bool)>,
+    /// A note for each entry of `[all]` or `[immediate]` that named nobody.
+    not_converted: Vec<String>,
+}
+
+/// A file of layout 1 in the message of layout 2, without comments.
+fn convert(text: &str, path: &Path) -> Result<Conversion, ConfigError> {
+    let (old, hosts, grants) = read_v1_values(text, path)?;
+    let granted = granted_names(&old, &grants);
     let mut config = pb::Config {
         config_version: Some(2),
         ..old
@@ -352,19 +380,102 @@ fn convert(text: &str, path: &Path) -> Result<(pb::Config, Vec<(String, bool)>),
         }
         names.push((name, h.endpoint_id.is_some()));
     }
-    Ok((config, names))
+    let not_converted = rights_onto_clients(&mut config, grants.all, grants.immediate);
+    Ok(Conversion {
+        config,
+        hosts: names,
+        not_converted,
+    })
 }
 
 /// Every name or id in a grant list: `[all]`, `[immediate]` or an export.
-fn granted_names(c: &pb::Config) -> BTreeSet<String> {
-    let all = c.all.iter().flat_map(|g| [&g.rw, &g.ro]);
-    let immediate = c.immediate.iter().flat_map(|g| [&g.rw, &g.ro]);
+fn granted_names(c: &pb::Config, old: &OldGrants) -> BTreeSet<String> {
+    let all = old.all.iter().flat_map(|g| [&g.rw, &g.ro]);
+    let immediate = old.immediate.iter().map(|g| &g.rw);
+    let old = all.chain(immediate).flatten().flatten().cloned();
     let exports = c.exports.iter().flat_map(|e| [&e.rw, &e.ro]);
-    all.chain(immediate)
-        .chain(exports)
-        .flatten()
-        .map(|e| e.value.clone())
-        .collect()
+    let exports = exports.flatten().map(|e| e.value.clone());
+    old.chain(exports).collect()
+}
+
+/// The comment above a client made from an id in `[all]` or `[immediate]`.
+const MADE_FROM_A_GRANT: &str = "# made from a grant to this id in [all] or [immediate]";
+
+/// Gives each client that `[all]` or `[immediate]` names the right that
+/// table stood for: `all_exports` (`rw` or `ro`) for `[all]`, `all_paths
+/// = "rw"` for `[immediate]`; `rw` beats `ro`. Run after the hosts are
+/// split, so that every host a list names is a client (see [`convert`]).
+/// An entry names a client by its name, else by its id (see
+/// [`client_for`]). Returns a note for each entry that names nobody,
+/// which is dropped.
+fn rights_onto_clients(
+    config: &mut pb::Config,
+    all: Option<RawGrants>,
+    immediate: Option<RawImmediate>,
+) -> Vec<String> {
+    let (all_rw, all_ro) = all.map_or((None, None), |g| (g.rw, g.ro));
+    let lists = [
+        ("[all] rw", Right::AllExports, Access::ReadWrite, all_rw),
+        ("[all] ro", Right::AllExports, Access::ReadOnly, all_ro),
+        (
+            "[immediate] rw",
+            Right::AllPaths,
+            Access::ReadWrite,
+            immediate.and_then(|g| g.rw),
+        ),
+    ];
+    let mut dropped = Vec::new();
+    for (list, right, access, entries) in lists {
+        for text in entries.into_iter().flatten() {
+            let Some(i) = client_for(config, &text) else {
+                dropped.push(format!(
+                    "{list}: dropped {text:?}: it names no host and is no id"
+                ));
+                continue;
+            };
+            let c = &mut config.clients[i];
+            if right.get(c) != Some(Access::ReadWrite) {
+                right.set(c, Some(access));
+            }
+        }
+    }
+    dropped
+}
+
+/// The index of the client a grant entry names: the one of that name,
+/// else the one with that id (the first name in lexicographic order, as
+/// `Clients::alias_of` picks). An id no client has becomes a new client,
+/// named `client-` and the first 10 hex digits of the id (`-2`, `-3`
+/// when a server or client has that name). `None` for text that is
+/// neither a name nor an id.
+fn client_for(config: &mut pb::Config, text: &str) -> Option<usize> {
+    if let Some(i) = config.clients.iter().position(|c| c.name == text) {
+        return Some(i);
+    }
+    let id = parse_endpoint_id(text).ok()?.as_bytes().to_vec();
+    let by_id = config
+        .clients
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.client_id == id)
+        .min_by(|(_, a), (_, b)| a.name.cmp(&b.name));
+    if let Some((i, _)) = by_id {
+        return Some(i);
+    }
+    let hex: String = id[..5].iter().map(|b| format!("{b:02x}")).collect();
+    let base = format!("client-{hex}");
+    let taken = |name: &str| {
+        config.clients.iter().any(|c| c.name == name)
+            || config.servers.iter().any(|s| s.name == name)
+    };
+    let name = std::iter::once(base.clone())
+        .chain((2..).map(|n| format!("{base}-{n}")))
+        .find(|n| !taken(n))
+        .expect("an endless list has a free name");
+    config
+        .clients
+        .push(client_entry(&name, id, vec![MADE_FROM_A_GRANT.to_string()]));
+    Some(config.clients.len() - 1)
 }
 
 fn server(h: &Host, endpoint_id: Vec<u8>) -> pb::ServerEntry {
@@ -424,7 +535,10 @@ fn table_path(group: &str, name: &str) -> Vec<String> {
 
 /// Where a comment the walker placed in `[hosts]` goes in the message of
 /// layout 2 (see [`read`]). `first` is the table of the first entry made
-/// from the first host. Places outside `[hosts]` stay as they are.
+/// from the first host. Those of `immediate` in `[daemon]` go to
+/// `allow_all_paths`, its new name. Other places stay as they are; those
+/// of `[all]` and `[immediate]` end in the footer, as the comments of
+/// any table the message has not.
 fn moved(msg: &pb::Config, first: Option<&Vec<String>>, place: Place) -> Place {
     let has_server = |name: &str| msg.servers.iter().any(|s| s.name == name);
     let entry = |name: &str| match has_server(name) {
@@ -462,6 +576,9 @@ fn moved(msg: &pb::Config, first: Option<&Vec<String>>, place: Place) -> Place {
         Spot::Key(p, k) if p.is_empty() && k == "hosts" => to_first(wrap(Spot::Key(p, k))),
         // `N = { … }` under `[hosts]`.
         Spot::Key(p, name) if is_group(&p) => wrap(Spot::Table(entry(&name))),
+        Spot::Key(p, k) if p == ["daemon"] && k == "immediate" => {
+            wrap(Spot::Key(p, "allow_all_paths".to_owned()))
+        }
         Spot::Table(p) => match host(&p) {
             Some(name) => wrap(Spot::Table(entry(&name))),
             None => wrap(Spot::Table(p)),
@@ -505,8 +622,12 @@ struct Host {
 }
 
 /// Reads the text of a file of layout 1 into the message, without its
-/// hosts and comments, and its hosts. `path` is the file named in errors.
-fn read_v1_values(text: &str, path: &Path) -> Result<(pb::Config, Vec<Host>), ConfigError> {
+/// hosts, its `[all]` and `[immediate]` and its comments; its hosts; and
+/// those two tables. `path` is the file named in errors.
+fn read_v1_values(
+    text: &str,
+    path: &Path,
+) -> Result<(pb::Config, Vec<Host>, OldGrants), ConfigError> {
     let at = |offset: usize, message: String| ConfigError::File {
         path: path.to_path_buf(),
         line: Some(line_of(text, offset)),
@@ -526,26 +647,11 @@ fn read_v1_values(text: &str, path: &Path) -> Result<(pb::Config, Vec<Host>), Co
     };
     let hosts = hosts(raw.hosts, &at)?;
     config.exports = exports(raw.exports, &at)?;
-    config.all = raw.all.map(|g| {
-        let (rw, rw_set) = entries(g.rw);
-        let (ro, ro_set) = entries(g.ro);
-        pb::GrantTable {
-            rw,
-            rw_set,
-            ro,
-            ro_set,
-            ..Default::default()
-        }
-    });
-    config.immediate = raw.immediate.map(|g| {
-        let (rw, rw_set) = entries(g.rw);
-        pb::GrantTable {
-            rw,
-            rw_set,
-            ..Default::default()
-        }
-    });
-    Ok((config, hosts))
+    let grants = OldGrants {
+        all: raw.all,
+        immediate: raw.immediate,
+    };
+    Ok((config, hosts, grants))
 }
 
 /// The shape pass over the top-level keys, with the old-layout hints.
@@ -668,7 +774,8 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
             ..Default::default()
         }),
         debug_addr: r.debug_addr,
-        immediate: r.immediate,
+        // Layout 2 calls it so.
+        allow_all_paths: r.immediate,
         allow_root: r.allow_root,
         ..Default::default()
     }

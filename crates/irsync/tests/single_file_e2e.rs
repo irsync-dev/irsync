@@ -1,11 +1,12 @@
 //! One file as the source of a copy, through the `irsync` binary: pushes
 //! and pulls placed by rsync's rules, several sources, a listing of one
-//! file, a push through the immediate grant, and the same placement as
+//! file, a push by a client with `all_paths`, and the same placement as
 //! `rsync -a` in both directions (skipped without GNU rsync).
 
 mod common;
 
 use common::{irsync_bin as irsync, irsync_bin_in, spawn_daemon_binary};
+use irsync::authz::Access;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -118,16 +119,16 @@ fn names(dir: &Path) -> Vec<std::ffi::OsString> {
     v
 }
 
-/// The ssh quick-start path: a key with the immediate grant pushes one
+/// The ssh quick-start path: a client with `all_paths = "rw"` pushes one
 /// file to `HOST:tmp` (the daemon's `<home>/tmp`). A missing `tmp` becomes
 /// the file and the home is exported; a directory `tmp` gets
 /// `tmp/f.iso` and is itself exported; a file `tmp` is updated. A missing
 /// parent is refused, and nothing is created or exported.
 #[test]
-fn immediate_push_of_one_file() {
+fn all_paths_push_of_one_file() {
     for case in ["missing", "dir", "file", "no_parent"] {
         let s = setup();
-        ok(&s.server, &["grant", "add", "immediate", &s.client_id]);
+        common::set_all_paths(&s.server, &s.client_id, Some(Access::ReadWrite));
         let home = s.server.canonicalize().unwrap();
         let tmp = home.join("tmp");
         fs::write(s.work.join("f.iso"), b"image").unwrap();

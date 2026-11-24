@@ -6,7 +6,9 @@
 //! comment where [`super::comments`] reads it back from. It writes only
 //! what the message sets.
 
+use super::clients::RIGHTS;
 use super::duration;
+use crate::authz::Access;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -56,17 +58,6 @@ pub fn write(msg: &pb::Config) -> String {
     }
     for e in &msg.exports {
         sections.push(table(&["exports", &e.name], &e.comment, &e.tail, export(e)));
-    }
-    if let Some(g) = &msg.all {
-        let mut keys = Keys::new(&g.key_comments);
-        keys.array("rw", &g.rw, g.rw_set);
-        keys.array("ro", &g.ro, g.ro_set);
-        sections.push(table(&["all"], &g.comment, &g.tail, keys));
-    }
-    if let Some(g) = &msg.immediate {
-        let mut keys = Keys::new(&g.key_comments);
-        keys.array("rw", &g.rw, g.rw_set);
-        sections.push(table(&["immediate"], &g.comment, &g.tail, keys));
     }
     sections.push(msg.footer.clone());
 
@@ -145,7 +136,7 @@ fn daemon(d: &pb::Daemon) -> Keys<'_> {
         d.pq_key_exchange.and_then(pq_key_exchange),
     );
     k.string("debug_addr", d.debug_addr.as_deref());
-    k.bool("immediate", d.immediate);
+    k.bool("allow_all_paths", d.allow_all_paths);
     k.bool("allow_root", d.allow_root);
     k
 }
@@ -189,6 +180,9 @@ fn server(s: &pb::ServerEntry) -> Keys<'_> {
 fn client_entry(c: &pb::ClientEntry) -> Keys<'_> {
     let mut k = Keys::new(&c.key_comments);
     k.string("client_id", non_empty(&c.client_id).map(id).as_deref());
+    for right in RIGHTS {
+        k.string(right.key(), right.get(c).map(Access::as_str));
+    }
     k
 }
 

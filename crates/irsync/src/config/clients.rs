@@ -3,6 +3,7 @@
 
 use super::names::{invalid_name, valid_alias};
 use super::{endpoint_id_from, file_error, ConfigError};
+use crate::authz::Access;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
@@ -13,6 +14,73 @@ use std::path::{Path, PathBuf};
 pub struct ClientEntry {
     /// The id the grants naming this client are for.
     pub client_id: EndpointId,
+    /// The right over every export that is not automatic, when the client has it.
+    pub all_exports: Option<Access>,
+    /// The right over any path no export names, when the client has it.
+    pub all_paths: Option<Access>,
+}
+
+/// A right a `[clients.NAME]` entry can hold. The one place that names the
+/// rights: the reader, the writer, `client set` and the listings go through
+/// [`RIGHTS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Right {
+    AllExports,
+    AllPaths,
+}
+
+pub const RIGHTS: [Right; 2] = [Right::AllExports, Right::AllPaths];
+
+impl Right {
+    /// The key of the right in the file.
+    pub fn key(self) -> &'static str {
+        match self {
+            Right::AllExports => "all_exports",
+            Right::AllPaths => "all_paths",
+        }
+    }
+
+    /// The right of the entry; none when unset (or not a known value).
+    pub fn get(self, c: &pb::ClientEntry) -> Option<Access> {
+        self.field(c).and_then(Access::from_message)
+    }
+
+    /// The right of a typed entry; none when unset.
+    pub fn of(self, c: &ClientEntry) -> Option<Access> {
+        match self {
+            Right::AllExports => c.all_exports,
+            Right::AllPaths => c.all_paths,
+        }
+    }
+
+    /// Sets or, with `None`, removes the right of the entry.
+    pub fn set(self, c: &mut pb::ClientEntry, a: Option<Access>) {
+        *self.field_mut(c).0 = a.map(|a| pb::Access::from(a) as i32);
+    }
+
+    /// The message's own value, whatever number it holds.
+    fn field(self, c: &pb::ClientEntry) -> Option<i32> {
+        match self {
+            Right::AllExports => c.all_exports,
+            Right::AllPaths => c.all_paths,
+        }
+    }
+
+    /// The message's field of the right, with the entry's key comments.
+    pub(crate) fn field_mut(
+        self,
+        c: &mut pb::ClientEntry,
+    ) -> (&mut Option<i32>, &mut BTreeMap<String, pb::Comment>) {
+        match self {
+            Right::AllExports => (&mut c.all_exports, &mut c.key_comments),
+            Right::AllPaths => (&mut c.all_paths, &mut c.key_comments),
+        }
+    }
+
+    /// The message of a value that is not `"rw"` or `"ro"`.
+    pub fn not_an_access(self) -> String {
+        format!("{} must be \"rw\" or \"ro\"", self.key())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +97,25 @@ impl ClientEntry {
         }
         let client_id =
             endpoint_id_from(&c.client_id).map_err(|e| format!("client {name:?}: {e}"))?;
-        Ok(ClientEntry { client_id })
+        let mut entry = ClientEntry {
+            client_id,
+            all_exports: None,
+            all_paths: None,
+        };
+        for right in RIGHTS {
+            let access = match right.field(c) {
+                None => None,
+                Some(n) => Some(
+                    Access::from_message(n)
+                        .ok_or_else(|| format!("client {name:?}: {}", right.not_an_access()))?,
+                ),
+            };
+            match right {
+                Right::AllExports => entry.all_exports = access,
+                Right::AllPaths => entry.all_paths = access,
+            }
+        }
+        Ok(entry)
     }
 }
 

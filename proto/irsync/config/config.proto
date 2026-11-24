@@ -19,6 +19,8 @@ message Entry {                // one element of a string array
 enum RelayMode { RELAY_MODE_UNSPECIFIED = 0; RELAY_MODE_DEFAULT = 1; RELAY_MODE_DISABLED = 2; }
 enum Congestion { CONGESTION_UNSPECIFIED = 0; CONGESTION_BBR = 1; CONGESTION_CUBIC = 2; }
 enum PqKeyExchange { PQ_KEY_EXCHANGE_UNSPECIFIED = 0; PQ_KEY_EXCHANGE_PREFER = 1; PQ_KEY_EXCHANGE_REQUIRE = 2; }
+// A right a client can hold over every export or every path; unset: none.
+enum Access { ACCESS_UNSPECIFIED = 0; ACCESS_RW = 1; ACCESS_RO = 2; }
 enum OtlpProtocol { OTLP_PROTOCOL_UNSPECIFIED = 0; OTLP_PROTOCOL_GRPC = 1; OTLP_PROTOCOL_HTTP = 2; }
 
 // Every table has: comment (its own), key_comments (by key name) and
@@ -36,11 +38,10 @@ message Config {
   Daemon daemon = 9;
   Telemetry telemetry = 10;
   repeated Export exports = 12;
-  GrantTable all = 13;
-  GrantTable immediate = 14;   // only rw is used
   optional uint32 config_version = 15;
   repeated ServerEntry servers = 16;
   repeated ClientEntry clients = 17;
+  reserved 13, 14;
 }
 
 message Client {
@@ -72,8 +73,9 @@ message Daemon {
   optional PqKeyExchange pq_key_exchange = 14;
   Discovery discovery = 15;
   optional string debug_addr = 16;
-  optional bool immediate = 17;
   optional bool allow_root = 18;
+  optional bool allow_all_paths = 19;
+  reserved 17;
 }
 
 message Discovery {
@@ -115,6 +117,8 @@ message ClientEntry {
   Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
   string name = 4;
   bytes client_id = 5;         // empty: missing
+  optional Access all_exports = 6;
+  optional Access all_paths = 7;
 }
 
 message Export {
@@ -129,12 +133,4 @@ message Export {
   bool rw_set = 11;
   repeated Entry ro = 12;
   bool ro_set = 13;
-}
-
-message GrantTable {
-  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
-  repeated Entry rw = 4;
-  bool rw_set = 5;
-  repeated Entry ro = 6;
-  bool ro_set = 7;
 }

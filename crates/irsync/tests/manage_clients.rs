@@ -1,7 +1,10 @@
+use irsync::authz::Access;
+use irsync::config::clients::Right;
 use irsync::config::legacy_v1;
+use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::clients::{
-    client_add, client_list, client_names, client_remove, client_rename,
+    client_add, client_list, client_names, client_remove, client_rename, client_set, parse_setting,
 };
 use irsync::manage::ManageError;
 use irsync_proto::config as pb;
@@ -22,8 +25,8 @@ fn msg(text: &str) -> pb::Config {
 
 fn named_everywhere() -> String {
     format!(
-        "[hosts.box]\nclient_id = \"{}\"\n[all]\nrw = [\"box\", \"x\"]\n\
-         [immediate]\nrw = [\"box\"]\n\
+        "[hosts.box]\nclient_id = \"{}\"\n[exports.a]\npath = \"/a\"\nrw = [\"box\", \"x\"]\n\
+         [exports.b]\npath = \"/b\"\nrw = [\"box\"]\n\
          [exports.p]\npath = \"/p\"\nro = [\"y\", \"box\"]\n\
          [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n",
         id(1)
@@ -62,11 +65,11 @@ fn add_refuses_an_invalid_name() {
 #[test]
 fn remove_without_grants() {
     let mut m = msg(&format!(
-        "[hosts.box]\nclient_id = \"{}\"\n[all]\nrw = [\"other\"]\n",
+        "[hosts.box]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n",
         id(1)
     ));
     assert_eq!(client_remove(&mut m, "box", false).unwrap(), 0);
-    assert_eq!(write(&m), "[all]\nrw = [\"other\"]\n");
+    assert_eq!(write(&m), "[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n");
     assert!(matches!(
         client_remove(&mut m, "box", false),
         Err(ManageError::NotFound(_))
@@ -79,10 +82,10 @@ fn remove_is_refused_while_grants_name_the_client() {
     let before = write(&m);
     let e = client_remove(&mut m, "box", false).unwrap_err();
     assert!(matches!(&e, ManageError::ClientInUse { name, lists }
-        if name == "box" && lists == &["all", "immediate", "exports.p"]));
+        if name == "box" && lists == &["exports.a", "exports.b", "exports.p"]));
     assert_eq!(
         e.to_string(),
-        "client \"box\" is named by grants in all, immediate, exports.p: \
+        "client \"box\" is named by grants in exports.a, exports.b, exports.p: \
          remove those grants first, or pass --force"
     );
     assert_eq!(write(&m), before);
@@ -95,10 +98,10 @@ fn force_removes_the_grants_then_the_client() {
     assert!(m.clients.is_empty());
     assert_eq!(
         write(&m),
-        "[exports.p]\npath = \"/p\"\nro = [\"y\"]\n\n\
-         [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n\n\
-         [all]\nrw = [\"x\"]\n\n\
-         [immediate]\nrw = []\n"
+        "[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n\n\
+         [exports.b]\npath = \"/b\"\nrw = []\n\n\
+         [exports.p]\npath = \"/p\"\nro = [\"y\"]\n\n\
+         [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n"
     );
 }
 
@@ -175,4 +178,110 @@ fn list_marks_a_missing_or_invalid_id() {
         ..Default::default()
     };
     assert_eq!(client_list(&m), ["none: (missing)", "bad: (invalid)"]);
+}
+
+fn client_file() -> pb::Config {
+    reader::read(
+        &format!("[clients.laptop]\nclient_id = \"{}\"\n", id(1)),
+        Path::new("f"),
+    )
+    .unwrap()
+    .config
+}
+
+#[test]
+fn client_set_sets_and_removes_rights() {
+    let mut m = client_file();
+    client_set(
+        &mut m,
+        "laptop",
+        &[
+            (Right::AllExports, Some(Access::ReadWrite)),
+            (Right::AllPaths, Some(Access::ReadOnly)),
+        ],
+    )
+    .unwrap();
+    let text = write(&m);
+    assert!(text.contains("all_exports = \"rw\""), "{text}");
+    assert!(text.contains("all_paths = \"ro\""), "{text}");
+    client_set(&mut m, "laptop", &[(Right::AllPaths, None)]).unwrap();
+    let text = write(&m);
+    assert!(text.contains("all_exports = \"rw\""), "{text}");
+    assert!(!text.contains("all_paths"), "{text}");
+}
+
+#[test]
+fn client_set_on_an_unknown_client_is_refused() {
+    let mut m = client_file();
+    let before = write(&m);
+    assert!(matches!(
+        client_set(&mut m, "nope", &[(Right::AllPaths, Some(Access::ReadWrite))]),
+        Err(ManageError::NotFound(n)) if n == "nope"
+    ));
+    assert_eq!(write(&m), before);
+}
+
+#[test]
+fn parse_setting_takes_rw_ro_none() {
+    assert_eq!(
+        parse_setting("all_paths=ro").unwrap(),
+        (Right::AllPaths, Some(Access::ReadOnly))
+    );
+    assert_eq!(
+        parse_setting("all_exports=rw").unwrap(),
+        (Right::AllExports, Some(Access::ReadWrite))
+    );
+    assert_eq!(
+        parse_setting("all_paths=none").unwrap(),
+        (Right::AllPaths, None)
+    );
+    // admin is not a right yet; issue #203 adds it to RIGHTS.
+    for bad in [
+        "all_paths=yes",
+        "admin=rw",
+        "all_paths",
+        "all_paths=",
+        "=rw",
+    ] {
+        assert!(
+            matches!(parse_setting(bad), Err(ManageError::BadValue(_))),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn client_list_shows_rights() {
+    let mut m = client_file();
+    client_set(
+        &mut m,
+        "laptop",
+        &[
+            (Right::AllExports, Some(Access::ReadWrite)),
+            (Right::AllPaths, Some(Access::ReadOnly)),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        client_list(&m),
+        vec![format!("laptop: {} all_exports=rw all_paths=ro", id(1))]
+    );
+    client_set(&mut m, "laptop", &[(Right::AllExports, None)]).unwrap();
+    assert_eq!(
+        client_list(&m),
+        vec![format!("laptop: {} all_paths=ro", id(1))]
+    );
+}
+
+#[test]
+fn rights_alone_do_not_hold_a_client_back_from_removal() {
+    let mut m = client_file();
+    client_set(
+        &mut m,
+        "laptop",
+        &[(Right::AllPaths, Some(Access::ReadWrite))],
+    )
+    .unwrap();
+    assert_eq!(client_remove(&mut m, "laptop", false).unwrap(), 0);
+    assert!(m.clients.is_empty());
 }

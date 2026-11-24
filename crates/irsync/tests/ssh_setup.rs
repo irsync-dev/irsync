@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use common::irsync_bin;
 use iroh::{EndpointId, SecretKey};
+use irsync::authz::Access;
 use irsync::config::file::Config;
 use irsync::config::reader;
 use irsync::config::writer::write;
@@ -121,7 +122,7 @@ fn report_roundtrips() {
     let grants = [
         GrantOutcome::Added,
         GrantOutcome::Already,
-        GrantOutcome::ImmediateOff,
+        GrantOutcome::AllPathsOff,
         GrantOutcome::Missing,
     ];
     let ids = [Created::Existing, Created::Generated];
@@ -173,10 +174,9 @@ fn fresh_home_generates_grants_starts() {
     assert_eq!(r.version, *irsync::build::LONG_VERSION);
     assert_eq!(r.log, home.state().join("daemon.log"));
     let doc = read_config(&home);
-    let rw = doc["immediate"]["rw"].as_array().unwrap();
-    assert_eq!(rw.len(), 1);
-    // The client is saved under its host name, and the name is granted.
-    assert_eq!(rw[0].as_str().unwrap(), "myclient");
+    // The client is saved under its host name, with all_paths = "rw".
+    assert!(!doc.contains_key("immediate"));
+    assert_eq!(doc["clients"]["myclient"]["all_paths"].as_str(), Some("rw"));
     assert_eq!(
         doc["clients"]["myclient"]["client_id"].as_str().unwrap(),
         client.to_string()
@@ -252,26 +252,38 @@ fn no_dht_turns_publishing_off_and_reloads() {
 }
 
 #[test]
-fn immediate_off_reports_and_does_not_grant() {
-    let home = Home::new("immediate = false\n");
+fn all_paths_off_reports_and_does_not_grant() {
+    let home = Home::new("allow_all_paths = false\n");
     let r = home.setup(&client_id());
-    assert_eq!(r.grant, GrantOutcome::ImmediateOff);
-    assert!(!read_config(&home).contains_key("immediate"));
+    assert_eq!(r.grant, GrantOutcome::AllPathsOff);
+    assert!(!read_config(&home).contains_key("clients"));
+}
+
+/// A client the owner lowered to `all_paths = "ro"` is not raised again
+/// by a recheck.
+#[test]
+fn a_recheck_after_lowering_to_ro_reports_missing() {
+    let home = Home::new("");
+    let client = client_id();
+    assert_eq!(home.setup(&client).grant, GrantOutcome::Added);
+    common::set_all_paths(home.path(), &client.to_string(), Some(Access::ReadOnly));
+    let bytes = std::fs::read(home.config()).unwrap();
+    let r = home.setup_with(&client, &["--recheck"]);
+    assert_eq!(r.grant, GrantOutcome::Missing);
+    assert_eq!(std::fs::read(home.config()).unwrap(), bytes);
+    let doc = read_config(&home);
+    assert_eq!(doc["clients"]["myclient"]["all_paths"].as_str(), Some("ro"));
 }
 
 /// `--recheck` (the client's fallback for a saved host) never puts back an
-/// immediate grant the owner removed; it adds one only when the daemon
+/// all_paths right the owner removed; it adds one only when the daemon
 /// identity was just generated (a rebuilt server).
 #[test]
 fn recheck_does_not_regrant() {
     let home = Home::new("");
     let client = client_id();
     assert_eq!(home.setup(&client).grant, GrantOutcome::Added);
-    let out = irsync_bin(
-        home.path(),
-        &["grant", "remove", "immediate", &client.to_string()],
-    );
-    assert!(out.status.success(), "{out:?}");
+    common::set_all_paths(home.path(), &client.to_string(), None);
     let bytes = std::fs::read(home.config()).unwrap();
     let r = home.setup_with(&client, &["--recheck"]);
     assert_eq!(r.grant, GrantOutcome::Missing);
@@ -279,25 +291,18 @@ fn recheck_does_not_regrant() {
     assert_eq!(std::fs::read(home.config()).unwrap(), bytes);
     // Still granted: nothing to say.
     let other = client_id();
-    let out = irsync_bin(
-        home.path(),
-        &["grant", "add", "immediate", &other.to_string()],
-    );
-    assert!(out.status.success(), "{out:?}");
+    common::set_all_paths(home.path(), &other.to_string(), Some(Access::ReadWrite));
     assert_eq!(
         home.setup_named(&other, "other", &["--recheck"]).grant,
         GrantOutcome::Already
     );
-    // It was granted by its bare id. The name is saved, and saving the
-    // config writes a peer by the name `[clients]` has for it, as always.
+    // It had all_paths under another name; that name stays.
     let doc = read_config(&home);
-    let rw = doc["immediate"]["rw"].as_array().unwrap();
-    assert_eq!(rw.len(), 1);
-    assert_eq!(rw[0].as_str().unwrap(), "other");
     assert_eq!(
-        doc["clients"]["other"]["client_id"].as_str().unwrap(),
+        doc["clients"]["granted"]["client_id"].as_str().unwrap(),
         other.to_string()
     );
+    assert!(!doc["clients"].as_table().unwrap().contains_key("other"));
     // A rebuilt server (fresh identity) gets the grant again.
     let fresh = Home::new("");
     let r = fresh.setup_with(&client, &["--recheck"]);
@@ -415,7 +420,7 @@ fn setup_refuses_to_write_past_an_old_foreign_daemon() {
 }
 
 #[test]
-fn a_client_with_an_alias_is_granted_by_alias() {
+fn a_client_with_an_alias_gets_all_paths_under_it() {
     let home = Home::new("");
     let client = client_id();
     let mut text = std::fs::read_to_string(home.config()).unwrap();
@@ -423,10 +428,8 @@ fn a_client_with_an_alias_is_granted_by_alias() {
     irsync::fs::private::write(home.config(), text).unwrap();
     assert_eq!(home.setup(&client).grant, GrantOutcome::Added);
     let doc = read_config(&home);
-    let rw = doc["immediate"]["rw"].as_array().unwrap();
-    assert_eq!(rw.len(), 1);
-    assert_eq!(rw[0].as_str().unwrap(), "laptop");
-    // The alias is recognised as the client's grant on a second run.
+    assert_eq!(doc["clients"]["laptop"]["all_paths"].as_str(), Some("rw"));
+    // The right is recognised on a second run.
     assert_eq!(home.setup(&client).grant, GrantOutcome::Already);
 }
 
@@ -519,7 +522,7 @@ fn a_server_of_the_same_name_is_no_obstacle() {
     assert_eq!(c.clients.get("desktop").unwrap().client_id, id(2));
     assert_eq!((c.servers.entries.len(), c.clients.entries.len()), (1, 1));
     let t: toml::Table = write(&doc).parse().unwrap();
-    assert_eq!(t["immediate"]["rw"][0].as_str(), Some("desktop"));
+    assert_eq!(t["clients"]["desktop"]["all_paths"].as_str(), Some("rw"));
     assert_eq!(c.clients.resolve_peer("desktop").unwrap(), id(2));
 }
 
@@ -552,10 +555,8 @@ fn grants_the_name() {
     );
     assert!(t["clients"]["myclient"].get("endpoint_id").is_none());
     assert!(!t.contains_key("servers"));
-    assert_eq!(
-        t["immediate"]["rw"].as_array().unwrap(),
-        &[toml::Value::from("myclient")]
-    );
+    assert_eq!(t["clients"]["myclient"]["all_paths"].as_str(), Some("rw"));
+    assert!(!t.contains_key("immediate"));
 }
 
 /// Whatever a client calls itself, the config stays valid TOML and the
@@ -574,12 +575,12 @@ fn names_that_need_quoting_round_trip() {
         grant_client(&mut doc, cfg(), id(1), name).unwrap();
         let text = write(&doc);
         let t: toml::Table = text.parse().unwrap();
-        assert_eq!(t.len(), 2, "{name:?}: {text}");
+        assert_eq!(t.len(), 1, "{name:?}: {text}");
         assert!(
             t["clients"].as_table().unwrap().contains_key(name),
             "{name:?}: {text}"
         );
-        assert_eq!(t["immediate"]["rw"][0].as_str(), Some(name));
+        assert_eq!(t["clients"][name]["all_paths"].as_str(), Some("rw"));
         // And irsync itself reads it back as that client.
         assert_eq!(
             config_from(&text).clients.get(name).unwrap().client_id,
@@ -589,13 +590,14 @@ fn names_that_need_quoting_round_trip() {
 }
 
 #[test]
-fn a_bare_id_grant_counts() {
-    let mut doc = read(&format!("[immediate]\nrw = [\"{}\"]\n", id(1)), cfg()).unwrap();
+fn an_existing_all_paths_rw_counts() {
+    let text = format!(
+        "[clients.laptop]\nclient_id = \"{}\"\nall_paths = \"rw\"\n",
+        id(1)
+    );
+    let mut doc = read(&text, cfg()).unwrap();
     assert!(!grant_client(&mut doc, cfg(), id(1), "myclient").unwrap());
-    let t: toml::Table = write(&doc).parse().unwrap();
-    assert_eq!(t["immediate"]["rw"].as_array().unwrap().len(), 1);
-    assert_eq!(t["immediate"]["rw"][0].as_str(), Some(&*id(1).to_string()));
-    assert!(t["clients"].as_table().unwrap().contains_key("myclient"));
+    assert_eq!(doc, read(&text, cfg()).unwrap());
 }
 
 /// A name that belongs to another client is refused before anything on
@@ -625,9 +627,8 @@ fn a_taken_client_name_changes_nothing() {
 #[test]
 fn a_leftover_grant_name_is_not_taken_over() {
     for text in [
-        "[immediate]\nrw = [\"myclient\"]\n",
-        "[all]\nro = [\"myclient\"]\n",
         "[exports.photos]\npath = \"/p\"\nrw = [\"myclient\"]\n",
+        "[exports.photos]\npath = \"/p\"\nro = [\"myclient\"]\n",
     ] {
         let mut doc = read(text, cfg()).unwrap();
         let e = grant_client(&mut doc, cfg(), id(2), "myclient")
@@ -654,13 +655,13 @@ fn a_name_taken_in_the_config_is_not_overwritten() {
 fn recheck_does_not_revive_a_leftover_grant() {
     let home = Home::new("");
     let mut text = std::fs::read_to_string(home.config()).unwrap();
-    text.push_str("[immediate]\nrw = [\"myclient\"]\n");
+    text.push_str("[exports.photos]\npath = \"/p\"\nrw = [\"myclient\"]\n");
     irsync::fs::private::write(home.config(), &text).unwrap();
     for extra in [&["--recheck"][..], &[]] {
         let out = home.try_setup(&id(2), "myclient", extra);
         assert_eq!(out.status.code(), Some(1), "{extra:?}");
         let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("[immediate]"), "{err}");
+        assert!(err.contains("[exports.photos]"), "{err}");
         assert_eq!(std::fs::read_to_string(home.config()).unwrap(), text);
         assert!(probe(&home.state()).is_none());
     }

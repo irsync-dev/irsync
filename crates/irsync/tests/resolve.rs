@@ -24,8 +24,7 @@ fn exports(v: &[(&str, &str)]) -> BTreeMap<String, Export> {
 
 fn all(a: Access) -> Grants {
     Grants {
-        all: Some(a),
-        immediate: false,
+        all_exports: Some(a),
         ..Grants::default()
     }
 }
@@ -33,8 +32,7 @@ fn all(a: Access) -> Grants {
 fn only(n: &str, a: Access) -> Grants {
     Grants {
         exports: [(n.to_string(), a)].into(),
-        all: None,
-        immediate: false,
+        ..Grants::default()
     }
 }
 
@@ -144,8 +142,7 @@ fn equal_paths_best_access_wins() {
             ("b".to_string(), Access::ReadWrite),
         ]
         .into(),
-        all: None,
-        immediate: false,
+        ..Grants::default()
     };
     assert_eq!(
         containing(Path::new("/data/x"), &ex, &g, None)
@@ -224,8 +221,7 @@ fn a_short_name_prefers_its_export_among_equal_paths_and_ties_rank_by_effective_
             ("home".to_string(), Access::ReadWrite),
         ]
         .into(),
-        all: None,
-        immediate: false,
+        ..Grants::default()
     };
     let r = resolve(b"rw/x", Some(Path::new("/h")), &with_home, &g2)
         .unwrap()
@@ -268,8 +264,7 @@ fn the_name_of_an_export_out_of_reach_is_a_directory_under_the_home() {
             ("photos".to_string(), Access::ReadOnly),
         ]
         .into(),
-        all: None,
-        immediate: false,
+        ..Grants::default()
     };
     let r = resolve(b"photos/2024", home, &with, &both)
         .unwrap()

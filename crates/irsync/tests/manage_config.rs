@@ -50,7 +50,10 @@ fn kinds_of_known_keys() {
     assert_eq!(kind_of(&p("servers.home")), Some(Kind::Table));
     assert_eq!(kind_of(&p("clients.home")), Some(Kind::Table));
     assert_eq!(kind_of(&p("daemon.discovery")), Some(Kind::Table));
-    assert_eq!(kind_of(&p("all.rw")), Some(Kind::StrArray));
+    assert_eq!(kind_of(&p("exports.photos.rw")), Some(Kind::StrArray));
+    // The old tables of rights are no keys any more.
+    assert!(kind_of(&p("all.rw")).is_none() && kind_of(&p("immediate")).is_none());
+    assert!(kind_of(&p("daemon.immediate")).is_none());
     assert_eq!(kind_of(&p("identity")), Some(Kind::Path));
     assert!(kind_of(&p("daemon.nope")).is_none() && kind_of(&p("nope")).is_none());
     assert!(kind_of(&p("servers.home.nope")).is_none());
@@ -441,6 +444,25 @@ fn unset_removes_tables_it_leaves_empty() {
 }
 
 #[test]
+fn config_set_takes_client_rights() {
+    let mut m = base();
+    let key = p("clients.nas.all_paths");
+    assert_eq!(kind_of(&key), Some(Kind::Str));
+    set(
+        &mut m,
+        &key,
+        parse_value(Kind::Str, &strings(&["ro"])).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(get(&m, &key).unwrap(), lines(&["ro"]));
+    assert!(write(&m).contains("all_paths = \"ro\"\n"));
+    let before = m.clone();
+    let e = set(&mut m, &key, Value::Text("maybe".into())).unwrap_err();
+    assert!(matches!(e, ManageError::BadValue(_)), "{e}");
+    assert_eq!(m, before);
+}
+
+#[test]
 fn set_telemetry_endpoint() {
     let mut m = pb::Config::default();
     let key = p("telemetry.otlp_endpoint");
@@ -484,7 +506,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("daemon.congestion", &["cubic"]),
     ("daemon.pq_key_exchange", &["require"]),
     ("daemon.debug_addr", &["127.0.0.1:9000"]),
-    ("daemon.immediate", &["true"]),
+    ("daemon.allow_all_paths", &["false"]),
     ("daemon.allow_root", &["true"]),
     ("daemon.discovery.dht", &["false"]),
     ("daemon.discovery.dns", &["false"]),
@@ -505,6 +527,8 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("servers.nas.ssh", &["me@nas"]),
     ("servers.nas.ssh_aliases", &["box"]),
     ("clients.nas.client_id", &[ID5]),
+    ("clients.nas.all_exports", &["ro"]),
+    ("clients.nas.all_paths", &["rw"]),
     ("exports.p.path", &["/srv/q"]),
     ("exports.p.read_only", &["true"]),
     ("exports.p.warm_index", &["true"]),
@@ -512,9 +536,6 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("exports.p.auto", &["true"]),
     ("exports.p.rw", &["nas"]),
     ("exports.p.ro", &["nas"]),
-    ("all.rw", &["nas"]),
-    ("all.ro", &["nas"]),
-    ("immediate.rw", &["nas"]),
 ];
 
 /// A key path with the name of a server, a client or an export as `*`.
@@ -565,8 +586,6 @@ fn message_keys() -> Vec<String> {
     let config = pool.get_message_by_name("irsync.config.Config").unwrap();
     let mut out = Vec::new();
     walk(&config, &[], &mut out);
-    // `[immediate]` shares `GrantTable` with `[all]` and has only `rw`.
-    out.retain(|k| k != "immediate.ro");
     out
 }
 
@@ -676,8 +695,6 @@ fn unset_of_a_table_takes_its_comments() {
         "daemon",
         "client",
         "exports",
-        "all",
-        "immediate",
         "telemetry",
     ] {
         assert!(

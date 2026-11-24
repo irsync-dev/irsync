@@ -3,6 +3,7 @@
 //! are pure on a message; loading and saving belong to the caller.
 
 use super::ManageError;
+use crate::authz::Access;
 use crate::config::exports::RESERVED;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
@@ -73,25 +74,31 @@ pub(crate) fn unique_auto_name(path: &Path, taken: impl Fn(&str) -> bool) -> Str
     name
 }
 
-/// Add an automatic export of `path`, read-write for `peer`; the name it
-/// got (`-2`, `-3`, ... when the name is taken).
+/// Add an automatic export of `path` that lists `peer` under `ro` for
+/// read-only `access`, else under `rw`; the name it got (`-2`, `-3`, ...
+/// when the name is taken).
 pub fn add_auto_export(
     msg: &mut pb::Config,
     path: &Path,
     peer: EndpointId,
+    access: Access,
 ) -> Result<String, ManageError> {
     let name = unique_auto_name(path, |n| msg.exports.iter().any(|e| e.name == n));
-    msg.exports.push(pb::Export {
+    let mut export = pb::Export {
         name: name.clone(),
         path: path.to_string_lossy().into_owned(),
         auto: Some(true),
-        rw: vec![pb::Entry {
-            value: peer.to_string(),
-            comment: None,
-        }],
-        rw_set: true,
         ..Default::default()
-    });
+    };
+    let listed = vec![pb::Entry {
+        value: peer.to_string(),
+        comment: None,
+    }];
+    match access {
+        Access::ReadOnly => (export.ro, export.ro_set) = (listed, true),
+        Access::ReadWrite => (export.rw, export.rw_set) = (listed, true),
+    }
+    msg.exports.push(export);
     Ok(name)
 }
 

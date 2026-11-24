@@ -186,8 +186,9 @@ pub struct DaemonSettings {
     pub discovery: Discovery,
     /// The debug HTTP port's address (see [`parse_debug_addr`]); off when unset.
     pub debug_addr: Option<SocketAddr>,
-    /// Honour `[immediate]` grants (and create auto exports for them).
-    pub immediate: bool,
+    /// Let a client with the `all_paths` right reach any path (and create
+    /// auto exports for them): `allow_all_paths`.
+    pub allow_all_paths: bool,
     /// Let the daemon run as root (see `irsync daemon`'s refusal).
     pub allow_root: bool,
 }
@@ -221,7 +222,7 @@ impl Default for DaemonSettings {
             pq_key_exchange: PqKeyExchange::Prefer,
             discovery: Discovery::default(),
             debug_addr: None,
-            immediate: true,
+            allow_all_paths: true,
             allow_root: false,
         }
     }
@@ -383,7 +384,7 @@ impl DaemonSettings {
                 .unwrap_or(defaults.pq_key_exchange),
             discovery,
             debug_addr: d.debug_addr.as_deref().map(parse_debug_addr).transpose()?,
-            immediate: d.immediate.unwrap_or(defaults.immediate),
+            allow_all_paths: d.allow_all_paths.unwrap_or(defaults.allow_all_paths),
             allow_root: d.allow_root.unwrap_or(defaults.allow_root),
         })
     }

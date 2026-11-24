@@ -1,6 +1,7 @@
-[all]
+[exports.p]
+path = "/p"
 rw = ["nas"]
-# the writer moves all last
+# the writer moves exports last
 
 [daemon]
 portmap = false

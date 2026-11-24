@@ -144,7 +144,7 @@ remote symlink as the last component counts as a file and is pulled as a
 link, even if it points to a directory. A remote file that does not exist is
 an error.
 
-With an automatic ("immediate") grant, a push of a file to a missing `T`
+With `all_paths`, a push of a file to a missing `T`
 exports `T`'s parent directory, which must already exist, and creates
 nothing. The client then has lasting read-write access to that whole
 directory. When `T` is a directory, or the destination ends in `/`, the

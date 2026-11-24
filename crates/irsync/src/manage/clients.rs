@@ -4,6 +4,8 @@
 
 use super::grants::{lists_naming, remove_named, rename_named};
 use super::{id_bytes, id_of, ManageError};
+use crate::authz::Access;
+use crate::config::clients::{Right, RIGHTS};
 use crate::config::names::valid_alias;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
@@ -88,7 +90,63 @@ pub fn client_names(msg: &pb::Config) -> Vec<String> {
     msg.clients.iter().map(|c| c.name.clone()).collect()
 }
 
-/// The lines `client list` prints: `name: id`.
+/// Parse one `KEY=VALUE` of `client set`: a right of [`RIGHTS`] and
+/// `rw`, `ro` or `none` (`None`: remove the right).
+pub fn parse_setting(s: &str) -> Result<(Right, Option<Access>), ManageError> {
+    let keys = || RIGHTS.map(Right::key).join(", ");
+    let Some((key, value)) = s.split_once('=') else {
+        return Err(ManageError::BadValue(format!(
+            "{s:?} is not KEY=VALUE (keys: {})",
+            keys()
+        )));
+    };
+    let Some(right) = RIGHTS.into_iter().find(|r| r.key() == key) else {
+        return Err(ManageError::BadValue(format!(
+            "{key:?} is not a right of a client (rights: {})",
+            keys()
+        )));
+    };
+    if value == "none" {
+        return Ok((right, None));
+    }
+    match Access::parse(value) {
+        Some(a) => Ok((right, Some(a))),
+        None => Err(ManageError::BadValue(format!(
+            "{key} must be \"rw\", \"ro\" or \"none\", not {value:?}"
+        ))),
+    }
+}
+
+/// Set (or, with `None`, remove) rights of client `name`. `NotFound` for
+/// a name that is no client; `msg` is then unchanged.
+pub fn client_set(
+    msg: &mut pb::Config,
+    name: &str,
+    settings: &[(Right, Option<Access>)],
+) -> Result<(), ManageError> {
+    let c = msg
+        .clients
+        .iter_mut()
+        .find(|c| c.name == name)
+        .ok_or_else(|| ManageError::NotFound(name.to_string()))?;
+    for (right, access) in settings {
+        right.set(c, *access);
+    }
+    Ok(())
+}
+
+/// The rights of a client as `client set` reports them: `KEY=VALUE` for
+/// every right, `none` for one that is not set.
+pub fn rights_summary(c: &pb::ClientEntry) -> String {
+    let words: Vec<String> = RIGHTS
+        .iter()
+        .map(|r| format!("{}={}", r.key(), r.get(c).map_or("none", Access::as_str)))
+        .collect();
+    words.join(" ")
+}
+
+/// The lines `client list` prints: `name: id`, then ` KEY=VALUE` for each
+/// right the client has.
 pub fn client_list(msg: &pb::Config) -> Vec<String> {
     msg.clients
         .iter()
@@ -98,7 +156,13 @@ pub fn client_list(msg: &pb::Config) -> Vec<String> {
             } else {
                 id_of(&c.client_id).map_or_else(|| "(invalid)".to_string(), |id| id.to_string())
             };
-            format!("{}: {id}", c.name)
+            let mut line = format!("{}: {id}", c.name);
+            for right in RIGHTS {
+                if let Some(a) = right.get(c) {
+                    line.push_str(&format!(" {}={}", right.key(), a.as_str()));
+                }
+            }
+            line
         })
         .collect()
 }

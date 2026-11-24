@@ -188,7 +188,7 @@ irsync grant add photos <client-id>
 ```
 
 `irsync pair` does not fix this. Pairing again never changes the grants a client has lost. The refusal
-is on purpose, and irsync never adds back an immediate grant you removed. See
+is on purpose, and irsync never adds back an `all_paths` you removed. See
 [Identity and trust](../explanation/identity-and-trust.md).
 
 ## The transfer is slow and says `relay`

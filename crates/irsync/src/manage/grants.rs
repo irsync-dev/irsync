@@ -1,13 +1,12 @@
 //! Edits of the grant lists in the config message for `grant add` and
-//! `grant remove`: the `rw` and `ro` lists of `[all]`, `[immediate]`
-//! and every export. The editing functions are pure on a message; loading
+//! `grant remove`: the `rw` and `ro` lists of every export. The editing functions are pure on a message; loading
 //! and saving belong to the caller. The `list_*` reporters behind
 //! `grant list` read the typed config.
 
 use super::show::grant_lines;
 use super::{check_comment, ManageError, PeerSpec};
 use crate::authz::{Access, Snapshot};
-use crate::config::clients::Clients;
+use crate::config::clients::{Clients, Right, RIGHTS};
 use crate::config::exports::Exports;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
@@ -17,8 +16,8 @@ use std::fmt::Write;
 
 type Resolve<'a> = &'a dyn Fn(&str) -> Option<EndpointId>;
 
-/// The grant lists of one table, `rw` and `ro`, with their `*_set`
-/// flags and the table's key comments.
+/// The grant lists of one export, `rw` and `ro`, with their `*_set`
+/// flags and the export's key comments.
 struct Lists<'a> {
     rw: &'a mut Vec<pb::Entry>,
     rw_set: &'a mut bool,
@@ -28,16 +27,6 @@ struct Lists<'a> {
 }
 
 impl<'a> Lists<'a> {
-    fn of_table(t: &'a mut pb::GrantTable) -> Self {
-        Lists {
-            rw: &mut t.rw,
-            rw_set: &mut t.rw_set,
-            ro: &mut t.ro,
-            ro_set: &mut t.ro_set,
-            key_comments: &mut t.key_comments,
-        }
-    }
-
     fn of_export(e: &'a mut pb::Export) -> Self {
         Lists {
             rw: &mut e.rw,
@@ -121,50 +110,27 @@ impl<'a> Lists<'a> {
     }
 }
 
-/// The grant tables, read-only: `[all]`, `[immediate]` and every export,
-/// each with the name `lists_naming` reports it by and its `rw` and
-/// `ro` lists.
+/// The grant lists of every export, read-only, each with the name
+/// `lists_naming` reports it by and its `rw` and `ro` lists.
 fn grant_lists(msg: &pb::Config) -> Vec<(String, [&Vec<pb::Entry>; 2])> {
-    let mut out = Vec::new();
-    if let Some(t) = &msg.all {
-        out.push(("all".to_string(), [&t.rw, &t.ro]));
-    }
-    if let Some(t) = &msg.immediate {
-        out.push(("immediate".to_string(), [&t.rw, &t.ro]));
-    }
-    for e in &msg.exports {
-        out.push((format!("exports.{}", e.name), [&e.rw, &e.ro]));
-    }
-    out
+    msg.exports
+        .iter()
+        .map(|e| (format!("exports.{}", e.name), [&e.rw, &e.ro]))
+        .collect()
 }
 
-/// The grant tables, as `grant_lists`, for editing.
+/// The grant lists of every export, for editing.
 fn grant_lists_mut(msg: &mut pb::Config) -> Vec<Lists<'_>> {
-    let mut out = Vec::new();
-    if let Some(t) = msg.all.as_mut() {
-        out.push(Lists::of_table(t));
-    }
-    if let Some(t) = msg.immediate.as_mut() {
-        out.push(Lists::of_table(t));
-    }
-    out.extend(msg.exports.iter_mut().map(Lists::of_export));
-    out
+    msg.exports.iter_mut().map(Lists::of_export).collect()
 }
 
-/// The lists of export `export`, or of `[all]` for `None` (created when
-/// missing).
-fn target<'a>(msg: &'a mut pb::Config, export: Option<&str>) -> Result<Lists<'a>, ManageError> {
-    match export {
-        Some(n) => msg
-            .exports
-            .iter_mut()
-            .find(|e| e.name == n)
-            .map(Lists::of_export)
-            .ok_or_else(|| ManageError::NotFound(n.to_string())),
-        None => Ok(Lists::of_table(
-            msg.all.get_or_insert_with(Default::default),
-        )),
-    }
+/// The lists of export `export`.
+fn target<'a>(msg: &'a mut pb::Config, export: &str) -> Result<Lists<'a>, ManageError> {
+    msg.exports
+        .iter_mut()
+        .find(|e| e.name == export)
+        .map(Lists::of_export)
+        .ok_or_else(|| ManageError::NotFound(export.to_string()))
 }
 
 /// The id `who` stands for, when it has one.
@@ -216,7 +182,7 @@ fn grant_entry(who: &PeerSpec) -> Result<pb::Entry, ManageError> {
 /// first place, and an entry in both `rw` and `ro` leaves `ro`: `rw` wins
 /// when the file is read, so nobody's access changes.
 ///
-/// Covers `[all]`, `[immediate]` and every export. An entry keeps its
+/// Covers every export. An entry keeps its
 /// comments; a removed one takes only the rest of its line along. True when the message
 /// changed; a second run changes nothing.
 pub fn canonicalize(msg: &mut pb::Config, clients: &Clients) -> bool {
@@ -249,8 +215,8 @@ pub fn canonicalize(msg: &mut pb::Config, clients: &Clients) -> bool {
     changed
 }
 
-/// The tables with a grant entry whose text is `name`: `all`,
-/// `immediate`, then `exports.NAME` in file order, each once.
+/// The tables with a grant entry whose text is `name`: `exports.NAME` in
+/// file order, each once.
 pub fn lists_naming(msg: &pb::Config, name: &str) -> Vec<String> {
     grant_lists(msg)
         .into_iter()
@@ -259,8 +225,8 @@ pub fn lists_naming(msg: &pb::Config, name: &str) -> Vec<String> {
         .collect()
 }
 
-/// Removes every grant entry whose text is `name`, from `[all]`,
-/// `[immediate]` and every export; the count. The comment lines above a
+/// Removes every grant entry whose text is `name`, from every export;
+/// the count. The comment lines above a
 /// removed entry stay in the file.
 pub fn remove_named(msg: &mut pb::Config, name: &str) -> usize {
     grant_lists_mut(msg)
@@ -269,8 +235,8 @@ pub fn remove_named(msg: &mut pb::Config, name: &str) -> usize {
         .sum()
 }
 
-/// Writes every grant entry whose text is `old` as `new`, in `[all]`,
-/// `[immediate]` and every export, keeping its comments; the count.
+/// Writes every grant entry whose text is `old` as `new`, in every
+/// export, keeping its comments; the count.
 pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
     let mut n = 0;
     for lists in grant_lists_mut(msg) {
@@ -284,7 +250,7 @@ pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
     n
 }
 
-/// Grant `who` access to `export` (`[all]` for `None`): read-only or
+/// Grant `who` access to `export`: read-only or
 /// read-write. Any earlier grant of the same peer there, under either
 /// spelling, is replaced; the new entry goes last. An earlier entry of the
 /// same text moves there with its comments (the key's comment, when given,
@@ -292,7 +258,7 @@ pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
 /// comment lines above it behind.
 pub fn grant_add(
     msg: &mut pb::Config,
-    export: Option<&str>,
+    export: &str,
     who: &PeerSpec,
     ro: bool,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
@@ -317,53 +283,6 @@ pub fn grant_add(
     Ok(())
 }
 
-/// Grant `who` immediate access (`[immediate].rw`). False when the peer
-/// was already granted, under either spelling.
-pub fn grant_immediate(
-    msg: &mut pb::Config,
-    who: &PeerSpec,
-    resolve: &dyn Fn(&str) -> Option<EndpointId>,
-) -> Result<bool, ManageError> {
-    let entry = grant_entry(who)?;
-    let mut lists = Lists::of_table(msg.immediate.get_or_insert_with(Default::default));
-    let id = who_id(who, resolve);
-    if lists
-        .rw
-        .iter()
-        .any(|e| entry_matches(&e.value, who, id, resolve))
-    {
-        return Ok(false);
-    }
-    lists.push(false, entry);
-    Ok(true)
-}
-
-/// Remove `who` from `[immediate].rw` (`None`: everyone); the count.
-pub fn grant_remove_immediate(
-    msg: &mut pb::Config,
-    who: Option<&PeerSpec>,
-    resolve: &dyn Fn(&str) -> Option<EndpointId>,
-) -> Result<usize, ManageError> {
-    let n = match msg.immediate.as_mut() {
-        Some(t) => {
-            let mut lists = Lists::of_table(t);
-            match who {
-                None => lists.remove_where_in(false, &|_| true),
-                Some(w) => {
-                    let id = who_id(w, resolve);
-                    lists.remove_where_in(false, &|s| entry_matches(s, w, id, resolve))
-                }
-            }
-        }
-        None => 0,
-    };
-    if n == 0 {
-        let what = who.map_or_else(|| "immediate".to_string(), PeerSpec::entry);
-        return Err(ManageError::NothingToRemove(what));
-    }
-    Ok(n)
-}
-
 /// Removes the grants of `who` (`None`: everyone) from both lists.
 fn remove_in(lists: &mut Lists, who: Option<&PeerSpec>, resolve: Resolve) -> usize {
     match who {
@@ -376,9 +295,8 @@ fn remove_in(lists: &mut Lists, who: Option<&PeerSpec>, resolve: Resolve) -> usi
 }
 
 /// Remove grants; the number of entries removed. `who = None` empties both
-/// lists of `export` (or of `[all]`); `export = None` walks `[all]` and
-/// every export, so `(None, None)` empties every list but `[immediate]`.
-/// An emptied list stays in the file, as `rw = []`.
+/// lists of `export`; `export = None` walks every export, so
+/// `(None, None)` empties every export's lists. An emptied list stays in the file, as `rw = []`.
 pub fn grant_remove(
     msg: &mut pb::Config,
     export: Option<&str>,
@@ -387,16 +305,13 @@ pub fn grant_remove(
 ) -> Result<usize, ManageError> {
     let n = match export {
         None => {
-            let mut n = match msg.all.as_mut() {
-                Some(all) => remove_in(&mut Lists::of_table(all), who, resolve),
-                None => 0,
-            };
+            let mut n = 0;
             for e in msg.exports.iter_mut() {
                 n += remove_in(&mut Lists::of_export(e), who, resolve);
             }
             n
         }
-        Some(_) => remove_in(&mut target(msg, export)?, who, resolve),
+        Some(name) => remove_in(&mut target(msg, name)?, who, resolve),
     };
     if n == 0 {
         let what = match (who, export) {
@@ -409,6 +324,40 @@ pub fn grant_remove(
     Ok(n)
 }
 
+/// One line per server-wide right (of [`RIGHTS`]) still held by the clients
+/// `grant remove` was asked about: `who` (a client's name or id), or, with
+/// `who = None` and `export = None` (`grant remove all all`), every client.
+/// `grant remove` clears only the exports' own lists, so these stay.
+pub fn rights_still_held(
+    clients: &Clients,
+    export: Option<&str>,
+    who: Option<&PeerSpec>,
+    resolve: Resolve,
+) -> Vec<String> {
+    let id = who.and_then(|w| who_id(w, resolve));
+    let mut notes = Vec::new();
+    for (name, c) in &clients.entries {
+        let asked = match who {
+            None => export.is_none(),
+            Some(w) => *name == w.entry() || id == Some(c.client_id),
+        };
+        if !asked {
+            continue;
+        }
+        for right in RIGHTS {
+            if let Some(a) = right.of(c) {
+                notes.push(format!(
+                    "{name} still has {}={}; remove it with: irsync client set {name} {}=none",
+                    right.key(),
+                    a.as_str(),
+                    right.key()
+                ));
+            }
+        }
+    }
+    notes
+}
+
 /// `NAME:` and the grant lines of one table; the header always.
 fn block(name: &str, rw: &[String], ro: &[String], clients: &Clients) -> String {
     let mut out = format!("{name}:\n");
@@ -416,39 +365,61 @@ fn block(name: &str, rw: &[String], ro: &[String], clients: &Clients) -> String 
     out
 }
 
-/// Every grant: the `all:` block, the `immediate:` block, then one block
-/// per export in name order.
+/// `KEY:` and the `rw` and `ro` lines of the clients that hold the right
+/// `right`; the header always.
+fn right_block(right: Right, clients: &Clients) -> String {
+    let names = |access: Access| -> Vec<String> {
+        clients
+            .entries
+            .iter()
+            .filter(|(_, c)| right.of(c) == Some(access))
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+    block(
+        right.key(),
+        &names(Access::ReadWrite),
+        &names(Access::ReadOnly),
+        clients,
+    )
+}
+
+/// Every grant: one block per right of [`RIGHTS`] (`all_exports:`,
+/// `all_paths:`), then one block per export in name order.
 pub fn list_all(exports: &Exports, clients: &Clients) -> String {
-    let mut out = block("all", &exports.rw, &exports.ro, clients);
-    out.push_str(&block("immediate", &exports.immediate_rw, &[], clients));
+    let mut out: String = RIGHTS.iter().map(|r| right_block(*r, clients)).collect();
     for (name, e) in &exports.exports {
         out.push_str(&block(name, &e.rw, &e.ro, clients));
     }
     out
 }
 
-/// The block of one export, of `all` or of `immediate`; `None` when no
-/// such export.
+/// The block of one export or of one right (`all_exports`, `all_paths`);
+/// `None` when no such export.
 pub fn list_export(exports: &Exports, clients: &Clients, name: &str) -> Option<String> {
-    match name {
-        "all" => return Some(block("all", &exports.rw, &exports.ro, clients)),
-        "immediate" => return Some(block("immediate", &exports.immediate_rw, &[], clients)),
-        _ => {}
+    if let Some(right) = RIGHTS.into_iter().find(|r| r.key() == name) {
+        return Some(right_block(right, clients));
     }
     let e = exports.exports.get(name)?;
     Some(block(name, &e.rw, &e.ro, clients))
 }
 
-/// `{label}:`, `    immediate: rw` when `id` is in `[immediate]`, then
-/// one `    NAME: rw|ro` line per export `id` may reach: ` (all)` when the
-/// access comes from `[all]` rather than the export's own entry,
+/// `{label}:`, `    all_paths: rw|ro` when `id` has `all_paths`, then
+/// one `    NAME: rw|ro` line per export `id` may reach: ` (all_exports)` when the
+/// access comes from `all_exports` rather than the export's own entry,
 /// ` (read_only export)` when a read-write grant is capped by the export's
 /// `read_only` flag.
-pub fn list_peer(exports: &Exports, clients: &Clients, label: &str, id: &EndpointId) -> String {
-    let grants = Snapshot::from_files(clients, exports, true).grants(id);
+pub fn list_peer(
+    exports: &Exports,
+    clients: &Clients,
+    allow_all_paths: bool,
+    label: &str,
+    id: &EndpointId,
+) -> String {
+    let grants = Snapshot::from_files(clients, exports, allow_all_paths).grants(id);
     let mut out = format!("{label}:\n");
-    if grants.immediate {
-        out.push_str("    immediate: rw\n");
+    if let Some(a) = grants.all_paths {
+        let _ = writeln!(out, "    all_paths: {}", a.as_str());
     }
     for (name, e) in &exports.exports {
         let Some(access) = grants.access_to(name, e) else {
@@ -463,7 +434,7 @@ pub fn list_peer(exports: &Exports, clients: &Clients, label: &str, id: &Endpoin
         };
         let _ = write!(out, "    {name}: {mode}");
         if inherited {
-            out.push_str(" (all)");
+            out.push_str(" (all_exports)");
         }
         if capped {
             out.push_str(" (read_only export)");

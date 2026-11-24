@@ -1,3 +1,4 @@
+use irsync::authz::Access;
 use irsync::config::file::Config;
 use irsync::config::reader;
 use irsync::config::writer::write;
@@ -50,7 +51,7 @@ fn add_writes_under_exports_as_a_dotted_header_and_refuses_all() {
     let e = add_export(&mut m, "all", Path::new("/srv/all"), false, false).unwrap_err();
     assert_eq!(
         e.to_string(),
-        "\"all\" is reserved: it is the word `grant add all WHO` uses for every export"
+        "\"all\" is reserved: it is the word `grant remove all WHO` and `export update all` use for every export"
     );
     assert!(add_export(&mut m, "rw", Path::new("/srv/rw"), false, false).is_ok());
 }
@@ -66,10 +67,13 @@ fn a_new_export_goes_last_and_the_path_stays_as_written() {
 
 #[test]
 fn remove_last_export_leaves_a_loadable_file() {
-    let mut m = msg("[all]\nrw = [\"x\"]\n[exports.a]\npath = \"/a\"\n");
+    let mut m = msg(&format!(
+        "[clients.x]\nclient_id = \"{}\"\nall_exports = \"rw\"\n[exports.a]\npath = \"/a\"\n",
+        id(1)
+    ));
     remove_export(&mut m, "a").unwrap();
     let c = typed(&m);
-    assert!(c.exports.exports.is_empty() && c.exports.rw == vec!["x"]);
+    assert!(c.exports.exports.is_empty() && c.clients.get("x").is_some());
     assert!(matches!(
         remove_export(&mut m, "all"),
         Err(ManageError::NotFound(_))
@@ -90,7 +94,7 @@ fn remove_drops_table_and_its_grants() {
 #[test]
 fn remove_only_removes_an_export() {
     let text = format!(
-        "[all]\nrw = [\"{}\"]\nro = []\n[exports.p]\npath = \"/p\"\n",
+        "[clients.c]\nclient_id = \"{}\"\nall_exports = \"rw\"\n[exports.p]\npath = \"/p\"\nro = []\n",
         id(1)
     );
     let mut m = msg(&text);
@@ -107,7 +111,7 @@ fn remove_only_removes_an_export() {
 #[test]
 fn auto_export_names() {
     let mut m = pb::Config::default();
-    let mut n = |p: &str| add_auto_export(&mut m, Path::new(p), id(1)).unwrap();
+    let mut n = |p: &str| add_auto_export(&mut m, Path::new(p), id(1), Access::ReadWrite).unwrap();
     assert_eq!(n("/srv/photos"), "auto-srv-photos");
     assert_eq!(n("/"), "auto-root");
     assert_eq!(n("/a b/\u{e7}"), "auto-a_b-__");
@@ -120,6 +124,18 @@ fn auto_export_names() {
     let text = write(&m);
     let want = format!(
         "[exports.auto-srv-photos]\npath = \"/srv/photos\"\nauto = true\nrw = [\"{}\"]\n",
+        id(1)
+    );
+    assert!(text.contains(&want), "{text}");
+}
+
+#[test]
+fn auto_export_for_read_only_lists_the_peer_under_ro() {
+    let mut m = pb::Config::default();
+    add_auto_export(&mut m, Path::new("/srv/photos"), id(1), Access::ReadOnly).unwrap();
+    let text = write(&m);
+    let want = format!(
+        "[exports.auto-srv-photos]\npath = \"/srv/photos\"\nauto = true\nro = [\"{}\"]\n",
         id(1)
     );
     assert!(text.contains(&want), "{text}");

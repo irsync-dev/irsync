@@ -61,8 +61,9 @@ server when it does not offer post-quantum key exchange.
 | --- | --- |
 | `irsync client add NAME ID` | Add a client: a name for the `EndpointId` a machine has as a client (what `irsync id show` prints on that machine). For an existing name, change the id; grants that name it then apply to the new id, and a note on stderr says so. Prints `NAME: ID`. |
 | `irsync client remove NAME [-f]` | Remove a client. Refused while a grant names it, and the error lists where: without the client those grants would match nobody. A grant written as the `EndpointId` counts as naming the client, unless another client has the same id. `-f`/`--force` removes those grants, then the client. |
-| `irsync client rename OLD NEW` | Rename a client, and every grant that names it: in `[all]`, `[immediate]` and every export. A grant written as the `EndpointId` counts as naming the client. The client keeps its place and comments. Refused, with nothing changed, when `OLD` is no client, `NEW` is not a valid name or `NEW` is a client already. Only the config file changes. |
-| `irsync client list` | One `NAME: ID` line per client. |
+| `irsync client rename OLD NEW` | Rename a client, and every grant that names it: in every export. Its `all_exports` and `all_paths` stay with it. A grant written as the `EndpointId` counts as naming the client. The client keeps its place and comments. Refused, with nothing changed, when `OLD` is no client, `NEW` is not a valid name or `NEW` is a client already. Only the config file changes. |
+| `irsync client set NAME KEY=VALUE...` | Set the server-wide rights of a client. `KEY` is `all_exports` or `all_paths`, and `VALUE` is `rw`, `ro` or `none` (`none` removes the right). Give several pairs to change them together: if one is wrong, nothing changes. `irsync client set myclient all_paths=rw` lets `myclient` reach any path this account can. Prints the client's rights afterwards. See [Rights on a client](configuration.md#rights-on-a-client). |
+| `irsync client list` | One `NAME: ID` line per client, followed by `all_exports=VALUE` and `all_paths=VALUE` for each right it has. |
 
 The old `host` noun is gone: it prints a pointer to `server` and `client`. A server and
 a client may have the same name; the two commands do not touch each other's
@@ -88,13 +89,11 @@ everyone; `--warm-index` sets `warm_index`.
 
 | Command | Effect |
 | --- | --- |
-| `irsync grant add EXPORT WHO [--ro]` | Grant `WHO` read-write access to `EXPORT`, or read-only access with `--ro`. `EXPORT` may be `all`, for every export. An earlier grant of the same peer there is replaced. |
-| `irsync grant remove EXPORT WHO` | Remove `WHO`'s grant on `EXPORT`. `irsync grant remove all WHO` removes `WHO` everywhere; `irsync grant remove EXPORT all` empties an export's grants. |
-| `irsync grant add immediate WHO` | Let `WHO` reach any path this account can, read-write (there is no `--ro` here). The daemon makes an automatic export for each new path `WHO` uses. See [Immediate grants](configuration.md#immediate-grants). |
-| `irsync grant remove immediate WHO` | Take `WHO` out of `[immediate]`. The automatic exports already made for it stay in the file, but `WHO` can no longer use them. |
-| `irsync grant list` | Every grant: an `all:` block, an `immediate:` block, then one block per export. |
-| `irsync grant list EXPORT` | One export's grants; `all` lists those that apply to every export, `immediate` the peers that may reach any path. |
-| `irsync grant list WHO` | What one peer may reach: `immediate: rw` first when it is in `[immediate]`, then one `NAME: rw` or `NAME: ro` line per export, marked `(all)` when the grant comes from `[all]` and `(read_only export)` when a read-write grant is capped by `read_only`. |
+| `irsync grant add EXPORT WHO [--ro]` | Grant `WHO` read-write access to `EXPORT`, or read-only access with `--ro`. An earlier grant of the same peer there is replaced. For every export or any path, use `irsync client set`; `grant add all` and `grant add immediate` are refused, with a hint. |
+| `irsync grant remove EXPORT WHO` | Remove `WHO`'s grant on `EXPORT`. `irsync grant remove all WHO` removes `WHO` from every export's own list. It leaves their `all_exports` and `all_paths` alone, and says so when `WHO` still has one; those go with `irsync client set`. `irsync grant remove EXPORT all` empties an export's grants. |
+| `irsync grant list` | Every grant: an `all_exports:` block, an `all_paths:` block (the clients that hold each right), then one block per export. |
+| `irsync grant list EXPORT` | One export's grants. `all_exports` and `all_paths` list the clients that hold that right. |
+| `irsync grant list WHO` | What one peer may reach: `all_paths: rw` or `all_paths: ro` first when it has that right, then one `NAME: rw` or `NAME: ro` line per export, marked `(all_exports)` when the access comes from `all_exports` and `(read_only export)` when a read-write grant is capped by `read_only`. |
 
 A client paired over ssh is listed by its host name, which `irsync pair` saved
 in `[clients]`.
@@ -104,7 +103,7 @@ line, or the path of a `.pub` file holding one. A key's comment is kept as a
 TOML comment at the end of the entry's line. Removing the grant removes that
 comment; comment lines above it stay. A peer that `[clients]` has a name for is stored
 by that name, however it was named. A server name is not a `WHO`. There is no open access: `all` and `*` are
-refused as `WHO` in `grant add`.
+refused as `WHO` in `grant add`. The words `all`, `immediate`, `all_exports` and `all_paths` are reserved: no export has one of them as its name.
 
 ## id
 
@@ -156,7 +155,6 @@ irsync show [--passphrase-file PATH]
 ```
 
 Prints the config file's path, the client's `EndpointId` and public key line,
-the servers as `server list` prints them under `servers:`, the clients as `client list` prints them under `clients:`, and under `exports:` the
-daemon's `EndpointId` and the exports as `export list` prints them, followed by
-the `[all]` grants. `show` generates
+the servers as `server list` prints them under `servers:`, the clients (with their rights) as `client list` prints them under `clients:`, and under `exports:` the
+daemon's `EndpointId` and the exports as `export list` prints them. `show` generates
 either key if it does not exist yet.

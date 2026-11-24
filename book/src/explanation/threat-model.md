@@ -29,7 +29,7 @@ detail. This page builds on it.
 | A key without a grant | A connection attempt | Not at all |
 | A client with a read-only grant | Requests for files in an export | To read that export |
 | A client with a read-write grant | File names, contents and metadata pushed into an export | To change that export, and nothing else |
-| A client with the immediate grant | The same, for any path | As much as the daemon's account itself |
+| A client with `all_paths = "rw"` | The same, for any path | As much as the daemon's account itself |
 | The daemon a client talks to | The listing and the data on a pull; the answers on a push | To hold the files you give it, and to supply the files you ask for |
 | Whoever made a tree you sync | File names, symlinks, permissions, and any `.fileset` manifest in it | Not at all, beyond the content you chose to copy |
 | Other users of the same machine | Files in directories they can write | Not at all |
@@ -142,10 +142,12 @@ client's session, or exhaust the daemon.
   bound single messages, queues and stored sessions, not a client that works
   at being expensive. irsync does not treat a granted key as hostile to the daemon's
   uptime.
-- **The immediate grant is the whole account.** Such a key can reach any
+- **`all_paths = "rw"` is the whole account.** Such a key can reach any
   path the daemon's account can. Give it only to machines you would give
-  ssh access to. See
-  [Immediate grants](../reference/configuration.md#immediate-grants).
+  ssh access to. `all_paths = "ro"` is smaller, but it still reads the whole
+  account: `~/.ssh`, irsync's own config and, if the daemon's key file is
+  readable, the daemon's identity key. Give it with the same care. See
+  [Rights on a client](../reference/configuration.md#rights-on-a-client).
 
 ## The daemon you connect to
 
@@ -276,7 +278,7 @@ symlink while a sync runs in a tree they can write.
 - [`irsync pair`](../how-to/pair.md) trusts ssh: the server you
   log in to is the one irsync installs on and grants access to. Only `pair`
   uses ssh; a sync never does. It gives
-  this client the immediate grant on that server.
+  this client `all_paths = "rw"` on that server.
 - Releases are signed. [Verify a download](../how-to/verify-a-download.md)
   shows how to check one, and
   [Supply chain security](../contributing/supply-chain.md) how they are

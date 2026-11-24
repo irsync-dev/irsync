@@ -32,8 +32,7 @@ fn hello(path: &[u8], dir: Direction) -> Hello {
 
 fn grants(access: Access) -> Grants {
     Grants {
-        all: Some(access),
-        immediate: false,
+        all_exports: Some(access),
         ..Grants::default()
     }
 }
@@ -149,6 +148,14 @@ async fn closed_before_hello(mk: impl FnOnce(iroh::EndpointId) -> MemoryAuthoriz
     let dir = tempfile::tempdir().unwrap();
     let authz = mk(client.id());
     let d = spawn_daemon(vec![("rw", dir.path().to_path_buf(), false)], authz).await;
+    assert_closed_before_hello(&d, &client).await;
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+/// `d` closes a connection from `client` as `unauthorized` before it
+/// reads a Hello.
+async fn assert_closed_before_hello(d: &DaemonHandle, client: &Endpoint) {
     let conn = within(client.connect(d.addr.clone(), ALPN)).await.unwrap();
     // The stream may open locally and the write may even succeed; reading must fail.
     let res = within(async {
@@ -162,10 +169,9 @@ async fn closed_before_hello(mk: impl FnOnce(iroh::EndpointId) -> MemoryAuthoriz
     })
     .await;
     assert!(res.is_err(), "unauthorized peer got a clean reply: {res:?}");
-    within(conn.closed()).await;
+    let closed = format!("{:?}", within(conn.closed()).await);
+    assert!(closed.contains("unauthorized"), "{closed}");
     assert_eq!(d.hellos.load(Ordering::SeqCst), 0, "daemon parsed a Hello");
-    d.shutdown.cancel();
-    let _ = within(d.task).await;
 }
 
 #[tokio::test]
@@ -201,8 +207,7 @@ async fn read_only_grant_cannot_send() {
 async fn an_ungranted_name_is_no_export_even_with_a_granted_twin_on_the_same_path() {
     let g = || Grants {
         exports: [("ro".to_string(), Access::ReadWrite)].into(),
-        all: None,
-        immediate: false,
+        ..Grants::default()
     };
     for name in [&b"rw"[..], b"no-such-export"] {
         for direction in [Direction::DaemonSends, Direction::ClientSends] {
@@ -236,8 +241,7 @@ async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
             client.id(),
             Grants {
                 exports: [("srv".to_string(), Access::ReadWrite)].into(),
-                all: None,
-                immediate: false,
+                ..Grants::default()
             },
         ),
         None,
@@ -414,8 +418,7 @@ async fn ungranted_reply_does_not_reveal_whether_a_path_exists() {
     let (dir, _, abs) = export_dir();
     let none = Grants {
         exports: [("other".to_string(), Access::ReadWrite)].into(),
-        all: None,
-        immediate: false,
+        ..Grants::default()
     };
     let mut existing = abs.clone();
     existing.extend_from_slice(b"/sub");
@@ -543,8 +546,7 @@ async fn list_exports_names_only_what_the_key_may_use() {
     // Granted on rw only: one entry.
     let d = spawn(Grants {
         exports: [("rw".to_string(), Access::ReadWrite)].into(),
-        all: None,
-        immediate: false,
+        ..Grants::default()
     })
     .await;
     assert_eq!(
@@ -573,7 +575,7 @@ async fn list_exports_names_only_what_the_key_may_use() {
 
 fn immediate() -> Grants {
     Grants {
-        immediate: true,
+        all_paths: Some(Access::ReadWrite),
         ..Grants::default()
     }
 }
@@ -606,10 +608,7 @@ async fn immediate_push_creates_auto_export() {
     // The daemon records the real path (macOS: /var is a link to /private/var).
     assert_eq!(e.path, dest.canonicalize().unwrap());
     assert_eq!(e.rw, vec![client.id().to_string()]);
-    assert_eq!(
-        snap.grants(&client.id()).access(name),
-        Some(Access::ReadWrite)
-    );
+    assert_eq!(snap.access(&client.id(), name), Some(Access::ReadWrite));
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }
@@ -643,8 +642,7 @@ async fn immediate_off_rejects_unexported_path() {
     let client = client_endpoint().await;
     let g = Grants {
         exports: [("other".to_string(), Access::ReadWrite)].into(),
-        all: None,
-        immediate: false,
+        ..Grants::default()
     };
     let export = irsync::config::exports::Export {
         path: exported,
@@ -761,9 +759,9 @@ fn export_at(
     }
 }
 
-/// `[all]` covers the exports written by hand only: an automatic export
-/// belongs to the peer it was made for, so an `[all] rw` key can neither
-/// use nor list it.
+/// `all_exports` covers the exports written by hand only: an automatic
+/// export belongs to the peer it was made for, so a client with
+/// `all_exports = "rw"` can neither use nor list it.
 #[tokio::test]
 async fn all_grant_does_not_reach_auto_exports() {
     use irsync_proto::v1::export_entry::Access as A;
@@ -891,6 +889,148 @@ async fn immediate_push_under_unwritable_parent_says_why() {
         )
     );
     assert!(authz.snapshot().unwrap().exports.is_empty());
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+/// A daemon whose exports and grants come from `dir/irsync.toml`, written
+/// as `config` after a `state_dir` in `dir` (so saving the file looks for
+/// a daemon there, not in the default state folder), with home `home`.
+async fn spawn_from_file(
+    dir: &std::path::Path,
+    home: &std::path::Path,
+    config: &str,
+) -> (DaemonHandle, std::path::PathBuf) {
+    let path = dir.join("irsync.toml");
+    let state = dir.join("state").display().to_string();
+    irsync::fs::private::write(&path, format!("state_dir = {state:?}\n{config}")).unwrap();
+    let authz = Arc::new(FileAuthorizer::new(Paths::resolve(Some(&path))));
+    let d = spawn_daemon_full(
+        authz,
+        tempfile::tempdir().unwrap(),
+        Some(home.to_path_buf()),
+    )
+    .await;
+    (d, path)
+}
+
+/// The table of a client `laptop` with `id` and the lines `rights`.
+fn laptop(id: iroh::EndpointId, rights: &str) -> String {
+    format!("[clients.laptop]\nclient_id = \"{id}\"\n{rights}")
+}
+
+/// A home directory in a fresh temp dir, by its real path (macOS: /var is
+/// a link to /private/var).
+fn temp_home() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = std::fs::canonicalize(tmp.path()).unwrap().join("home");
+    std::fs::create_dir(&home).unwrap();
+    (tmp, home)
+}
+
+fn read_only_reply() -> (i32, String) {
+    (
+        Code::ReadOnly as i32,
+        "export is read-only for this key".to_string(),
+    )
+}
+
+#[tokio::test]
+async fn all_paths_ro_pulls_any_path_and_makes_a_ro_export() {
+    use irsync::authz::Authorizer;
+    let (tmp, home) = temp_home();
+    std::fs::create_dir(home.join("data")).unwrap();
+    let client = client_endpoint().await;
+    let (d, config) = spawn_from_file(
+        tmp.path(),
+        &home,
+        &laptop(client.id(), "all_paths = \"ro\"\n"),
+    )
+    .await;
+    let r = exchange_against(&d, &client, hello(b"~/data", Direction::DaemonSends)).await;
+    assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)));
+    let snap = FileAuthorizer::new(Paths::resolve(Some(&config)))
+        .snapshot()
+        .unwrap();
+    let autos: Vec<_> = snap.exports.values().filter(|e| e.auto).collect();
+    assert_eq!(autos.len(), 1, "{:?}", snap.exports);
+    assert_eq!(autos[0].path, home.join("data"));
+    assert_eq!(autos[0].ro, ["laptop"]);
+    assert!(autos[0].rw.is_empty(), "{:?}", autos[0]);
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+/// A push by a read-only client is refused before the daemon makes the
+/// directory or the export.
+#[tokio::test]
+async fn all_paths_ro_cannot_push_and_creates_nothing() {
+    let (tmp, home) = temp_home();
+    let client = client_endpoint().await;
+    let (d, config) = spawn_from_file(
+        tmp.path(),
+        &home,
+        &laptop(client.id(), "all_paths = \"ro\"\n"),
+    )
+    .await;
+    let before = std::fs::read(&config).unwrap();
+    let e = reply(exchange_against(&d, &client, hello(b"~/new", Direction::ClientSends)).await);
+    assert_eq!(e, read_only_reply());
+    assert!(!home.join("new").exists(), "the push target was created");
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        before,
+        "the config changed"
+    );
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+/// An automatic export made while the client was `rw` gives it `ro` once
+/// its `all_paths` is lowered, without a restart.
+#[tokio::test]
+async fn lowering_all_paths_takes_effect_on_existing_auto_exports() {
+    let (tmp, home) = temp_home();
+    let client = client_endpoint().await;
+    let (d, config) = spawn_from_file(
+        tmp.path(),
+        &home,
+        &laptop(client.id(), "all_paths = \"rw\"\n"),
+    )
+    .await;
+    let push = hello(b"~/dest", Direction::ClientSends);
+    let r = exchange_against(&d, &client, push.clone()).await;
+    assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)));
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("auto = true"), "{text}");
+    let lowered = text.replace("all_paths = \"rw\"", "all_paths = \"ro\"");
+    assert_ne!(lowered, text);
+    irsync::fs::private::write(&config, &lowered).unwrap();
+    let e = reply(exchange_against(&d, &client, push).await);
+    assert_eq!(e, read_only_reply());
+    let r = exchange_against(&d, &client, hello(b"~/dest", Direction::DaemonSends)).await;
+    assert!(
+        matches!(r.unwrap(), HelloAckOrError::Ack(_)),
+        "a pull still works"
+    );
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+#[tokio::test]
+async fn all_paths_alone_is_refused_when_not_allowed() {
+    let (tmp, home) = temp_home();
+    let client = client_endpoint().await;
+    let (d, _config) = spawn_from_file(
+        tmp.path(),
+        &home,
+        &format!(
+            "[daemon]\nallow_all_paths = false\n\n{}",
+            laptop(client.id(), "all_paths = \"rw\"\n")
+        ),
+    )
+    .await;
+    assert_closed_before_hello(&d, &client).await;
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }

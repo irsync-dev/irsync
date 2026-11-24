@@ -65,7 +65,7 @@ In steps, it:
   prints the line to add to a startup file there, and you see it while
   `pair` runs;
 - lets this client reach any path your account on the server can, read-write
-  (an [immediate grant](../reference/configuration.md#immediate-grants)). The
+  (`all_paths = "rw"`, see [Rights on a client](../reference/configuration.md#rights-on-a-client)). The
   server saves the client under its host name, here `myclient`, as a
   `[clients.myclient]` entry, so its grants show that name instead of a long id. The first push to
   `/srv/photos` makes it an export, granted to this client only;
