@@ -14,6 +14,8 @@
 //! `writer,lookup,sync` (default: all). Every file holds 8 bytes: one chunk.
 //! Each run prints one line of `key=value` fields.
 
+#![deny(unsafe_code)]
+
 #[path = "../tests/common/mod.rs"]
 mod common;
 

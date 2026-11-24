@@ -145,6 +145,9 @@ impl Reader<'_> {
     /// every new binding, which costs more than the lookup it serves; tests
     /// check that none is.
     #[cfg(feature = "test-hooks")]
+    // A call into SQLite through rusqlite, not into the operating system,
+    // so it stays here rather than in the platform module.
+    #[allow(unsafe_code)]
     pub fn reprepared(&self) -> Vec<(String, i32)> {
         use rusqlite::ffi;
         let mut out = Vec::new();

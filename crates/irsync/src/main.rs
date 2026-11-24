@@ -1,3 +1,6 @@
+// Unsafe code belongs in the library's platform module.
+#![deny(unsafe_code)]
+
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
