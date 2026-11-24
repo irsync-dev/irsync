@@ -1,6 +1,5 @@
 //! Process-wide resource usage: CPU time, peak resident memory and open file descriptors.
 
-use nix::sys::resource::{getrusage, UsageWho};
 use std::time::Duration;
 
 /// One reading of this process's resource usage.
@@ -11,21 +10,6 @@ pub struct ProcessSample {
     pub max_rss_bytes: u64,
     /// `None` where the open descriptors cannot be counted.
     pub open_fds: Option<u64>,
-}
-
-/// Converts `ru_maxrss` (KiB on Linux, bytes on macOS) to bytes.
-pub fn rss_bytes(raw: i64) -> u64 {
-    let raw = u64::try_from(raw).unwrap_or(0);
-    if cfg!(target_os = "macos") {
-        raw
-    } else {
-        raw * 1024
-    }
-}
-
-fn timeval(t: nix::sys::time::TimeVal) -> Duration {
-    use nix::sys::time::TimeValLike;
-    Duration::from_micros(u64::try_from(t.num_microseconds()).unwrap_or(0))
 }
 
 /// The number of descriptors this process has open, from the `sysinfo`
@@ -68,10 +52,10 @@ pub fn sample() -> ProcessSample {
         open_fds: open_fds(),
         ..ProcessSample::default()
     };
-    if let Ok(u) = getrusage(UsageWho::RUSAGE_SELF) {
-        s.cpu_user = timeval(u.user_time());
-        s.cpu_sys = timeval(u.system_time());
-        s.max_rss_bytes = rss_bytes(u.max_rss());
+    if let Some(u) = crate::platform::process_usage() {
+        s.cpu_user = u.cpu_user;
+        s.cpu_sys = u.cpu_sys;
+        s.max_rss_bytes = u.max_rss;
     }
     s
 }
@@ -81,37 +65,10 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
-    #[test]
-    fn rss_bytes_units() {
-        if cfg!(target_os = "macos") {
-            assert_eq!(rss_bytes(2048), 2048);
-        } else {
-            assert_eq!(rss_bytes(2048), 2048 * 1024);
-        }
-    }
-
     /// Counts the open descriptors the slow, sure way: asks about each
     /// number in turn.
     fn direct_fd_count() -> u64 {
-        use nix::libc::{c_int, c_long, fcntl, sysconf, _SC_OPEN_MAX, F_GETFD};
-        // Descriptor numbers stay below the process's open-file limit,
-        // which sysconf reports. It can be "none" or in the millions; this
-        // test process has only a few descriptors, so stop at 65536 to
-        // keep the walk short.
-        const CAP: c_long = 1 << 16;
-        // SAFETY: sysconf takes a constant name, reads a limit and returns
-        // it as a number; it touches no memory of ours.
-        let limit = match unsafe { sysconf(_SC_OPEN_MAX) } {
-            n if n > 0 => n.min(CAP),
-            _ => CAP,
-        };
-        (0..limit as c_int)
-            // SAFETY: F_GETFD takes no third argument and only returns the
-            // flags of `fd`, or fails with EBADF when no such descriptor is
-            // open. It changes nothing, so asking about a descriptor some
-            // other code owns is harmless.
-            .filter(|&fd| unsafe { fcntl(fd, F_GETFD) } != -1)
-            .count() as u64
+        crate::platform::testutil::open_descriptor_count()
     }
 
     #[test]

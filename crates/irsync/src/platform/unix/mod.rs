@@ -360,6 +360,12 @@ pub fn open_read_nofollow(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
+/// Makes `link` a symlink to `target`, both paths the caller trusts. Unix
+/// links have no kind.
+pub fn symlink_path(target: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
 // ---------------------------------------------------------------------------
 // Stat and positional I/O.
 
@@ -465,6 +471,19 @@ pub fn ctime_of(m: &std::fs::Metadata) -> (i64, u32) {
 pub fn owner_of(m: &std::fs::Metadata) -> (u32, u32) {
     use std::os::unix::fs::MetadataExt;
     (m.uid(), m.gid())
+}
+
+/// The mode of the file `m` describes, as `st_mode` holds it (the kind
+/// bits included).
+pub fn mode_of(m: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    m.permissions().mode()
+}
+
+/// How many names (hard links) the file `m` describes has.
+pub fn nlink_of(m: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    m.nlink()
 }
 
 /// Reads at `offset` without moving the file's position.
@@ -814,6 +833,19 @@ pub fn local_time(secs: i64) -> String {
         tm.tm_sec
     )
 }
+
+// ---------------------------------------------------------------------------
+// Private files (`private.rs`); limits, process usage, the host name and
+// signals (`process.rs`); a daemon started in the background
+// (`daemonize.rs`).
+
+mod private;
+pub use private::*;
+
+mod process;
+pub use process::*;
+
+pub mod daemonize;
 
 // ---------------------------------------------------------------------------
 // Test helpers.

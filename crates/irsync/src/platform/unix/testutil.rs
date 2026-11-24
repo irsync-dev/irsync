@@ -101,3 +101,27 @@ impl Drop for Swap {
         }
     }
 }
+
+/// Counts the descriptors this process has open the slow, sure way: asks
+/// about each number in turn.
+pub fn open_descriptor_count() -> u64 {
+    use nix::libc::{c_int, c_long, fcntl, sysconf, _SC_OPEN_MAX, F_GETFD};
+    // Descriptor numbers stay below the process's open-file limit,
+    // which sysconf reports. It can be "none" or in the millions; this
+    // test process has only a few descriptors, so stop at 65536 to
+    // keep the walk short.
+    const CAP: c_long = 1 << 16;
+    // SAFETY: sysconf takes a constant name, reads a limit and returns
+    // it as a number; it touches no memory of ours.
+    let limit = match unsafe { sysconf(_SC_OPEN_MAX) } {
+        n if n > 0 => n.min(CAP),
+        _ => CAP,
+    };
+    (0..limit as c_int)
+        // SAFETY: F_GETFD takes no third argument and only returns the
+        // flags of `fd`, or fails with EBADF when no such descriptor is
+        // open. It changes nothing, so asking about a descriptor some
+        // other code owns is harmless.
+        .filter(|&fd| unsafe { fcntl(fd, F_GETFD) } != -1)
+        .count() as u64
+}

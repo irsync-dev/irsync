@@ -1,49 +1,20 @@
 //! Directories that hold irsync's own state.
 
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
+
+pub use crate::platform::open_file_problem;
 
 /// Like [`std::fs::create_dir_all`], but every directory it makes is for
 /// the owner only (0700). One that exists keeps its mode.
 pub fn create_dir_all(dir: &Path) -> io::Result<()> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+    crate::platform::create_private_dir_all(dir)
 }
 
 /// Writes `contents` to `path`, replacing what is there. A file it makes is
 /// for the owner only (0600); one that exists keeps its mode.
 pub fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?
-        .write_all(contents.as_ref())
-}
-
-/// What is wrong with the owner or mode of a file that only its owner
-/// should reach, as sshd asks of a key: `None` when it belongs to this
-/// user (or root) and neither its group nor anyone else may read, write or
-/// run it. Root may use a file of any owner: it manages the daemon
-/// account's files. Only a regular file is judged: a pipe or a device
-/// stores nothing.
-pub fn open_file_problem(meta: &std::fs::Metadata) -> Option<String> {
-    use std::os::unix::fs::MetadataExt;
-    if !meta.is_file() {
-        return None;
-    }
-    let me = nix::unistd::geteuid().as_raw();
-    if me != 0 && meta.uid() != me && meta.uid() != 0 {
-        return Some(format!("is owned by another user (uid {})", meta.uid()));
-    }
-    let mode = meta.mode() & 0o7777;
-    (mode & 0o077 != 0).then(|| format!("has mode {mode:04o}, which is open to other users"))
+    crate::platform::write_private(path.as_ref(), contents.as_ref())
 }
 
 /// The whole refusal for `path`: what is wrong, and the two ways out.
@@ -67,7 +38,7 @@ pub fn read_with_problem(path: &Path) -> io::Result<(String, Option<String>)> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
+    use crate::platform::{mode_of, set_mode_path_following};
 
     #[test]
     fn a_file_is_private_only_when_group_and_others_have_nothing() {
@@ -75,7 +46,7 @@ mod tests {
         let f = t.path().join("f");
         std::fs::write(&f, b"x").unwrap();
         let problem = |mode: u32| {
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+            set_mode_path_following(&f, mode).unwrap();
             super::open_file_problem(&std::fs::metadata(&f).unwrap())
         };
         for ok in [0o600, 0o400, 0o700] {
@@ -86,7 +57,7 @@ mod tests {
             assert!(p.contains(&format!("{open:04o}")), "{open:o}");
         }
         // A directory, like a pipe or a device, is not a stored secret.
-        std::fs::set_permissions(t.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        set_mode_path_following(t.path(), 0o755).unwrap();
         assert_eq!(
             super::open_file_problem(&std::fs::metadata(t.path()).unwrap()),
             None
@@ -101,9 +72,9 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let old = t.path().join("old");
         std::fs::create_dir(&old).unwrap();
-        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+        set_mode_path_following(&old, 0o755).unwrap();
         super::create_dir_all(&old.join("a/b")).unwrap();
-        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let mode = |p: &std::path::Path| mode_of(&std::fs::metadata(p).unwrap()) & 0o777;
         assert_eq!(mode(&old), 0o755);
         assert_eq!(mode(&old.join("a")), 0o700);
         assert_eq!(mode(&old.join("a/b")), 0o700);

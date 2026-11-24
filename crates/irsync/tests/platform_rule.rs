@@ -17,17 +17,6 @@ const BANNED: [&str; 7] = [
 /// Files not moved yet. Each task of this pull request removes the files it
 /// converts. Task 5 empties the list and deletes this constant.
 const PENDING: &[&str] = &[
-    "src/fs/private.rs",
-    "src/fs/rlimit.rs",
-    "src/identity.rs",
-    "src/main.rs",
-    "src/manage/mod.rs",
-    "src/net/tap/capture.rs",
-    "src/ssh/client.rs",
-    "src/ssh/legacy.rs",
-    "src/ssh/payload.rs",
-    "src/ssh/setup.rs",
-    "src/telemetry/process.rs",
     "tests/autoexport.rs",
     "tests/backpressure.rs",
     "tests/change_detection.rs",

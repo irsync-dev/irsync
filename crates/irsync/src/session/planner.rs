@@ -113,7 +113,7 @@ pub(super) fn inflight_cap(ctx: &Ctx) -> usize {
         let _ = ctx;
         MAX_INFLIGHT
     };
-    cap.min(inflight_for_limit(crate::fs::rlimit::nofile_soft()))
+    cap.min(inflight_for_limit(crate::platform::handle_limit()))
         .max(1)
 }
 
