@@ -1,3 +1,5 @@
+use std::ffi::OsStr;
+use std::fs::{FileType, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -5,9 +7,128 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use nix::libc;
+
 /// Makes `link` a symlink to `target`.
 pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, link)
+}
+
+/// Sets the permission bits of `path` (`chmod`, which follows a link).
+pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+    super::set_mode_path_following(path, mode)
+}
+
+/// Sets the owner and the group of `path` (`chown`, which follows a link);
+/// `None` leaves one as it is.
+pub fn chown(path: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
+    std::os::unix::fs::chown(path, uid, gid)
+}
+
+/// Sets the access and the modification time of `path` to `sec` seconds
+/// and `nsec` nanoseconds since the epoch (`utimensat`); a final link is
+/// followed only when `follow`.
+pub fn set_times(path: &Path, sec: i64, nsec: i64, follow: bool) -> io::Result<()> {
+    use nix::sys::stat::{utimensat, UtimensatFlags};
+    let t = nix::sys::time::TimeSpec::new(sec as _, nsec as _);
+    let flag = if follow {
+        UtimensatFlags::FollowSymlink
+    } else {
+        UtimensatFlags::NoFollowSymlink
+    };
+    utimensat(nix::fcntl::AT_FDCWD, path, &t, &t, flag).map_err(super::errno_of)
+}
+
+/// Makes a FIFO at `path` with permission bits `mode` (less the umask).
+pub fn mkfifo(path: &Path, mode: u32) -> io::Result<()> {
+    nix::unistd::mkfifo(path, nix::sys::stat::Mode::from_bits_truncate(mode as _))
+        .map_err(super::errno_of)
+}
+
+/// Binds a Unix domain socket at `path`; the socket file stays while the
+/// listener lives.
+pub fn bind_unix_socket(path: &Path) -> io::Result<std::os::unix::net::UnixListener> {
+    std::os::unix::net::UnixListener::bind(path)
+}
+
+/// Whether `t` is a FIFO.
+pub fn is_fifo(t: FileType) -> bool {
+    std::os::unix::fs::FileTypeExt::is_fifo(&t)
+}
+
+/// How many 512-byte blocks the file `m` describes has on disk.
+pub fn blocks_of(m: &Metadata) -> u64 {
+    std::os::unix::fs::MetadataExt::blocks(m)
+}
+
+/// The device number of device `major`, `minor`.
+// The argument and result types differ by platform.
+#[allow(clippy::unnecessary_cast)]
+pub fn makedev(major: u32, minor: u32) -> u64 {
+    libc::makedev(major as _, minor as _) as u64
+}
+
+/// The real user id of this process.
+pub fn real_uid() -> u32 {
+    nix::unistd::getuid().as_raw()
+}
+
+/// The real group id of this process.
+pub fn real_gid() -> u32 {
+    nix::unistd::getgid().as_raw()
+}
+
+/// The stored bytes of `name`, borrowed.
+pub fn name_bytes(name: &OsStr) -> &[u8] {
+    std::os::unix::ffi::OsStrExt::as_bytes(name)
+}
+
+/// The name that `bytes` stand for, borrowed: any bytes are a name.
+pub fn name_from_bytes(bytes: &[u8]) -> &OsStr {
+    std::os::unix::ffi::OsStrExt::from_bytes(bytes)
+}
+
+/// The soft and the hard limit on open files (`RLIMIT_NOFILE`).
+// `rlim_t` is signed on FreeBSD.
+#[allow(clippy::unnecessary_cast)]
+pub fn open_file_limits() -> io::Result<(u64, u64)> {
+    use nix::sys::resource::{getrlimit, Resource};
+    getrlimit(Resource::RLIMIT_NOFILE)
+        .map(|(soft, hard)| (soft as u64, hard as u64))
+        .map_err(super::errno_of)
+}
+
+/// Sets the soft and the hard limit on open files (`RLIMIT_NOFILE`).
+pub fn set_open_file_limits(soft: u64, hard: u64) -> io::Result<()> {
+    use nix::sys::resource::{setrlimit, Resource};
+    setrlimit(Resource::RLIMIT_NOFILE, soft as _, hard as _).map_err(super::errno_of)
+}
+
+/// A signal [`send_signal`] sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signal {
+    /// `SIGINT`.
+    Interrupt,
+    /// `SIGKILL`.
+    Kill,
+}
+
+/// Sends `sig` to the process `pid` (`kill`).
+pub fn send_signal(pid: u32, sig: Signal) -> io::Result<()> {
+    use nix::sys::signal::{kill, Signal as S};
+    let sig = match sig {
+        Signal::Interrupt => S::SIGINT,
+        Signal::Kill => S::SIGKILL,
+    };
+    kill(nix::unistd::Pid::from_raw(pid as i32), sig).map_err(super::errno_of)
+}
+
+/// Error numbers, for tests that make or expect an operating-system error.
+pub mod errno {
+    pub use nix::libc::{
+        EACCES, EAGAIN, EBUSY, EILSEQ, EINVAL, EIO, EMFILE, ENFILE, ENOBUFS, ENOENT, ENOMEM,
+        ENOSPC, EPERM,
+    };
 }
 /// How long the swapping thread leaves each state (the link, then the
 /// directory) in place: long enough that an operation running in the
