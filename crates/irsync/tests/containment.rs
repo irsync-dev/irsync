@@ -569,6 +569,15 @@ mod attack {
     /// A directory the deleter removes holds only irsync's leftover
     /// temporaries, which it clears first. Outside, a directory of the same
     /// name holds a file named like one of them: it stays.
+    ///
+    /// What the counts prove: the link refusals counted here happen where
+    /// the deleter opens the parent `a/b` (`remove_one`), and the outside
+    /// snapshot shows nothing was removed through the link there. What they
+    /// do not prove: `clear_temporaries`' own descent into `a/b/c` runs from
+    /// the parent already held open, which no swap can change, so no refusal
+    /// here comes from it. A `clear_temporaries` that went by path would be
+    /// caught only when a swap lands while it runs, after `remove_one` has
+    /// opened the real `a/b`: a short window, not met on every run.
     #[test]
     fn clear_temporaries_never_removes_outside() {
         let t = Tree::new();

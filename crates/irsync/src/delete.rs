@@ -339,13 +339,18 @@ fn clear_temporaries(parent: &Dir, name: &[u8]) -> io::Result<()> {
     let Ok(dir) = parent.open_dir(name) else {
         return Ok(());
     };
-    // In the order the directory gives them, as it was read before.
-    let mut temps = Vec::new();
-    for n in dir.list()? {
-        if !is_temp_name(&n) {
-            return Ok(());
+    // In the order the directory gives them; reading stops at the first
+    // name that is not a temporary, which keeps the directory.
+    let (mut temps, mut only_temps) = (Vec::new(), true);
+    dir.list_while(|n| {
+        only_temps = is_temp_name(n);
+        if only_temps {
+            temps.push(n.to_vec());
         }
-        temps.push(n);
+        only_temps
+    })?;
+    if !only_temps {
+        return Ok(());
     }
     // Every `.part` locked before any goes: none is a running writer's.
     let read = Open {

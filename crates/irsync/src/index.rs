@@ -831,7 +831,7 @@ impl Index {
         // its directory is for the owner only, also one made by an older
         // build.
         crate::fs::private::create_dir_all(&dir)?;
-        crate::platform::set_permissions(&dir, 0o700)?;
+        crate::platform::set_mode_path_following(&dir, 0o700)?;
         // One file per schema version: an older build keeps its own, and
         // the two never see each other's tables.
         let file = dir.join(format!("{name}.v{SCHEMA_VERSION}.sqlite"));

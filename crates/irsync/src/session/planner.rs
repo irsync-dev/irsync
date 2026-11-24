@@ -1298,8 +1298,9 @@ mod tests {
     /// The race of `tests/containment.rs`'s attack tests, on the placement
     /// only this module reaches: `a/b` is swapped for a link to a directory
     /// outside while hard links are placed into it and copies made from it.
-    /// Runs until the link was met, a placement succeeded and one was
-    /// refused for the link; the outside directory must not change.
+    /// Runs until the link was put in place and each of the two operations
+    /// (link, copy) has succeeded and has been refused for the link at
+    /// least once; the outside directory must not change.
     #[test]
     fn place_hardlink_never_links_outside() {
         use crate::platform::testutil::swap_for_link;
@@ -1337,23 +1338,25 @@ mod tests {
                 res
             }
         }
-        let mut n = Counts::default();
+        // Each operation must meet the link on its own: one set of counts each.
+        let (mut linked, mut copied) = (Counts::default(), Counts::default());
         let start = Instant::now();
         let (tries, swaps) = {
             let swap = swap_for_link(&root.path().join("a/b"), out.path());
             let mut i = 0;
             loop {
-                let met = n.ok > 0 && n.link > 0 && swap.swaps() > 0;
-                if i >= MIN_TRIES && met {
+                let met = |n: &Counts| n.ok > 0 && n.link > 0;
+                if i >= MIN_TRIES && met(&linked) && met(&copied) && swap.swaps() > 0 {
                     break;
                 }
                 assert!(
                     start.elapsed() < LIMIT,
-                    "the attack was not met within {LIMIT:?}: {i} tries, {} swaps, {n:?}",
+                    "the attack was not met within {LIMIT:?}: {i} tries, {} swaps, \
+                     link {linked:?}, copy {copied:?}",
                     swap.swaps()
                 );
                 // A link into the swapped directory.
-                let _ = n.note(place_hardlink(
+                let _ = linked.note(place_hardlink(
                     root.path(),
                     &r("a/t"),
                     &r(&format!("a/b/l{i}")),
@@ -1363,15 +1366,16 @@ mod tests {
                 ));
                 // A copy of a file in the swapped directory.
                 let copy = format!("a/c{i}");
-                if n.note(place_hardlink(
-                    root.path(),
-                    &r("a/b/f"),
-                    &r(&copy),
-                    false,
-                    &e,
-                    &none,
-                ))
-                .is_ok()
+                if copied
+                    .note(place_hardlink(
+                        root.path(),
+                        &r("a/b/f"),
+                        &r(&copy),
+                        false,
+                        &e,
+                        &none,
+                    ))
+                    .is_ok()
                 {
                     let got = std::fs::read(root.path().join(&copy)).unwrap();
                     assert_eq!(got, b"inside", "copied through the link");
@@ -1380,7 +1384,7 @@ mod tests {
             }
             (i, swap.swaps())
         };
-        eprintln!("{tries} tries, {swaps} swaps, {n:?}");
+        eprintln!("{tries} tries, {swaps} swaps, link {linked:?}, copy {copied:?}");
         assert_eq!(snapshot(out.path()), before);
         assert!(std::fs::symlink_metadata(root.path().join("a/b"))
             .unwrap()

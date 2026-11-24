@@ -463,7 +463,7 @@ fn run_walk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::set_permissions;
+    use crate::platform::set_mode_path_following;
 
     /// Only a clone folder's exact name form is pruned: the prefix and a
     /// uid; a user's folder that merely starts the same way is synced.
@@ -634,14 +634,14 @@ mod tests {
         std::fs::create_dir(t.path().join("locked")).unwrap();
         std::fs::write(t.path().join("locked/secret"), b"").unwrap();
         std::fs::write(t.path().join("z"), b"").unwrap();
-        set_permissions(&t.path().join("locked"), 0o000).unwrap();
+        set_mode_path_following(&t.path().join("locked"), 0o000).unwrap();
         if std::fs::read_dir(t.path().join("locked")).is_ok() {
-            set_permissions(&t.path().join("locked"), 0o755).unwrap();
+            set_mode_path_following(&t.path().join("locked"), 0o755).unwrap();
             eprintln!("skipping: running with privileges that bypass directory permissions");
             return;
         }
         let (v, summary) = events(t.path()).await;
-        set_permissions(&t.path().join("locked"), 0o755).unwrap();
+        set_mode_path_following(&t.path().join("locked"), 0o755).unwrap();
         let want: Vec<(String, bool)> = [
             ("", false),
             ("a", false),
@@ -676,14 +676,14 @@ mod tests {
         std::fs::write(t.path().join("d/b"), b"").unwrap();
         std::fs::write(t.path().join("e"), b"").unwrap();
         // Listable but not searchable: names are read, nothing in it can be stat'ed.
-        set_permissions(&t.path().join("d"), 0o644).unwrap();
+        set_mode_path_following(&t.path().join("d"), 0o644).unwrap();
         if std::fs::symlink_metadata(t.path().join("d/a")).is_ok() {
-            set_permissions(&t.path().join("d"), 0o755).unwrap();
+            set_mode_path_following(&t.path().join("d"), 0o755).unwrap();
             eprintln!("skipping: running with privileges that bypass directory permissions");
             return;
         }
         let (v, summary) = events(t.path()).await;
-        set_permissions(&t.path().join("d"), 0o755).unwrap();
+        set_mode_path_following(&t.path().join("d"), 0o755).unwrap();
         let want: Vec<(String, bool)> = [
             ("", false),
             ("d", false),

@@ -280,17 +280,32 @@ impl Dir {
 
     /// The names in the directory, without `.` and `..`, in no order.
     pub fn list(&self) -> io::Result<Vec<Vec<u8>>> {
+        let mut names = Vec::new();
+        self.list_while(|n| {
+            names.push(n.to_vec());
+            true
+        })?;
+        Ok(names)
+    }
+
+    /// Calls `f` with each name in the directory (without `.` and `..`),
+    /// in the order the directory gives them, and stops reading as soon as
+    /// `f` returns false. A failed read ends the listing with its error.
+    pub fn list_while(&self, mut f: impl FnMut(&[u8]) -> bool) -> io::Result<()> {
         // A second descriptor of the same open directory: reading moves
         // the position both share, and the iterator rewinds it when done.
         let mut dir = nix::dir::Dir::from_fd(self.0.try_clone()?).map_err(errno_of)?;
-        let mut names = Vec::new();
         for entry in dir.iter() {
-            let n = entry.map_err(errno_of)?.file_name().to_bytes().to_vec();
-            if n != b"." && n != b".." {
-                names.push(n);
+            let entry = entry.map_err(errno_of)?;
+            let n = entry.file_name().to_bytes();
+            if n == b"." || n == b".." {
+                continue;
+            }
+            if !f(n) {
+                break;
             }
         }
-        Ok(names)
+        Ok(())
     }
 
     /// Removes `name`, which is not a directory (a link is removed, not
@@ -548,8 +563,8 @@ pub fn ctime_of(m: &std::fs::Metadata) -> (i64, i64) {
 }
 
 /// Sets the permission bits of `path` as the standard library does
-/// (`chmod`, following a link).
-pub fn set_permissions(path: &Path, mode: u32) -> io::Result<()> {
+/// (`chmod`): a link at `path` is FOLLOWED, unlike [`set_mode_path`].
+pub fn set_mode_path_following(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
@@ -1051,6 +1066,41 @@ mod tests {
         let st = fstat(&file).unwrap();
         assert_eq!((st.kind, st.size), (Kind::File, 5));
         assert_eq!(st, d.stat(b"w").unwrap());
+    }
+
+    #[test]
+    fn list_while_stops_when_told() {
+        let t = tempfile::tempdir().unwrap();
+        for n in ["a", "b", "c"] {
+            std::fs::write(t.path().join(n), n).unwrap();
+        }
+        let d = Dir::open_root(t.path()).unwrap();
+        // Told to stop at the first name: called once.
+        let mut calls = 0;
+        d.list_while(|_| {
+            calls += 1;
+            false
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        // Never told to stop: every name, without `.` and `..`.
+        let mut names = Vec::new();
+        d.list_while(|n| {
+            names.push(n.to_vec());
+            true
+        })
+        .unwrap();
+        assert_eq!(sorted(names), [&b"a"[..], b"b", b"c"]);
+        // Stopped after the second name: called twice, and a later listing
+        // starts from the first name again.
+        let mut calls = 0;
+        d.list_while(|_| {
+            calls += 1;
+            calls < 2
+        })
+        .unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(sorted(d.list().unwrap()), [&b"a"[..], b"b", b"c"]);
     }
 
     #[test]
