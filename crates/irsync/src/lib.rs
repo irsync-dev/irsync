@@ -1,3 +1,7 @@
+// Unsafe code calls into the operating system, which is the platform
+// module's work. Anywhere else it needs its own allow and a reason.
+#![deny(unsafe_code)]
+
 pub mod authz;
 pub mod autoexport;
 pub mod build;
@@ -17,6 +21,8 @@ pub mod index;
 pub mod manage;
 pub mod net;
 pub mod plan;
+#[allow(unsafe_code)]
+pub mod platform;
 pub mod recv;
 pub mod resolve;
 pub mod scan;

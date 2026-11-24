@@ -1,15 +1,10 @@
 //! POSIX metadata: `lstat` into a `FileEntry`, and symlink-safe application.
 
 use crate::fs::paths::RelPath;
+use crate::platform::{self, Dir, Stat};
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
-use nix::fcntl::{AtFlags, AT_FDCWD};
-use nix::sys::stat::{
-    fchmodat, fstat, lstat, utimensat, FchmodatFlags, FileStat, Mode, SFlag, UtimensatFlags,
-};
-use nix::sys::time::TimeSpec;
-use nix::unistd::{fchownat, Gid, Uid};
+use std::fs::File;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 /// Which metadata `apply_metadata` should set.
@@ -21,22 +16,29 @@ pub struct ApplyOpts {
     pub group: bool,
 }
 
-fn kind_of(mode: u32) -> Kind {
-    let fmt = SFlag::from_bits_truncate(mode as _) & SFlag::S_IFMT;
-    if fmt == SFlag::S_IFDIR {
-        Kind::Directory
-    } else if fmt == SFlag::S_IFLNK {
-        Kind::Symlink
-    } else if fmt == SFlag::S_IFCHR {
-        Kind::CharDev
-    } else if fmt == SFlag::S_IFBLK {
-        Kind::BlockDev
-    } else if fmt == SFlag::S_IFIFO {
-        Kind::Fifo
-    } else if fmt == SFlag::S_IFSOCK {
-        Kind::Socket
-    } else {
-        Kind::Regular
+/// The listing's kind of a platform kind: anything that is no other kind
+/// counts as a regular file.
+fn kind_of(kind: platform::Kind) -> Kind {
+    match kind {
+        platform::Kind::Dir => Kind::Directory,
+        platform::Kind::Symlink => Kind::Symlink,
+        platform::Kind::CharDev => Kind::CharDev,
+        platform::Kind::BlockDev => Kind::BlockDev,
+        platform::Kind::Fifo => Kind::Fifo,
+        platform::Kind::Socket => Kind::Socket,
+        platform::Kind::File | platform::Kind::Other => Kind::Regular,
+    }
+}
+
+/// The platform kind a special entry is made as; [`platform::Kind::Other`]
+/// (refused) for any kind that is not special.
+fn special_kind(kind: Kind) -> platform::Kind {
+    match kind {
+        Kind::Fifo => platform::Kind::Fifo,
+        Kind::CharDev => platform::Kind::CharDev,
+        Kind::BlockDev => platform::Kind::BlockDev,
+        Kind::Socket => platform::Kind::Socket,
+        _ => platform::Kind::Other,
     }
 }
 
@@ -50,35 +52,23 @@ pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
 /// below `base` is followed on the way to it (see
 /// [`open_parent_beneath`](crate::fs::safe::open_parent_beneath)). The
 /// root itself is `lstat`ed by name.
-// `st_mode` is narrower on macOS.
-#[allow(clippy::unnecessary_cast)]
 pub fn lstat_beneath(base: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
     if rel.as_bytes().is_empty() {
         return lstat_entry_with_ctime(base, rel);
     }
     let (dir, name) = crate::fs::safe::open_parent_beneath(base, rel)?;
-    lstat_at(std::os::fd::AsFd::as_fd(&dir), Path::new(&name), rel)
+    lstat_at(&dir, &name, rel)
 }
 
 /// `lstat` of `name` in the open directory `dir`, as the entry of `rel`.
-// `st_mode` is narrower on macOS.
-#[allow(clippy::unnecessary_cast)]
-pub fn lstat_at(
-    dir: std::os::fd::BorrowedFd<'_>,
-    name: &Path,
-    rel: &RelPath,
-) -> io::Result<(FileEntry, (i64, u32))> {
-    let st = nix::sys::stat::fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW)
-        .map_err(crate::fs::safe::errno)?;
-    let link_target = if kind_of(st.st_mode as u32) == Kind::Symlink {
-        nix::fcntl::readlinkat(dir, name)
-            .map_err(crate::fs::safe::errno)?
-            .as_bytes()
-            .to_vec()
+pub fn lstat_at(dir: &Dir, name: &[u8], rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
+    let st = dir.stat(name)?;
+    let link_target = if st.kind == platform::Kind::Symlink {
+        dir.read_link(name)?
     } else {
         Vec::new()
     };
-    Ok(entry_of(st, rel, link_target))
+    Ok(entry_of(&st, rel, link_target))
 }
 
 /// Like [`lstat_entry`], also returning the inode change time `(sec, nsec)`.
@@ -88,90 +78,56 @@ pub fn lstat_entry_with_ctime(root: &Path, rel: &RelPath) -> io::Result<(FileEnt
     } else {
         root.join(rel.to_os())
     };
-    let st = lstat(&full)?;
-    let link_target = if kind_of(st.st_mode as u32) == Kind::Symlink {
-        std::fs::read_link(&full)?.as_os_str().as_bytes().to_vec()
+    let st = platform::lstat(&full)?;
+    let link_target = if st.kind == platform::Kind::Symlink {
+        platform::os_to_bytes(std::fs::read_link(&full)?.as_os_str())
     } else {
         Vec::new()
     };
-    Ok(entry_of(st, rel, link_target))
+    Ok(entry_of(&st, rel, link_target))
 }
 
 /// [`lstat_entry_with_ctime`] of the file open as `file` (never a
 /// symlink), for the entry at `rel`.
-pub fn fstat_entry_with_ctime(
-    file: &std::fs::File,
-    rel: &RelPath,
-) -> io::Result<(FileEntry, (i64, u32))> {
-    Ok(stat_entry_with_ctime(fstat(file)?, rel))
+pub fn fstat_entry_with_ctime(file: &File, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
+    Ok(stat_entry_with_ctime(&platform::fstat(file)?, rel))
 }
 
 /// [`fstat_entry_with_ctime`] from an `fstat` already taken.
-pub fn stat_entry_with_ctime(st: FileStat, rel: &RelPath) -> (FileEntry, (i64, u32)) {
+pub fn stat_entry_with_ctime(st: &Stat, rel: &RelPath) -> (FileEntry, (i64, u32)) {
     entry_of(st, rel, Vec::new())
 }
 
-// The `stat` field types differ by platform; some casts are no-ops here.
-#[allow(clippy::unnecessary_cast)]
-fn entry_of(st: FileStat, rel: &RelPath, link_target: Vec<u8>) -> (FileEntry, (i64, u32)) {
-    let mode = st.st_mode as u32;
-    let kind = kind_of(mode);
-    // Linux and macOS both expose st_mtime / st_mtime_nsec through nix's libc FileStat.
-    let ctime = (st.st_ctime as i64, st.st_ctime_nsec as u32);
+fn entry_of(st: &Stat, rel: &RelPath, link_target: Vec<u8>) -> (FileEntry, (i64, u32)) {
+    // The whole `st_mode`: the kind's bits and the permission bits.
+    let mode = platform::mode_of_kind(st.kind) | st.mode;
+    let kind = kind_of(st.kind);
     let entry = FileEntry {
         path: rel.as_bytes().to_vec(),
         kind: kind as i32,
-        size: st.st_size as u64,
-        mtime_sec: st.st_mtime as i64,
-        mtime_nsec: st.st_mtime_nsec as u32,
+        size: st.size,
+        mtime_sec: st.mtime.0,
+        mtime_nsec: st.mtime.1,
         mode,
-        uid: st.st_uid,
-        gid: st.st_gid,
+        uid: st.uid,
+        gid: st.gid,
         link_target,
-        rdev: st.st_rdev as u64,
-        dev: st.st_dev as u64,
-        inode: st.st_ino,
-        nlink: st.st_nlink as u32,
+        rdev: st.rdev,
+        dev: st.dev,
+        inode: st.ino,
+        nlink: st.nlink as u32,
         whole_hash: None,
-        sparse: kind == Kind::Regular && (st.st_blocks as i64) * 512 < st.st_size as i64,
+        sparse: st.sparse,
         // Attached by the listing (see `fs::ids`), not here.
         user: String::new(),
         group: String::new(),
     };
-    (entry, ctime)
-}
-
-fn errno(e: nix::Error) -> io::Error {
-    io::Error::from_raw_os_error(e as i32)
+    (entry, st.ctime)
 }
 
 /// The supplementary groups of this process, empty if they can't be read.
-/// Calls libc directly because nix leaves `getgroups` out on Apple targets.
 pub fn supplementary_groups() -> Vec<u32> {
-    #[cfg(not(target_os = "macos"))]
-    use nix::libc::getgroups;
-    use nix::libc::{c_int, gid_t};
-    // The plain macOS getgroups stops at 16 groups; this variant returns
-    // all of them.
-    #[cfg(target_os = "macos")]
-    extern "C" {
-        #[link_name = "getgroups$DARWIN_EXTSN"]
-        fn getgroups(size: c_int, list: *mut gid_t) -> c_int;
-    }
-    // SAFETY: with a size of 0, getgroups writes nothing and only returns
-    // the number of groups, so a null buffer is allowed.
-    let n = unsafe { getgroups(0, std::ptr::null_mut()) };
-    if n <= 0 {
-        return Vec::new();
-    }
-    // gid_t is u32 on Linux and macOS alike.
-    let mut buf: Vec<gid_t> = vec![0; n as usize];
-    // SAFETY: `buf` holds `n` writable gid_t slots and getgroups writes at
-    // most the size it is given. If the groups grew since the first call,
-    // it fails with EINVAL and writes nothing; the result is then empty.
-    let n = unsafe { getgroups(n as c_int, buf.as_mut_ptr()) };
-    buf.truncate(n.max(0) as usize);
-    buf
+    platform::supplementary_groups()
 }
 
 /// Whether this process runs as root, and the groups it is a member of
@@ -186,10 +142,9 @@ struct ProcessIds {
 fn process_ids() -> &'static ProcessIds {
     static IDS: std::sync::OnceLock<ProcessIds> = std::sync::OnceLock::new();
     IDS.get_or_init(|| {
-        let mut groups = supplementary_groups();
-        groups.push(nix::unistd::getegid().as_raw());
+        let groups = platform::groups();
         ProcessIds {
-            root: nix::unistd::geteuid().is_root(),
+            root: platform::is_root(),
             groups,
         }
     })
@@ -201,6 +156,36 @@ fn may_chgrp(gid: u32) -> bool {
     ids.root || ids.groups.contains(&gid)
 }
 
+/// Where [`apply_at`] sets metadata: a name in an open directory, or a
+/// path the caller trusts. Neither follows a symlink at the final name.
+enum Target<'a> {
+    At(&'a Dir, &'a [u8]),
+    Path(&'a Path),
+}
+
+impl Target<'_> {
+    fn set_owner(&self, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
+        match self {
+            Target::At(dir, name) => dir.set_owner(name, uid, gid),
+            Target::Path(path) => platform::set_owner_path(path, uid, gid),
+        }
+    }
+
+    fn set_mode(&self, mode: u32) -> io::Result<()> {
+        match self {
+            Target::At(dir, name) => dir.set_mode(name, mode),
+            Target::Path(path) => platform::set_mode_path(path, mode),
+        }
+    }
+
+    fn set_mtime(&self, mtime: (i64, u32)) -> io::Result<()> {
+        match self {
+            Target::At(dir, name) => dir.set_mtime(name, mtime),
+            Target::Path(path) => platform::set_mtime_path(path, mtime),
+        }
+    }
+}
+
 /// Apply the selected metadata of `e` to `path`, without following symlinks.
 /// Ownership is applied first (chown clears setuid bits), then mode, then times.
 ///
@@ -210,7 +195,7 @@ fn may_chgrp(gid: u32) -> bool {
 /// group only as root or a member of it; otherwise they are silently left
 /// alone.
 pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
-    apply_metadata_at(AT_FDCWD, path, e, opts)
+    apply_at(Target::Path(path), e, opts)
 }
 
 /// [`apply_metadata`] to `name` in the open directory `dir`. With a `dir`
@@ -218,109 +203,72 @@ pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Resul
 /// nothing is reached through a symlink: not on the way, and not at the
 /// name itself.
 pub fn apply_metadata_at(
-    dir: std::os::fd::BorrowedFd<'_>,
-    name: &Path,
+    dir: &Dir,
+    name: &[u8],
     e: &FileEntry,
     opts: &ApplyOpts,
 ) -> io::Result<()> {
+    apply_at(Target::At(dir, name), e, opts)
+}
+
+fn apply_at(at: Target<'_>, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
     let owner = opts.owner && process_ids().root;
     let group = opts.group && may_chgrp(e.gid);
     if owner || group {
-        let uid = owner.then(|| Uid::from_raw(e.uid));
-        let gid = group.then(|| Gid::from_raw(e.gid));
-        fchownat(dir, name, uid, gid, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno)?;
+        at.set_owner(owner.then_some(e.uid), group.then_some(e.gid))?;
     }
     if opts.perms && e.kind() != Kind::Symlink {
-        let mode = Mode::from_bits_truncate((e.mode & 0o7777) as _);
-        chmod_nofollow(dir, name, mode)?;
+        at.set_mode(e.mode & 0o7777)?;
     }
     if opts.times {
-        let t = TimeSpec::new(e.mtime_sec as _, e.mtime_nsec as _);
-        utimensat(dir, name, &t, &t, UtimensatFlags::NoFollowSymlink).map_err(errno)?;
+        at.set_mtime((e.mtime_sec, e.mtime_nsec))?;
     }
     Ok(())
 }
 
-/// `chmod` of `name` in `dir` that never changes the target of a symlink
-/// swapped in at `name`. Where the system cannot do that in one call (an
-/// older Linux without `/proc`), the name is checked first, then changed.
-// `st_mode` is narrower on macOS.
-#[allow(clippy::unnecessary_cast)]
-fn chmod_nofollow(dir: std::os::fd::BorrowedFd<'_>, name: &Path, mode: Mode) -> io::Result<()> {
-    match fchmodat(dir, name, mode, FchmodatFlags::NoFollowSymlink) {
-        Ok(()) => Ok(()),
-        Err(nix::Error::EOPNOTSUPP | nix::Error::ENOSYS | nix::Error::EINVAL) => {
-            let st =
-                nix::sys::stat::fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno)?;
-            if kind_of(st.st_mode as u32) == Kind::Symlink {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("refusing to follow symlink {}", name.display()),
-                ));
-            }
-            fchmodat(dir, name, mode, FchmodatFlags::FollowSymlink).map_err(errno)
-        }
-        Err(e) => Err(errno(e)),
-    }
-}
-
-/// [`apply_metadata`] through an open descriptor of a regular file (never
-/// by path, so nothing can be swapped in underneath).
-pub fn apply_metadata_fd(
-    fd: impl std::os::fd::AsFd,
-    e: &FileEntry,
-    opts: &ApplyOpts,
-) -> io::Result<()> {
-    apply_fd(fd.as_fd(), e, opts, None)
+/// [`apply_metadata`] through an open regular file (never by path, so
+/// nothing can be swapped in underneath).
+pub fn apply_metadata_fd(file: &File, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
+    apply_fd(file, e, opts, None)
 }
 
 /// [`apply_metadata_fd`] on a file whose owner and group are known to be
 /// `now` (`(uid, gid)`): an owner or group it already has is not set again,
 /// so a file that already has both needs no `fchown`.
 pub fn apply_metadata_fd_owned(
-    fd: impl std::os::fd::AsFd,
+    file: &File,
     e: &FileEntry,
     opts: &ApplyOpts,
     now: (u32, u32),
 ) -> io::Result<()> {
-    apply_fd(fd.as_fd(), e, opts, Some(now))
+    apply_fd(file, e, opts, Some(now))
 }
 
 /// The mode a new regular file gets under this process's umask: what a
 /// file created private is given when it is placed without `-p`.
 pub fn default_file_mode() -> u32 {
     static MODE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| {
-        // The umask can only be read by setting it. For the moment between
-        // the two calls, files other threads create are private, never
-        // more open. `main` asks once before it starts any thread.
-        let old = nix::sys::stat::umask(Mode::from_bits_truncate(0o077));
-        nix::sys::stat::umask(old);
-        0o666 & !(old.bits() as u32)
-    })
+    // Reading the umask changes it for a moment (see `platform::umask`).
+    // `main` asks once before it starts any thread.
+    *MODE.get_or_init(|| 0o666 & !platform::umask())
 }
 
 fn apply_fd(
-    fd: std::os::fd::BorrowedFd<'_>,
+    file: &File,
     e: &FileEntry,
     opts: &ApplyOpts,
     now: Option<(u32, u32)>,
 ) -> io::Result<()> {
-    use nix::sys::stat::{fchmod, futimens};
-    use nix::unistd::fchown;
     let owner = opts.owner && process_ids().root && now.is_none_or(|(uid, _)| uid != e.uid);
     let group = opts.group && now.is_none_or(|(_, gid)| gid != e.gid) && may_chgrp(e.gid);
     if owner || group {
-        let uid = owner.then(|| Uid::from_raw(e.uid));
-        let gid = group.then(|| Gid::from_raw(e.gid));
-        fchown(fd, uid, gid).map_err(errno)?;
+        platform::set_owner_file(file, owner.then_some(e.uid), group.then_some(e.gid))?;
     }
     if opts.perms {
-        fchmod(fd, Mode::from_bits_truncate((e.mode & 0o7777) as _)).map_err(errno)?;
+        platform::set_mode_file(file, e.mode & 0o7777)?;
     }
     if opts.times {
-        let t = TimeSpec::new(e.mtime_sec as _, e.mtime_nsec as _);
-        futimens(fd, &t, &t).map_err(errno)?;
+        platform::set_mtime_file(file, (e.mtime_sec, e.mtime_nsec))?;
     }
     Ok(())
 }
@@ -328,70 +276,10 @@ fn apply_fd(
 /// Create a FIFO or device node at `path` from `e` (mode permission bits and rdev).
 /// `mkfifo` and `mknod` are umask-subject, so callers follow with `apply_metadata` to set exact mode.
 pub fn create_special(path: &Path, e: &FileEntry) -> io::Result<()> {
-    create_special_at(AT_FDCWD, path, e)
+    platform::make_device_path(path, special_kind(e.kind()), e.mode & 0o7777, e.rdev)
 }
 
 /// [`create_special`] at `name` in the open directory `dir`.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-pub fn create_special_at(
-    dir: std::os::fd::BorrowedFd<'_>,
-    name: &Path,
-    e: &FileEntry,
-) -> io::Result<()> {
-    let perm = Mode::from_bits_truncate((e.mode & 0o7777) as _);
-    let kind = match e.kind() {
-        // mkfifo, not mknod: FreeBSD's mknod makes device nodes only.
-        Kind::Fifo => return nix::unistd::mkfifoat(dir, name, perm).map_err(errno),
-        Kind::CharDev => SFlag::S_IFCHR,
-        Kind::BlockDev => SFlag::S_IFBLK,
-        Kind::Socket => SFlag::S_IFSOCK,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "not a special file kind",
-            ))
-        }
-    };
-    nix::sys::stat::mknodat(dir, name, kind, perm, e.rdev as _).map_err(errno)
-}
-
-/// [`create_special`] at `name` in the open directory `dir`. The library
-/// irsync uses for system calls leaves these two out on macOS, so they are
-/// called directly.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-pub fn create_special_at(
-    dir: std::os::fd::BorrowedFd<'_>,
-    name: &Path,
-    e: &FileEntry,
-) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-    let c = std::ffi::CString::new(name.as_os_str().as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in a file name"))?;
-    let perm = (e.mode & 0o7777) as nix::libc::mode_t;
-    let kind = match e.kind() {
-        Kind::Fifo => nix::libc::S_IFIFO,
-        Kind::CharDev => nix::libc::S_IFCHR,
-        Kind::BlockDev => nix::libc::S_IFBLK,
-        Kind::Socket => nix::libc::S_IFSOCK,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "not a special file kind",
-            ))
-        }
-    };
-    // SAFETY: `c` is a valid NUL-terminated string and `dir` an open
-    // descriptor (or `AT_FDCWD`) for the length of the call.
-    let r = unsafe {
-        if e.kind() == Kind::Fifo {
-            nix::libc::mkfifoat(dir.as_raw_fd(), c.as_ptr(), perm)
-        } else {
-            nix::libc::mknodat(dir.as_raw_fd(), c.as_ptr(), kind | perm, e.rdev as _)
-        }
-    };
-    if r == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
+pub fn create_special_at(dir: &Dir, name: &[u8], e: &FileEntry) -> io::Result<()> {
+    dir.make_device(name, special_kind(e.kind()), e.mode & 0o7777, e.rdev)
 }

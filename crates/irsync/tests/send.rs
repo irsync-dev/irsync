@@ -276,7 +276,11 @@ async fn sender_refuses_symlink() {
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("secret"), &bytes).unwrap();
     std::fs::remove_file(f.root.path().join("s.bin")).unwrap();
-    std::os::unix::fs::symlink(outside.path().join("secret"), f.root.path().join("s.bin")).unwrap();
+    irsync::platform::testutil::symlink(
+        &outside.path().join("secret"),
+        &f.root.path().join("s.bin"),
+    )
+    .unwrap();
     let idxs: Vec<u32> = (0..d.chunks.len() as u32).collect();
     let e = within(sender(&f, 4, 64 << 20, None).send_chunks(1, &p, &d, &idxs))
         .await
@@ -297,7 +301,7 @@ async fn sender_does_not_send_through_a_swapped_directory() {
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("s.bin"), &bytes).unwrap();
     std::fs::remove_dir_all(f.root.path().join("d")).unwrap();
-    std::os::unix::fs::symlink(outside.path(), f.root.path().join("d")).unwrap();
+    irsync::platform::testutil::symlink(outside.path(), &f.root.path().join("d")).unwrap();
     assert_eq!(std::fs::read(f.root.path().join("d/s.bin")).unwrap(), bytes);
     let e = within(sender(&f, 4, 64 << 20, None).send_chunks(1, &p, &d, &idxs))
         .await

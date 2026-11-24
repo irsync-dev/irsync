@@ -1,9 +1,7 @@
 //! Placement rules for a single file as the source of a copy, following
 //! rsync: where the file lands depends on what the destination is.
 
-use std::ffi::OsStr;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -19,6 +17,7 @@ use crate::build::BuildInfo;
 use crate::fs::paths::RelPath;
 use crate::net::frame::write_msg_tapped;
 use crate::net::tap::{ConnTap, StreamKind as TapStream};
+use crate::platform::{bytes_to_os, os_to_bytes};
 
 /// A one-file transfer. Each name is exactly one path component. `wire` is
 /// the receiver's name for the file, `local` is this side's name; they are
@@ -81,9 +80,9 @@ pub fn split_last(path: &Path) -> (PathBuf, Vec<u8>) {
                 Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
                 _ => PathBuf::from("."),
             };
-            (parent, name.as_bytes().to_vec())
+            (parent, os_to_bytes(name))
         }
-        None => (PathBuf::from("."), path.as_os_str().as_bytes().to_vec()),
+        None => (PathBuf::from("."), os_to_bytes(path.as_os_str())),
     }
 }
 
@@ -122,7 +121,8 @@ pub fn place_file(
         let (root, name) = split_last(dest);
         return Ok(FilePlace { root, name });
     }
-    let target = dest.join(OsStr::from_bytes(src_name));
+    let name = bytes_to_os(src_name).map_err(|e| PlaceError::Io(dest.to_path_buf(), e))?;
+    let target = dest.join(name);
     match std::fs::symlink_metadata(&target) {
         Ok(m) if m.is_dir() => return Err(PlaceError::IsADirectory(target)),
         Ok(_) => {}

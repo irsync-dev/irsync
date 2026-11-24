@@ -5,11 +5,11 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{symlink, MetadataExt};
 use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, Flow, Harness};
+use irsync::platform::{nlink_of, testutil::symlink};
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
@@ -102,7 +102,7 @@ async fn hardlink_target_outside_root_rejected() {
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("secret"), b"private key").unwrap();
     // A symlink inside the export leading out of it.
-    symlink(outside.path(), h.export.path().join("esc")).unwrap();
+    symlink(outside.path(), &h.export.path().join("esc")).unwrap();
     fs::write(h.local.path().join("a"), b"a").unwrap();
     let out = push_with(
         &h,
@@ -113,7 +113,7 @@ async fn hardlink_target_outside_root_rejected() {
     assert!(has_error(&out, b"b", "hard link"), "{:?}", out.errors);
     assert!(fs::symlink_metadata(h.export.path().join("b")).is_err());
     assert_eq!(
-        fs::metadata(outside.path().join("secret")).unwrap().nlink(),
+        nlink_of(&fs::metadata(outside.path().join("secret")).unwrap()),
         1
     );
 }
@@ -289,4 +289,309 @@ async fn excluded_paths_in_the_peers_listing_are_refused() {
         );
     }
     assert_eq!(out.exit_code(), 23);
+}
+
+/// The containment layer under attack: while each operation runs over and
+/// over, another thread swaps the directory `a/b` on its way for a link to
+/// a directory outside the root and back, many times a second. Each test
+/// goes on until it has seen its operation both succeed and be refused
+/// because of the link, so it cannot pass without meeting the attack.
+/// Whatever the operation meets, nothing outside is read, written or
+/// removed.
+mod attack {
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::io::{self, Read, Write};
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    use irsync::cli::DeleteMode;
+    use irsync::delete::DeletePass;
+    use irsync::fs::paths::RelPath;
+    use irsync::fs::safe::{create_dir_all_beneath, open_regular_beneath, Beneath, DirStack};
+    use irsync::platform::testutil::swap_for_link;
+    use irsync::platform::{Create, Open};
+    use irsync_proto::v1::file_entry::Kind;
+
+    /// Tries of the operation per test at the least, each racing the
+    /// swapping thread.
+    const MIN_TRIES: usize = 500;
+    /// A test that has not met the link by then fails.
+    const LIMIT: Duration = Duration::from_secs(20);
+
+    /// What the tries of an operation came to.
+    #[derive(Debug, Default)]
+    struct Counts {
+        ok: usize,
+        /// Refused because a component on the way was the link.
+        link: usize,
+        /// Any other failure: mostly `a/b` missing for a moment.
+        other: usize,
+    }
+
+    impl Counts {
+        /// Counts `r` and hands it on.
+        fn note<T>(&mut self, r: io::Result<T>) -> io::Result<T> {
+            match &r {
+                Ok(_) => self.ok += 1,
+                Err(e) if refused_for_link(e) => self.link += 1,
+                Err(_) => self.other += 1,
+            }
+            r
+        }
+    }
+
+    /// The error of `fs::safe` for a component that is a symlink (here
+    /// `a/b` never becomes anything else that is not a directory).
+    fn refused_for_link(e: &io::Error) -> bool {
+        e.kind() == io::ErrorKind::InvalidInput && e.to_string().contains("symlink")
+    }
+
+    /// Every file and directory below `dir`, with each file's bytes.
+    fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+        fn walk(top: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+            for e in fs::read_dir(dir).unwrap() {
+                let path = e.unwrap().path();
+                let rel = path.strip_prefix(top).unwrap().to_path_buf();
+                let meta = fs::symlink_metadata(&path).unwrap();
+                if meta.is_dir() {
+                    out.insert(rel, None);
+                    walk(top, &path, out);
+                } else if meta.is_file() {
+                    out.insert(rel, Some(fs::read(&path).unwrap()));
+                } else {
+                    let target = fs::read_link(&path).unwrap();
+                    out.insert(rel, Some(target.as_os_str().as_encoded_bytes().to_vec()));
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    /// A root with `a/b/f`, `a/b/victim` and `a/b/gone` in it, and a
+    /// directory outside with files of the same names (and one more
+    /// level), so that any operation led outside would find something to
+    /// read or change there.
+    struct Tree {
+        root: tempfile::TempDir,
+        outside: tempfile::TempDir,
+    }
+
+    impl Tree {
+        fn new() -> Tree {
+            let (root, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            fs::create_dir_all(root.path().join("a/b")).unwrap();
+            fs::write(root.path().join("a/b/f"), b"inside").unwrap();
+            fs::write(root.path().join("a/b/victim"), b"inside victim").unwrap();
+            fs::write(root.path().join("a/b/gone"), b"inside gone").unwrap();
+            fs::create_dir(outside.path().join("sub")).unwrap();
+            fs::write(outside.path().join("f"), b"outside").unwrap();
+            fs::write(outside.path().join("victim"), b"keep").unwrap();
+            fs::write(outside.path().join("gone"), b"keep too").unwrap();
+            fs::write(outside.path().join("sub/deep"), b"deep").unwrap();
+            Tree { root, outside }
+        }
+
+        fn at(&self, p: &str) -> Beneath {
+            Beneath::new(self.root.path(), rel(p))
+        }
+
+        /// Runs `op` (try number, counts) while `a/b` is swapped: at least
+        /// [`MIN_TRIES`] times, and until the link was put in place, an
+        /// operation succeeded and one was refused for the link; fails
+        /// after [`LIMIT`] without that. Then checks that the outside
+        /// directory is exactly as it was.
+        fn attack(&self, mut op: impl FnMut(usize, &mut Counts)) {
+            let before = snapshot(self.outside.path());
+            let mut n = Counts::default();
+            let start = Instant::now();
+            let (tries, swaps) = {
+                // Dropped at the end of this block, or while a failed
+                // assertion unwinds: either way its thread is stopped and
+                // joined, with `a/b` back in place.
+                let swap = swap_for_link(&self.root.path().join("a/b"), self.outside.path());
+                let mut i = 0;
+                while i < MIN_TRIES || n.ok == 0 || n.link == 0 || swap.swaps() == 0 {
+                    assert!(
+                        start.elapsed() < LIMIT,
+                        "the attack was not met within {LIMIT:?}: {i} tries, {} swaps, {n:?}",
+                        swap.swaps()
+                    );
+                    op(i, &mut n);
+                    i += 1;
+                }
+                (i, swap.swaps())
+            };
+            eprintln!("{tries} tries, {swaps} swaps, {n:?}");
+            assert_eq!(snapshot(self.outside.path()), before);
+            // The swapping thread has put the directory back.
+            assert!(fs::symlink_metadata(self.root.path().join("a/b"))
+                .unwrap()
+                .is_dir());
+        }
+    }
+
+    fn rel(p: &str) -> RelPath {
+        RelPath::new(p.as_bytes()).unwrap()
+    }
+
+    fn open(read: bool, write: bool, create: Create, truncate: bool) -> Open {
+        Open {
+            read,
+            write,
+            create,
+            truncate,
+            nonblock: true,
+            mode: 0o644,
+        }
+    }
+
+    #[test]
+    fn open_regular_beneath_never_reads_outside() {
+        let t = Tree::new();
+        t.attack(|_, n| {
+            if let Ok(mut f) = n.note(open_regular_beneath(t.root.path(), &rel("a/b/f"))) {
+                let mut got = Vec::new();
+                f.read_to_end(&mut got).unwrap();
+                assert_eq!(got, b"inside", "read through the link");
+            }
+        });
+    }
+
+    #[test]
+    fn beneath_open_create_never_writes_outside() {
+        let t = Tree::new();
+        t.attack(|i, n| {
+            let existing = open(false, true, Create::IfMissing, true);
+            if let Ok(mut f) = n.note(t.at("a/b/victim").open(existing)) {
+                f.write_all(b"written").unwrap();
+            }
+            let new = open(true, true, Create::New, false);
+            if let Ok(mut f) = n.note(t.at(&format!("a/b/new{i}")).open(new)) {
+                f.write_all(b"new").unwrap();
+            }
+        });
+    }
+
+    /// Each rename goes one way only and to a name never used again, so a
+    /// rename led outside cannot be undone by a later one: a file taken
+    /// from the outside directory, or one put into it, stays where it went
+    /// and the snapshot shows it.
+    #[test]
+    fn beneath_unlink_and_rename_never_touch_outside() {
+        let t = Tree::new();
+        let make = open(false, true, Create::IfMissing, false);
+        t.attack(|i, n| {
+            // Something to remove, made where it belongs.
+            let _ = t.at("a/b/gone").open(make);
+            let _ = n.note(t.at("a/b/gone").unlink());
+            // Out of `a/b`.
+            let _ = t.at("a/b/victim").open(make);
+            let _ = n.note(t.at("a/b/victim").rename_to(&t.at(&format!("a/out{i}"))));
+            // Into `a/b`.
+            let src = format!("a/in{i}");
+            fs::write(t.root.path().join(&src), format!("pushed {i}")).unwrap();
+            let _ = n.note(t.at(&src).rename_to(&t.at(&format!("a/b/pushed{i}"))));
+        });
+    }
+
+    #[test]
+    fn create_dir_all_beneath_never_creates_outside() {
+        let t = Tree::new();
+        t.attack(|i, n| {
+            let deep = rel(&format!("a/b/n{i}/deep"));
+            let _ = n.note(create_dir_all_beneath(t.root.path(), &deep, 0o755));
+        });
+    }
+
+    #[test]
+    fn dir_stack_never_descends_outside() {
+        let t = Tree::new();
+        let mut want = vec![b"f".to_vec(), b"gone".to_vec(), b"victim".to_vec()];
+        want.sort();
+        let mut stack = DirStack::new(t.root.path()).unwrap();
+        t.attack(|_, n| {
+            // Back to the base, so each try opens `a` and `a/b` afresh.
+            stack.dir(&RelPath::root()).unwrap();
+            if let Ok(d) = n.note(stack.dir(&rel("a/b"))) {
+                let mut names = d.list().unwrap();
+                names.sort();
+                assert_eq!(names, want, "listed through the link");
+            }
+        });
+    }
+
+    /// The receiver's deletion pass over the one candidate `path`, as an
+    /// `io::Result`: `Ok` when it was removed; an `InvalidInput` error
+    /// when the pass reports a symlink on the way (as `fs::safe` words
+    /// it); any other failure, or nothing there to remove, otherwise.
+    fn delete(rt: &tokio::runtime::Runtime, root: &Path, path: &str, kind: Kind) -> io::Result<()> {
+        let mut pass = DeletePass::new(DeleteMode::After, None, false, false, false);
+        pass.plan(rel(path), kind);
+        let rep = rt
+            .block_on(pass.execute(root.to_path_buf(), false))
+            .expect("a complete listing is not refused");
+        if !rep.deleted.is_empty() {
+            return Ok(());
+        }
+        Err(match rep.errors.first() {
+            Some((_, msg)) if msg.contains("symlink") => {
+                io::Error::new(io::ErrorKind::InvalidInput, msg.clone())
+            }
+            Some((_, msg)) => io::Error::other(msg.clone()),
+            None => io::Error::new(io::ErrorKind::NotFound, "nothing was removed"),
+        })
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// The deleter removes a file below the swapped directory; the file of
+    /// the same name outside stays.
+    #[test]
+    fn delete_remove_one_never_removes_outside() {
+        let t = Tree::new();
+        let rt = runtime();
+        let make = open(false, true, Create::IfMissing, false);
+        t.attack(|_, n| {
+            // Something to remove, made where it belongs.
+            let _ = t.at("a/b/gone").open(make);
+            let _ = n.note(delete(&rt, t.root.path(), "a/b/gone", Kind::Regular));
+        });
+    }
+
+    /// A directory the deleter removes holds only irsync's leftover
+    /// temporaries, which it clears first. Outside, a directory of the same
+    /// name holds a file named like one of them: it stays.
+    ///
+    /// What the counts prove: the link refusals counted here happen where
+    /// the deleter opens the parent `a/b` (`remove_one`), and the outside
+    /// snapshot shows nothing was removed through the link there. What they
+    /// do not prove: `clear_temporaries`' own descent into `a/b/c` runs from
+    /// the parent already held open, which no swap can change, so no refusal
+    /// here comes from it. A `clear_temporaries` that went by path would be
+    /// caught only when a swap lands while it runs, after `remove_one` has
+    /// opened the real `a/b`: a short window, not met on every run.
+    #[test]
+    fn clear_temporaries_never_removes_outside() {
+        let t = Tree::new();
+        fs::create_dir(t.outside.path().join("c")).unwrap();
+        fs::write(t.outside.path().join("c/.irsync.x.part"), b"outside part").unwrap();
+        fs::write(t.outside.path().join("c/.irsync.y.tmp"), b"outside tmp").unwrap();
+        let rt = runtime();
+        let make = open(false, true, Create::IfMissing, false);
+        t.attack(|_, n| {
+            // The leftovers, made where they belong.
+            let _ = create_dir_all_beneath(t.root.path(), &rel("a/b/c"), 0o755);
+            let _ = t.at("a/b/c/.irsync.x.part").open(make);
+            let _ = t.at("a/b/c/.irsync.y.tmp").open(make);
+            let _ = n.note(delete(&rt, t.root.path(), "a/b/c", Kind::Directory));
+        });
+    }
 }

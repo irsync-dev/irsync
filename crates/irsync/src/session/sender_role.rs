@@ -11,7 +11,6 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,9 +39,9 @@ use super::planner::MAX_INFLIGHT;
 use super::Outcome;
 use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict as FilterVerdict};
-use crate::fs::clone::{Cloned, Clones};
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed};
+use crate::platform::clone::{Cloned, Clones};
 use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
 use crate::telemetry::meter::Counter;
@@ -1597,19 +1596,19 @@ fn tail_digest(
     // The open's type check already took the file's stat. No symlink is
     // followed on the way from the base.
     let (file, st) = crate::fs::safe::open_regular_beneath_stat(base, local)?;
-    tail_digest_at(file, st, key, from, check)
+    tail_digest_at(file, &st, key, from, check)
 }
 
 /// [`tail_digest`] of the open `file` (a clone, `--paranoid`).
 fn tail_digest_of(file: std::fs::File, key: &RelPath, from: u64) -> io::Result<Hashed> {
-    let st = nix::sys::stat::fstat(&file).map_err(crate::fs::safe::errno)?;
-    tail_digest_at(file, st, key, from, true)
+    let st = crate::platform::fstat(&file)?;
+    tail_digest_at(file, &st, key, from, true)
 }
 
 /// [`tail_digest`] of the open `file`, whose stat is `st`.
 fn tail_digest_at(
     mut file: std::fs::File,
-    st: nix::sys::stat::FileStat,
+    st: &crate::platform::Stat,
     key: &RelPath,
     from: u64,
     check: bool,
@@ -1893,7 +1892,10 @@ fn walk_admits(root: &Path, path: &RelPath, filters: &FilterSet) -> bool {
             rel.push(b'/');
         }
         rel.extend_from_slice(c);
-        full.push(std::ffi::OsStr::from_bytes(c));
+        let Ok(name) = crate::platform::bytes_to_os(c) else {
+            return false;
+        };
+        full.push(name);
         let last = i + 1 == comps.len();
         let Ok(r) = RelPath::new(&rel) else {
             return false;
@@ -2740,7 +2742,7 @@ mod tests {
         assert!(tail_digest(root.path(), &path, &path, 4, true).is_ok());
 
         std::fs::remove_dir_all(root.path().join("d")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.path().join("d")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &root.path().join("d")).unwrap();
         let Err(err) = tail_digest(root.path(), &path, &path, 4, true) else {
             panic!("the tail was read through the link");
         };

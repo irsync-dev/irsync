@@ -5,7 +5,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -43,7 +42,7 @@ fn set_mtime(p: &Path, t: SystemTime) {
 }
 
 fn inode(p: &Path) -> u64 {
-    fs::metadata(p).unwrap().ino()
+    irsync::platform::file_id(&fs::metadata(p).unwrap()).1
 }
 
 fn checksum_opts() -> irsync::cli::SyncOptions {

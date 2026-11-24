@@ -8,8 +8,6 @@ use irsync_proto::chunk::{ChunkRecord, FileDigest, CHUNK_PARAMS};
 use irsync_proto::v1::{FileEntry, Hash, RangeSet};
 use prost::Message;
 use rusqlite::{params, Connection, OptionalExtension};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, LockResult, Mutex, MutexGuard, TryLockError, TryLockResult};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -147,6 +145,9 @@ impl Reader<'_> {
     /// every new binding, which costs more than the lookup it serves; tests
     /// check that none is.
     #[cfg(feature = "test-hooks")]
+    // A call into SQLite through rusqlite, not into the operating system,
+    // so it stays here rather than in the platform module.
+    #[allow(unsafe_code)]
     pub fn reprepared(&self) -> Vec<(String, i32)> {
         use rusqlite::ffi;
         let mut out = Vec::new();
@@ -823,7 +824,7 @@ impl Index {
 
     pub fn open(state_dir: &Path, root: &Path) -> Result<Index> {
         let canon = canonical_root(root)?;
-        let h = blake3::hash(canon.as_os_str().as_bytes());
+        let h = blake3::hash(&crate::platform::os_to_bytes(canon.as_os_str()));
         let name: String = h.as_bytes()[..16]
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -833,7 +834,7 @@ impl Index {
         // its directory is for the owner only, also one made by an older
         // build.
         crate::fs::private::create_dir_all(&dir)?;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        crate::platform::set_mode_path_following(&dir, 0o700)?;
         // One file per schema version: an older build keeps its own, and
         // the two never see each other's tables.
         let file = dir.join(format!("{name}.v{SCHEMA_VERSION}.sqlite"));
@@ -859,7 +860,7 @@ impl Index {
         // Remember which root this (hash-named) file belongs to, so `irsync gc` can find it.
         ix.conn
             .prepare_cached("INSERT OR IGNORE INTO meta (key, value) VALUES ('root_path', ?1)")?
-            .execute([canon.as_os_str().as_bytes()])?;
+            .execute([crate::platform::os_to_bytes(canon.as_os_str())])?;
         Ok(ix)
     }
 
@@ -906,13 +907,15 @@ impl Index {
     /// The canonical root recorded in the index file at `file`, if any
     /// (indexes from before the key existed have none).
     pub fn root_of_file(file: &Path) -> Result<Option<std::path::PathBuf>> {
-        use std::os::unix::ffi::OsStringExt;
         let conn = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let v: Option<Vec<u8>> = conn
             .prepare_cached("SELECT value FROM meta WHERE key = 'root_path'")?
             .query_row([], |r| r.get(0))
             .optional()?;
-        Ok(v.map(|b| std::path::PathBuf::from(std::ffi::OsString::from_vec(b))))
+        Ok(
+            v.map(|b| crate::platform::bytes_to_os(&b).map(std::path::PathBuf::from))
+                .transpose()?,
+        )
     }
 
     /// When garbage collection last walked this root (seconds since the epoch).

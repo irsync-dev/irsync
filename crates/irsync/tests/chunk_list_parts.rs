@@ -5,7 +5,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
@@ -48,12 +47,12 @@ fn count(events: &[String], what: &str) -> usize {
 
 /// Overwrites `bytes` at `offset` in place.
 fn patch(p: &Path, offset: u64, bytes: &[u8]) {
-    fs::OpenOptions::new()
-        .write(true)
-        .open(p)
-        .unwrap()
-        .write_all_at(bytes, offset)
-        .unwrap();
+    irsync::platform::write_all_at(
+        &fs::OpenOptions::new().write(true).open(p).unwrap(),
+        bytes,
+        offset,
+    )
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

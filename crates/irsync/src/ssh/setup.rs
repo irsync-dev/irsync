@@ -8,10 +8,7 @@
 //! from the old install path when no service file starts that; any other
 //! daemon is reported as foreign and left alone.
 
-use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -600,20 +597,12 @@ fn old_bin_step(home: Option<&Path>, keep: bool) -> OldBin {
 
 /// Tells this copy's daemon `pid` to re-read its settings.
 fn reload_daemon(pid: u32) -> anyhow::Result<()> {
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
-    let raw = i32::try_from(pid).context("daemon pid out of range")?;
-    kill(Pid::from_raw(raw), Signal::SIGHUP)
-        .with_context(|| format!("telling the daemon (pid {pid}) to reload"))
+    crate::platform::daemonize::send_reload(pid)
 }
 
 /// Sends SIGTERM to this copy's daemon `pid` and waits for its lock to go.
 fn stop_daemon(pid: u32, state: &Path) -> anyhow::Result<()> {
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
-    let raw = i32::try_from(pid).context("daemon pid out of range")?;
-    kill(Pid::from_raw(raw), Signal::SIGTERM)
-        .with_context(|| format!("stopping the old daemon (pid {pid})"))?;
+    crate::platform::daemonize::send_stop(pid)?;
     let deadline = Instant::now() + DAEMON_WAIT;
     while probe(state).is_some() {
         if Instant::now() >= deadline {
@@ -647,28 +636,14 @@ fn start_daemon(exe: &Path, paths: &Paths, state: &Path, log: &Path) -> anyhow::
     crate::fs::private::create_dir_all(state)
         .with_context(|| format!("creating {}", state.display()))?;
     // The log names files and peers: for the owner only.
-    let out = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(log)
+    let out = crate::platform::daemonize::open_log(log)
         .with_context(|| format!("opening {}", log.display()))?;
     let start = out.metadata().map(|m| m.len()).unwrap_or(0);
     let mut cmd = daemon_command(exe, paths);
     cmd.stdin(Stdio::null())
         .stdout(out.try_clone()?)
         .stderr(out);
-    // SAFETY: the closure runs in the child between fork and exec, where
-    // only async-signal-safe calls are allowed. It only calls setsid,
-    // which is, and on failure turns its errno into an `io::Error`, which
-    // does not allocate.
-    unsafe {
-        cmd.pre_exec(|| {
-            nix::unistd::setsid()
-                .map(|_| ())
-                .map_err(std::io::Error::from)
-        });
-    }
+    crate::platform::daemonize::new_session(&mut cmd);
     let mut child = cmd
         .spawn()
         .with_context(|| format!("starting {} daemon", exe.display()))?;
@@ -798,17 +773,17 @@ mod tests {
 
     #[test]
     fn failed_removal_is_reported_not_kept() {
-        if nix::unistd::geteuid().is_root() {
+        if crate::platform::is_root() {
             // root may remove anything.
             return;
         }
-        use std::os::unix::fs::PermissionsExt;
+        use crate::platform::set_mode_path_following;
         let (home, old) = home_with_old_bin();
         let bin = old.parent().unwrap();
-        std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o555)).unwrap();
+        set_mode_path_following(bin, 0o555).unwrap();
         let got = old_bin_step(Some(home.path()), false);
         // Writable again, so the temp dir can be cleaned up.
-        std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        set_mode_path_following(bin, 0o755).unwrap();
         assert!(
             matches!(&got, OldBin::RemoveFailed(e) if !e.is_empty()),
             "{got:?}"

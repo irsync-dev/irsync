@@ -6,10 +6,9 @@
 //! process-wide [`Recorder`] owns the file; a background thread writes it.
 
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions, Permissions, TryLockError};
+use std::fs::{File, TryLockError};
 use std::io::{self, BufWriter, Write as _};
 use std::net::Ipv6Addr;
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -20,6 +19,7 @@ use prost::Message as _;
 use tracing::warn;
 
 use super::scrub::{fit, scrub};
+use crate::platform::{Create, Open};
 use pbcap::write as pcapng;
 
 /// The largest record we write: Wireshark's 256 KiB packet limit, less room
@@ -90,13 +90,15 @@ pub(crate) struct Recorder {
 /// and takes its lock; `None` if another holds the lock. A symlink at
 /// `path` is an error: following it would empty and chmod its target.
 fn open_locked(path: &Path) -> io::Result<Option<File>> {
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(path)?;
+    let how = Open {
+        read: false,
+        write: true,
+        create: Create::IfMissing,
+        truncate: false,
+        nonblock: false,
+        mode: 0o600,
+    };
+    let file = crate::platform::open_private(path, how)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(TryLockError::WouldBlock) => Ok(None),
@@ -131,7 +133,7 @@ impl Recorder {
         };
         // Only the lock holder truncates, so a capture in use is never cut.
         file.set_len(0)?;
-        file.set_permissions(Permissions::from_mode(0o600))?;
+        crate::platform::set_permissions_file(&file, 0o600)?;
         warn!(
             "writing a protocol capture to {}; it holds paths and file names",
             path.display()
@@ -413,12 +415,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("precious");
         std::fs::write(&target, b"keep me").unwrap();
-        std::fs::set_permissions(&target, Permissions::from_mode(0o644)).unwrap();
+        crate::platform::set_mode_path_following(&target, 0o644).unwrap();
         let link = dir.path().join("f.pcapng");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
+        crate::platform::testutil::symlink(&target, &link).unwrap();
         assert!(Recorder::open(&link).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"keep me");
-        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        let mode = crate::platform::mode_of(&std::fs::metadata(&target).unwrap());
         assert_eq!(mode & 0o777, 0o644);
     }
 
@@ -426,7 +428,7 @@ mod tests {
     fn file_is_owner_only() {
         let dir = tempfile::tempdir().unwrap();
         let r = Recorder::open(dir.path().join("f.pcapng")).unwrap();
-        let mode = std::fs::metadata(r.path()).unwrap().permissions().mode();
+        let mode = crate::platform::mode_of(&std::fs::metadata(r.path()).unwrap());
         assert_eq!(mode & 0o777, 0o600);
     }
 

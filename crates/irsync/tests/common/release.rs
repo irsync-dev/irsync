@@ -134,10 +134,9 @@ pub fn full_release(dir: &Path, target: &str, bin: &Path) -> String {
 
 /// A stand-in `fileset` and the three man pages, in `dir`.
 pub fn put_extras(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
     let fileset = dir.join("fileset");
     std::fs::write(&fileset, "#!/bin/sh\necho 'fileset (stand-in)'\n").unwrap();
-    std::fs::set_permissions(&fileset, std::fs::Permissions::from_mode(0o755)).unwrap();
+    irsync::platform::testutil::set_mode(&fileset, 0o755).unwrap();
     for page in PAGES {
         let p = dir.join(page);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();

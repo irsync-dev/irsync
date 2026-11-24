@@ -20,6 +20,7 @@ use super::engine::{
 };
 use super::{control::hex, LocalSide, Outcome, SessionRecord, CLOSE_SUPERSEDED};
 use crate::cli::SyncOptions;
+use crate::platform::local_time;
 use crate::telemetry::{phase, Phase, PhaseKind, Side};
 
 /// How long to keep trying, and how long to wait between attempts.
@@ -378,34 +379,6 @@ pub async fn probe_path(
 /// grants, for a path it may not use); `None` for any other refusal.
 fn describe_refusal(r: &SessionRefused, remote: &str, client: &EndpointId) -> Option<String> {
     (r.code == Code::Unauthorized).then(|| no_access_hint(remote, client))
-}
-
-/// `secs` since the epoch as local time, `YYYY-MM-DD HH:MM:SS`.
-fn local_time(secs: i64) -> String {
-    // `time_t`, inferred: naming the alias is deprecated on musl.
-    let t = secs as _;
-    // SAFETY: `tm` is a plain C struct of integers (and, on some systems, a
-    // pointer to the zone name, which may be null), so all zero bytes is a
-    // valid value.
-    let mut tm: nix::libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: both pointers come from references to locals that outlive
-    // the call. localtime_r reads `t` and returns its result only through
-    // `tm`, not in a static buffer as localtime does. It also reads TZ and
-    // updates libc's own time-zone state, which libc guards with a lock;
-    // nothing in irsync changes the environment while it runs.
-    let ok = unsafe { !nix::libc::localtime_r(&t, &mut tm).is_null() };
-    if !ok {
-        return format!("@{secs}");
-    }
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        tm.tm_year + 1900,
-        tm.tm_mon + 1,
-        tm.tm_mday,
-        tm.tm_hour,
-        tm.tm_min,
-        tm.tm_sec
-    )
 }
 
 /// The session an earlier run left for this key, if any.

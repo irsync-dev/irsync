@@ -51,10 +51,10 @@ async fn exchange_with(g: Grants, h: Hello) -> Result<HelloAckOrError, String> {
 /// A fresh temp dir: itself, its file name (home-relative from its parent)
 /// and its absolute path, as bytes.
 fn export_dir() -> (tempfile::TempDir, Vec<u8>, Vec<u8>) {
-    use std::os::unix::ffi::OsStrExt;
+    use irsync::platform::os_to_bytes;
     let dir = tempfile::tempdir().unwrap();
-    let rel = dir.path().file_name().unwrap().as_bytes().to_vec();
-    let abs = dir.path().as_os_str().as_bytes().to_vec();
+    let rel = os_to_bytes(dir.path().file_name().unwrap());
+    let abs = os_to_bytes(dir.path().as_os_str());
     (dir, rel, abs)
 }
 
@@ -225,7 +225,7 @@ async fn an_ungranted_name_is_no_export_even_with_a_granted_twin_on_the_same_pat
 /// under the outer one, so a key cannot map where other exports sit.
 #[tokio::test]
 async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
-    use std::os::unix::ffi::OsStrExt;
+    use irsync::platform::testutil::name_bytes;
     let tmp = tempfile::tempdir().unwrap();
     let (srv, inner) = (tmp.path().join("srv"), tmp.path().join("srv/photos"));
     std::fs::create_dir_all(&inner).unwrap();
@@ -244,7 +244,7 @@ async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
     )
     .await;
     for path in [
-        inner.as_os_str().as_bytes(),
+        name_bytes(inner.as_os_str()),
         &b"srv/photos"[..],
         &b"srv/other"[..],
     ] {
@@ -527,9 +527,8 @@ async fn list_against(
 #[tokio::test]
 async fn list_exports_names_only_what_the_key_may_use() {
     use irsync_proto::v1::export_entry::Access as A;
-    use std::os::unix::ffi::OsStrExt;
     let (dir, ..) = export_dir();
-    let path = dir.path().as_os_str().as_bytes().to_vec();
+    let path = irsync::platform::os_to_bytes(dir.path().as_os_str());
     let client = client_endpoint().await;
     let spawn = |g: Grants| {
         spawn_daemon_home(
@@ -580,8 +579,7 @@ fn immediate() -> Grants {
 }
 
 fn bytes(p: &std::path::Path) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt;
-    p.as_os_str().as_bytes().to_vec()
+    irsync::platform::os_to_bytes(p.as_os_str())
 }
 
 /// A daemon with no home whose exports and grants are `authz`'s, kept
@@ -867,21 +865,21 @@ async fn immediate_relative_path_does_not_take_another_clients_export() {
 #[tokio::test]
 async fn immediate_push_under_unwritable_parent_says_why() {
     use irsync::authz::Authorizer;
-    use std::os::unix::fs::PermissionsExt;
-    if nix::unistd::geteuid().is_root() {
+    use irsync::platform::testutil::set_mode;
+    if irsync::platform::is_root() {
         eprintln!("skipped: root may write anywhere");
         return;
     }
     let tmp = tempfile::tempdir().unwrap();
     let parent = tmp.path().join("srv");
     std::fs::create_dir(&parent).unwrap();
-    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+    set_mode(&parent, 0o555).unwrap();
     let new = parent.join("photos");
     let client = client_endpoint().await;
     let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
     let d = spawn_memory(&authz).await;
     let e = reply(exchange_against(&d, &client, hello(&bytes(&new), Direction::ClientSends)).await);
-    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&parent, 0o755).unwrap();
     assert_eq!(
         e,
         (

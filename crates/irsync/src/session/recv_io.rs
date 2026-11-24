@@ -18,7 +18,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
-use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -342,12 +341,9 @@ async fn unchanged_file(ctx: &Ctx, key: &RelPath, old: &OldFile) -> Option<File>
         let file = crate::fs::safe::open_regular_beneath(&base, &local)?;
         let m = file.metadata()?;
         let same = m.len() == entry.size
-            && m.mtime() == entry.mtime_sec
-            && m.mtime_nsec() == i64::from(entry.mtime_nsec)
-            && m.ctime() == ctime.0
-            && m.ctime_nsec() == i64::from(ctime.1)
-            && m.dev() == entry.dev
-            && m.ino() == entry.inode;
+            && crate::platform::mtime_of(&m) == (entry.mtime_sec, entry.mtime_nsec)
+            && crate::platform::ctime_of(&m) == ctime
+            && crate::platform::file_id(&m) == (entry.dev, entry.inode);
         Ok(same.then_some(file))
     })
     .await
@@ -762,7 +758,7 @@ async fn sign(
     let basis = blocking(move || {
         let _timed = meter.start(Activity::Read);
         let mut buf = vec![0u8; len as usize];
-        f.read_exact_at(&mut buf, offset)?;
+        crate::platform::read_exact_at(&f, &mut buf, offset)?;
         meter.add(Counter::DiskRead, u64::from(len));
         Ok(Basis::sign(offset, &buf))
     })
@@ -860,7 +856,7 @@ async fn rebuild(
         let _timed = meter.start(Activity::Read);
         decode(&ops, len, &mut |off, buf| {
             meter.add(Counter::DiskRead, buf.len() as u64);
-            old.read_exact_at(buf, off)
+            crate::platform::read_exact_at(&old, buf, off)
         })
     })
     .await
@@ -907,8 +903,11 @@ async fn read_local(
     blocking(move || {
         let _timed = meter.start(Activity::Read);
         let mut buf = vec![0u8; len as usize];
-        crate::fs::safe::open_regular_beneath(&from.root, &from.rel)?
-            .read_exact_at(&mut buf, offset)?;
+        crate::platform::read_exact_at(
+            &crate::fs::safe::open_regular_beneath(&from.root, &from.rel)?,
+            &mut buf,
+            offset,
+        )?;
         meter.add(Counter::DiskRead, u64::from(len));
         Ok(buf)
     })
@@ -1053,15 +1052,11 @@ fn local_sources(
 /// Whether the file at `h.path` under `base` is still the regular file the
 /// index describes, by inode and size. No symlink below `base` is followed
 /// on the way: a file behind one is not a source.
-// `st_mode` and `st_ino` differ in width between systems.
-#[allow(clippy::unnecessary_cast)]
 fn still_indexed(base: &Path, h: &ChunkHolder) -> bool {
     crate::fs::safe::Beneath::new(base, h.path.clone())
         .lstat()
         .is_ok_and(|st| {
-            crate::fs::safe::is_regular_mode(st.st_mode as u32)
-                && st.st_ino as u64 == h.inode
-                && st.st_size as u64 == h.size
+            st.kind == crate::platform::Kind::File && st.ino == h.inode && st.size == h.size
         })
 }
 

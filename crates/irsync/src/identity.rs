@@ -4,7 +4,6 @@ use iroh::{EndpointId, SecretKey};
 use ssh_key::getrandom::SysRng;
 use ssh_key::rand_core::UnwrapErr;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -55,8 +54,7 @@ fn secret_of(key: &PrivateKey) -> Result<SecretKey, IdentityError> {
 /// Whether the file's mode lets its group or everyone read or write it.
 /// Whoever reads an unencrypted key file is that identity.
 pub fn open_to_others(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o066 != 0)
+    std::fs::metadata(path).is_ok_and(|m| crate::platform::key_file_open_to_others(&m))
 }
 
 /// Load an OpenSSH Ed25519 private key as an iroh secret key.
@@ -186,7 +184,7 @@ pub fn write_new(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<()>
     };
     let mut tmp = tempfile::Builder::new()
         .prefix(".irsync-new")
-        .permissions(std::fs::Permissions::from_mode(mode))
+        .permissions(crate::platform::permissions_of_mode(mode))
         .tempfile_in(dir)?;
     tmp.write_all(contents)?;
     tmp.as_file().sync_all()?;

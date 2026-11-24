@@ -7,12 +7,12 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, Flow, Harness};
+use irsync::platform::file_id;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * 1024;
@@ -37,12 +37,12 @@ fn data(n: usize, seed: u32) -> Vec<u8> {
 }
 
 fn patch(p: &Path, offset: u64, bytes: &[u8]) {
-    fs::OpenOptions::new()
-        .write(true)
-        .open(p)
-        .unwrap()
-        .write_all_at(bytes, offset)
-        .unwrap();
+    irsync::platform::write_all_at(
+        &fs::OpenOptions::new().write(true).open(p).unwrap(),
+        bytes,
+        offset,
+    )
+    .unwrap();
 }
 
 fn count(events: &[String], prefix: &str) -> usize {
@@ -83,7 +83,7 @@ async fn a_cloned_part_writes_only_the_changed_chunk() {
         let src = h.src(flow).join("x.bin");
         let dst = h.dst(flow).join("x.bin");
         patch(&src, 2 * MIB as u64 + 999, &[0x77]);
-        let before = fs::metadata(&dst).unwrap().ino();
+        let before = file_id(&fs::metadata(&dst).unwrap()).1;
         let log: irsync::session::EventLog = Arc::default();
         let mut local = h.local_side();
         local.hooks.events = Some(log.clone());
@@ -96,7 +96,7 @@ async fn a_cloned_part_writes_only_the_changed_chunk() {
         assert_eq!(count(&events, "copied:x.bin"), 0, "{events:?}");
         assert_eq!(count(&events, "chunk:x.bin"), 1, "{events:?}");
         // Still placed by rename: a new inode, no `.part` left.
-        assert_ne!(fs::metadata(&dst).unwrap().ino(), before);
+        assert_ne!(file_id(&fs::metadata(&dst).unwrap()).1, before);
         assert!(!h.dst(flow).join(".irsync.x.bin.part").exists());
         assert!(out.bytes_transferred < 16 * KIB as u64);
     })
@@ -110,7 +110,7 @@ fn inplace_opts() -> irsync::cli::SyncOptions {
 }
 
 fn inode(p: &Path) -> u64 {
-    fs::metadata(p).unwrap().ino()
+    file_id(&fs::metadata(p).unwrap()).1
 }
 
 /// Seeds `x.bin` with `content` in direction `flow` on a plain harness.

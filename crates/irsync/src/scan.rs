@@ -3,12 +3,11 @@
 use crate::filter::{FilterSet, Verdict};
 use crate::fs::meta::lstat_entry_with_ctime;
 use crate::fs::paths::RelPath;
+use crate::platform::os_to_bytes;
 use crate::telemetry::meter::{Activity, Meter};
 use irsync_proto::v1::FileEntry;
 use jwalk::{Parallelism, WalkDirGeneric};
 use std::cell::RefCell;
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -134,7 +133,7 @@ fn is_below(path: &RelPath, dir: &RelPath) -> bool {
 
 fn rel_of(root: &Path, full: &Path) -> Option<RelPath> {
     let rest = full.strip_prefix(root).ok()?;
-    RelPath::new(rest.as_os_str().as_bytes()).ok()
+    RelPath::new(&os_to_bytes(rest.as_os_str())).ok()
 }
 
 /// Walk `root`, sending every non-filtered entry (root first) in increasing `RelPath`
@@ -258,15 +257,15 @@ pub mod clock_hold {
 /// The sort is stable, so the entries keep the walk's order among equals.
 fn sort_children<T, E>(
     children: &mut [Result<T, E>],
-    name: impl Fn(&T) -> &[u8],
-    err_name: impl Fn(&E) -> Option<&[u8]>,
+    name: impl Fn(&T) -> Vec<u8>,
+    err_name: impl Fn(&E) -> Option<Vec<u8>>,
 ) {
     // `false` sorts before `true`: nameless errors go last.
     let key = |c: &Result<T, E>| -> (bool, Vec<u8>) {
         match c {
-            Ok(t) => (false, name(t).to_vec()),
+            Ok(t) => (false, name(t)),
             Err(e) => match err_name(e) {
-                Some(n) => (false, n.to_vec()),
+                Some(n) => (false, n),
                 None => (true, Vec::new()),
             },
         }
@@ -280,10 +279,10 @@ fn sort_children<T, E>(
 }
 
 /// Whether a directory's name is that of a clone folder, never listed:
-/// [`crate::fs::clone::CLONE_DIR_PREFIX`] and a uid (one or more ASCII
+/// [`crate::platform::clone::CLONE_DIR_PREFIX`] and a uid (one or more ASCII
 /// digits). Any other name with that start is a user's and is synced.
 pub fn is_clone_dir(name: &[u8]) -> bool {
-    name.strip_prefix(crate::fs::clone::CLONE_DIR_PREFIX.as_bytes())
+    name.strip_prefix(crate::platform::clone::CLONE_DIR_PREFIX.as_bytes())
         .is_some_and(|uid| !uid.is_empty() && uid.iter().all(u8::is_ascii_digit))
 }
 
@@ -352,7 +351,7 @@ fn run_walk(
             }
             Err(e) => return Err(e),
         };
-        crate::fs::meta::lstat_at(dir, Path::new(OsStr::from_bytes(&name)), rel).map(Some)
+        crate::fs::meta::lstat_at(dir, &name, rel).map(Some)
     };
     let send = |sum: &mut ScanSummary, rel: RelPath| -> bool {
         match lstat(&rel) {
@@ -397,15 +396,15 @@ fn run_walk(
         .process_read_dir(move |_, dir, _, children| {
             sort_children(
                 children,
-                |e| e.file_name().as_bytes(),
-                |err| err.path().and_then(Path::file_name).map(|n| n.as_bytes()),
+                |e| os_to_bytes(e.file_name()),
+                |err| err.path().and_then(Path::file_name).map(os_to_bytes),
             );
             let Some(dir_rel) = rel_of(&cb_root, dir) else {
                 return;
             };
             children.retain_mut(|c| {
                 let Ok(e) = c else { return true };
-                let Ok(rel) = dir_rel.join(e.file_name().as_bytes()) else {
+                let Ok(rel) = dir_rel.join(&os_to_bytes(e.file_name())) else {
                     // Kept, unwalked, for the loop below to report.
                     e.read_children = None;
                     return true;
@@ -414,7 +413,7 @@ fn run_walk(
                     return false;
                 }
                 // `--paranoid`'s clone folders, with everything below them.
-                !(e.file_type().is_dir() && is_clone_dir(e.file_name().as_bytes()))
+                !(e.file_type().is_dir() && is_clone_dir(&os_to_bytes(e.file_name())))
             });
         });
 
@@ -464,7 +463,7 @@ fn run_walk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use crate::platform::set_mode_path_following;
 
     /// Only a clone folder's exact name form is pruned: the prefix and a
     /// uid; a user's folder that merely starts the same way is synced.
@@ -556,7 +555,7 @@ mod tests {
         assert!(!sum.incomplete);
 
         // The session root itself is a link.
-        std::os::unix::fs::symlink(outside.path(), export.path().join("s")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &export.path().join("s")).unwrap();
         let (v, _) = events_below(export.path(), "s").await;
         assert!(!named(&v), "{v:?}");
         assert_eq!(v, [(String::new(), false)], "only the link itself");
@@ -609,7 +608,11 @@ mod tests {
             Err(None),
             Err(Some("d")),
         ];
-        sort_children(&mut children, |n| n.as_bytes(), |e| e.map(str::as_bytes));
+        sort_children(
+            &mut children,
+            |n| n.as_bytes().to_vec(),
+            |e| e.map(|n| n.as_bytes().to_vec()),
+        );
         assert_eq!(
             children,
             vec![
@@ -631,26 +634,14 @@ mod tests {
         std::fs::create_dir(t.path().join("locked")).unwrap();
         std::fs::write(t.path().join("locked/secret"), b"").unwrap();
         std::fs::write(t.path().join("z"), b"").unwrap();
-        std::fs::set_permissions(
-            t.path().join("locked"),
-            std::fs::Permissions::from_mode(0o000),
-        )
-        .unwrap();
+        set_mode_path_following(&t.path().join("locked"), 0o000).unwrap();
         if std::fs::read_dir(t.path().join("locked")).is_ok() {
-            std::fs::set_permissions(
-                t.path().join("locked"),
-                std::fs::Permissions::from_mode(0o755),
-            )
-            .unwrap();
+            set_mode_path_following(&t.path().join("locked"), 0o755).unwrap();
             eprintln!("skipping: running with privileges that bypass directory permissions");
             return;
         }
         let (v, summary) = events(t.path()).await;
-        std::fs::set_permissions(
-            t.path().join("locked"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        set_mode_path_following(&t.path().join("locked"), 0o755).unwrap();
         let want: Vec<(String, bool)> = [
             ("", false),
             ("a", false),
@@ -685,17 +676,14 @@ mod tests {
         std::fs::write(t.path().join("d/b"), b"").unwrap();
         std::fs::write(t.path().join("e"), b"").unwrap();
         // Listable but not searchable: names are read, nothing in it can be stat'ed.
-        std::fs::set_permissions(t.path().join("d"), std::fs::Permissions::from_mode(0o644))
-            .unwrap();
+        set_mode_path_following(&t.path().join("d"), 0o644).unwrap();
         if std::fs::symlink_metadata(t.path().join("d/a")).is_ok() {
-            std::fs::set_permissions(t.path().join("d"), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            set_mode_path_following(&t.path().join("d"), 0o755).unwrap();
             eprintln!("skipping: running with privileges that bypass directory permissions");
             return;
         }
         let (v, summary) = events(t.path()).await;
-        std::fs::set_permissions(t.path().join("d"), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        set_mode_path_following(&t.path().join("d"), 0o755).unwrap();
         let want: Vec<(String, bool)> = [
             ("", false),
             ("d", false),
@@ -756,7 +744,7 @@ mod tests {
             }
         }
         std::fs::rename(root.join("z"), &aside).unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("z")).unwrap();
+        crate::platform::testutil::symlink(&outside, &root.join("z")).unwrap();
         assert_eq!(std::fs::read(root.join("z/f0000")).unwrap(), b"secret");
 
         let mut below = Vec::new();

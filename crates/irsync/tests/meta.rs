@@ -2,11 +2,10 @@ mod common;
 
 use irsync::fs::meta::{apply_metadata, create_special, lstat_entry, ApplyOpts};
 use irsync::fs::paths::{is_contained, RelPath};
+use irsync::platform::testutil::{real_gid, real_uid, set_mode, set_times, symlink};
+use irsync::platform::{file_id, mode_of, mtime_of};
 use irsync_proto::v1::file_entry::Kind;
-use nix::sys::stat::{utimensat, UtimensatFlags};
-use nix::sys::time::TimeSpec;
 use std::fs;
-use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 use std::path::Path;
 
 fn rp(b: &[u8]) -> RelPath {
@@ -14,13 +13,7 @@ fn rp(b: &[u8]) -> RelPath {
 }
 
 fn set_mtime(path: &Path, sec: i64, nsec: i64, follow: bool) {
-    let t = TimeSpec::new(sec, nsec);
-    let flag = if follow {
-        UtimensatFlags::FollowSymlink
-    } else {
-        UtimensatFlags::NoFollowSymlink
-    };
-    utimensat(nix::fcntl::AT_FDCWD, path, &t, &t, flag).unwrap();
+    set_times(path, sec, nsec, follow).unwrap();
 }
 
 const ALL: ApplyOpts = ApplyOpts {
@@ -35,7 +28,7 @@ fn lstat_regular_file_fields() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("f");
     fs::write(&p, b"hello").unwrap();
-    fs::set_permissions(&p, fs::Permissions::from_mode(0o640)).unwrap();
+    set_mode(&p, 0o640).unwrap();
     set_mtime(&p, 1_700_000_000, 123_456_789, true);
     let e = lstat_entry(d.path(), &rp(b"f")).unwrap();
     assert_eq!(e.path, b"f");
@@ -46,13 +39,13 @@ fn lstat_regular_file_fields() {
     assert_eq!(e.mtime_nsec, 123_456_789);
     assert!(e.whole_hash.is_none());
     let md = fs::symlink_metadata(&p).unwrap();
-    assert_eq!(e.uid, nix::unistd::getuid().as_raw());
-    assert_eq!(e.gid, nix::unistd::getgid().as_raw());
+    assert_eq!(e.uid, real_uid());
+    assert_eq!(e.gid, real_gid());
     assert_eq!(e.nlink, 1);
     assert_ne!(e.inode, 0);
     assert_ne!(e.dev, 0);
-    assert_eq!(e.inode, md.ino());
-    assert_eq!(e.dev, md.dev());
+    assert_eq!(e.inode, file_id(&md).1);
+    assert_eq!(e.dev, file_id(&md).0);
     assert!(!e.sparse);
 }
 
@@ -79,7 +72,7 @@ fn sparse_only_for_regular_files_with_holes() {
     f.write_all(&[1u8; 4096]).unwrap();
     drop(f);
     assert!(lstat_entry(d.path(), &rp(b"holey")).unwrap().sparse);
-    symlink("holey", d.path().join("l")).unwrap();
+    symlink(Path::new("holey"), &d.path().join("l")).unwrap();
     let l = lstat_entry(d.path(), &rp(b"l")).unwrap();
     assert_eq!(l.kind(), Kind::Symlink);
     assert!(!l.sparse);
@@ -120,7 +113,7 @@ fn relpath_new_accepts_root_and_nested() {
 #[test]
 fn lstat_symlink_has_target_and_kind() {
     let d = tempfile::tempdir().unwrap();
-    symlink("some/target", d.path().join("l")).unwrap();
+    symlink(Path::new("some/target"), &d.path().join("l")).unwrap();
     let e = lstat_entry(d.path(), &rp(b"l")).unwrap();
     assert_eq!(e.kind(), Kind::Symlink);
     assert_eq!(e.link_target, b"some/target");
@@ -133,14 +126,14 @@ fn apply_metadata_sets_mode_and_mtime() {
     let dst = d.path().join("dst");
     fs::write(&src, b"x").unwrap();
     fs::write(&dst, b"x").unwrap();
-    fs::set_permissions(&src, fs::Permissions::from_mode(0o751)).unwrap();
+    set_mode(&src, 0o751).unwrap();
     set_mtime(&src, 1_600_000_000, 5, true);
     let e = lstat_entry(d.path(), &rp(b"src")).unwrap();
     apply_metadata(&dst, &e, &ALL).unwrap();
     let m = fs::metadata(&dst).unwrap();
-    assert_eq!(m.mode() & 0o7777, 0o751);
-    assert_eq!(m.mtime(), 1_600_000_000);
-    assert_eq!(m.mtime_nsec(), 5);
+    assert_eq!(mode_of(&m) & 0o7777, 0o751);
+    assert_eq!(mtime_of(&m).0, 1_600_000_000);
+    assert_eq!(mtime_of(&m).1, 5);
 }
 
 #[test]
@@ -148,21 +141,21 @@ fn apply_metadata_on_symlink_does_not_follow() {
     let d = tempfile::tempdir().unwrap();
     let target = d.path().join("target");
     fs::write(&target, b"x").unwrap();
-    fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+    set_mode(&target, 0o644).unwrap();
     set_mtime(&target, 1_500_000_000, 0, true);
     let link = d.path().join("link");
-    symlink("target", &link).unwrap();
+    symlink(Path::new("target"), &link).unwrap();
     set_mtime(&link, 1_400_000_000, 7, false);
     let e = lstat_entry(d.path(), &rp(b"link")).unwrap();
 
     set_mtime(&link, 1_000_000_000, 0, false);
     apply_metadata(&link, &e, &ALL).unwrap();
 
-    assert_eq!(fs::metadata(&target).unwrap().mtime(), 1_500_000_000);
-    assert_eq!(fs::metadata(&target).unwrap().mode() & 0o7777, 0o644);
+    assert_eq!(mtime_of(&fs::metadata(&target).unwrap()).0, 1_500_000_000);
+    assert_eq!(mode_of(&fs::metadata(&target).unwrap()) & 0o7777, 0o644);
     let lm = fs::symlink_metadata(&link).unwrap();
-    assert_eq!(lm.mtime(), 1_400_000_000);
-    assert_eq!(lm.mtime_nsec(), 7);
+    assert_eq!(mtime_of(&lm).0, 1_400_000_000);
+    assert_eq!(mtime_of(&lm).1, 7);
 }
 
 #[test]
@@ -208,7 +201,7 @@ fn supplementary_groups_lists_every_group() {
     // `id -G` lists them all; old macOS getgroups stops at 16.
     let out = std::process::Command::new("id").arg("-G").output().unwrap();
     assert!(out.status.success());
-    let primary = [nix::unistd::getgid(), nix::unistd::getegid()].map(|g| g.as_raw());
+    let primary = [real_gid(), irsync::platform::egid()];
     let got = irsync::fs::meta::supplementary_groups();
     for g in String::from_utf8(out.stdout).unwrap().split_whitespace() {
         let g: u32 = g.parse().unwrap();

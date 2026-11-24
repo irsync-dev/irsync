@@ -338,7 +338,7 @@ fn a_root_opens_one_index_however_it_is_named() {
     let root = real.join("a/b");
     drop(Index::open(state.path(), &root).unwrap());
     std::fs::create_dir_all(&root).unwrap();
-    std::os::unix::fs::symlink(&real, d.path().join("link")).unwrap();
+    irsync::platform::testutil::symlink(&real, &d.path().join("link")).unwrap();
     drop(Index::open(state.path(), &root).unwrap());
     drop(Index::open(state.path(), &d.path().join("link/a/b")).unwrap());
     drop(Index::open(state.path(), &d.path().join("link/a/./b")).unwrap());

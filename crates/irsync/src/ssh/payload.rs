@@ -3,13 +3,13 @@
 //! installer script into one plain tar. The server unpacks it with `tar -xf`
 //! and runs the script on `files/`, which has the release tarball's layout.
 
-use std::os::unix::fs::{symlink, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
 use super::{installer, release};
+use crate::platform::{nlink_of, symlink_path};
 
 /// The three man pages, relative to a man directory.
 const PAGES: [&str; 3] = ["man1/irsync.1", "man1/fileset.1", "man5/irsync.toml.5"];
@@ -220,7 +220,7 @@ fn release_member(base: &Path, rel: &str) -> Result<bool> {
             let what = parts[..=i].join("/");
             bail!("the release holds {what} as something other than a regular file or directory (a symlink?)");
         }
-        if i + 1 == parts.len() && meta.nlink() != 1 {
+        if i + 1 == parts.len() && nlink_of(&meta) != 1 {
             bail!("the release holds {rel} as a file with more than one name (a hard link)");
         }
     }
@@ -228,20 +228,20 @@ fn release_member(base: &Path, rel: &str) -> Result<bool> {
 }
 
 fn link(from: &Path, to: &Path) -> Result<()> {
-    symlink(from, to).with_context(|| format!("cannot stage {}", from.display()))
+    symlink_path(from, to).with_context(|| format!("cannot stage {}", from.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use crate::platform::{mode_of, set_mode_path_following};
 
     /// A directory with a small stand-in `irsync` (named `exe_name`).
     fn bin_dir(exe_name: &str) -> (tempfile::TempDir, PathBuf) {
         let d = tempfile::tempdir().unwrap();
         let exe = d.path().join(exe_name);
         std::fs::write(&exe, b"fake irsync").unwrap();
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        set_mode_path_following(&exe, 0o755).unwrap();
         (d, exe)
     }
 
@@ -384,7 +384,7 @@ mod tests {
         let meta = std::fs::symlink_metadata(&got).unwrap();
         assert!(meta.is_file(), "not a regular file");
         assert_eq!(std::fs::read(&got).unwrap(), b"fake irsync");
-        assert!(meta.permissions().mode() & 0o111 != 0);
+        assert!(mode_of(&meta) & 0o111 != 0);
     }
 
     /// A release directory with a stand-in irsync, as `fetch` leaves it.
@@ -441,7 +441,7 @@ mod tests {
         let (tmp, dir) = release_dir();
         let secret = tmp.path().join("secret");
         std::fs::write(&secret, b"s").unwrap();
-        symlink(&secret, dir.join("fileset")).unwrap();
+        symlink_path(&secret, dir.join("fileset")).unwrap();
         let e = staged_from(tmp, &dir).unwrap_err().to_string();
         assert!(e.contains("fileset"), "{e}");
     }
@@ -453,10 +453,10 @@ mod tests {
             let real = tmp.path().join("elsewhere");
             put_pages(&real);
             if link_at == "man" {
-                symlink(&real, dir.join("man")).unwrap();
+                symlink_path(&real, dir.join("man")).unwrap();
             } else {
                 std::fs::create_dir(dir.join("man")).unwrap();
-                symlink(real.join("man1"), dir.join("man/man1")).unwrap();
+                symlink_path(real.join("man1"), dir.join("man/man1")).unwrap();
             }
             let e = staged_from(tmp, &dir).unwrap_err().to_string();
             assert!(e.contains(link_at), "{link_at}: {e}");
@@ -467,7 +467,7 @@ mod tests {
     fn a_release_whose_top_directory_is_a_symlink_is_an_error() {
         let (tmp, real) = release_dir();
         let dir = tmp.path().join("irsync-link");
-        symlink(&real, &dir).unwrap();
+        symlink_path(&real, &dir).unwrap();
         let e = staged_from(tmp, &dir).unwrap_err().to_string();
         assert!(e.contains("top directory"), "{e}");
     }
@@ -478,7 +478,7 @@ mod tests {
         let man = dir.join("man");
         put_pages(&man);
         std::fs::remove_file(man.join(PAGES[0])).unwrap();
-        symlink("/etc/hosts", man.join(PAGES[0])).unwrap();
+        symlink_path("/etc/hosts", man.join(PAGES[0])).unwrap();
         let e = staged_from(tmp, &dir).unwrap_err().to_string();
         assert!(e.contains("irsync.1"), "{e}");
     }

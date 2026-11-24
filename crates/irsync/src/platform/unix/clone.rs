@@ -35,12 +35,13 @@ use std::time::Duration;
 
 use nix::dir::Dir;
 use nix::fcntl::{openat, AtFlags, OFlag, AT_FDCWD};
-use nix::sys::stat::{fstat, fstatat, mkdirat, FileStat, Mode, SFlag};
+use nix::sys::stat::{fstat, fstatat, mkdirat, Mode, SFlag};
 use nix::unistd::{access, unlinkat, AccessFlags, UnlinkatFlags};
 
+use super::errno_of as errno;
 use crate::fs::paths::RelPath;
-use crate::fs::safe::errno;
 use crate::hasher::Freshness;
+use crate::platform::{cause, Cause, Stat};
 
 /// The start of a clone folder's name, followed by the uid; the walk
 /// prunes a directory with exactly that form of name
@@ -204,7 +205,7 @@ impl Clones {
         base: &Path,
         dir: &RelPath,
         full: &Path,
-        open: impl Fn() -> io::Result<(File, FileStat)>,
+        open: impl Fn() -> io::Result<(File, Stat)>,
     ) -> io::Result<Option<Cloned>> {
         for _ in 0..2 {
             match self.try_clone(base, dir, full, &open)? {
@@ -221,15 +222,13 @@ impl Clones {
         base: &Path,
         dir: &RelPath,
         full: &Path,
-        open: &impl Fn() -> io::Result<(File, FileStat)>,
+        open: &impl Fn() -> io::Result<(File, Stat)>,
     ) -> io::Result<Attempt> {
         if self.closed.load(Ordering::SeqCst) {
             return Ok(Attempt::NoClone);
         }
         let (src, s1) = open()?;
-        // `st_dev` is narrower on macOS.
-        #[allow(clippy::unnecessary_cast)]
-        let dev = s1.st_dev as u64;
+        let dev = s1.dev;
         let Some(area) = self.area(base, dir, dev) else {
             return Ok(Attempt::NoClone);
         };
@@ -256,13 +255,13 @@ impl Clones {
         let cloned = Cloned {
             file,
             path: area.dir_path.join(&name),
-            stat: freshness(s1),
+            stat: freshness(&s1),
             dir: area.dir.clone(),
             name,
         };
         // A write while cloning may have given a clone of no real state.
-        let s2 = fstat(&src).map_err(errno)?;
-        if freshness(s2) != cloned.stat {
+        let s2 = crate::platform::fstat(&src)?;
+        if freshness(&s2) != cloned.stat {
             return Ok(Attempt::Changed);
         }
         Ok(Attempt::Cloned(cloned))
@@ -360,7 +359,7 @@ fn out_of_fds(e: &io::Error) -> bool {
     )
 }
 
-fn freshness(st: FileStat) -> Freshness {
+fn freshness(st: &Stat) -> Freshness {
     let (entry, ctime) = crate::fs::meta::stat_entry_with_ctime(st, &RelPath::root());
     Freshness::of_entry(&entry, ctime)
 }
@@ -689,7 +688,7 @@ fn sweep_at(root: &OwnedFd) -> io::Result<usize> {
         let dir = match openat(root, name.as_os_str(), dir_flags(), Mode::empty()) {
             Ok(fd) => fd,
             Err(nix::Error::ENOENT | nix::Error::ENOTDIR) => continue,
-            Err(e) if crate::fs::safe::is_symlink_errno(e) => continue,
+            Err(e) if cause(&errno(e)) == Cause::LinkRefused => continue,
             Err(e) => return Err(errno(e)),
         };
         // Held while the folder goes, so no session takes it meanwhile;

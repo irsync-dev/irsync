@@ -685,7 +685,6 @@ async fn handle(
 /// The exports `grants` cover, by name, with the real path and the
 /// effective access (`read_only` caps a read-write grant).
 fn list_exports_for(snap: &Snapshot, grants: &Grants) -> ExportList {
-    use std::os::unix::ffi::OsStrExt;
     let exports = snap
         .exports
         .iter()
@@ -698,7 +697,7 @@ fn list_exports_for(snap: &Snapshot, grants: &Grants) -> ExportList {
             };
             Some(ExportEntry {
                 name: name.clone(),
-                path: e.path.as_os_str().as_bytes().to_vec(),
+                path: crate::platform::os_to_bytes(e.path.as_os_str()),
                 access: access as i32,
             })
         })
@@ -881,7 +880,6 @@ fn place_single(
     if hello.direction == Direction::DaemonSends as i32 {
         return source_single(export_root, rel, hello);
     }
-    use std::os::unix::ffi::OsStrExt;
     // A missing directory is created later, by the session.
     prepare_root(export_root, &rel.parent(), Missing::Allow).map_err(bad_session_path)?;
     let dest = if rel.as_bytes().is_empty() {
@@ -900,7 +898,7 @@ fn place_single(
         .root
         .strip_prefix(export_root)
         .ok()
-        .and_then(|r| RelPath::new(r.as_os_str().as_bytes()).ok());
+        .and_then(|r| RelPath::new(&crate::platform::os_to_bytes(r.as_os_str())).ok());
     let name = RelPath::new(&placed.name)
         .ok()
         .filter(|_| is_one_component(&placed.name));
@@ -929,8 +927,8 @@ fn place_file_beneath(
     contents_only: bool,
     src_name: &[u8],
 ) -> Result<FilePlace, PlaceError> {
-    use crate::fs::safe::{is_dir_mode, Beneath};
-    use nix::sys::stat::SFlag;
+    use crate::fs::safe::Beneath;
+    use crate::platform::Kind as FileKind;
     let io_at = |p: &Path, e: io::Error| PlaceError::Io(p.to_path_buf(), e);
     let missing = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
     let in_dir = if rel.as_bytes().is_empty() {
@@ -938,9 +936,9 @@ fn place_file_beneath(
         true
     } else {
         match Beneath::new(export_root, rel.clone()).lstat() {
-            Ok(st) if is_dir_mode(st.st_mode as _) => true,
+            Ok(st) if st.kind == FileKind::Dir => true,
             Ok(st) => {
-                let link = SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT == SFlag::S_IFLNK;
+                let link = st.kind == FileKind::Symlink;
                 // Only decides; nothing is written through the link.
                 if link {
                     match link_leads_to(export_root, rel) {
@@ -966,12 +964,12 @@ fn place_file_beneath(
         let (root, name) = crate::session::single::split_last(dest);
         return Ok(FilePlace { root, name });
     }
-    let target = dest.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(src_name));
+    let target = dest.join(crate::platform::bytes_to_os(src_name).map_err(|e| io_at(dest, e))?);
     let target_rel = rel
         .join(src_name)
         .map_err(|e| io_at(&target, io::Error::new(io::ErrorKind::InvalidInput, e)))?;
     match Beneath::new(export_root, target_rel).lstat() {
-        Ok(st) if is_dir_mode(st.st_mode as _) => return Err(PlaceError::IsADirectory(target)),
+        Ok(st) if st.kind == FileKind::Dir => return Err(PlaceError::IsADirectory(target)),
         Ok(_) => {}
         Err(e) if missing(&e) => {}
         Err(e) => return Err(io_at(&target, e)),
@@ -1003,16 +1001,15 @@ enum LinkTo {
 /// destination itself, so looking at what an outside link leads to would
 /// tell it what is at a path it may not see.
 fn link_leads_to(export_root: &Path, rel: &RelPath) -> LinkTo {
-    use crate::fs::safe::{is_dir_mode, open_parent_beneath, Beneath};
-    use nix::sys::stat::SFlag;
-    use std::os::unix::ffi::OsStrExt;
+    use crate::fs::safe::{open_parent_beneath, Beneath};
+    use crate::platform::Kind as FileKind;
     let Ok((dir, name)) = open_parent_beneath(export_root, rel) else {
         return LinkTo::NotFollowed;
     };
-    let Ok(target) = nix::fcntl::readlinkat(&dir, name.as_os_str()) else {
+    let Ok(target) = dir.read_link(&name) else {
         return LinkTo::NotFollowed;
     };
-    let target = target.as_bytes();
+    let target = &target[..];
     if target.is_empty() || target[0] == b'/' || target.contains(&0) {
         return LinkTo::NotFollowed;
     }
@@ -1037,10 +1034,8 @@ fn link_leads_to(export_root: &Path, rel: &RelPath) -> LinkTo {
         return LinkTo::NotFollowed;
     };
     match Beneath::new(export_root, to).lstat() {
-        Ok(st) if is_dir_mode(st.st_mode as _) => LinkTo::Directory,
-        Ok(st) if SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT == SFlag::S_IFLNK => {
-            LinkTo::NotFollowed
-        }
+        Ok(st) if st.kind == FileKind::Dir => LinkTo::Directory,
+        Ok(st) if st.kind == FileKind::Symlink => LinkTo::NotFollowed,
         Ok(_) => LinkTo::Other,
         Err(e) if e.kind() == io::ErrorKind::NotFound => LinkTo::Other,
         Err(_) => LinkTo::NotFollowed,
@@ -1060,11 +1055,11 @@ fn source_single(
     let Some(name) = rel.components().last() else {
         return Err((Code::BadPath, PlaceError::IsADirectory(dir).to_string()));
     };
-    let file = dir.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+    let file = dir.join(crate::platform::bytes_to_os(name).map_err(|_| invalid())?);
     // Looked at from the export's directory with no symlink followed: the
     // directories above may have changed since they were checked.
     match crate::fs::safe::Beneath::new(export_root, rel.clone()).lstat() {
-        Ok(st) if crate::fs::safe::is_dir_mode(st.st_mode as _) => {
+        Ok(st) if st.kind == crate::platform::Kind::Dir => {
             return Err((Code::BadPath, PlaceError::IsADirectory(file).to_string()))
         }
         Ok(_) => {}
@@ -1092,7 +1087,7 @@ fn probe_kind(export_root: &Path, rel: &RelPath) -> path_info::Kind {
     }
     // From the export's directory, with no symlink followed on the way.
     match crate::fs::safe::Beneath::new(export_root, rel.clone()).lstat() {
-        Ok(st) if crate::fs::safe::is_dir_mode(st.st_mode as _) => Kind::Directory,
+        Ok(st) if st.kind == crate::platform::Kind::Dir => Kind::Directory,
         Ok(_) => Kind::File,
         Err(_) => Kind::Missing,
     }
@@ -1320,13 +1315,9 @@ enum Removal {
 /// classifies. No symlink is followed, the final name's or a directory's
 /// on the way (one swapped in since the path was recorded): such a path
 /// holds no part of ours, so it counts as missing.
-// The `stat` field types differ by platform; the mode cast is a no-op here.
-#[allow(clippy::unnecessary_cast)]
 fn remove_part(root: &Path, rel: &RelPath, cutoff: i64, dry_run: bool) -> io::Result<Removal> {
-    use crate::fs::safe::{errno, is_regular_mode, open_dir_beneath, split_last};
-    use nix::fcntl::AtFlags;
-    use nix::sys::stat::fstatat;
-    use nix::unistd::{unlinkat, UnlinkatFlags};
+    use crate::fs::safe::{open_dir_beneath, split_last};
+    use crate::platform::{cause, Cause, Kind as FileKind};
     if !rel.components().last().is_some_and(is_part_name) {
         return Ok(Removal::Skipped);
     }
@@ -1345,16 +1336,16 @@ fn remove_part(root: &Path, rel: &RelPath, cutoff: i64, dry_run: bool) -> io::Re
         }
         Err(e) => return Err(e),
     };
-    match fstatat(&dfd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-        Ok(st) if is_regular_mode(st.st_mode as u32) && st.st_mtime <= cutoff => {
+    match dfd.stat(name) {
+        Ok(st) if st.kind == FileKind::File && st.mtime.0 <= cutoff => {
             if !dry_run {
-                unlinkat(&dfd, name, UnlinkatFlags::NoRemoveDir).map_err(errno)?;
+                dfd.remove_file(name)?;
             }
             Ok(Removal::Removed)
         }
         Ok(_) => Ok(Removal::Skipped),
-        Err(nix::Error::ENOENT) => Ok(Removal::Missing),
-        Err(e) => Err(errno(e)),
+        Err(e) if cause(&e) == Cause::NotThere => Ok(Removal::Missing),
+        Err(e) => Err(e),
     }
 }
 
@@ -1576,7 +1567,6 @@ fn prune_entries(
     skipped: &dyn Fn(&RelPath) -> bool,
     dry_run: bool,
 ) -> io::Result<usize> {
-    use std::os::unix::fs::MetadataExt;
     if seen.is_empty() {
         return Ok(0);
     }
@@ -1599,7 +1589,7 @@ fn prune_entries(
         let here = std::fs::symlink_metadata(root.join(path.to_os()))
             .ok()
             .filter(|m| m.is_file())
-            .map(|m| (m.ino(), m.len()));
+            .map(|m| (crate::platform::file_id(&m).1, m.len()));
         if here == Some((inode, size)) {
             continue;
         }
@@ -1695,7 +1685,7 @@ mod banner_tests {
         std::fs::create_dir(export.path().join("d")).unwrap();
         std::fs::write(export.path().join("d/f"), b"x").unwrap();
         std::fs::write(outside.path().join("f"), b"x").unwrap();
-        std::os::unix::fs::symlink(outside.path(), export.path().join("link")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &export.path().join("link")).unwrap();
         let kind = |p: &str| probe_kind(export.path(), &RelPath::new(p.as_bytes()).unwrap());
         assert_eq!(kind(""), Kind::Directory);
         assert_eq!(kind("d"), Kind::Directory);
@@ -1716,7 +1706,7 @@ mod banner_tests {
         std::fs::write(export.path().join("d/old"), b"x").unwrap();
         std::fs::create_dir(outside.path().join("sub")).unwrap();
         std::fs::write(outside.path().join("old"), b"x").unwrap();
-        std::os::unix::fs::symlink(outside.path(), export.path().join("link")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &export.path().join("link")).unwrap();
         let place = |p: &str, contents_only: bool| {
             let rel = RelPath::new(p.as_bytes()).unwrap();
             let dest = export.path().join(p);
@@ -1761,7 +1751,7 @@ mod banner_tests {
         std::fs::write(export.path().join("d/file"), b"x").unwrap();
         std::fs::create_dir(outside.path().join("dir")).unwrap();
         let link = |name: &str, to: &std::path::Path| {
-            std::os::unix::fs::symlink(to, export.path().join(name)).unwrap();
+            crate::platform::testutil::symlink(to, &export.path().join(name)).unwrap();
             link_leads_to(export.path(), &RelPath::new(name.as_bytes()).unwrap())
         };
         let p = std::path::Path::new;

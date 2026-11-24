@@ -103,9 +103,7 @@ pub fn load_message(path: &Path) -> Result<pb::Config, ManageError> {
 /// save never opens up a file its owner closed; 0600 for a new file, since
 /// it names exports, peers and grants.
 fn saved_mode(path: &Path) -> std::fs::Permissions {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(path).map_or(0o600, |m| m.permissions().mode() & 0o777);
-    std::fs::Permissions::from_mode(mode)
+    crate::platform::saved_file_permissions(path)
 }
 
 /// Save the config file, refusing a message that would not load; takes

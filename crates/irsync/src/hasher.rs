@@ -134,7 +134,7 @@ struct At<'a> {
 
 impl io::Read for At<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = std::os::unix::fs::FileExt::read_at(self.file, buf, self.pos)?;
+        let n = crate::platform::read_at(self.file, buf, self.pos)?;
         self.pos += n as u64;
         Ok(n)
     }
@@ -465,7 +465,7 @@ impl Hasher {
             // Never follow a symlink swapped in since the walk lstat'ed it,
             // as the final name or anywhere on the way from the root.
             let (file, st) = crate::fs::safe::open_regular_beneath_stat(&root, &path)?;
-            let at_open = crate::fs::meta::stat_entry_with_ctime(st, &path);
+            let at_open = crate::fs::meta::stat_entry_with_ctime(&st, &path);
             let opened = Freshness::of_entry(&at_open.0, at_open.1);
             let (mut entry, ctime) = stat.unwrap_or(at_open);
             if let Some(p) = &progress {
@@ -568,7 +568,7 @@ mod tests {
         });
 
         std::fs::remove_dir_all(root.path().join("d")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.path().join("d")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &root.path().join("d")).unwrap();
         assert_eq!(
             std::fs::read(root.path().join("d/passwd")).unwrap(),
             b"secret"

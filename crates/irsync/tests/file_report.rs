@@ -5,7 +5,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -72,7 +71,7 @@ fn tearing_hook(src: PathBuf) -> HashHook {
                 .write(true)
                 .open(src.join("x.bin"))
                 .unwrap();
-            f.write_all_at(&data(TEAR, 100 + 2 * pass), 0).unwrap();
+            irsync::platform::write_all_at(&f, &data(TEAR, 100 + 2 * pass), 0).unwrap();
             set_mtime(&f, 1_000_000_000 + u64::from(pass));
         }
     })

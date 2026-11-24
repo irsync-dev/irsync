@@ -10,16 +10,17 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use common::{Flow, Harness};
-use irsync::fs::clone::Clones;
 use irsync::fs::paths::RelPath;
 use irsync::hasher::HashHook;
+use irsync::platform::clone::Clones;
+use irsync::platform::testutil::set_mode;
+use irsync::platform::{mtime_of, write_all_at};
 use irsync::session::{EventLog, PartsFault};
 
 const MIB: usize = 1024 * 1024;
@@ -64,7 +65,7 @@ fn paranoid_opts(extra: &[&str]) -> irsync::cli::SyncOptions {
 }
 
 fn uid() -> u32 {
-    nix::unistd::getuid().as_raw()
+    irsync::platform::testutil::real_uid()
 }
 
 /// The clone folder irsync makes in `base`.
@@ -77,11 +78,7 @@ fn clone_dir(base: &Path) -> PathBuf {
 /// the clone folder for a symlink).
 fn private_tempdir_in(dir: &Path) -> tempfile::TempDir {
     let t = tempfile::tempdir_in(dir).unwrap();
-    fs::set_permissions(
-        t.path(),
-        std::os::unix::fs::PermissionsExt::from_mode(0o700),
-    )
-    .unwrap();
+    set_mode(t.path(), 0o700).unwrap();
     t
 }
 
@@ -184,9 +181,8 @@ fn rewriting_hook(src: PathBuf, base: PathBuf, seen: Arc<Seen>) -> HashHook {
         }
         let pass = seen.passes.load(Ordering::SeqCst);
         let f = fs::File::options().write(true).open(&path).unwrap();
-        f.write_all_at(&data(TEAR, 100 + 2 * pass), 0).unwrap();
-        f.write_all_at(&data(TEAR, 101 + 2 * pass), (SIZE - TEAR) as u64)
-            .unwrap();
+        write_all_at(&f, &data(TEAR, 100 + 2 * pass), 0).unwrap();
+        write_all_at(&f, &data(TEAR, 101 + 2 * pass), (SIZE - TEAR) as u64).unwrap();
         drop(f);
         set_mtime(&path, 1_000_000_100 + u64::from(pass));
     })
@@ -306,15 +302,18 @@ async fn paranoid_places_the_clone_time_stat() {
         assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
         let src = fs::metadata(h.src(flow).join("x.bin")).unwrap();
         assert_ne!(
-            src.mtime() as u64,
+            mtime_of(&src).0 as u64,
             T1,
             "the hook did not rewrite the source"
         );
         // Placed with the stat of the last clone (sent again by the final
         // re-check), taken after the first rewrite and before the second.
         let dst = fs::metadata(h.dst(flow).join("x.bin")).unwrap();
-        assert_eq!((dst.mtime() as u64, dst.mtime_nsec()), (1_000_000_101, 0));
-        assert_eq!(src.mtime() as u64, 1_000_000_102);
+        assert_eq!(
+            (mtime_of(&dst).0 as u64, mtime_of(&dst).1),
+            (1_000_000_101, 0)
+        );
+        assert_eq!(mtime_of(&src).0 as u64, 1_000_000_102);
         assert_eq!(dst.len(), SIZE as u64);
     })
     .await;
@@ -357,14 +356,14 @@ async fn clones_are_removed_after_the_run() {
         fs::write(h.src(flow).join("ro/g"), data(100_000, 9)).unwrap();
         fs::create_dir(h.dst(flow).join("ro")).unwrap();
         let ro = h.dst(flow).join("ro");
-        fs::set_permissions(&ro, std::os::unix::fs::PermissionsExt::from_mode(0o555)).unwrap();
+        set_mode(&ro, 0o555).unwrap();
         seen.store(false, Ordering::SeqCst);
         let local = sending_side(&h, flow, base.path(), Some(hook), &events);
         let out = h
             .run_side(&paranoid_opts(&["-r"]), flow, local)
             .await
             .unwrap();
-        fs::set_permissions(&ro, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        set_mode(&ro, 0o755).unwrap();
         assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
         assert!(seen.load(Ordering::SeqCst), "no clone was made");
         assert!(!h.dst(flow).join("ro/g").exists());

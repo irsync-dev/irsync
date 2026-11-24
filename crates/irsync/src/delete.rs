@@ -17,24 +17,17 @@
 //! - on a dry run it only lists what it would delete.
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
 use std::io;
-use std::os::fd::OwnedFd;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use irsync_proto::v1::file_entry::Kind;
-use nix::dir::Dir;
-use nix::fcntl::{openat, AtFlags, OFlag};
-use nix::sys::stat::Mode;
-use nix::sys::stat::{fstatat, SFlag};
-use nix::unistd::{unlinkat, UnlinkatFlags};
 
 use crate::cli::DeleteMode;
 use crate::fs::paths::RelPath;
-use crate::fs::safe::{errno, open_dir_beneath, split_last};
+use crate::fs::safe::{open_dir_beneath, split_last};
+use crate::platform::{cause, Cause, Create, Dir, Kind as FileKind, Open};
 use crate::recv::is_temp_name;
 use crate::telemetry::meter::{Activity, Meter};
 
@@ -332,7 +325,7 @@ impl DeletePass {
 
 /// The parent directory last opened by [`remove_one`]: candidates come
 /// deepest first in reverse path order, so siblings share it.
-type ParentCache = Option<(RelPath, OwnedFd)>;
+type ParentCache = Option<(RelPath, Dir)>;
 
 /// Clears irsync's own temporaries (`.irsync.<name>.part` / `.tmp`, see
 /// [`is_temp_name`]) from the directory `name` in `parent`, so that what an
@@ -341,39 +334,40 @@ type ParentCache = Option<(RelPath, OwnedFd)>;
 /// `.part`s (each is locked while its writer runs): otherwise they stay,
 /// and removing the directory fails as for any that is not empty. Their
 /// progress records go at the next GC, which finds the parts missing.
-fn clear_temporaries(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
-    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+fn clear_temporaries(parent: &Dir, name: &[u8]) -> io::Result<()> {
     // Not a directory we can open: removing it reports why.
-    let Ok(fd) = openat(parent, name, flags, Mode::empty()) else {
+    let Ok(dir) = parent.open_dir(name) else {
         return Ok(());
     };
-    let mut temps = Vec::new();
-    for entry in Dir::from_fd(fd.try_clone()?).map_err(errno)?.iter() {
-        let n = entry.map_err(errno)?.file_name().to_bytes().to_vec();
-        if n == b"." || n == b".." {
-            continue;
+    // In the order the directory gives them; reading stops at the first
+    // name that is not a temporary, which keeps the directory.
+    let (mut temps, mut only_temps) = (Vec::new(), true);
+    dir.list_while(|n| {
+        only_temps = is_temp_name(n);
+        if only_temps {
+            temps.push(n.to_vec());
         }
-        if !is_temp_name(&n) {
-            return Ok(());
-        }
-        temps.push(n);
+        only_temps
+    })?;
+    if !only_temps {
+        return Ok(());
     }
     // Every `.part` locked before any goes: none is a running writer's.
+    let read = Open {
+        read: true,
+        write: false,
+        create: Create::No,
+        truncate: false,
+        nonblock: true,
+        mode: 0,
+    };
     let mut held = Vec::new();
     for t in temps.iter().filter(|t| t.ends_with(b".part")) {
-        let part = OsStr::from_bytes(t);
-        let opened = openat(
-            &fd,
-            part,
-            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        );
-        let file = match opened {
-            Ok(fd) => std::fs::File::from(fd),
+        let file = match dir.open_file(t, read) {
+            Ok(f) => f,
             // A symlink is no writer's: removed below, never followed.
-            Err(nix::Error::ENOENT) => continue,
-            Err(e) if crate::fs::safe::is_symlink_errno(e) => continue,
-            Err(e) => return Err(errno(e)),
+            Err(e) if matches!(cause(&e), Cause::NotThere | Cause::LinkRefused) => continue,
+            Err(e) => return Err(e),
         };
         match file.try_lock() {
             Ok(()) => held.push(file),
@@ -382,12 +376,14 @@ fn clear_temporaries(parent: &OwnedFd, name: &OsStr) -> io::Result<()> {
         }
     }
     for t in &temps {
-        match unlinkat(&fd, OsStr::from_bytes(t), UnlinkatFlags::NoRemoveDir) {
-            Ok(()) | Err(nix::Error::ENOENT) => {}
-            Err(e) => return Err(errno(e)),
+        match dir.remove_file(t) {
+            Ok(()) => {}
+            Err(e) if cause(&e) == Cause::NotThere => {}
+            Err(e) => return Err(e),
         }
     }
-    tracing::debug!(dir = ?name, n = temps.len(), "removed leftover temporaries");
+    let shown = crate::platform::bytes_to_os(name).unwrap_or_default();
+    tracing::debug!(dir = ?shown, n = temps.len(), "removed leftover temporaries");
     Ok(())
 }
 
@@ -423,23 +419,21 @@ fn remove_one(root: &Path, path: &RelPath, parent: &mut ParentCache) -> io::Resu
     let Some((_, fd)) = parent.as_ref() else {
         unreachable!("the parent was just opened")
     };
-    let name = OsStr::from_bytes(&name);
-    let st = match fstatat(fd, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+    let st = match fd.stat(&name) {
         Ok(st) => st,
-        Err(nix::Error::ENOENT) => return Ok(false),
-        Err(e) => return Err(errno(e)),
+        Err(e) if cause(&e) == Cause::NotThere => return Ok(false),
+        Err(e) => return Err(e),
     };
-    let is_dir = SFlag::from_bits_truncate(st.st_mode as _) & SFlag::S_IFMT == SFlag::S_IFDIR;
-    let flag = if is_dir {
-        clear_temporaries(fd, name)?;
-        UnlinkatFlags::RemoveDir
+    let removed = if st.kind == FileKind::Dir {
+        clear_temporaries(fd, &name)?;
+        fd.remove_dir(&name)
     } else {
-        UnlinkatFlags::NoRemoveDir
+        fd.remove_file(&name)
     };
-    match unlinkat(fd, name, flag) {
+    match removed {
         Ok(()) => Ok(true),
-        Err(nix::Error::ENOENT) => Ok(false),
-        Err(e) => Err(errno(e)),
+        Err(e) if cause(&e) == Cause::NotThere => Ok(false),
+        Err(e) => Err(e),
     }
 }
 
@@ -499,7 +493,7 @@ mod tests {
         let mut p = pass(None, false, false);
         plan_all(&mut p);
         std::fs::remove_dir(export.path().join("s")).unwrap();
-        std::os::unix::fs::symlink(outside.path(), export.path().join("s")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &export.path().join("s")).unwrap();
 
         let rep = p
             .execute_below(export.path().to_path_buf(), rel("s"), false)
@@ -582,7 +576,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("precious"), b"p").unwrap();
-        std::os::unix::fs::symlink(outside.path(), t.path().join("link")).unwrap();
+        crate::platform::testutil::symlink(outside.path(), &t.path().join("link")).unwrap();
         let mut p = pass(None, false, false);
         // Even a planned path through the link stays untouched.
         p.plan(rel("link/precious"), Kind::Regular);

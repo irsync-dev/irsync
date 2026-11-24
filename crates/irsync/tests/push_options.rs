@@ -212,12 +212,12 @@ async fn push_with_a_relative_partial_dir_keeps_parts_under_the_destination_root
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn push_without_perms_or_times_leaves_them_to_the_daemon() {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use irsync::platform::{mode_of, mtime_of, testutil::set_mode};
     within30(async {
         let h = Harness::new().await;
         let (src, dst) = (h.local.path().join("f"), h.export.path().join("f"));
         fs::write(&src, b"x").unwrap();
-        fs::set_permissions(&src, fs::Permissions::from_mode(0o640)).unwrap();
+        set_mode(&src, 0o640).unwrap();
         set_mtime(&src, 1_600_000_000);
         // Recursion only: the daemon creates the file with its own mode and
         // leaves the mtime at "now".
@@ -225,30 +225,26 @@ async fn push_without_perms_or_times_leaves_them_to_the_daemon() {
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         let md = fs::metadata(&dst).unwrap();
         assert_eq!(fs::read(&dst).unwrap(), b"x");
-        assert_ne!(md.mode() & 0o777, 0o640, "-p was not asked for");
-        assert_ne!(md.mtime(), 1_600_000_000, "-t was not asked for");
+        assert_ne!(mode_of(&md) & 0o777, 0o640, "-p was not asked for");
+        assert_ne!(mtime_of(&md).0, 1_600_000_000, "-t was not asked for");
         // With -a the client's flags reach the daemon: mode and mtime copied.
         let out = h.run(&opts(&[]), Flow::Push).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         let md = fs::metadata(&dst).unwrap();
-        assert_eq!(md.mode() & 0o777, 0o640);
-        assert_eq!(md.mtime(), 1_600_000_000);
+        assert_eq!(mode_of(&md) & 0o777, 0o640);
+        assert_eq!(mtime_of(&md).0, 1_600_000_000);
     })
     .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn push_without_links_or_specials_skips_them() {
-    use std::os::unix::fs::FileTypeExt;
+    use irsync::platform::testutil::{is_fifo, mkfifo, symlink};
     within30(async {
         let h = Harness::new().await;
         fs::write(h.local.path().join("f"), b"x").unwrap();
-        std::os::unix::fs::symlink("f", h.local.path().join("l")).unwrap();
-        nix::unistd::mkfifo(
-            &h.local.path().join("p"),
-            nix::sys::stat::Mode::from_bits_truncate(0o644),
-        )
-        .unwrap();
+        symlink(std::path::Path::new("f"), &h.local.path().join("l")).unwrap();
+        mkfifo(&h.local.path().join("p"), 0o644).unwrap();
         let out = h.run(&opts_with("-rt", &[]), Flow::Push).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert!(h.export.path().join("f").exists());
@@ -266,26 +262,26 @@ async fn push_without_links_or_specials_skips_them() {
             fs::read_link(h.export.path().join("l")).unwrap().to_str(),
             Some("f")
         );
-        assert!(h
-            .export
-            .path()
-            .join("p")
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_fifo());
+        assert!(is_fifo(
+            h.export
+                .path()
+                .join("p")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+        ));
     })
     .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn push_hard_links_only_with_h() {
-    use std::os::unix::fs::MetadataExt;
+    use irsync::platform::file_id;
     within30(async {
         let h = Harness::new().await;
         fs::write(h.local.path().join("a"), b"same").unwrap();
         fs::hard_link(h.local.path().join("a"), h.local.path().join("b")).unwrap();
-        let inode = |n: &str| fs::metadata(h.export.path().join(n)).unwrap().ino();
+        let inode = |n: &str| file_id(&fs::metadata(h.export.path().join(n)).unwrap()).1;
         let out = h.run(&opts(&[]), Flow::Push).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert_ne!(inode("a"), inode("b"), "linked without -H");
@@ -295,7 +291,7 @@ async fn push_hard_links_only_with_h() {
         fs::hard_link(h2.local.path().join("a"), h2.local.path().join("b")).unwrap();
         let out = h2.run(&opts(&["-H"]), Flow::Push).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
-        let inode2 = |n: &str| fs::metadata(h2.export.path().join(n)).unwrap().ino();
+        let inode2 = |n: &str| file_id(&fs::metadata(h2.export.path().join(n)).unwrap()).1;
         assert_eq!(inode2("a"), inode2("b"), "not linked with -H");
     })
     .await;

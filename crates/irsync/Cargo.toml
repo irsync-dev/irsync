@@ -32,7 +32,6 @@ otel = [
 irsync-glob = { path = "../irsync-glob" }
 irsync-proto = { path = "../irsync-proto" }
 pbcap = { path = "../pbcap" }
-nix = { workspace = true, features = ["dir", "fs", "hostname", "resource", "user", "time", "signal", "process"] }
 iroh = { workspace = true }
 # Only for CustomAddr, which iroh does not re-export. Used by netsim.
 iroh-base = { workspace = true, optional = true }
@@ -86,8 +85,11 @@ iroh-mdns-address-lookup = { workspace = true }
 indicatif = { workspace = true }
 console = { workspace = true }
 
+# Only the platform module (src/platform/unix/) calls into the system.
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["dir", "fs", "hostname", "resource", "user", "time", "signal", "process"] }
+
 [dev-dependencies]
-nix = { workspace = true, features = ["signal"] }
 # `test-util`: tests that pause tokio's clock and let it jump ahead.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

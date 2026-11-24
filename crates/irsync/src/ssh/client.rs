@@ -431,8 +431,7 @@ fn raw_host_name() -> Result<String> {
     if let Ok(name) = std::env::var("IRSYNC_TEST_HOSTNAME") {
         return Ok(name);
     }
-    let name = nix::unistd::gethostname().context("cannot read this machine's host name")?;
-    Ok(name.to_string_lossy().into_owned())
+    crate::platform::host_name().context("cannot read this machine's host name")
 }
 
 /// `name` as hex digits, for a command line that several shells read.

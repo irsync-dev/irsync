@@ -1,3 +1,6 @@
+// Unsafe code belongs in the library's platform module.
+#![deny(unsafe_code)]
+
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -47,8 +50,9 @@ use irsync_proto::PROTOCOL_VERSION;
 
 fn main() {
     let args = Args::parse();
-    // The receiver holds a descriptor per file in flight; see `fs::rlimit`.
-    let _ = irsync::fs::rlimit::raise_nofile();
+    // The receiver holds a descriptor per file in flight; see
+    // `platform::raise_handle_limit`.
+    let _ = irsync::platform::raise_handle_limit();
     // Read the umask now, while this is the only thread.
     let _ = irsync::fs::meta::default_file_mode();
     let (log, files) = (args.log, &args.files);
@@ -302,36 +306,13 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
         telemetry.flush();
         if let (Some(addr), false) = (debug_port, opts.debug_no_wait) {
             // Listen before saying so: a signal sent on seeing the line ends the wait.
-            let signals = exit_signals();
+            let signals = irsync::platform::exit_signals();
             eprintln!("irsync: debug port open at {addr}; Ctrl-C to exit");
-            wait_for_signal(signals).await;
+            irsync::platform::wait_for_exit_signal(signals).await;
         }
         telemetry.shutdown().await;
     });
     code
-}
-
-/// SIGINT's and SIGHUP's streams.
-type ExitSignals = (tokio::signal::unix::Signal, tokio::signal::unix::Signal);
-
-/// Listens for SIGINT and SIGHUP; `None` when that cannot be set up.
-fn exit_signals() -> Option<ExitSignals> {
-    use tokio::signal::unix::{signal, SignalKind};
-    Some((
-        signal(SignalKind::interrupt()).ok()?,
-        signal(SignalKind::hangup()).ok()?,
-    ))
-}
-
-/// Returns on SIGINT or SIGHUP from `signals`; at once when there are none.
-async fn wait_for_signal(signals: Option<ExitSignals>) {
-    let Some((mut int, mut hup)) = signals else {
-        return;
-    };
-    tokio::select! {
-        _ = int.recv() => {}
-        _ = hup.recv() => {}
-    }
 }
 
 /// The process exit code for `total` sessions of which `failed` errored:
@@ -1523,7 +1504,7 @@ fn running_as_root() -> bool {
     if std::env::var("IRSYNC_TEST_EUID_ROOT").as_deref() == Ok("1") {
         return true;
     }
-    nix::unistd::geteuid().is_root()
+    irsync::platform::is_root()
 }
 
 fn run_daemon(d: &DaemonArgs, log: LogArgs, files: &FilesArgs) -> i32 {
@@ -1599,31 +1580,14 @@ fn run_daemon(d: &DaemonArgs, log: LogArgs, files: &FilesArgs) -> i32 {
             let shutdown = tokio_util::sync::CancellationToken::new();
             let token = shutdown.clone();
             tokio::spawn(async move {
-                use tokio::signal::unix::{signal, SignalKind};
-                match signal(SignalKind::terminate()) {
-                    Ok(mut term) => {
-                        tokio::select! {
-                            _ = tokio::signal::ctrl_c() => {}
-                            _ = term.recv() => {}
-                        }
-                    }
-                    Err(_) => {
-                        let _ = tokio::signal::ctrl_c().await;
-                    }
-                }
+                irsync::platform::stop_signal().await;
                 token.cancel();
             });
             // SIGHUP: re-read irsync.toml and apply the [daemon] settings.
             let reload = std::sync::Arc::new(tokio::sync::Notify::new());
             let hup = reload.clone();
             tokio::spawn(async move {
-                use tokio::signal::unix::{signal, SignalKind};
-                let Ok(mut hangup) = signal(SignalKind::hangup()) else {
-                    return;
-                };
-                while hangup.recv().await.is_some() {
-                    hup.notify_one();
-                }
+                irsync::platform::on_each_reload_signal(|| hup.notify_one()).await;
             });
             let res = irsync::daemon::run_from_settings(
                 &paths,

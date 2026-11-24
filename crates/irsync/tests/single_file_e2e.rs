@@ -8,7 +8,6 @@ mod common;
 use common::{irsync_bin as irsync, irsync_bin_in, spawn_daemon_binary};
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -316,13 +315,22 @@ fn snapshot(root: &Path) -> Tree {
             let m = fs::symlink_metadata(&p).unwrap();
             let rel = p.strip_prefix(root).unwrap().to_path_buf();
             if m.is_dir() {
-                out.insert(rel, ("dir", m.mode() & 0o7777, None, vec![]));
-                walk(root, &p, out);
-            } else {
-                let mtime = Some((m.mtime(), m.mtime_nsec()));
                 out.insert(
                     rel,
-                    ("file", m.mode() & 0o7777, mtime, fs::read(&p).unwrap()),
+                    ("dir", irsync::platform::mode_of(&m) & 0o7777, None, vec![]),
+                );
+                walk(root, &p, out);
+            } else {
+                let (sec, nsec) = irsync::platform::mtime_of(&m);
+                let mtime = Some((sec, i64::from(nsec)));
+                out.insert(
+                    rel,
+                    (
+                        "file",
+                        irsync::platform::mode_of(&m) & 0o7777,
+                        mtime,
+                        fs::read(&p).unwrap(),
+                    ),
                 );
             }
         }
@@ -381,7 +389,7 @@ fn placement_rows() -> [Row; 7] {
 /// `f.iso` at `src` with fixed contents, mode and mtime.
 fn placement_source(src: &Path) {
     fs::write(src, b"new image").unwrap();
-    fs::set_permissions(src, fs::Permissions::from_mode(0o640)).unwrap();
+    irsync::platform::testutil::set_mode(src, 0o640).unwrap();
     set_mtime(src, 1_500_000_000);
 }
 

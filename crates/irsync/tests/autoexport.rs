@@ -64,9 +64,10 @@ fn auto_root_is_never_the_filesystem_root() {
 
 #[test]
 fn auto_root_refuses_non_utf8_before_creating() {
-    use std::os::unix::ffi::OsStrExt;
     let tmp = tempfile::tempdir().unwrap();
-    let bad = tmp.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    let bad = tmp
+        .path()
+        .join(irsync::platform::testutil::name_from_bytes(b"caf\xe9"));
     assert_eq!(auto_root(&bad, true, false), Err(AutoRootError::NotUtf8));
     assert!(!bad.exists(), "a refused root was created");
 }

@@ -10,15 +10,13 @@ use crate::fs::meta::{apply_metadata_fd_owned, fstat_entry_with_ctime, ApplyOpts
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{require_regular, Beneath};
 use crate::index::{IndexHandle, Partial};
+use crate::platform::{cause, Cause, Create, Open};
 use crate::telemetry::meter::{Activity, Counter, Meter};
 use crate::tree_hash::TreeHash;
 use irsync_proto::chunk::{digest_reader, ChunkRecord, FileDigest};
 use irsync_proto::v1::{FileEntry, Range, RangeSet};
-use nix::fcntl::OFlag;
 use std::fs::File;
 use std::io::{self, Read};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -62,7 +60,7 @@ pub struct CloneSource<'a> {
     pub digest: &'a FileDigest,
 }
 
-pub use crate::fs::clone::reflink;
+pub use crate::platform::clone::reflink;
 
 /// Writes one file's chunks into its `.part` file and finalizes it atomically.
 pub struct FileWriter {
@@ -212,7 +210,7 @@ fn paths(
         ));
     }
     let (part_root, mut part_rel, skip) = match partial_dir {
-        Some(pd) => match RelPath::new(pd.dir.as_os_str().as_bytes()) {
+        Some(pd) => match RelPath::new(&crate::platform::os_to_bytes(pd.dir.as_os_str())) {
             Ok(below) if pd.dir.is_relative() => {
                 (root.to_path_buf(), below.as_bytes().to_vec(), pd.skip)
             }
@@ -245,7 +243,7 @@ pub fn discard_part(
 ) -> io::Result<()> {
     let (_, part) = paths(root, rel, partial_dir)?;
     match part
-        .open(OFlag::O_RDONLY | OFlag::O_NONBLOCK, 0)
+        .open(part_open(true, false, Create::No, 0))
         .and_then(|f| require_regular(&f, &part.path()).map(|()| f))
     {
         Ok(file) => match file.try_lock() {
@@ -318,21 +316,33 @@ pub const PART_BUSY: &str = "part file busy";
 /// `finalize` sets the final mode. No symlink is followed at the `.part`
 /// name or on the way to it, and a FIFO there cannot block the open.
 fn open_rw(part: &Beneath) -> io::Result<File> {
-    part.open(OFlag::O_RDWR | OFlag::O_CREAT | OFlag::O_NONBLOCK, 0o600)
+    part.open(part_open(true, true, Create::IfMissing, 0o600))
+}
+
+/// How a `.part` is opened: never blocking (a FIFO there cannot stop the
+/// open), never following a symlink at its name.
+fn part_open(read: bool, write: bool, create: Create, mode: u32) -> Open {
+    Open {
+        read,
+        write,
+        create,
+        truncate: false,
+        nonblock: true,
+        mode,
+    }
 }
 
 /// Add owner read/write to our own open `.part` file (`fchmod`).
 fn make_owner_writable(file: &File) -> io::Result<()> {
-    let mode = file.metadata()?.permissions().mode();
-    file.set_permissions(std::fs::Permissions::from_mode(mode | 0o600))
+    crate::platform::make_owner_writable(file)
 }
 
 /// A previous `finalize` may have applied a read-only mode to the `.part`
 /// before failing: open it with whatever access the mode still allows
 /// (never following a symlink) and restore owner read/write on that fd.
 fn restore_owner_rw(part: &Beneath) -> io::Result<()> {
-    let open = |flags: OFlag| part.open(flags | OFlag::O_NONBLOCK, 0);
-    let f = open(OFlag::O_RDONLY).or_else(|_| open(OFlag::O_WRONLY))?;
+    let open = |read: bool| part.open(part_open(read, !read, Create::No, 0));
+    let f = open(true).or_else(|_| open(false))?;
     require_regular(&f, &part.path())?;
     make_owner_writable(&f)
 }
@@ -373,19 +383,15 @@ struct FileId {
 
 impl FileId {
     fn of(m: &std::fs::Metadata) -> FileId {
-        FileId {
-            dev: m.dev(),
-            ino: m.ino(),
-        }
+        let (dev, ino) = crate::platform::file_id(m);
+        FileId { dev, ino }
     }
 
     /// The regular file `st` describes; `None` for anything else.
-    // The `stat` field types differ by platform; some casts are no-ops here.
-    #[allow(clippy::unnecessary_cast)]
-    fn of_regular(st: &nix::sys::stat::FileStat) -> Option<FileId> {
-        crate::fs::safe::is_regular_mode(st.st_mode as u32).then_some(FileId {
-            dev: st.st_dev as u64,
-            ino: st.st_ino as u64,
+    fn of_regular(st: &crate::platform::Stat) -> Option<FileId> {
+        (st.kind == crate::platform::Kind::File).then_some(FileId {
+            dev: st.dev,
+            ino: st.ino,
         })
     }
 }
@@ -410,7 +416,7 @@ struct AtReader<'a> {
 
 impl Read for AtReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.file.read_at(buf, self.pos)?;
+        let n = crate::platform::read_at(self.file, buf, self.pos)?;
         self.pos += n as u64;
         Ok(n)
     }
@@ -493,7 +499,7 @@ fn open_part_in_dir(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, s
 
 fn read_chunk(file: &File, c: &ChunkRecord) -> io::Result<Vec<u8>> {
     let mut buf = vec![0u8; c.len as usize];
-    file.read_exact_at(&mut buf, c.offset)?;
+    crate::platform::read_exact_at(file, &mut buf, c.offset)?;
     Ok(buf)
 }
 
@@ -608,7 +614,7 @@ impl FileWriter {
         );
         w.hole_from = hole_from;
         w.held_id = FileId::of(&meta);
-        w.held_owner = (meta.uid(), meta.gid());
+        w.held_owner = crate::platform::owner_of(&meta);
         w.cloned = cloned;
         let adopted_from_record = w.adopt_recorded()?;
         if cloned {
@@ -643,7 +649,7 @@ impl FileWriter {
         let (dest, _) = paths(root, rel, None)?;
         let (file, now) = open_locked_part(&dest, &activity)?;
         let hashed = old.file.metadata()?;
-        if now.ino() != hashed.ino() || now.dev() != hashed.dev() {
+        if crate::platform::file_id(&now) != crate::platform::file_id(&hashed) {
             return Err(invalid("destination is no longer the file that was hashed"));
         }
         let hole_from = now.len();
@@ -660,7 +666,7 @@ impl FileWriter {
         );
         w.hole_from = hole_from;
         w.held_id = FileId::of(&now);
-        w.held_owner = (now.uid(), now.gid());
+        w.held_owner = crate::platform::owner_of(&now);
         w.inplace = true;
         let adopted_from_record = w.adopt_recorded()?;
         w.adopt_from(old.digest)?;
@@ -755,7 +761,7 @@ impl FileWriter {
     fn opened(&mut self, file: File, meta: &std::fs::Metadata) -> Arc<File> {
         self.hole_from = meta.len();
         self.held_id = FileId::of(meta);
-        self.held_owner = (meta.uid(), meta.gid());
+        self.held_owner = crate::platform::owner_of(meta);
         let file = Arc::new(file);
         self.file = Some(file.clone());
         file
@@ -967,8 +973,11 @@ impl FileWriter {
                 Source::Local { from, offset } => {
                     let _timed = meter.as_deref().map(|m| m.start(Activity::Read));
                     let mut buf = vec![0u8; c.len as usize];
-                    crate::fs::safe::open_regular_beneath(&from.root, &from.rel)?
-                        .read_exact_at(&mut buf, offset)?;
+                    crate::platform::read_exact_at(
+                        &crate::fs::safe::open_regular_beneath(&from.root, &from.rel)?,
+                        &mut buf,
+                        offset,
+                    )?;
                     if let Some(m) = &meter {
                         m.add(Counter::DiskRead, buf.len() as u64);
                     }
@@ -994,9 +1003,9 @@ impl FileWriter {
             let res = if hole && !inject {
                 Ok(())
             } else if inject {
-                Err(io::Error::from_raw_os_error(nix::libc::ENOSPC))
+                Err(crate::platform::no_space_error())
             } else {
-                file.write_all_at(&data, c.offset)
+                crate::platform::write_all_at(file, &data, c.offset)
             };
             Ok((opened, data, hole, res))
         })
@@ -1227,12 +1236,10 @@ impl Verified {
             let mode = if opts.perms || inplace {
                 Ok(())
             } else {
-                file.set_permissions(std::fs::Permissions::from_mode(
-                    crate::fs::meta::default_file_mode(),
-                ))
+                crate::platform::set_permissions_file(&file, crate::fs::meta::default_file_mode())
             };
             let placed = mode
-                .and_then(|()| apply_metadata_fd_owned(&*file, &entry, &opts, held_owner))
+                .and_then(|()| apply_metadata_fd_owned(&file, &entry, &opts, held_owner))
                 .and_then(|()| still_same_file(held_id, &part))
                 .and_then(|()| {
                     if inplace {
@@ -1240,7 +1247,7 @@ impl Verified {
                     }
                     part.rename_to(&dest).map_err(|e| {
                         let (part, dest) = (part.path(), dest.path());
-                        if e.raw_os_error() == Some(nix::libc::EISDIR) {
+                        if cause(&e) == Cause::IsADirectory {
                             return io::Error::other(format!(
                                 "refusing to replace directory {} with a file",
                                 dest.display()

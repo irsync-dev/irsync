@@ -103,14 +103,13 @@ mod tests {
 
     #[test]
     fn unreadable_unit_counts_as_stale() {
-        if nix::unistd::geteuid().is_root() {
+        if crate::platform::is_root() {
             // root reads any file.
             return;
         }
-        use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
         let unit = put(home.path(), SERVICE_FILES[0], "ExecStart=/usr/bin/irsync\n");
-        fs::set_permissions(&unit, fs::Permissions::from_mode(0o000)).unwrap();
+        crate::platform::set_mode_path_following(&unit, 0o000).unwrap();
         assert_eq!(stale_services(home.path()), vec![unit]);
     }
 
@@ -126,7 +125,7 @@ mod tests {
         let real = dir.path().join("real");
         put(&real, OLD_REMOTE_BIN, "old");
         let home = dir.path().join("home");
-        std::os::unix::fs::symlink(&real, &home).unwrap();
+        crate::platform::testutil::symlink(&real, &home).unwrap();
         assert!(is_old_bin(&home, &real.join(OLD_REMOTE_BIN)));
     }
 
