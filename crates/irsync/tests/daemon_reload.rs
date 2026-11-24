@@ -9,7 +9,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{irsync_bin, loopback_endpoint, offline_opts, spawn_daemon_binary, within};
+#[cfg(unix)]
+use common::{irsync_bin, spawn_daemon_binary};
+use common::{loopback_endpoint, offline_opts, within};
 use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
 use irsync::authz::FileAuthorizer;
 use irsync::config::file::Config;
@@ -166,6 +168,7 @@ async fn reload_binds_anew_and_retires_the_old_endpoint_after_its_sessions() {
 }
 
 #[test]
+#[cfg(unix)]
 fn sighup_makes_the_daemon_listen_anew_and_serve_there() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
