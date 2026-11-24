@@ -58,6 +58,17 @@ fn add_and_allow_take_effect_without_restart() {
     let log_now = std::fs::read_to_string(&log).unwrap();
     assert!(log_now.contains("unauthorized"), "{log_now}");
 
+    // 4b. Listing the exports is refused too, and irsync's message is the
+    // first thing on stderr: no log line from iroh about an endpoint
+    // dropped without being closed (#256).
+    let o = irsync(&client, &["--address", &address, &format!("{daemon_id}:")]);
+    assert!(!o.status.success(), "listing before add should fail");
+    assert!(
+        stderr(&o).starts_with("irsync: ") && stderr(&o).contains("rejected this client's key"),
+        "{}",
+        stderr(&o)
+    );
+
     // 5. Export and authorize while the daemon runs.
     let o = irsync(
         &server,
