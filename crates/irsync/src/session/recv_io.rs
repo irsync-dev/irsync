@@ -1355,6 +1355,7 @@ async fn read_range(
             (Some(frame.data), wire)
         };
         ctx.progress.store(true, Ordering::Relaxed);
+        ctx.busy.received.fetch_add(wire, Ordering::Relaxed);
         ctx.activity.fetch_add(1, Ordering::Relaxed);
         ctx.hooks
             .bus

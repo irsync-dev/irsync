@@ -1541,6 +1541,7 @@ async fn run_role(
         peer_ev_tx,
         ctx.hooks.bus.clone(),
         ctx.activity.clone(),
+        ctx.progress.clone(),
         scan,
         control_tap,
     );
