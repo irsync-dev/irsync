@@ -560,7 +560,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
         if config.clients.get(host).is_some() {
             bail!(irsync::session::reconnect::client_only(host));
         }
-        bail!(irsync::session::reconnect::not_paired(host));
+        bail!(irsync::session::reconnect::not_paired(host, &paths.config));
     }
     let Config {
         settings,

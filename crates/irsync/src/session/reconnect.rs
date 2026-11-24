@@ -244,11 +244,14 @@ pub const WRONG_ID_HINT: &str = "if you copied this host's ID by hand, it must b
      daemon's EndpointId: on the server, irsync id show --daemon prints it (plain \
      irsync id show prints the client's). Also check that the daemon is running there";
 
-/// A name that is neither a saved server nor an EndpointId.
-pub fn not_paired(host: &str) -> String {
+/// A name that is neither a saved server nor an EndpointId. `config_file`
+/// is where saved servers are looked up.
+pub fn not_paired(host: &str, config_file: &std::path::Path) -> String {
     format!(
-        "{host} is not a saved server or an EndpointId. To set it up over ssh: \
-         irsync pair {host}. To add it by hand: irsync server add {host} <daemon-id>"
+        "{host} is not a saved server or an EndpointId (saved servers are in {}). \
+         To set it up over ssh: irsync pair {host}. To add it by hand: \
+         irsync server add {host} <daemon-id>",
+        config_file.display()
     )
 }
 
