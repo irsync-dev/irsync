@@ -669,6 +669,8 @@ pub struct Busy {
     pub deleted: std::sync::atomic::AtomicU64,
     /// The deletion pass's candidate count once known, else 0.
     pub delete_total: std::sync::atomic::AtomicU64,
+    /// File data this side's receiver took in on this connection.
+    pub received: std::sync::atomic::AtomicU64,
 }
 
 impl Busy {
@@ -686,6 +688,7 @@ impl Busy {
             skipped_bytes: self.skipped_bytes.load(Relaxed),
             deleted: self.deleted.load(Relaxed),
             delete_total: self.delete_total.load(Relaxed),
+            received_bytes: self.received.load(Relaxed),
             listed: None,
             listed_settled: 0,
         }

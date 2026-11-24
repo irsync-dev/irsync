@@ -132,8 +132,9 @@ pub fn link(p: ProfileName, d: Dir) -> LinkParams {
             duplicate: 0.0,
             cross: None,
         },
-        // For tests only: a slow, clean uplink and an unlimited downlink.
-        ProfileName::TestSlow => LinkParams {
+        // For tests only: a slow, clean uplink and an unlimited downlink;
+        // `test-dead-zones` adds a dead zone every 1.5 MiB.
+        ProfileName::TestSlow | ProfileName::TestDeadZones => LinkParams {
             rate_bps: match d {
                 Dir::Down => (u64::MAX, u64::MAX),
                 Dir::Up => (256_000, 256_000),
@@ -211,6 +212,9 @@ pub struct OutageParams {
     pub dead_zone_ms: (u64, u64),
     /// Traffic seen before the dead zone opens.
     pub dead_zone_after_bytes: (u64, u64),
+    /// After a dead zone closes, another opens once `dead_zone_after_bytes`
+    /// more traffic has crossed; `false`: one dead zone only.
+    pub dead_zone_repeats: bool,
 }
 
 /// The outages of profile `p`; `None` when it has none.
@@ -221,6 +225,7 @@ pub fn outages(p: ProfileName) -> Option<OutageParams> {
             handover_ms: (200, 2000),
             dead_zone_ms: (20_000, 60_000),
             dead_zone_after_bytes: (256 * KIB, 4 * KIB * KIB),
+            dead_zone_repeats: false,
         }),
         ProfileName::DslVideo
         | ProfileName::TestSlow
@@ -231,6 +236,14 @@ pub fn outages(p: ProfileName) -> Option<OutageParams> {
             handover_ms: (0, 0),
             dead_zone_ms: (6000, 6000),
             dead_zone_after_bytes: (256 * KIB, 256 * KIB),
+            dead_zone_repeats: false,
+        }),
+        ProfileName::TestDeadZones => Some(OutageParams {
+            handover_every_ms: (0, 0),
+            handover_ms: (0, 0),
+            dead_zone_ms: (6000, 6000),
+            dead_zone_after_bytes: (1536 * KIB, 1536 * KIB),
+            dead_zone_repeats: true,
         }),
     }
 }

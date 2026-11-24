@@ -326,17 +326,21 @@ pub(super) enum Listed {
 
 /// Spawns the reader: every control frame but heartbeats goes to `events`,
 /// and a full queue stops the reading. The peer's listing has a stream of
-/// its own; `scan` is what its reader has seen.
+/// its own; `scan` is what its reader has seen. A heartbeat that reports
+/// data received on this connection sets `progress`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_reader(
     recv: RecvStream,
     events: PeerTx,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
+    progress: Arc<std::sync::atomic::AtomicBool>,
     scan: Arc<PeerScan>,
     tap: StreamTap,
 ) -> JoinHandle<()> {
     tokio::spawn(
-        read_control(recv, events, bus, activity, scan, tap).instrument(tracing::Span::current()),
+        read_control(recv, events, bus, activity, progress, scan, tap)
+            .instrument(tracing::Span::current()),
     )
 }
 
@@ -370,6 +374,7 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
     events: PeerTx,
     bus: super::EventBus,
     activity: Arc<std::sync::atomic::AtomicU64>,
+    progress: Arc<std::sync::atomic::AtomicBool>,
     scan: Arc<PeerScan>,
     tap: StreamTap,
 ) {
@@ -418,6 +423,12 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
                             &crate::scan::ListStats::from_wire(listed),
                             h.listed_settled,
                         );
+                    }
+                    // Only a receiver sends these: data it took in on this
+                    // connection is progress for this side, the sender,
+                    // which otherwise counts only finished sends and files.
+                    if h.received_bytes > 0 {
+                        progress.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     if h.skipped_bytes > 0 {
                         bus.emit(Event::PeerSkipped(h.skipped_bytes));
@@ -1143,6 +1154,7 @@ mod tests {
             super::super::EventBus::default(),
             Arc::default(),
             Arc::default(),
+            Arc::default(),
             StreamTap::off(),
         ));
         let ev = rx.recv().await.expect("an event");
@@ -1221,6 +1233,7 @@ mod tests {
             super::super::EventBus::default(),
             activity.clone(),
             Arc::default(),
+            Arc::default(),
             StreamTap::off(),
         ));
         // The length prefix of a 400 KB frame and the first part of its body.
@@ -1236,6 +1249,42 @@ mod tests {
         let seen = tokio::time::timeout(std::time::Duration::from_secs(2), moved).await;
         reader.abort();
         assert!(seen.is_ok(), "no activity while a frame was arriving");
+    }
+
+    /// A receiver's heartbeat that reports data taken in on this
+    /// connection is progress for the sender; one that does not is not.
+    #[tokio::test]
+    async fn a_heartbeat_with_received_bytes_counts_as_progress() {
+        use irsync_proto::v1::Heartbeat;
+        for (received_bytes, expected) in [(0, false), (4096, true)] {
+            let (mut w, r) = tokio::io::duplex(1 << 16);
+            let (tx, _rx) = PeerTx::channel(&super::super::SideHooks::default());
+            let progress: Arc<std::sync::atomic::AtomicBool> = Arc::default();
+            let reader = tokio::spawn(read_control(
+                r,
+                tx,
+                super::super::EventBus::default(),
+                Arc::default(),
+                progress.clone(),
+                Arc::default(),
+                StreamTap::off(),
+            ));
+            let hb = Control {
+                msg: Some(Msg::Heartbeat(Heartbeat {
+                    received_bytes,
+                    ..Heartbeat::default()
+                })),
+            };
+            crate::net::frame::write_msg(&mut w, &hb).await.unwrap();
+            // The reader ends at the end of the stream, after the heartbeat.
+            drop(w);
+            reader.await.unwrap();
+            assert_eq!(
+                progress.load(std::sync::atomic::Ordering::Relaxed),
+                expected,
+                "received_bytes {received_bytes}"
+            );
+        }
     }
 
     #[test]

@@ -245,6 +245,51 @@ async fn a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything()
     .await;
 }
 
+/// A push of one big file over `test-dead-zones` (32 KB/s up, 6 s dead
+/// every 1.5 MiB): no connection lives long enough to send the whole file,
+/// but each one moves part of it. That is progress, so the client keeps
+/// redialling past a `--reconnect` shorter than the whole push. (The
+/// sender once counted progress only per finished send or confirmed file,
+/// and gave up after `max` while data kept moving.)
+#[tokio::test(start_paused = true)]
+async fn a_big_push_through_repeated_dead_zones_keeps_going_while_data_moves() {
+    with_netsim(ProfileName::TestDeadZones, 1, async {
+        let h = Harness::new().await;
+        // 8 MiB: over four minutes at 32 KB/s, across five dead zones or so.
+        // Each connection carries about 1.5 MiB, more than the largest
+        // chunk (1 MiB), so every connection can deliver whole chunks.
+        std::fs::write(h.local.path().join("big"), noise(8 << 20)).unwrap();
+        let mut opts = archive_opts();
+        opts.timeout = Some(Duration::from_secs(2));
+        let ropts = ReconnectOpts {
+            max: Duration::from_secs(90),
+            backoff_max: Duration::from_secs(4),
+            ..ReconnectOpts::default()
+        };
+        let start = tokio::time::Instant::now();
+        let (out, reconnects) = h
+            .run_reconnect(&opts, Flow::Push, ropts, h.local_side())
+            .await;
+        let took = start.elapsed();
+        out.unwrap_or_else(|e| panic!("gave up after {took:?}, {reconnects} reconnects: {e:#}"));
+        assert!(
+            took > ropts.max * 2,
+            "the push took only {took:?}, so it no longer outlasts --reconnect"
+        );
+        assert!(reconnects >= 3, "only {reconnects} reconnects");
+        assert_eq!(
+            h.daemon.session_ids().len(),
+            1,
+            "a redial started a new session"
+        );
+        assert_eq!(
+            std::fs::read(h.local.path().join("big")).unwrap(),
+            std::fs::read(h.export.path().join("big")).unwrap()
+        );
+    })
+    .await;
+}
+
 /// A single-file push through `test-blackout`: the dead zone drops the
 /// connection mid-file and the same session resumes (the session key must
 /// match across the redial).

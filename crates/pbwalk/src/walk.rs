@@ -437,6 +437,7 @@ mod tests {
                 delete_total: 3,
                 listed: totals(),
                 listed_settled: 4,
+                received_bytes: 5,
             }),
             Msg::ChunkListPart(v1::ChunkListPart {
                 file_id: 4,

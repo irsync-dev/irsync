@@ -481,6 +481,15 @@ loss, no delay, no outages. irsync's test
 (in `crates/irsync/tests/netsim.rs`) uses it to push data that takes over
 a minute of network time, on tokio's paused clock. `irsync-netstress` does not offer it.
 
+#### `test-dead-zones`: for irsync's own tests
+
+The `test-slow` link with a 6 s dead zone every 1.5 MiB of traffic, again
+and again. irsync's test
+`a_big_push_through_repeated_dead_zones_keeps_going_while_data_moves` (in
+`crates/irsync/tests/netsim.rs`) uses it to push one 8 MiB file that no
+single connection can finish, and checks that the client keeps redialling
+while each connection moves part of it. `irsync-netstress` does not offer it.
+
 #### `test-wan`: for measurements
 
 A fast, clean long-distance link: 100 Mbit/s each way, 40 ms of delay in

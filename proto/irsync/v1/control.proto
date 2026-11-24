@@ -249,6 +249,10 @@ message Heartbeat {
   // With `listed`: how many of its bytes need nothing more on this
   // connection (files found up to date, or placed by an earlier one).
   uint64 listed_settled = 6;
+  // File data this side's receiver has taken in on this connection. The
+  // sender counts it as progress: a big file sent over several connections,
+  // none of which finishes it, still moves the session on.
+  uint64 received_bytes = 7;
 }
 message Control {
   reserved 4; // ChunkList, one frame per list (never shipped)

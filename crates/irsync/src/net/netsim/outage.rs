@@ -1,5 +1,6 @@
-//! When the simulated link is down: short handovers on a timetable and one
-//! dead zone that opens after enough traffic. Pure: the times are handed in.
+//! When the simulated link is down: short handovers on a timetable and a
+//! dead zone that opens after enough traffic (once, or again after as much
+//! more). Pure: the times are handed in.
 
 use std::time::Duration;
 
@@ -76,7 +77,13 @@ impl Outages {
                 }
                 Some((_, end)) if now >= end => {
                     dz.window = None;
-                    dz.done = true;
+                    if self.params.dead_zone_repeats {
+                        dz.after_bytes =
+                            self.bytes + draw(&mut self.rng, self.params.dead_zone_after_bytes);
+                        dz.length = draw_ms(&mut self.rng, self.params.dead_zone_ms);
+                    } else {
+                        dz.done = true;
+                    }
                     change = Some(Change::DeadZoneClosed);
                 }
                 _ => {}
@@ -162,6 +169,23 @@ mod tests {
         assert!(
             matches!(changes[..], [(a, Change::DeadZoneOpened { secs: 6 }), (b, Change::DeadZoneClosed)] if b - a == 6000)
         );
+    }
+
+    #[test]
+    fn repeating_dead_zones_open_again_after_as_much_traffic() {
+        let mut o = Outages::new(outages(ProfileName::TestDeadZones).unwrap(), 1);
+        let mut opened = vec![];
+        for i in 0..120_000u64 {
+            // 64 bytes per ms: 1.5 MiB in 24576 ms after each close, plus 6 s dead.
+            let (_, c) = o.packet(ms(i), 64);
+            if let Some(Change::DeadZoneOpened { secs }) = c {
+                assert_eq!(secs, 6);
+                opened.push(i);
+            }
+        }
+        let gaps: Vec<u64> = opened.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(opened.len() >= 3, "{opened:?}");
+        assert!(gaps.iter().all(|&g| g == 6000 + 24_576), "{gaps:?}");
     }
 
     #[test]
