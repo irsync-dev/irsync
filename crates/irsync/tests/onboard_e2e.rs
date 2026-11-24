@@ -1275,7 +1275,7 @@ fn force_ssh_refuses_an_endpoint_id() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success(), "{err}");
     assert!(
-        err.contains("--ssh needs a host alias or an ssh destination, not an EndpointId"),
+        err.contains("--ssh needs a server name or an ssh destination, not an EndpointId"),
         "{err}"
     );
     assert_eq!(w.ssh_calls(), 0);

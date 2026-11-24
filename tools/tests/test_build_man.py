@@ -368,8 +368,9 @@ class BuildManTests(unittest.TestCase):
     def test_required_keys_say_required(self):
         text = " ".join(render(self.toml).split())
         self.assertNotIn("Default: required", text)
-        # A host needs endpoint_id or client_id: neither is required alone.
-        self.assertIn("endpoint_id Default: none.", text)
+        # A server needs its endpoint_id and a client its client_id.
+        self.assertRegex(text, r"\bendpoint_id Required\. The EndpointId")
+        self.assertRegex(text, r"\bclient_id Required\. The machine")
         self.assertRegex(text, r"\bpath Required\. The directory")
 
     def test_fileset_page_has_no_install_block(self):

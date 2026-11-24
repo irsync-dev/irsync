@@ -597,7 +597,7 @@ async fn connect_for(
         } else {
             "--no-remote-dht"
         };
-        bail!("{flag} needs a host alias or an ssh destination, not an EndpointId");
+        bail!("{flag} needs a server name or an ssh destination, not an EndpointId");
     }
     if first || forced {
         // A saved host: its `ssh` destination, else the alias itself.

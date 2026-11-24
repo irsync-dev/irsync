@@ -32,10 +32,10 @@ is not running.
 irsync id show --daemon
 ```
 
-On the client, save it under the host's name, replacing the old one:
+On the client, save it under the server's name, replacing the old one:
 
 ```sh
-irsync host add myserver <daemon-id>
+irsync server add myserver <daemon-id>
 ```
 
 Then check that `irsync daemon` is running on the server.

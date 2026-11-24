@@ -3,7 +3,7 @@
 One file holds everything: `~/.config/irsync/irsync.toml`. It is optional; a
 missing file is the same as an empty one, and every key has a default except
 where noted. The [management commands](management.md) edit it for you and keep
-its comments and the order of its hosts and exports (they rewrite the rest in
+its comments and the order of its servers, clients and exports (they rewrite the rest in
 one standard form); `irsync config` reads and writes any key; you can also edit it by
 hand.
 
@@ -27,11 +27,12 @@ into `irsync.toml`.
 Every table, with the defaults except where marked:
 
 ```toml
+config_version = 2              # written by irsync; always first
 unsafe_config_allowed = false   # true: skip the permission checks
 identity = "~/.config/irsync/id_ed25519"
 state_dir = "~/.local/state/irsync"
 
-[client]                     # defaults for every host
+[client]                     # defaults for every server
 parallel = 128
 reconnect = "1d"
 dial_retries = 4
@@ -68,9 +69,8 @@ mdns = true
 otlp_endpoint = "http://localhost:4318"  # no default: off
 otlp_protocol = "http"       # or "grpc"
 
-# One [hosts.ALIAS] table per remote. On a daemon's machine the
-# same tables name the clients that exports are granted to.
-[hosts.myserver]
+# One [servers.NAME] table per machine this one connects to.
+[servers.myserver]
 endpoint_id = "4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff"
 relay = "https://relay.example.net"   # the rest is optional
 relay_mode = "disabled"
@@ -84,11 +84,12 @@ dht = false
 mdns = false
 ssh = "myserver"             # set by the SSH setup
 
-[hosts.myclient]
-endpoint_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
+# One [clients.NAME] table per machine this one's daemon lets in.
+[clients.myclient]
+client_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
 
 # What the daemon shares and with whom. Entries in rw and ro are
-# aliases from [hosts.*] or EndpointIds.
+# names from [clients.*] or EndpointIds.
 [all]                        # grants for every export
 rw = []
 ro = []
@@ -169,9 +170,9 @@ on one machine and reach each other.
 
 ## Client
 
-`[client]` holds the defaults for every sync. A host's table overrides them
-for that host, and a command-line flag overrides both: a sync resolves each
-setting from the flag, then the alias's table, then `[client]`, then the
+`[client]` holds the defaults for every sync. A server's table overrides them
+for that server, and a command-line flag overrides both: a sync resolves each
+setting from the flag, then the server's table, then `[client]`, then the
 built-in default.
 
 | Key | Default | Meaning |
@@ -188,7 +189,7 @@ built-in default.
 | `pq_key_exchange` | `prefer` | `require`: refuse a daemon that does not offer the post-quantum key exchange. See [Post-quantum key exchange](#post-quantum-key-exchange). Flag: `--pq-key-exchange`. |
 
 `congestion` picks the congestion controller of the side that sends: the
-client's (the host's, else `[client]`'s) for a push, the daemon's for a pull.
+client's (the server's, else `[client]`'s) for a push, the daemon's for a pull.
 When to choose `cubic` over `bbr`, with measurements, is in
 [Connections](../explanation/connections.md#congestion-control).
 
@@ -206,41 +207,80 @@ the other side does not, as irsync 0.1.0-beta.6 and older do not:
 - `require`: the connection is refused, before any file name or data is
   sent. The side that refuses says why, and the other side prints it.
 
-Each side decides for itself. On the client it is the flag, else the host's
+Each side decides for itself. On the client it is the flag, else the server's
 table, else `[client]`. On the daemon it is `pq_key_exchange` in
 [`[daemon]`](#daemon), and it holds for every client: there is no setting
 per export or per grant yet. A daemon tells only a client that has a grant;
 a key without one is turned away as before.
 
-## Hosts
+## Servers
 
-`[hosts.ALIAS]` names another machine. A machine has two `EndpointId`s: its
-daemon's, which you dial, and its own as a client, which grants are for. An
-entry holds one of them or both, so one name serves a machine you sync to
-and that syncs to you. The
-[SSH setup](../how-to/ssh-setup.md#the-names-the-setup-saves) writes both
-sides: the server's alias on the client, and the client's host name on the
-server. An alias may not be empty, contain `:` or `/`, be `all` or `*`, or
-be an `EndpointId`.
+`[servers.NAME]` names a machine this one connects to. The name is what you
+type before the colon in `NAME:PATH`. The
+[SSH setup](../how-to/ssh-setup.md#the-names-the-setup-saves) writes the entry
+for you. A name may not be empty, contain `:` or `/`, be `all` or `*`, or be
+an `EndpointId`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `endpoint_id` | none | The `EndpointId` of the machine's daemon: the one dialled for `ALIAS:PATH`. The client pins it. An entry needs this, `client_id`, or both. |
-| `client_id` | none | The machine's `EndpointId` as a client. A grant that names `ALIAS` is for this id. Without it, such a grant is for `endpoint_id`, as for a client you added by hand with `irsync host add`. When `irsync config set` or `unset` changes which id a host's grants are for, a note on stderr says so. |
-| `relay` | `[client]`'s | This host's relay server. |
-| `relay_mode` | `[client]`'s | `disabled`: reach this host directly only. |
-| `congestion` | `[client]`'s | The congestion controller for pushes to this host. |
-| `pq_key_exchange` | `[client]`'s | `require`: refuse this host when it does not offer the post-quantum key exchange. |
+| `endpoint_id` | required | The `EndpointId` of the server's daemon: the one dialled for `NAME:PATH`. The client pins it. |
+| `relay` | `[client]`'s | This server's relay server. |
+| `relay_mode` | `[client]`'s | `disabled`: reach this server directly only. |
+| `congestion` | `[client]`'s | The congestion controller for pushes to this server. |
+| `pq_key_exchange` | `[client]`'s | `require`: refuse this server when it does not offer the post-quantum key exchange. |
 | `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. Cannot be combined with `--relay`. |
-| `parallel` | `[client]`'s | Data streams a push to this host keeps open at once. |
+| `parallel` | `[client]`'s | Data streams a push to this server keeps open at once. |
 | `reconnect` | `[client]`'s | How long to keep redialling. |
-| `dial_retries` | `[client]`'s | How often to retry this host before it has answered. |
-| `dht` | `[client]`'s | Look this host up in the mainline DHT. |
-| `mdns` | `[client]`'s | Look this host up with mDNS. |
-| `ssh` | none | The ssh destination this host was set up through, such as `myserver` or `me@myserver`. The [SSH setup](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a sync to a host with `ssh` gets no answer within about 15 seconds, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. It does not add back an immediate grant that was removed on the server. The export listing, `irsync HOST:`, is not checked this way. A host without `ssh` is never touched over ssh. |
-| `ssh_aliases` | none | Other ssh destinations that were typed for this host, such as its address: `["192.168.1.5"]`. Typing one of them finds this host, as typing its `ssh` value does. The SSH setup adds to it; nothing is ever dialled through it. These are not host aliases: they do not work in grant lists or with `irsync host`. |
+| `dial_retries` | `[client]`'s | How often to retry this server before it has answered. |
+| `dht` | `[client]`'s | Look this server up in the mainline DHT. |
+| `mdns` | `[client]`'s | Look this server up with mDNS. |
+| `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. The [SSH setup](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. When a sync to a server with `ssh` gets no answer within about 15 seconds, `irsync` checks it over ssh once: it starts the daemon again, and updates `endpoint_id` if the server's identity changed. It does not add back an immediate grant that was removed on the server. The export listing, `irsync NAME:`, is not checked this way. A server without `ssh` is never touched over ssh. |
+| `ssh_aliases` | none | Other ssh destinations that were typed for this server, such as its address: `["192.168.1.5"]`. Typing one of them finds this server, as typing its `ssh` value does. The SSH setup adds to it; nothing is ever dialled through it. These are not server names: they do not work with `irsync server`. |
 
-`--address` on the command line replaces the host's `address` list.
+`--address` on the command line replaces the server's `address` list.
+
+## Clients
+
+`[clients.NAME]` names a machine that this machine's daemon lets in. Grants
+(`rw` and `ro` in an export, `[all]` and `[immediate]`) name clients, never
+servers. The name has the same rules as a server's.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `client_id` | required | The machine's `EndpointId` as a client: the key it signs in with. A grant that names `NAME` is for this id. |
+
+A server and a client may have the same name. They are two entries, for the
+two ids a machine has: its daemon's, which you dial, and its own as a client,
+which grants are for. The SSH setup writes both sides: the server's name on the
+client, and the client's host name on the server.
+
+## Config versions
+
+The file starts with `config_version = 2`. irsync writes it first, every time
+it saves the file. You do not set it, and `irsync config set` refuses it.
+
+Version 1 had one table, `[hosts.NAME]`, for servers and clients alike. An old
+file works as it is. irsync reads it as before, and it grants the same access.
+The first change rewrites it as version 2. That change is any `irsync` command
+that edits the file, the SSH setup, or the daemon adding an automatic export.
+Comments stay.
+
+The rewrite splits each `[hosts.NAME]`:
+
+- A host with an `endpoint_id` becomes `[servers.NAME]`.
+- When a grant names that host, and the host has no `client_id`, it also
+  becomes `[clients.NAME]`, with that same id and a comment that says so. The
+  grant was for that id before, and still is.
+- A host with a `client_id` becomes `[clients.NAME]`. If it also has an
+  `endpoint_id`, it is a server too.
+- A host with only a `client_id` has no use as a server. Its dial keys and its
+  `ssh` keys are dropped. The command names them on stderr, in lines that start
+  with `irsync: note:`.
+
+An older irsync cannot read a version 2 file. While an older daemon is running
+on the file, irsync refuses to rewrite it, and says to restart the daemon
+first. The daemon needs a restart, not a new config. Do that, then run the
+command again.
 
 ## Daemon
 
@@ -294,7 +334,7 @@ be `all`.
 | `read_only` | `false` | Refuse pushes from everyone, even from peers under `rw`. |
 | `warm_index` | `false` | Hash the files already in the export into its index whenever the daemon starts, so files `irsync` did not place are reused. |
 | `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. |
-| `rw` | `[]` | Peers with read-write access: aliases or `EndpointId`s. |
+| `rw` | `[]` | Peers with read-write access: client names or `EndpointId`s. |
 | `ro` | `[]` | Peers with read-only access. |
 | `auto` | `false` | Marks an automatic export, one the daemon made for an `[immediate]` peer; see [Immediate grants](#immediate-grants). |
 
@@ -307,7 +347,7 @@ automatic ones (`auto = true`).
 account can, read-write. There is no read-only form. `irsync grant add
 immediate WHO` adds a peer, `irsync grant remove immediate WHO` takes it out,
 and the SSH setup adds its client here, by the host name it saved the client
-under in `[hosts]`.
+under in `[clients]`.
 
 When such a peer uses a path that no export covers, the daemon adds an
 automatic export for it, `auto = true`, named `auto-` and the path with `-`
@@ -335,14 +375,14 @@ How grants combine:
   a peer that `[all]` grants `rw`.
 - Within one table, `rw` wins over `ro`.
 - `read_only` caps everyone at read-only.
-- An entry that names no alias and is no `EndpointId` matches nobody; the
-  daemon logs a warning for it.
-- Whenever `irsync` saves the file, it writes a peer by its `[hosts]` alias:
-  an `EndpointId` in a grant list that has an alias becomes that alias, also
-  one that was already in the file. With two aliases for one `EndpointId` it
+- An entry that names no client and is no `EndpointId` matches nobody; the
+  daemon logs a warning for it. A server's name is no client name.
+- Whenever `irsync` saves the file, it writes a peer by its `[clients]` name:
+  an `EndpointId` in a grant list that has a client becomes that name, also
+  one that was already in the file. With two clients for one `EndpointId` it
   writes the first in alphabetical order. An entry named twice is kept once.
-- A grant by alias follows the alias. If the host entry later gets another
-  `EndpointId`, the grant is for that one.
+- A grant by name follows the client. If the client entry later gets another
+  `client_id`, the grant is for that one.
 
 How a remote path finds its export, nested exports included, is described in
 [Remote addresses](remote-addresses.md#exports-decide-access).

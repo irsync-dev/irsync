@@ -1,13 +1,13 @@
 # Change exports and settings
 
 A running daemon picks up most changes without a restart. Exports, grants and
-aliases apply from the next connection. The `[daemon]` settings apply when you
+clients apply from the next connection. The `[daemon]` settings apply when you
 send it SIGHUP. Only a few settings wait for the next start.
 
 Run the commands on the daemon's machine, as the daemon's account and with the
 daemon's `--config` (see [Run the daemon](run-the-daemon.md#run-it-as-its-own-account)).
 
-## Exports, grants and aliases
+## Exports, grants and clients
 
 Edit them with the [management commands](../reference/management.md), or by
 hand:
@@ -19,7 +19,7 @@ irsync grant remove photos phone
 ```
 
 Nothing else is needed. The daemon reads `irsync.toml` afresh on every
-accepted connection, once the handshake has proved the peer's `EndpointId`. It takes the aliases, exports
+accepted connection, once the handshake has proved the peer's `EndpointId`. It takes the clients, exports
 and grants from that read.
 
 - A `grant remove` or `export remove` does not end a session already in
