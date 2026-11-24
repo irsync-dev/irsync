@@ -350,6 +350,10 @@ pub enum Command {
     /// exports.photos.read_only true`.
     /// With no subcommand, runs `list`.
     Config(ConfigArgs),
+    /// Set a server up over ssh: install irsync there, let this client in,
+    /// start the daemon and save the server. Syncs then go over iroh; ssh is
+    /// used only here.
+    Pair(PairArgs),
     /// Show the config files, identities, servers, clients and exports.
     Show,
     /// The server side of SSH onboarding, run by the client over ssh:
@@ -703,6 +707,30 @@ pub struct FilesArgs {
     /// the new key with it.
     #[arg(long, global = true, value_name = "PATH")]
     pub passphrase_file: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct PairArgs {
+    /// A server name, or an ssh destination (`[user@]host`).
+    #[arg(value_name = "HOST")]
+    pub host: String,
+    /// The remote shell for SSH onboarding (default: IRSYNC_RSH, else `ssh`);
+    /// split on whitespace like rsync's `-e`.
+    #[arg(long, value_name = "CMD")]
+    pub rsh: Option<String>,
+    /// Copy nothing to the server: use the irsync already at
+    /// `~/.local/bin/irsync` there, and stop if it is missing or another
+    /// version. Default: `ssh_install` in the config file, else install.
+    #[arg(long)]
+    pub no_install: bool,
+    /// Turn the server's DHT publishing off (`[daemon.discovery] dht =
+    /// false`). Without it the server's setting is left alone.
+    #[arg(long)]
+    pub no_dht: bool,
+    /// The private key to pair with (default: `identity` in irsync.toml,
+    /// else id_ed25519 in the config directory; generated if missing).
+    #[arg(long, value_name = "FILE")]
+    pub identity: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]

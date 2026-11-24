@@ -17,7 +17,7 @@ use irsync::cli::progress::Reporter;
 use irsync::cli::{
     validate, Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode,
     Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs,
-    LogArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
+    LogArgs, PairArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
 };
 use irsync::config::clients::Clients;
 use irsync::config::file::Config;
@@ -82,6 +82,7 @@ fn main() {
         Some(Command::Grant(g)) => std::process::exit(run_grant(g, files)),
         Some(Command::Id(i)) => std::process::exit(run_id(i, files)),
         Some(Command::Config(c)) => std::process::exit(run_config(c, files)),
+        Some(Command::Pair(a)) => std::process::exit(run_pair(a, log, files)),
         Some(Command::Show) => std::process::exit(run_show(files)),
         Some(Command::SshSetup {
             client,
@@ -819,13 +820,85 @@ fn recheck_over_ssh(
     Recheck::Done(o.hints())
 }
 
+/// `irsync pair HOST`: sets the server up over ssh and saves it.
+fn run_pair(a: &PairArgs, _log: LogArgs, files: &FilesArgs) -> i32 {
+    let log = LogWriter::new();
+    finish(
+        "pair",
+        (|| {
+            let paths = file_paths(files);
+            let config = Config::load(&paths)?;
+            let pass = PassphraseSource::from_env(
+                files.passphrase_file.clone(),
+                config.settings.unsafe_config_allowed,
+            );
+            let t = irsync::ssh::pair::target(&config.servers, &config.clients, &a.host)?;
+            if let Some(typed) = &t.found_as {
+                log.eprintln(&format!("irsync: {typed} is saved as {}", t.host));
+            }
+            // No ssh call yet: these errors need no "over ssh failed" context.
+            match &t.alias {
+                Some(alias) => irsync::ssh::onboard::check(alias, &t.dest)?,
+                None => irsync::ssh::onboard::check_dest(&t.dest)?,
+            }
+            let secret = client_key(a.identity.as_deref(), &config.settings, &pass)?;
+            let rsh = irsync::ssh::client::Rsh::from_opts(a.rsh.as_deref());
+            log.eprintln(&format!("irsync: pairing with {} over ssh", t.host));
+            let flags = SetupFlags {
+                recheck: t.kind == irsync::ssh::pair::PairKind::Saved,
+                no_dht: a.no_dht,
+                no_install: a.no_install || config.settings.client.ssh_install == Some(false),
+            };
+            let host = &t.host;
+            let o = irsync::ssh::onboard::onboard(
+                &paths,
+                &rsh,
+                t.alias.as_deref(),
+                &t.dest,
+                secret.public(),
+                flags,
+            )
+            .with_context(|| match t.kind {
+                irsync::ssh::pair::PairKind::ClientOnly => format!(
+                    "{host} is saved in {} as a client only; setting its daemon \
+                     up over ssh failed",
+                    paths.config.display()
+                ),
+                irsync::ssh::pair::PairKind::First => format!(
+                    "{host:?} is not a server in {} and not an EndpointId; \
+                     setting it up over ssh failed",
+                    paths.config.display()
+                ),
+                irsync::ssh::pair::PairKind::Saved => {
+                    format!("checking {host} over ssh failed")
+                }
+            })?;
+            report_onboarded(&log, &o);
+            log.eprintln(&format!(
+                "irsync: {}",
+                irsync::ssh::pair::paired_line(&o.alias)
+            ));
+            Ok(())
+        })(),
+    )
+}
+
 /// The client identity for a sync, with a stderr notice when it was generated.
 fn load_client_key(
     opts: &SyncOptions,
     settings: &Settings,
     pass: &PassphraseSource,
 ) -> anyhow::Result<iroh::SecretKey> {
-    let (secret, source) = client_identity(opts.identity.as_deref(), settings, pass)?;
+    client_key(opts.identity.as_deref(), settings, pass)
+}
+
+/// As [`load_client_key`], for the identity file named on the command line.
+fn client_key(
+    explicit: Option<&Path>,
+    settings: &Settings,
+    pass: &PassphraseSource,
+) -> anyhow::Result<iroh::SecretKey> {
+    let (secret, source) = client_identity(explicit, settings, pass)?;
     if let KeySource::Generated(path) = &source {
         eprintln!("generated identity {}", path.display());
         eprintln!("{}", irsync::identity::public_key_line(&secret, "irsync"));

@@ -340,6 +340,52 @@ fn user_at_host_saves_the_plain_name_too() {
 }
 
 #[test]
+fn pair_sets_up_a_new_host() {
+    let w = World::new();
+    let err = ok(&w.irsync_bare(&["pair", "myserver"]));
+    assert!(
+        err.contains("irsync: paired with myserver; syncs go over iroh, not ssh"),
+        "{err}"
+    );
+    assert!(err.contains("saved server myserver"), "{err}");
+    let calls = w.ssh_calls();
+    assert!(calls > 0);
+    let dest = w.server.path().join("dest");
+    let target = format!("myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    assert!(dest.join("a.txt").exists());
+    assert_eq!(w.ssh_calls(), calls, "a push needs no ssh");
+}
+
+#[test]
+fn pair_user_at_host_saves_both_names() {
+    let w = World::new();
+    let err = ok(&w.irsync_bare(&["pair", "u@myserver"]));
+    assert!(err.contains("saved server u@myserver"), "{err}");
+    assert!(err.contains("saved server myserver"), "{err}");
+    let cfg: toml::Table = w.client_config().parse().unwrap();
+    for a in ["u@myserver", "myserver"] {
+        assert_eq!(cfg["servers"][a]["ssh"].as_str(), Some("u@myserver"), "{a}");
+    }
+}
+
+/// A second pairing checks the server but does not put back a grant the
+/// owner removed.
+#[test]
+fn pair_again_does_not_regrant() {
+    let w = World::new();
+    ok(&w.irsync_bare(&["pair", "myserver"]));
+    let id = client_id(w.client.path());
+    let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
+    assert!(out.status.success(), "{out:?}");
+    w.kill_daemon();
+    let o = w.irsync_bare(&["pair", "myserver"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("has no immediate grant"), "{err}");
+    assert!(!immediate_granted(&w, &id), "{}", w.server_toml());
+}
+
+#[test]
 fn ip_address_is_saved_under_the_server_name() {
     let mut w = World::new();
     w.hostname = Some("myserver.example.com".into());
