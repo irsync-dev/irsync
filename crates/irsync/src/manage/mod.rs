@@ -44,9 +44,10 @@ fn reads_config_v2(version: &str) -> bool {
     }
 }
 
-/// Refuses to convert a file of layout 1 while a daemon holds the lock of
-/// the state dir of `config` and cannot read layout 2: it would find a
-/// file it cannot read at its next reload.
+/// Refuses to write a file of layout 2 over one that does not say so
+/// (a file of layout 1, one without `config_version`, or none at all)
+/// while a daemon holds the lock of the state dir of `config` and cannot
+/// read layout 2: it would find a file it cannot read at its next reload.
 fn check_daemon(config: &Config) -> Result<(), ManageError> {
     let state_dir = &config.settings.state_dir;
     let Some(info) = crate::daemon_lock::probe(state_dir) else {
@@ -196,8 +197,12 @@ fn saved_mode(path: &Path) -> std::fs::Permissions {
 /// Save the config file, refusing a message that would not load; takes
 /// and releases the file's lock (see [`lock_config`]). Like
 /// [`ConfigLock::save`], it first writes peers by their aliases.
+/// The file is read under the lock first, so the save makes the same
+/// check of a running daemon as one after [`ConfigLock::load`].
 pub fn save_config(path: &Path, msg: &mut pb::Config) -> Result<(), ManageError> {
-    lock_config(path)?.save(msg)
+    let mut lock = lock_config(path)?;
+    lock.load()?;
+    lock.save(msg)
 }
 
 /// The typed config of `msg`; one that would not load is an error naming
@@ -255,6 +260,9 @@ pub struct ConfigLock {
     /// The layout of the file as [`ConfigLock::load`] read it; `None`
     /// before a load.
     version: Option<u32>,
+    /// Whether the file itself says `config_version` 2, so any irsync
+    /// that reads it reads what a save writes. False before a load.
+    says_v2: bool,
     /// What converting the file left out (see [`reader::Read::dropped`]).
     dropped: Vec<String>,
 }
@@ -282,6 +290,7 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
             lock,
             file: Some(file),
             version: None,
+            says_v2: false,
             dropped: Vec::new(),
         }),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(ManageError::Locked {
@@ -301,6 +310,10 @@ impl ConfigLock {
         crate::config::file::warn_ignored_split_files(&self.path);
         let read = read_file(&self.path)?;
         self.version = Some(read.version);
+        // A file of layout 2 without the key reads as layout 2 too; only
+        // the key keeps an older irsync from reading it.
+        self.says_v2 =
+            read.version == CONFIG_VERSION && read.config.config_version == Some(CONFIG_VERSION);
         self.dropped = read.dropped;
         Ok(read.config)
     }
@@ -310,7 +323,9 @@ impl ConfigLock {
     /// lock. Peers that the clients have a name for are written by it
     /// first (see [`canonicalize_doc`]), so every save leaves the file in
     /// one form. A message that would not load is refused and the file
-    /// left as it was. When the file loaded was of layout 1, each thing
+    /// left as it was, and so is one that a running older daemon could
+    /// not read when the file did not say `config_version` 2 (see
+    /// [`check_daemon`]). When the file loaded was of layout 1, each thing
     /// its conversion left out is noted on stderr once the file is saved.
     pub fn save(mut self, msg: &mut pb::Config) -> Result<(), ManageError> {
         msg.config_version = Some(CONFIG_VERSION);
@@ -318,7 +333,7 @@ impl ConfigLock {
             // The rewrite only renames and drops entries; checked all the same.
             typed(msg, &self.path)?;
         }
-        if self.version == Some(1) {
+        if !self.says_v2 {
             check_daemon(&typed(msg, &self.path)?)?;
         }
         let io = |source| ManageError::Io {

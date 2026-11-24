@@ -321,8 +321,10 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     lock.save(&mut m).unwrap();
     assert_eq!(mode(&locked), 0o600);
 
-    // A file open to other users loads only when it says so itself.
+    // A file open to other users loads only when it says so itself;
+    // save_config reads the file first too.
     m.unsafe_config_allowed = Some(true);
+    save_config(&fresh, &mut m).unwrap();
     for kept in [0o640, 0o644, 0o600] {
         set_mode(&fresh, kept).unwrap();
         m.client.as_mut().unwrap().parallel = Some(kept);

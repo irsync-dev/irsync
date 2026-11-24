@@ -2,7 +2,7 @@
 //! cannot read layout 2. (This build is itself 0.1.0-beta.6, below
 //! `READS_CONFIG_V2`, so the old daemons here are beta.5.)
 
-use irsync::manage::{lock_config, ManageError};
+use irsync::manage::{load_message, lock_config, save_config, ManageError};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
@@ -131,4 +131,88 @@ fn a_v2_file_is_saved_under_any_daemon() {
     });
     let _held = hold(&dir.path().join("state"), &record("0.1.0-beta.5 (abc)"));
     resave(&path).unwrap();
+}
+
+/// A file of the current layout that does not say `config_version`:
+/// an older irsync reads it, but not the file a save writes.
+fn unversioned(state: &Path) -> String {
+    format!(
+        "state_dir = {:?}\n\n[exports.www]\npath = \"/srv/www\"\n",
+        state.display().to_string()
+    )
+}
+
+#[test]
+fn save_of_a_file_without_config_version_is_refused_under_an_old_daemon() {
+    let (dir, path, text) = setup(unversioned);
+    let _held = hold(&dir.path().join("state"), &record("0.1.0-beta.5 (abc)"));
+    let err = resave(&path).unwrap_err();
+    assert!(matches!(err, ManageError::OldDaemon { .. }), "{err}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    assert!(!dir.path().join("irsync.toml.lock").exists());
+
+    let (_dir, path, _) = setup(unversioned);
+    resave(&path).unwrap();
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("config_version = 2"));
+}
+
+/// Saves a first file at `path`, naming `state` as its state dir.
+fn create(path: &Path, state: &Path) -> Result<(), ManageError> {
+    let mut lock = lock_config(path)?;
+    let mut msg = lock.load()?;
+    msg.state_dir = Some(state.display().to_string());
+    lock.save(&mut msg)
+}
+
+#[test]
+fn first_save_is_refused_under_an_old_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let path = dir.path().join("irsync.toml");
+    let held = hold(&state, &record("0.1.0-beta.5 (abc)"));
+    let err = create(&path, &state).unwrap_err();
+    assert!(matches!(err, ManageError::OldDaemon { .. }), "{err}");
+    assert!(!path.exists());
+    assert!(!dir.path().join("irsync.toml.lock").exists());
+
+    drop(held);
+    create(&path, &state).unwrap();
+    assert!(path.exists());
+}
+
+#[test]
+fn save_config_checks_the_daemon_too() {
+    for text in [v1 as fn(&Path) -> String, unversioned] {
+        let (dir, path, before) = setup(text);
+        let _held = hold(&dir.path().join("state"), &record("0.1.0-beta.5 (abc)"));
+        let mut msg = load_message(&path).unwrap();
+        let err = save_config(&path, &mut msg).unwrap_err();
+        assert!(matches!(err, ManageError::OldDaemon { .. }), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+    // A file that already says config_version 2: any daemon reads it.
+    let (dir, path, _) = setup(|state| {
+        format!(
+            "config_version = 2\nstate_dir = {:?}\n",
+            state.display().to_string()
+        )
+    });
+    let _held = hold(&dir.path().join("state"), &record("0.1.0-beta.5 (abc)"));
+    let mut msg = load_message(&path).unwrap();
+    save_config(&path, &mut msg).unwrap();
+}
+
+#[test]
+fn a_record_with_pid_0_and_the_current_version_is_refused() {
+    let (dir, path, text) = setup(v1);
+    let rec = format!("pid=0\nversion={} (abc)\n", env!("CARGO_PKG_VERSION"));
+    let _held = hold(&dir.path().join("state"), &rec);
+    let err = resave(&path).unwrap_err();
+    assert!(
+        matches!(err, ManageError::OldDaemon { pid: 0, .. }),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }
