@@ -98,8 +98,10 @@ The user picked B, for transactions.
 3. The client sends **changes**. The server checks only that each is well
    formed and stores it. It does not answer each change.
 4. The client sends **COMMIT**. The server:
-   - takes the config lock (`manage::lock_config`, the same lock and wait as
-     local commands);
+   - takes the config lock (`manage::lock_config`), waiting for it up to
+     `authz::LOCK_WAIT` the way `FileAuthorizer::add_auto_export` does (the
+     local commands fail at once instead); if it is still held, NACK "busy"
+     (my call);
    - loads the config (`manage::load_message`);
    - checks that the client still has `admin = "rw"` in that config;
    - applies the changes in order to the in-memory config, with the same
@@ -131,11 +133,28 @@ Edges:
   only during a commit, so two admins collecting changes at the same time do
   not block each other; the later commit sees the earlier one's result.
 
+### No version check
+
+A commit carries no "only if unchanged since I read it" condition: the last
+commit wins, as long as every change in it applies cleanly to the config as
+it is at commit time; otherwise it is a NACK. (Considered and turned down: a
+config version in read replies and an optional one on COMMIT.)
+
 ### NACK
 
 To a client with `admin = "rw"`, a NACK names the change that failed (its
 place in the transaction) and the reason, such as "change 2: /srv/x is not a
 directory". To anyone else, a refusal is the plain one that reveals nothing.
+
+### Other calls made while writing this (mine)
+
+- The server knows the committing client by its EndpointId and looks up its
+  entry in the config it loaded for the commit.
+- Every read checks the admin right again against the saved config.
+- ACK carries a result for each change, so the CLI can print what the local
+  command prints (for example how many grant lines a client removal took).
+- For `grant add` and `client add`, the CLI reads a key file or key line on
+  the client and sends the EndpointId, not the file.
 
 ### Replies carry data
 
@@ -162,6 +181,9 @@ type, mirroring the local command's arguments.
 `irsync remote SERVERNAME COMMAND ...`
 
 - SERVERNAME is a `[servers]` name or an EndpointId.
+- It only dials a daemon that is already running. It reuses sync's dialling
+  code where that splits out cleanly, but never starts an SSH setup as a side
+  effect (my call).
 - COMMAND is one of the remote commands above, with the same arguments as the
   local one.
 - A change command opens a session, sends one change and COMMIT, and prints
@@ -191,7 +213,8 @@ type, mirroring the local command's arguments.
 ## Order of work
 
 1. #284 first: rights on the client entry and `client set`.
-2. Then this issue.
+2. Then this issue. Write its plan only after #284 is merged, so the
+   clients and grants messages follow what #284 actually built (my call).
 
 ## Left to the builder
 
