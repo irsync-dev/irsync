@@ -53,7 +53,8 @@ Three claims together, none leading:
 - First sync over ssh sets up the server; later runs connect over iroh.
 - Two web surfaces, built from this repository: the landing page at
   irsync.org, and the book (mdbook) once per release channel (`/book/`,
-  `/stable/`, `/beta/`, `/alpha/`, `/dev/`). See
+  `/stable/`, `/beta/`, `/alpha/`; `/dev/`, the book as on `main`, is on
+  dev.irsync.org only). See
   `book/src/contributing/website.md`.
 
 ## Capabilities and Constraints

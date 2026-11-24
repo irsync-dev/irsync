@@ -6,7 +6,8 @@ name: Site
 # Cargo.toml: the landing page shows the release versions, and a version bump
 # is such a push, so staging shows a release from its bump on. Running the workflow by
 # hand promotes the newest staging build to production (Worker irsync-pub,
-# irsync.org): the same files, downloaded from that run's artifact, not rebuilt.
+# irsync.org): the same files, downloaded from that run's artifact, not rebuilt,
+# less dev/: the dev book is served from dev.irsync.org only.
 # It refuses a build that holds a version which is not published yet (the
 # build's VERSIONS file says so), unless it is started with allow-unpublished.
 #
@@ -144,6 +145,9 @@ jobs:
             exit 1
           fi
           gh run download "$id" -n site -D site-out
+      # The dev book lives on dev.irsync.org; the switcher links Dev there.
+      - name: Leave out the dev book
+        run: rm -rf site-out/dev
       - name: Refuse a version that is not published
         if: ${{ !inputs.allow-unpublished }}
         run: python3 site/tools/versions.py promotable site-out/VERSIONS

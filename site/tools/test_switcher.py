@@ -16,6 +16,14 @@ TODAY = (f"book 0.1.0-beta.5 {SHA} published\nbeta 0.1.0-beta.5 {SHA} published\
          f"alpha 0.1.0-alpha.4 {SHA} published\ndev - {SHA} main\n")
 NO_RELEASE = f"book - {SHA} main\ndev - {SHA} main\n"
 PAGE = "tutorial/first-sync.html"
+PRETTY = "tutorial/first-sync"
+
+
+def url(book, page=PRETTY):
+    """Where the switcher links `page` of `book`: Dev on dev.irsync.org,
+    the others on irsync.org."""
+    host = "https://dev.irsync.org" if book == "dev" else "https://irsync.org"
+    return f"{host}/{book}/{page}"
 
 
 def links(menu):
@@ -50,10 +58,12 @@ class MenuTests(unittest.TestCase):
     def test_page_in_a_subdirectory(self):
         menu = switcher.menu(switcher.entries(TODAY), "beta", PAGE, self.all_pages())
         got = links(menu)
-        self.assertEqual(set(got), {f"../../{p}/{PAGE}" for p in ("beta", "alpha", "dev")})
+        self.assertEqual(set(got), {url(p) for p in ("beta", "alpha", "dev")})
+        self.assertIn("https://dev.irsync.org/dev/tutorial/first-sync", got)
+        self.assertIn("https://irsync.org/beta/tutorial/first-sync", got)
         self.assertEqual(menu.count("data-same-page"), 3)
-        self.assertIn('aria-current="true"', got[f"../../beta/{PAGE}"])
-        self.assertNotIn("aria-current", got[f"../../alpha/{PAGE}"])
+        self.assertIn('aria-current="true"', got[url("beta")])
+        self.assertNotIn("aria-current", got[url("alpha")])
         self.assertRegex(menu, r'<button [^>]*id="irsync-book-toggle"[^>]*>\s*Beta')
         self.assertIn('aria-haspopup="true"', menu)
         self.assertIn('aria-expanded="false"', menu)
@@ -71,15 +81,24 @@ class MenuTests(unittest.TestCase):
         pages = self.all_pages()
         pages["alpha"] = {"index.html"}
         got = links(switcher.menu(switcher.entries(TODAY), "beta", PAGE, pages))
-        self.assertIn("../../alpha/index.html", got)
-        self.assertNotIn("data-same-page", got["../../alpha/index.html"])
-        self.assertIn("data-same-page", got[f"../../dev/{PAGE}"])
+        self.assertIn(url("alpha", ""), got)
+        self.assertNotIn("data-same-page", got[url("alpha", "")])
+        self.assertIn("data-same-page", got[url("dev")])
 
     def test_not_found_page_goes_to_title_pages(self):
         pages = {p: {"index.html", "404.html"} for p in ("beta", "alpha", "dev")}
         menu = switcher.menu(switcher.entries(TODAY), "beta", "404.html", pages)
-        self.assertEqual(set(links(menu)), {f"../{p}/index.html" for p in ("beta", "alpha", "dev")})
+        self.assertEqual(set(links(menu)), {url(p, "") for p in ("beta", "alpha", "dev")})
         self.assertNotIn("data-same-page", menu)
+
+    def test_local_links_stay_in_the_build(self):
+        # site/serve.sh: the books on this machine, not on the two sites.
+        got = links(switcher.menu(switcher.entries(TODAY), "beta", PAGE, self.all_pages(),
+                                  local=True))
+        self.assertEqual(set(got), {f"../../{p}/{PAGE}" for p in ("beta", "alpha", "dev")})
+        got = links(switcher.menu(switcher.entries(TODAY), "beta", "index.html", {}, up="",
+                                  local=True))
+        self.assertEqual(set(got), {f"{p}/index.html" for p in ("beta", "alpha", "dev")})
 
     def test_insert(self):
         page = '<div class="right-buttons">\n<a href="print.html">'
@@ -109,9 +128,9 @@ class ApplyTests(unittest.TestCase):
         switcher.apply(self.site)
         page = (self.site / "book" / PAGE).read_text(encoding="utf-8")
         got = links(page)
-        self.assertIn("../../alpha/index.html", got)
-        self.assertIn(f"../../beta/{PAGE}", got)
-        self.assertIn('aria-current="true"', got[f"../../beta/{PAGE}"])
+        self.assertIn(url("alpha", ""), got)
+        self.assertIn(url("beta"), got)
+        self.assertIn('aria-current="true"', got[url("beta")])
         for book in ("book", "beta", "alpha", "dev"):
             self.assertEqual((self.site / book / "toc.html").read_text(encoding="utf-8"),
                              "<ol></ol>\n")
@@ -128,12 +147,12 @@ class ApplyTests(unittest.TestCase):
         switcher.apply(self.site)
         page = (self.site / "index.html").read_text(encoding="utf-8")
         got = links(page)
-        self.assertEqual(set(got), {f"{p}/index.html" for p in ("beta", "alpha", "dev")})
+        self.assertEqual(set(got), {url(p, "") for p in ("beta", "alpha", "dev")})
         # The main version's channel is ticked, as in /book/.
-        self.assertIn('aria-current="true"', got["beta/index.html"])
+        self.assertIn('aria-current="true"', got[url("beta", "")])
         self.assertNotIn("data-same-page", page)
         # The landing page remembers the book picked by its data-book.
-        self.assertIn('data-book="alpha"', got["alpha/index.html"])
+        self.assertIn('data-book="alpha"', got[url("alpha", "")])
         self.assertNotIn("switcher -->", page)
         self.assertEqual(check.check_links(self.site), [])
 
@@ -153,6 +172,18 @@ class ApplyTests(unittest.TestCase):
                                                          encoding="utf-8")
         with self.assertRaisesRegex(switcher.SwitcherError, "book/index.html: no top bar"):
             switcher.apply(self.site)
+
+    def test_cli_local(self):
+        (self.site / "VERSIONS").write_text(NO_RELEASE, encoding="utf-8")
+        bar = '<html><body><div class="right-buttons"></div></body></html>\n'
+        for book in ("book", "dev"):
+            (self.site / book).mkdir()
+            (self.site / book / "index.html").write_text(bar, encoding="utf-8")
+        r = subprocess.run([sys.executable, str(TOOL), "--local", str(self.site)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = links((self.site / "book" / "index.html").read_text(encoding="utf-8"))
+        self.assertEqual(set(got), {"../dev/index.html"})
 
     def test_cli_error(self):
         r = subprocess.run([sys.executable, str(TOOL), str(self.site)],

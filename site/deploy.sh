@@ -6,7 +6,8 @@
 #                            site check, deploy it to the Worker irsync-dev
 #                            (dev.irsync.org), keep a copy in target/site-staging/
 #   site/deploy.sh promote [--allow-unpublished]
-#                            deploy target/site-staging/ unchanged to the Worker
+#                            deploy target/site-staging/, less its dev/ (the
+#                            dev book is on dev.irsync.org only), to the Worker
 #                            irsync-pub (irsync.org). Refuses a build that holds
 #                            a version which is not published yet, unless
 #                            --allow-unpublished is given (an abandoned bump, or
@@ -23,6 +24,7 @@ WRANGLER_VERSION=4.152.0
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 site=$root/target/site
 staging=$root/target/site-staging
+promote=$root/target/site-promote
 staging_url=https://dev.irsync.org
 
 usage() {
@@ -88,7 +90,11 @@ case $1 in
     if [ "$allow_unpublished" = false ]; then
       python3 "$root/site/tools/versions.py" promotable "$staging/VERSIONS"
     fi
-    worker_deploy "$staging" irsync-pub
+    # The dev book lives on dev.irsync.org; the switcher links Dev there.
+    rm -rf "$promote"
+    cp -R "$staging" "$promote"
+    rm -rf "${promote:?}/dev"
+    worker_deploy "$promote" irsync-pub
     echo "promoted $build"
     ;;
   *) usage ;;

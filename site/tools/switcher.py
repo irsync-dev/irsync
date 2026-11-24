@@ -13,11 +13,17 @@ other book if that book has the file, else that book's title page. So the
 build's link check (check.py) checks every one of them, and the browser
 only opens and closes the list (book/theme/switcher.js).
 
+The links name the site that serves each book (see `home`): Dev is on
+dev.irsync.org, deployed on every push to main, and the release books are
+on irsync.org, which changes only when staging is promoted. The promote
+leaves dev/ out of irsync.org. With --local, for a build served on this
+machine (site/serve.sh), the links stay inside the build instead.
+
 The landing page (SITE_DIR/index.html) gets the same switcher, between its
 `<!-- switcher -->` markers, with links to each book's title page and the
 main version's channel ticked, as in /book/.
 
-Usage: switcher.py SITE_DIR    (SITE_DIR holds VERSIONS and the books)
+Usage: switcher.py [--local] SITE_DIR    (SITE_DIR holds VERSIONS and the books)
 """
 
 import html
@@ -26,10 +32,15 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
+import pretty_urls
 import versions
 
 ORDER = (*versions.CHANNELS, "dev")
 LABELS = {"stable": "Stable", "beta": "Beta", "alpha": "Alpha", "dev": "Dev"}
+
+# The two sites. Both serve the same build; irsync.org without dev/.
+PUB_URL = "https://irsync.org"
+DEV_URL = "https://dev.irsync.org"
 
 # One book in the list. `version` is None for dev.
 Entry = namedtuple("Entry", "path label version")
@@ -67,17 +78,25 @@ def ticked(versions_text, path):
     return versions.channel(version) if version else "dev"
 
 
-def menu(entries, here, page, pages_of, up=None):
+def home(path):
+    """The site that serves the book at /PATH/."""
+    return DEV_URL if path == "dev" else PUB_URL
+
+
+def menu(entries, here, page, pages_of, up=None, local=False):
     """The switcher's markup for `page` (its path inside its book, such as
     tutorial/first-sync.html). `here` is the ticked entry; `pages_of` holds
-    the HTML files of each entry's book. `up` leads from the page to the
-    site's root; by default, from a page inside a book."""
+    the HTML files of each entry's book. Each link names the site of its
+    book (`home`), without .html as the site serves it. With `local`, the
+    links are relative instead: `up` leads from the page to the site's
+    root; by default, from a page inside a book."""
     if up is None:
         up = "../" * (page.count("/") + 1)
     items = []
     for e in entries:
         same = page != "404.html" and page in pages_of.get(e.path, ())
-        href = f"{up}{e.path}/{page if same else 'index.html'}"
+        target = f"{e.path}/{page if same else 'index.html'}"
+        href = f"{up}{target}" if local else f"{home(e.path)}/{pretty_urls.pretty(target)}"
         attrs = [f'href="{html.escape(href)}"', f'data-book="{e.path}"']
         if e.path == here:
             attrs.append('aria-current="true"')
@@ -121,9 +140,10 @@ def landing(page_html, menu_html):
     return _LANDING.sub(lambda _: menu_html, page_html)
 
 
-def apply(site_dir):
+def apply(site_dir, local=False):
     """Add the switcher to every page of every book in SITE_DIR/VERSIONS,
-    and to the landing page SITE_DIR/index.html when there is one."""
+    and to the landing page SITE_DIR/index.html when there is one. With
+    `local`, the links stay inside the build (see `menu`)."""
     site_dir = Path(site_dir)
     try:
         text = (site_dir / "VERSIONS").read_text(encoding="utf-8")
@@ -144,7 +164,7 @@ def apply(site_dir):
             f = site_dir / path / page
             before = f.read_text(encoding="utf-8")
             try:
-                after = insert(before, menu(found, here, page, pages_of))
+                after = insert(before, menu(found, here, page, pages_of, local=local))
             except SwitcherError as e:
                 raise SwitcherError(f"{path}/{page}: {e}") from e
             if after != before:
@@ -153,16 +173,20 @@ def apply(site_dir):
     if page.is_file():
         # Each link goes to a book's title page: the landing page is in none.
         html_ = landing(page.read_text(encoding="utf-8"),
-                        menu(found, ticked(text, "book"), "index.html", {}, up=""))
+                        menu(found, ticked(text, "book"), "index.html", {}, up="", local=local))
         page.write_text(html_, encoding="utf-8")
 
 
 def main(argv):
-    if len(argv) != 2:
-        print("usage: switcher.py SITE_DIR", file=sys.stderr)
+    args = argv[1:]
+    local = args[:1] == ["--local"]
+    if local:
+        args = args[1:]
+    if len(args) != 1:
+        print("usage: switcher.py [--local] SITE_DIR", file=sys.stderr)
         return 2
     try:
-        apply(argv[1])
+        apply(args[0], local=local)
     except SwitcherError as e:
         print(f"switcher.py: {e}", file=sys.stderr)
         return 1

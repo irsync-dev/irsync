@@ -76,7 +76,7 @@ class ApplyTests(unittest.TestCase):
             (d / "tutorial").mkdir(parents=True)
             (d / "index.html").write_text(
                 '<a href="tutorial/first-sync.html#here">t</a><a href="print.html">p</a>'
-                '<a href="../dev/index.html">dev</a>\n', encoding="utf-8")
+                '<a href="../beta/index.html">beta</a>\n', encoding="utf-8")
             (d / "introduction.html").write_text('<h1 id="install">I</h1>\n', encoding="utf-8")
             (d / "print.html").write_text("<p>all</p>\n", encoding="utf-8")
             (d / "tutorial" / "first-sync.html").write_text(
@@ -90,7 +90,7 @@ class ApplyTests(unittest.TestCase):
                          '<a href="book/introduction">Docs</a>\n')
         self.assertEqual((self.site / "beta" / "index.html").read_text(encoding="utf-8"),
                          '<a href="tutorial/first-sync#here">t</a><a href="print">p</a>'
-                         '<a href="../dev/">dev</a>\n')
+                         '<a href="../beta/">beta</a>\n')
         self.assertIn('href=\\"tutorial/first-sync\\"', (self.site / "dev" / "toc-abc123.js")
                       .read_text(encoding="utf-8").replace('"', '\\"'))
         self.assertIn('"introduction#install"',

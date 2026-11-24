@@ -10,6 +10,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from switcher import DEV_URL, PUB_URL
+
 # Repository paths that the book replaces; Tasks 3-7 delete them one by one.
 MOVED_FILES = [
     "docs/daemon.md",
@@ -54,24 +56,51 @@ def _parse(path):
     return page
 
 
+_PUB = urlsplit(PUB_URL)
+_DEV = urlsplit(DEV_URL)
+_SITES = {(_PUB.scheme, _PUB.netloc), (_DEV.scheme, _DEV.netloc)}
+
+
+def _in_dev(path):
+    return path == "/dev" or path.startswith("/dev/")
+
+
 def check_links(site_dir):
-    """Every relative href/src resolves to a file; a #fragment to an id in it."""
+    """Every relative href/src resolves to a file; a #fragment to an id in it.
+
+    A link to irsync.org or dev.irsync.org is checked against this build too:
+    both sites serve it. irsync.org serves it without dev/ (the promote
+    leaves it out), so a link there must name dev.irsync.org, and a relative
+    one may only come from a page inside dev/."""
     site_dir = Path(site_dir).resolve()
+    dev_dir = site_dir / "dev"
     pages = {p: _parse(p) for p in sorted(site_dir.rglob("*.html"))}
     problems = []
     for src, page in pages.items():
         rel_src = src.relative_to(site_dir)
         for ref in page.refs:
             parts = urlsplit(ref)
-            if parts.scheme or parts.netloc:
+            site = (parts.scheme, parts.netloc) in _SITES
+            if site:
+                if parts.netloc == _PUB.netloc and _in_dev(parts.path):
+                    problems.append(f"{rel_src}: {ref}: irsync.org has no /dev/; "
+                                    f"link to {DEV_URL}{parts.path} instead")
+                    continue
+                target = site_dir / unquote(parts.path).lstrip("/")
+            elif parts.scheme or parts.netloc:
                 continue
-            if parts.path.startswith("/"):
+            elif parts.path.startswith("/"):
                 target = site_dir / unquote(parts.path).lstrip("/")
             elif parts.path:
                 target = src.parent / unquote(parts.path)
             else:
                 target = src
             target = target.resolve()
+            if (not site and target.is_relative_to(dev_dir)
+                    and not src.is_relative_to(dev_dir)):
+                problems.append(f"{rel_src}: {ref}: dev/ is only on dev.irsync.org; "
+                                f"link to {DEV_URL}/dev/... instead")
+                continue
             if target.is_dir():
                 target = target / "index.html"
             elif not target.exists() and target.with_name(target.name + ".html").is_file():
