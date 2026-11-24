@@ -107,17 +107,23 @@ again after a reboot. It writes one of these files, each marked
 - On macOS, `~/Library/LaunchAgents/org.irsync.daemon.plist`, a launchd
   agent. After a reboot it starts only once someone logs in on the Mac.
 
-A service file that irsync did not write is left alone. `pair` then starts the
+The file runs `irsync daemon -vv --config` with the full paths of the
+binary and of the server's config file, so the service finds the same
+config as `pair` did.
+
+A service file that irsync did not write is left alone, unless it starts
+`~/.local/bin/irsync daemon` (as the one in the steps below does): `pair`
+then uses it as it is. `pair` then starts the
 daemon in the background, and prints the steps below. So does a server with no
 systemd or launchd user session, and so does `irsync pair --no-service`, which
 you pass for a daemon you run your own way. A background daemon runs under your
 account until the server reboots. Nothing starts it again: run
 `irsync pair myserver` from the client when it has stopped.
 
-Where the daemon writes its log depends on how it runs. As a service, its output
-goes to the service manager: `journalctl --user -u irsync` on Linux. A daemon
-that `pair` started in the background writes
-`~/.local/state/irsync/daemon.log`.
+Where the daemon writes its log depends on how it runs. As a systemd service,
+its output goes to the service manager: `journalctl --user -u irsync`. The
+launchd agent on macOS, and a daemon that `pair` started in the background,
+write `~/.local/state/irsync/daemon.log`.
 
 To make the service yourself, the steps are these.
 

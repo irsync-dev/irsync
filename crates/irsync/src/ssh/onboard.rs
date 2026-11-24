@@ -407,7 +407,7 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
             );
         }
     }
-    if let Some(line) = service_line(&r.service) {
+    if let Some(line) = service_line(&r.service, &r.log) {
         out.push(line);
     }
     for file in &r.stale_services {
@@ -453,16 +453,18 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
 }
 
 /// How the daemon runs, after the daemon line; none when the service was
-/// not touched.
-fn service_line(s: &ServiceOutcome) -> Option<String> {
+/// not touched. `log`: where a launchd agent's output goes.
+fn service_line(s: &ServiceOutcome, log: &std::path::Path) -> Option<String> {
     const UNTIL: &str = "the daemon runs in the background until the server reboots";
     Some(match s {
         ServiceOutcome::Systemd => "  the daemon runs as a systemd user service (irsync.service), \
                                     also after a reboot"
             .into(),
-        ServiceOutcome::Launchd => "  the daemon runs as a launchd agent (org.irsync.daemon); \
-                                    after a reboot it starts when you log in on the Mac"
-            .into(),
+        ServiceOutcome::Launchd => format!(
+            "  the daemon runs as a launchd agent (org.irsync.daemon, log: {}); after a \
+             reboot it starts when you log in on the Mac",
+            log.display()
+        ),
         ServiceOutcome::Skipped => format!("  {UNTIL} (--no-service)"),
         ServiceOutcome::Unavailable => {
             format!("  no systemd or launchd user session there: {UNTIL}")
@@ -1031,7 +1033,7 @@ mod tests {
             ),
             (
                 ServiceOutcome::Launchd,
-                Some("  the daemon runs as a launchd agent (org.irsync.daemon); after a reboot it starts when you log in on the Mac".to_string()),
+                Some("  the daemon runs as a launchd agent (org.irsync.daemon, log: /s/daemon.log); after a reboot it starts when you log in on the Mac".to_string()),
             ),
             (
                 ServiceOutcome::Skipped,

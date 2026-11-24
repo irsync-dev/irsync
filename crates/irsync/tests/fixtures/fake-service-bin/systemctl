@@ -4,7 +4,8 @@
 # Env: FAKE_SERVICE_LOG (each call is appended to it), FAKE_SYSTEMD_DOWN
 # (optional: 1 makes show-environment fail, as with no user session),
 # FAKE_SERVICE_NO_START (optional: 1 makes enable and restart succeed
-# without starting anything).
+# without starting anything), FAKE_SERVICE_START_FAILS (optional: 1 makes
+# enable --now enable the unit, then fail to start it).
 echo "systemctl $*" >> "$FAKE_SERVICE_LOG"
 if [ "$1" != --user ]; then
     echo "fake systemctl: only --user is faked" >&2
@@ -30,7 +31,8 @@ stop() {
 # Starts the ExecStart of the unit file $1.
 start() {
     [ "$FAKE_SERVICE_NO_START" = 1 ] && return 0
-    line=$(sed -n 's/^ExecStart=//p' "$1")
+    # %h is the home, as systemd reads it in a user unit.
+    line=$(sed -n 's/^ExecStart=//p' "$1" | sed "s|%h|$HOME|g")
     if [ -z "$line" ]; then
         echo "fake systemctl: no ExecStart in $1" >&2
         exit 1
@@ -58,6 +60,11 @@ case "$1" in
         alive
         ;;
     enable)
+        [ "$2" = --now ] || exit 0
+        if [ "$FAKE_SERVICE_START_FAILS" = 1 ]; then
+            echo "Job for irsync.service failed" >&2
+            exit 1
+        fi
         # enable --now leaves a running service alone.
         alive || start "$unit"
         ;;

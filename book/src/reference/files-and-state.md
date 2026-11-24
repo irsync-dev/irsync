@@ -39,7 +39,7 @@ that is set. The client and the daemon use the same layout.
 | `index/<hash>.sqlite-wal`, `-shm` | SQLite's write-ahead log and shared memory, beside each database. |
 | `daemon.lock` | Held by the running daemon, so a second daemon with the same state directory refuses to start. It holds the daemon's `pid`, the path of its program (`exe`) and its `version`, one `key=value` line each. `irsync pair` reads it to tell whether a daemon runs and which build it is. |
 | `daemon.addr` | Where the running daemon can be reached right now: its `pid`, its home `relay` and each direct `addr`, one `key=value` line each, rewritten whenever they change. `irsync pair` passes them to the client, so the first sync to a daemon it just started does not wait for the daemon to appear in the DHT or DNS. |
-| `daemon.log` | The log of a daemon that `irsync pair` started in the background, at info level (`-vv`). A daemon that runs as a service logs to the service manager (`journalctl --user -u irsync` on Linux). A daemon you start yourself logs to stderr instead. |
+| `daemon.log` | The log of a daemon that `irsync pair` started in the background or made a launchd agent on macOS, at info level (`-vv`). A daemon that runs as a systemd service logs to the service manager (`journalctl --user -u irsync`). A daemon you start yourself logs to stderr instead. |
 
 Each database holds:
 

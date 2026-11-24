@@ -545,9 +545,10 @@ pub fn run(
     let owner_unknown = lock.as_ref().is_some_and(|i| i.pid == 0);
     let ours =
         |i: &LockInfo| i.pid != 0 && (i.exe == exe || (stale.is_empty() && is_old_bin(&i.exe)));
-    // Where a service would find the config: given only when it is not the
-    // default, as the background start does.
-    let config = (*paths != Paths::resolve(None)).then_some(paths.config.as_path());
+    // Where a service finds the config: always named, in full, since the
+    // service manager's environment may differ from this session's.
+    let config = std::path::absolute(&paths.config)
+        .with_context(|| format!("finding {}", paths.config.display()))?;
     let reload = dht == Dht::TurnedOff;
     let bg = |lock| background(lock, &exe, paths, state, &log, reload, &ours);
     let (daemon, service) = if lock.as_ref().is_some_and(|i| !ours(i)) {
@@ -560,10 +561,10 @@ pub fn run(
             Some((m, h)) => {
                 let file = service::unit_path(h, m);
                 let text = std::fs::read_to_string(&file).ok();
-                if service::classify(text.as_deref(), m, &exe) == service::Existing::Foreign {
+                if service::classify(text.as_deref(), m, &exe, h) == service::Existing::Foreign {
                     (bg(lock)?, ServiceOutcome::Foreign(file))
                 } else {
-                    match as_service(m, h, lock, &exe, config, state, reload) {
+                    match as_service(m, h, lock, &exe, &config, state, &log, reload) {
                         Ok(d) => (
                             d,
                             match m {
@@ -648,16 +649,19 @@ fn background(
 /// prepared first, and only then is a daemon of ours that runs outside it
 /// stopped, so a refusal (linger, say) leaves that daemon running. A
 /// service that runs an older build is restarted. Waits for the lock as
-/// [`start_daemon`] does; when it never comes, the service is turned off
-/// again, so the background start that follows is the only daemon. `lock`
+/// [`start_daemon`] does; when it never comes, or the start fails, the
+/// service is turned off again, so the background start that follows is
+/// the only daemon. `lock`
 /// is held by a daemon of ours, or by none.
+#[allow(clippy::too_many_arguments)]
 fn as_service(
     m: service::Manager,
     home: &Path,
     lock: Option<LockInfo>,
     exe: &Path,
-    config: Option<&Path>,
+    config: &Path,
     state: &Path,
+    log: &Path,
     reload: bool,
 ) -> Result<DaemonOutcome, String> {
     let active = service::is_active(m);
@@ -669,7 +673,7 @@ fn as_service(
         }
         return Ok(DaemonOutcome::Running);
     }
-    service::prepare(m, home, exe, config)?;
+    service::prepare(m, home, exe, config, log)?;
     let outcome = match lock {
         Some(i) => {
             if !active {
@@ -686,18 +690,22 @@ fn as_service(
         }
         None => DaemonOutcome::Started,
     };
-    service::activate(m, home, active)?;
+    // Turned off again on a failure: `enable --now` may have enabled the
+    // service before its start failed.
+    let off = |mut e: String| {
+        if let Err(off) = service::deactivate(m) {
+            e.push_str(&format!(", and turning it off again failed: {off}"));
+        }
+        e
+    };
+    service::activate(m, home, active).map_err(off)?;
     let deadline = Instant::now() + DAEMON_WAIT;
     while !probe(state).is_some_and(|i| i.pid != 0 && current(&i)) {
         if Instant::now() >= deadline {
-            let mut e = format!(
+            return Err(off(format!(
                 "the service did not start the daemon within {} s",
                 DAEMON_WAIT.as_secs()
-            );
-            if let Err(off) = service::deactivate(m) {
-                e.push_str(&format!(", and turning it off again failed: {off}"));
-            }
-            return Err(e);
+            )));
         }
         std::thread::sleep(Duration::from_millis(50));
     }

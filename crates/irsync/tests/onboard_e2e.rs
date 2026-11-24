@@ -782,7 +782,9 @@ fn client_id(home: &Path) -> String {
 }
 
 /// A dead daemon stops the sync with a hint that names `irsync pair`; no ssh
-/// runs. Pairing again starts the daemon, and the push then works.
+/// runs. With the default retry settings a paired host is dialled once,
+/// bounded (here to the test's 5 s, really 15 s), not retried for minutes.
+/// Pairing again starts the daemon, and the push then works.
 #[test]
 fn dead_daemon_stops_the_sync_with_the_pair_hint() {
     let w = World::new();
@@ -792,9 +794,13 @@ fn dead_daemon_stops_the_sync_with_the_pair_hint() {
     let calls = w.ssh_calls();
     w.kill_daemon();
     std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
-    let o = w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]);
+    let started = Instant::now();
+    let o = w.irsync(&["-a", &w.src_arg(), &target]);
+    let took = started.elapsed();
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success(), "{err}");
+    assert!(took < Duration::from_secs(40), "took {took:?}:\n{err}");
+    assert!(err.contains("gave up after 1 attempt"), "{err}");
     for want in [
         "myserver did not answer",
         "systemctl --user status irsync",
@@ -1789,6 +1795,46 @@ fn pair_turns_off_a_service_that_starts_nothing() {
     assert!(alive(w.lock_pid()));
     // Our unit stays, for the next `pair`.
     assert!(w.unit().exists());
+}
+
+/// A unit written by hand from irsync's own steps (`ExecStart=%h/...`)
+/// starts this binary: it is used as it is, not called foreign.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_uses_a_hand_written_unit_of_this_binary() {
+    let mut w = World::new();
+    w.service = true;
+    let text = "[Unit]\nDescription=irsync daemon\n[Service]\n\
+                ExecStart=%h/.local/bin/irsync daemon -vv\nRestart=on-failure\n\
+                [Install]\nWantedBy=default.target\n";
+    std::fs::create_dir_all(w.unit().parent().unwrap()).unwrap();
+    std::fs::write(w.unit(), text).unwrap();
+    let err = w.pair("myserver");
+    assert!(!err.contains("not written by irsync"), "{err}");
+    assert!(err.lines().any(|l| l == SYSTEMD_LINE), "{err}");
+    assert_eq!(std::fs::read_to_string(w.unit()).unwrap(), text);
+    assert_eq!(Some(w.lock_pid()), w.service_pid());
+}
+
+/// A service that is enabled but fails to start is turned off again, not
+/// left to start after a reboot beside the background daemon.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_turns_off_a_service_whose_start_fails() {
+    let mut w = World::new();
+    w.service = true;
+    w.env.push(("FAKE_SERVICE_START_FAILS".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.contains("irsync:   warning: could not make the daemon a user service: "),
+        "{err}"
+    );
+    let log = w.service_log();
+    assert!(
+        log.contains("systemctl --user disable --now irsync"),
+        "{log}"
+    );
+    assert!(alive(w.lock_pid()));
 }
 
 /// Another daemon holds the lock: no unit is written and no service
