@@ -62,8 +62,8 @@ In steps, it:
   `--no-install` to copy nothing and use the irsync already at
   `~/.local/bin/irsync` there. The installer never edits your shell startup
   files. When the server's login shell does not find `irsync`, the installer
-  prints the line to add to a startup file there, and you see it during the
-  setup;
+  prints the line to add to a startup file there, and you see it while
+  `pair` runs;
 - lets this client reach any path your account on the server can, read-write
   (an [immediate grant](../reference/configuration.md#immediate-grants)). The
   server saves the client under its host name, here `myclient`, as a

@@ -143,8 +143,8 @@ the summary says when they did not.
 These stop `pair` after the files reached the server:
 
 - `could not unpack irsync on myserver (it needs tar and a writable home
-  directory). Nothing was changed there.`: the server has no `tar`, or the
-  setup cannot write its work directory in your home there. Install `tar`,
+  directory). Nothing was changed there.`: the server has no `tar`, or
+  `pair` cannot write its work directory in your home there. Install `tar`,
   or check that you own your home directory and can write to it, then run
   again.
 - `the installer failed on myserver; see its message above`: the installer
