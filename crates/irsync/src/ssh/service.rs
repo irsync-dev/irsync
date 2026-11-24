@@ -323,14 +323,7 @@ fn launchd_domains() -> [String; 2] {
 
 /// This user's id, as the service managers name the user.
 fn uid() -> u32 {
-    #[cfg(unix)]
-    {
-        crate::platform::euid()
-    }
-    #[cfg(not(unix))]
-    {
-        0
-    }
+    crate::platform::euid()
 }
 
 /// The domain the launchd job is loaded in, if it is loaded.
