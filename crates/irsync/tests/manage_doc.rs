@@ -12,6 +12,17 @@ fn msg(text: &str) -> pb::Config {
     reader::read(text, Path::new("irsync.toml")).unwrap().config
 }
 
+/// A `state_dir` line for a config in `dir`: a save then looks for a
+/// running daemon in a state folder of the test's own, never in the default
+/// one of whoever runs the tests (#275).
+fn state_line(dir: &Path) -> String {
+    format!("state_dir = {:?}\n", state(dir))
+}
+
+fn state(dir: &Path) -> String {
+    dir.join("state").display().to_string()
+}
+
 fn export(name: &str, path: &str) -> pb::Export {
     pb::Export {
         name: name.into(),
@@ -34,11 +45,15 @@ fn load_missing_is_empty_and_save_creates_parent_atomically() {
     let p = d.path().join("sub/irsync.toml");
     let mut m = load_message(&p).unwrap();
     assert_eq!(m, pb::Config::default());
+    m.state_dir = Some(state(d.path()));
     m.exports.push(export("x", "/x"));
     save_config(&p, &mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
-        "config_version = 2\n\n[exports.x]\npath = \"/x\"\n"
+        format!(
+            "config_version = 2\n{}\n[exports.x]\npath = \"/x\"\n",
+            state_line(d.path())
+        )
     );
     assert!(
         std::fs::read_dir(p.parent().unwrap()).unwrap().count() == 1,
@@ -52,7 +67,10 @@ fn save_preserves_comments_and_order() {
     let p = d.path().join("e.toml");
     irsync::fs::private::write(
         &p,
-        "# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\n",
+        format!(
+            "{}# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\n",
+            state_line(d.path())
+        ),
     )
     .unwrap();
     let mut m = load_message(&p).unwrap();
@@ -60,7 +78,10 @@ fn save_preserves_comments_and_order() {
     save_config(&p, &mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
-        "config_version = 2\n\n# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\nread_only = true\n"
+        format!(
+            "config_version = 2\n{}\n# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\nread_only = true\n",
+            state_line(d.path())
+        )
     );
 }
 
@@ -70,7 +91,10 @@ fn a_save_keeps_comments_and_writes_the_writers_form() {
     let path = dir.path().join("irsync.toml");
     irsync::fs::private::write(
         &path,
-        "[all]\nrw=[]   # nobody yet\n\n\n# the daemon\n[daemon]\nportmap=false\n",
+        format!(
+            "{}[all]\nrw=[]   # nobody yet\n\n\n# the daemon\n[daemon]\nportmap=false\n",
+            state_line(dir.path())
+        ),
     )
     .unwrap();
     let mut lock = lock_config(&path).unwrap();
@@ -78,7 +102,10 @@ fn a_save_keeps_comments_and_writes_the_writers_form() {
     lock.save(&mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "config_version = 2\n\n# the daemon\n[daemon]\nportmap = false\n\n[all]\nrw = [] # nobody yet\n"
+        format!(
+            "config_version = 2\n{}\n# the daemon\n[daemon]\nportmap = false\n\n[all]\nrw = [] # nobody yet\n",
+            state_line(dir.path())
+        )
     );
 }
 
@@ -186,6 +213,7 @@ fn save_config_refuses_a_message_that_does_not_load() {
     assert!(e.to_string().contains("refusing to save"), "{e}");
     assert!(!path.exists());
     let mut m = msg("[client]\nparallel = 2\n[exports.p]\npath = \"/p\"\n");
+    m.state_dir = Some(state(d.path()));
     save_config(&path, &mut m).unwrap();
     assert!(path.exists());
 }
@@ -195,7 +223,15 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("sub/irsync.toml");
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    irsync::fs::private::write(&p, "# keep\n[client]\nparallel = 4\n").unwrap();
+    irsync::fs::private::write(
+        &p,
+        format!("{}# keep\n[client]\nparallel = 4\n", state_line(d.path())),
+    )
+    .unwrap();
+    let kept = format!(
+        "config_version = 2\n{}\n# keep\n[client]\nparallel = 8\n",
+        state_line(d.path())
+    );
     let lock_file = d.path().join("sub/irsync.toml.lock");
 
     let mut lock = lock_config(&p).unwrap();
@@ -210,19 +246,13 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     m.client.as_mut().unwrap().parallel = Some(8);
     lock.save(&mut m).unwrap();
     assert!(!lock_file.exists(), "save releases the lock");
-    assert_eq!(
-        std::fs::read_to_string(&p).unwrap(),
-        "config_version = 2\n\n# keep\n[client]\nparallel = 8\n"
-    );
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), kept);
 
     // Dropped without saving: the lock goes and the file is untouched.
     let lock = lock_config(&p).unwrap();
     drop(lock);
     assert!(!lock_file.exists());
-    assert_eq!(
-        std::fs::read_to_string(&p).unwrap(),
-        "config_version = 2\n\n# keep\n[client]\nparallel = 8\n"
-    );
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), kept);
 
     // An invalid message is refused and the lock released.
     let mut lock = lock_config(&p).unwrap();
@@ -250,9 +280,11 @@ fn save_writes_aliases_for_ids() {
         "[clients.box]\nclient_id = \"{0}\"\n[all]\nrw = [\"{0}\"]\n",
         id(1)
     ));
+    m.state_dir = Some(state(d.path()));
     lock_config(&path).unwrap().save(&mut m).unwrap();
     let want = format!(
-        "config_version = 2\n\n[clients.box]\nclient_id = \"{}\"\n\n[all]\nrw = [\"box\"]\n",
+        "config_version = 2\n{}\n[clients.box]\nclient_id = \"{}\"\n\n[all]\nrw = [\"box\"]\n",
+        state_line(d.path()),
         id(1)
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
@@ -310,6 +342,7 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
 
     let fresh = d.path().join("new.toml");
     let mut m = load_message(&fresh).unwrap();
+    m.state_dir = Some(state(d.path()));
     m.client = Some(Default::default());
     save_config(&fresh, &mut m).unwrap();
     assert_eq!(mode(&fresh), 0o600);
@@ -317,6 +350,7 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     let locked = d.path().join("locked.toml");
     let mut lock = lock_config(&locked).unwrap();
     let mut m = lock.load().unwrap();
+    m.state_dir = Some(state(d.path()));
     m.client = Some(Default::default());
     lock.save(&mut m).unwrap();
     assert_eq!(mode(&locked), 0o600);
@@ -348,9 +382,10 @@ fn a_save_writes_the_current_layout() {
     irsync::fs::private::write(
         &path,
         format!(
-            "# the nas\n[hosts.nas]\nendpoint_id = \"{0}\"\nclient_id = \"{1}\" # its client\n\n[all]\nrw = [\"nas\"]\n",
+            "{2}# the nas\n[hosts.nas]\nendpoint_id = \"{0}\"\nclient_id = \"{1}\" # its client\n\n[all]\nrw = [\"nas\"]\n",
             id(1),
-            id(2)
+            id(2),
+            state_line(d.path())
         ),
     )
     .unwrap();
@@ -361,13 +396,18 @@ fn a_save_writes_the_current_layout() {
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         format!(
-            "config_version = 2\n\n# the nas\n[servers.nas]\nendpoint_id = \"{0}\"\n\n[clients.nas]\nclient_id = \"{1}\" # its client\n\n[all]\nrw = [\"nas\"]\n",
+            "config_version = 2\n{2}\n# the nas\n[servers.nas]\nendpoint_id = \"{0}\"\n\n[clients.nas]\nclient_id = \"{1}\" # its client\n\n[all]\nrw = [\"nas\"]\n",
             id(1),
-            id(2)
+            id(2),
+            state_line(d.path())
         )
     );
 
-    irsync::fs::private::write(&path, "[client]\nparallel = 2\n").unwrap();
+    irsync::fs::private::write(
+        &path,
+        format!("{}[client]\nparallel = 2\n", state_line(d.path())),
+    )
+    .unwrap();
     let mut lock = lock_config(&path).unwrap();
     let mut m = lock.load().unwrap();
     assert_eq!(m.config_version, None);
@@ -375,6 +415,9 @@ fn a_save_writes_the_current_layout() {
     assert_eq!(m.config_version, Some(2));
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "config_version = 2\n\n[client]\nparallel = 2\n"
+        format!(
+            "config_version = 2\n{}\n[client]\nparallel = 2\n",
+            state_line(d.path())
+        )
     );
 }

@@ -679,9 +679,15 @@ async fn immediate_push_then_resume_uses_index() {
         let client = common::client_endpoint().await;
         let config_dir = tempfile::tempdir().unwrap();
         let config = config_dir.path().join("irsync.toml");
+        // The automatic export saves the file; its own state_dir keeps that
+        // save from looking for a daemon in the real default one (#275).
         irsync::fs::private::write(
             &config,
-            format!("[immediate]\nrw = [\"{}\"]\n", client.id()),
+            format!(
+                "state_dir = {:?}\n[immediate]\nrw = [\"{}\"]\n",
+                config_dir.path().join("state").display().to_string(),
+                client.id()
+            ),
         )
         .unwrap();
         let paths = irsync::config::paths::Paths::resolve(Some(&config));

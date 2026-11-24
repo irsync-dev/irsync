@@ -267,10 +267,14 @@ fn save_config_refuses_an_export_message_that_does_not_load() {
         std::fs::read_to_string(&path).unwrap(),
         "[exports.p]\npath = \"/p\"\n"
     );
+    // A state folder of the test's own: the save looks for a running
+    // daemon there, not in the default one of whoever runs the tests (#275).
+    let state = d.path().join("state").display().to_string();
     let mut ok = msg("[exports.q]\npath = \"/q\"\n");
+    ok.state_dir = Some(state.clone());
     irsync::manage::save_config(&path, &mut ok).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "config_version = 2\n\n[exports.q]\npath = \"/q\"\n"
+        format!("config_version = 2\nstate_dir = {state:?}\n\n[exports.q]\npath = \"/q\"\n")
     );
 }
