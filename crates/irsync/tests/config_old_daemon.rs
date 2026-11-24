@@ -51,7 +51,7 @@ fn setup(text: impl FnOnce(&Path) -> String) -> (tempfile::TempDir, std::path::P
     let path = dir.path().join("irsync.toml");
     let text = text(&state);
     std::fs::write(&path, &text).unwrap();
-    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    irsync::platform::testutil::set_mode(&path, 0o600).unwrap();
     (dir, path, text)
 }
 

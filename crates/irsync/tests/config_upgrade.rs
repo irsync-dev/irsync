@@ -489,7 +489,6 @@ async fn a_daemon_on_a_v1_file_converts_it_and_still_lets_clients_in() {
     use common::{archive_opts, Flow, Harness};
     use irsync::authz::{Authorizer, FileAuthorizer};
     use irsync::config::paths::Paths;
-    use std::os::unix::ffi::OsStrExt;
     use std::sync::Arc;
 
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
@@ -533,7 +532,7 @@ async fn a_daemon_on_a_v1_file_converts_it_and_still_lets_clients_in() {
         };
         std::fs::write(h.local.path().join("a.txt"), b"hello").unwrap();
         let mut hello = Harness::hello(Flow::Push);
-        hello.path = h.export.path().as_os_str().as_bytes().to_vec();
+        hello.path = irsync::platform::testutil::name_bytes(h.export.path().as_os_str()).to_vec();
 
         let first = h
             .run_hello(&opts, hello.clone(), h.local_side())

@@ -258,7 +258,7 @@ fn save_config_refuses_an_export_message_that_does_not_load() {
     let path = d.path().join("irsync.toml");
     std::fs::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
     // save_config reads the file first, and refuses one open to others.
-    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    irsync::platform::testutil::set_mode(&path, 0o600).unwrap();
     let mut bad = msg("[exports.p]\npath = \"/p\"\n");
     bad.exports[0].path = "rel/p".into();
     let e = irsync::manage::save_config(&path, &mut bad).unwrap_err();
