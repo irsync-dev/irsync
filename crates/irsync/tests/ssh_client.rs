@@ -664,12 +664,13 @@ fn client_name_travels_as_hex() {
         recheck: true,
         no_dht: true,
         no_install: true,
+        no_service: true,
     };
     let cmd = setup_command(id, nasty, all);
     let fixed = format!("\"$HOME/{REMOTE_BIN}\" ssh-setup --client {id} --client-name-hex ");
     let rest = cmd.strip_prefix(&fixed).unwrap_or_else(|| panic!("{cmd}"));
     let (hex, flags) = rest.split_once(' ').unwrap();
-    assert_eq!(flags, "--recheck --no-dht --keep-old");
+    assert_eq!(flags, "--recheck --no-dht --keep-old --no-service");
     assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{hex}");
     assert_eq!(decode_name(hex).unwrap(), nasty);
     assert!(setup_command(id, "myclient", SetupFlags::default()).ends_with(" 6d79636c69656e74"));

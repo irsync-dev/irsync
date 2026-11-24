@@ -1,12 +1,16 @@
-# Set a server up over ssh
+# Pair with a server over ssh
 
-When `ssh myserver` logs you in to the server, the first sync to
-`myserver:PATH` sets the server up: it installs irsync there, grants this
-client access, starts the daemon and saves `myserver` as a server.
+When `ssh myserver` logs you in to the server, `irsync pair myserver` sets
+the server up: it installs irsync there, grants this client access, starts
+the daemon and saves `myserver` as a server.
 [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh) walks
 through it. This page covers the options.
 
-## The names the setup saves
+`pair` is the only command that uses ssh. A sync, push, pull or listing
+never does: it dials the daemon over iroh. A sync to a name irsync does not
+know stops and tells you to run `irsync pair`.
+
+## The names pair saves
 
 On the client, the server name depends on what you typed before the `:`:
 
@@ -17,8 +21,8 @@ On the client, the server name depends on what you typed before the `:`:
 | `192.168.1.5` or `mike@192.168.1.5` | the server's own host name, for example `myserver` |
 | `[fe80::1]` (an IPv6 address goes in brackets) | the server's own host name |
 
-Every server keeps what you typed as its `ssh` value, so a later check over
-ssh logs in the same way.
+Every server keeps what you typed as its `ssh` value, so pairing again
+logs in the same way.
 
 - With `mike@myserver`, both names reach the same daemon. If `myserver` is
   a server already, it is left as it is: the first one wins.
@@ -26,12 +30,12 @@ ssh logs in the same way.
   before the first `.`. If that name already belongs to another daemon, the
   name is `myserver-2`, then `myserver-3`.
 - A server that gives no usable name (none, or `localhost`) keeps an IPv4
-  address as its name. An IPv6 address cannot be a server name, so the setup
+  address as its name. An IPv6 address cannot be a server name, so `pair`
   stops before it changes anything; give the server a host name or
   [add the server by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
 
-Typing the address again later needs no ssh. irsync finds the saved server by
-its `ssh` value and says so:
+Typing the address again finds the saved server by its `ssh` value, and
+`irsync pair` says so:
 
 ```text
 irsync: 192.168.1.5 is saved as myserver
@@ -40,17 +44,18 @@ irsync: 192.168.1.5 is saved as myserver
 A server that is already saved with a name to reach it by, such as
 `ssh = "mike@myserver"`, keeps that name when you type its address: an
 address can go stale. The address is saved beside it, in `ssh_aliases`, so
-typing it again needs no ssh either. The same goes for a second spelling of
+typing it again finds the same server. The same goes for a second spelling of
 an address, such as `u@192.168.1.5` after `192.168.1.5`.
 
-It dials the daemon saved under that name, wherever it is now. If the
+It checks the daemon saved under that name, wherever it is now. If the
 address has since gone to another machine, that is not the machine you get.
 First take the address off the old entry (`irsync server remove myserver`, or
-change its `ssh` or `ssh_aliases` value in the config file), then sync to the address again:
-the new machine is set up and saved under its own name. Do not use `--ssh`
-for this: it would point the old name at the new machine.
+change its `ssh` or `ssh_aliases` value in the config file), then run
+`irsync pair` with the address again: the new machine is set up and saved
+under its own name. Do not pair again before that: it would point the old
+name at the new machine.
 
-On the server, the setup saves the client under the client's short host name
+On the server, `pair` saves the client under the client's short host name
 as a client, and grants that name:
 
 ```toml
@@ -68,13 +73,15 @@ has a name for keeps that name.
 The two machines can sync in both directions under the same names. The server
 may have a `[servers.myclient]` entry for the same machine: a server and a
 client may share a name, and neither touches the other. When the server later
-runs `irsync ... myclient:PATH`, irsync sees that `myclient` is saved as a
-client only, sets its daemon up over ssh, and saves the daemon's `endpoint_id`
-as `[servers.myclient]`.
+runs `irsync ... myclient:PATH` before it has paired with `myclient`, the
+sync stops: `myclient` is saved as a client only, and this machine has never
+dialled its daemon. Run `irsync pair myclient` on the server. It sets the
+daemon up over ssh and saves the daemon's `endpoint_id` as
+`[servers.myclient]`.
 
-The setup stops, and leaves the server's configuration and daemon as they
+`pair` stops, and leaves the server's configuration and daemon as they
 were, when the client's host name cannot be used there. The server checks
-the name with the irsync that the setup has just installed or updated
+the name with the irsync that `pair` has just installed or updated
 there; that install stays, and the message says so. The cases:
 
 - The name already belongs to another client. This also happens when the
@@ -89,36 +96,37 @@ there; that install stays, and the message says so. The cases:
 - The client has no usable host name of its own (none, or `localhost`).
   Give the machine a host name.
 
-## Run the setup again
+## Pair again
 
-Pass `--ssh` to go through ssh on purpose, for example to update irsync on
-the server after you updated the client:
+Run `pair` again on purpose, for example to update irsync on the server
+after you updated the client, or to start a daemon that has stopped:
 
 ```sh
-irsync -av --ssh ~/Photos/ myserver:/srv/photos/
+irsync pair myserver
 ```
 
-It runs the same setup for a saved server, then syncs.
+For a saved server it runs the same setup again. It never adds back an
+immediate grant you removed on the server.
 
-Without `--ssh`, a sync goes through ssh again only when the daemon does not
-answer for about 15 seconds: then irsync says
-`myserver did not answer; checking it over ssh`, starts the daemon again and
-carries on. A daemon that answers but refuses the client is never "fixed"
-over ssh: that refusal is on purpose. The check never adds back an immediate
-grant you removed on the server either; the sync then stops with the same
+A sync never does this for you. When the daemon does not answer within
+15 seconds, the sync stops and says `myserver did not answer`. It names what
+to check on the server and the command to start the daemon again:
+`irsync pair myserver`. The sync dials only once, unless you pass
+`--dial-retries N`, which tries N more times first. A daemon that answers but refuses the client is
+"fixed" by no one: that refusal is on purpose, and the sync stops with the
 "rejected this client's key" message.
 
 ## Keep the daemon out of the public DHT
 
-The daemon publishes its addresses in the mainline DHT, so later runs find it
-without ssh even when its IP address changes. To keep it out of that public
-table, pass `--no-remote-dht`:
+The daemon publishes its addresses in the mainline DHT, so syncs find it
+even when its IP address changes. To keep it out of that public
+table, pass `--no-dht`:
 
 ```sh
-irsync -av --no-remote-dht ~/Photos/ myserver:/srv/photos/
+irsync pair --no-dht myserver
 ```
 
-The setup then writes `dht = false` under `[daemon.discovery]` on the server.
+`pair` then writes `dht = false` under `[daemon.discovery]` on the server.
 The daemon can still be found through DNS and the relay.
 
 ## Use another ssh command
@@ -126,32 +134,32 @@ The daemon can still be found through DNS and the relay.
 Use `--rsh` or `IRSYNC_RSH` for another ssh command:
 
 ```sh
-irsync -av --rsh "ssh -p 2222" ~/Photos/ myserver:/srv/photos/
+irsync pair --rsh "ssh -p 2222" myserver
 ```
 
-ssh is used only for the setup, never for the data.
+ssh is used only by `pair`, never for the data.
 
 ## Share only named directories
 
-By default the setup lets the client reach any path your account on the
+By default `pair` lets the client reach any path your account on the
 server can (an [immediate grant](../reference/configuration.md#immediate-grants)).
-If the client should not reach every path, set this on the server before the
-first sync:
+If the client should not reach every path, set this on the server before you
+pair:
 
 ```sh
 irsync config set daemon.immediate false
 ```
 
-The setup then grants nothing, and you grant exports by hand as in
+`pair` then grants nothing, and you grant exports by hand as in
 [Your first sync](../tutorial/first-sync.md#3-grant-the-client-access).
 
 ## What gets installed, and from where
 
-The setup installs the same files as `install.sh`: `irsync` and `fileset` in
+`pair` installs the same files as `install.sh`: `irsync` and `fileset` in
 `~/.local/bin`, and the three manual pages under `~/.local/share/man`. It
 runs the installer script on files the client sends. The installer never
 edits your shell startup files. When the server's login shell does not find
-`irsync`, the setup shows the line to add.
+`irsync`, `pair` shows the line to add.
 
 A released irsync downloads the release files of its own version on the
 client, for every server platform, and checks their SHA-256:
@@ -180,31 +188,31 @@ it had unless the binary reports the client's exact build.
 
 Release files exist for Linux on x86_64 and arm64 and for macOS on Apple
 Silicon. For any other server, and for a client built from source whose
-server has another OS or CPU, the setup stops and changes nothing. Then
+server has another OS or CPU, `pair` stops and changes nothing. Then
 install irsync on the server yourself and
 [set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
-Installing it on the server does not make the ssh setup work, unless you run
-with `--no-install`: the setup otherwise uses its own copy of the client's
+Installing it on the server does not make `pair` work, unless you run
+with `--no-install`: `pair` otherwise uses its own copy of the client's
 exact build. See
-[Troubleshooting](troubleshooting.md#ssh-setup-stops-the-server-runs-another-os-or-cpu)
+[Troubleshooting](troubleshooting.md#pair-stops-the-server-runs-another-os-or-cpu)
 for the messages.
 
 To copy nothing to the server, use `--no-install` (or `ssh_install = false`
-in the config file). The setup then uses the irsync at `~/.local/bin/irsync`
+in the config file). `pair` then uses the irsync at `~/.local/bin/irsync`
 there, and stops if it is missing or another version.
 
 ## Servers set up by an older irsync
 
-Older versions installed irsync in `~/.local/share/irsync/bin`. The setup now
+Older versions installed irsync in `~/.local/share/irsync/bin`. `pair` now
 moves a server off that directory: it starts the daemon from `~/.local/bin`
 and removes the old copy. It warns instead when a service file still starts
 the old copy; see
 [Run the daemon](run-the-daemon.md#service-files-from-an-older-irsync).
 A client with an older irsync that also uses this server puts the old copy
-back on its next setup, so update those clients too.
+back when it pairs, so update those clients too.
 
 ## Keep the daemon running
 
-A daemon started over ssh does not survive a reboot on its own; the next sync
-restarts it over ssh. To make it a user service, see
-[Run the daemon](run-the-daemon.md#keep-a-daemon-started-over-ssh-running).
+`pair` makes the daemon a user service, so it starts again after a reboot.
+Pass `--no-service` to skip that. See
+[Run the daemon](run-the-daemon.md#run-the-daemon-as-a-user-service).

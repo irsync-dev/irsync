@@ -13,8 +13,8 @@ irsync [OPTIONS] HOST:[PATH]        # the same as irsync list
 direction, in the mould of rsync. It runs on both ends: the client runs
 `irsync`, and the server runs `irsync daemon`, the *daemon*, which serves its
 directories. A push copies from the client to the server, a pull the other
-way. If you can log in to the server with ssh, the first sync sets the server
-up for you (see [Setup over ssh](#setup-over-ssh)).
+way. If you can log in to the server with ssh, `irsync pair` sets the server
+up for you (see [irsync pair](#irsync-pair)).
 
 The terms used on this page:
 
@@ -46,14 +46,16 @@ lists a subcommand's.
 
 ## Examples
 
-The first sync to a server you can log in to with `ssh myserver` sets the
-server up over ssh, then pushes the contents of `~/Photos`:
+Set up a server you can log in to with `ssh myserver`, then push the contents
+of `~/Photos`:
 
 ```sh
+irsync pair myserver
 irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
-Later runs of the same command go over iroh and send only what changed.
+`pair` is the only step that uses ssh. Later runs of the push go over iroh and
+send only what changed.
 
 Pull the copy back into a new directory:
 
@@ -83,8 +85,8 @@ irsync -av --delete ~/Photos/ myserver:/srv/photos/
 Each operand is a local path or `HOST:PATH`. `HOST` is a server name from the
 [configuration](configuration.md#servers) or an `EndpointId`; `PATH` is resolved
 on the daemon's machine, as described in
-[Remote addresses](remote-addresses.md). A `HOST` that is neither is taken as
-an ssh destination; see [Setup over ssh](#setup-over-ssh).
+[Remote addresses](remote-addresses.md). A `HOST` that is neither is an error that
+names `irsync pair`; see [irsync pair](#irsync-pair).
 
 - A `:` before the first `/` makes an operand remote, as in rsync. To name a
   local file whose name has a colon, write `./name:with:colons`.
@@ -108,30 +110,56 @@ an ssh destination; see [Setup over ssh](#setup-over-ssh).
 
 The daemon honours the client's flags in both directions, filters included.
 
-### Setup over ssh
+### irsync pair
 
-A `HOST` that is neither a server name nor an `EndpointId` is taken as an ssh
-destination, such as `myserver` or `me@myserver`. `irsync` then sets that
-machine up over ssh before it syncs: it installs `irsync`, `fileset` and the
-manual pages there (the same files as `install.sh`, in `~/.local/bin`) when
-the server has no matching build, grants this client access to any path
-(`[immediate]`), starts the daemon and saves `HOST` as a server with
-`ssh = "HOST"`. It prints what it did. Later runs dial the server over iroh
-and do not use ssh.
+```text
+irsync pair [OPTIONS] HOST
+```
+
+`pair` sets a server up over ssh. It is the only command that uses ssh: a
+sync, push, pull or listing never does. `HOST` is an ssh destination, such as
+`myserver` or `me@myserver`, or a saved server name. `pair` then:
+
+- installs `irsync`, `fileset` and the manual pages on the server (the same
+  files as `install.sh`, in `~/.local/bin`) when the server has no matching
+  build;
+- grants this client access to any path (`[immediate]`);
+- starts the daemon and makes it a user service: a systemd service on Linux, a
+  launchd agent on macOS;
+- saves `HOST` as a server with `ssh = "HOST"`.
+
+It prints what it did and ends with `paired with myserver; syncs go over
+iroh, not ssh`. The account you log in to must not be root.
+
 A release build downloads the release files on this machine, for every server
 platform. If that fails and the server has the same OS and CPU, it installs
 this machine's own files instead. The server needs no internet access.
-`--no-install` copies nothing.
 
-A sync to a server with `ssh` dials once and waits at most 15 seconds
-(`--dial-retries` sets how often it retries first). When the daemon does not
-answer, `irsync` checks the server over ssh once, starts the daemon again or
-updates the server, and retries with the usual `--dial-retries` and
-`--reconnect` settings. That check never adds back an immediate grant removed
-on the server. When ssh itself fails, `irsync` says so and tries the daemon
-once more with the usual settings; if that fails too, it reports both errors.
-A daemon that answers and refuses the client is never handled over ssh. See
-[Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
+On Linux the service is `~/.config/systemd/user/irsync.service`, and `pair`
+turns on linger so that it runs when you are logged out. On macOS it is
+`~/Library/LaunchAgents/org.irsync.daemon.plist`, which starts after a reboot
+only once someone logs in on the Mac. A service file that irsync did not write
+is left alone. With no service manager, a foreign service file or
+`--no-service`, the daemon runs in the background until the server reboots and
+`pair` prints the steps to make a service yourself. See
+[Run the daemon](../how-to/run-the-daemon.md#run-the-daemon-as-a-user-service).
+
+For a saved server, `pair` checks it again: it updates irsync, starts the
+daemon if it has stopped and updates the server's `endpoint_id` if it
+changed. It never adds back an immediate grant removed on the server. A sync
+to a server `pair` saved dials once and waits at most 15 seconds for the
+daemon to answer. It retries only when you give `--dial-retries N` on the
+command line: then it tries N more times first. When the daemon does not
+answer, the sync stops and names `irsync pair` as the way to start it again.
+See [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
+
+| Flag | Meaning |
+| --- | --- |
+| `--rsh CMD` | The remote shell, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
+| `--no-install` | Copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
+| `--no-dht` | Turn the server's DHT publishing off (`[daemon.discovery] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
+| `--no-service` | Do not make the daemon a user service: start it in the background, until the server reboots. For a daemon you run your own way. |
+| `--identity FILE` | The private key to pair with. Default as for a sync. |
 
 ## rsync-compatible flags
 
@@ -268,17 +296,13 @@ These have no rsync counterpart.
 | --- | --- |
 | `--parallel N` | Data streams a push keeps open at once, across all files. Default: `parallel` from the server entry, else from `[client]`, else 128. A pull uses the daemon's 128. See [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams). |
 | `--reconnect DUR` | How long to keep redialling after a dropped connection, as `N[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the server entry, else from `[client]`, else 24h. This window applies only once the server has answered; before that, `--dial-retries` applies. |
-| `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[client]`, else 4. |
+| `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[client]`, else 4. For a server `irsync pair` saved (one with `ssh`), the default is 0 and only this flag changes it; each try there waits at most 15 seconds. |
 | `--relay URL` | Use this relay server instead of the server entry's, `[client]`'s or n0's default. Cannot be combined with `--no-relay` or `--address`. |
 | `--no-relay` | Direct connections only: never fall back to a relay. The address lookups stay on. Default: `relay_mode` from the server entry, else from `[client]`. |
 | `--pq-key-exchange prefer\|require` | `require`: refuse a daemon that does not offer the post-quantum key exchange, such as an older irsync; nothing is sent to it. `prefer`: use that key exchange when the daemon offers it. Default: `pq_key_exchange` from the server entry, else from `[client]`, else `prefer`. See [Post-quantum key exchange](configuration.md#post-quantum-key-exchange). |
 | `--no-dht` | Do not look the daemon up in the mainline DHT. |
 | `--address ADDR` | Dial the daemon at `ip:port`, `[ipv6]:port` or `host:port` directly; repeatable. Turns the relay, DNS, DHT, mDNS and the port mapper off, and binds the client to the local address it dials from (see [Keep to one path](../how-to/direct-and-relay.md#keep-to-one-path)). The daemon's `EndpointId` is still required and still checked. |
 | `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. |
-| `--rsh CMD` | The remote shell for the ssh setup, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
-| `--ssh` | Go through ssh even for a saved server: install or update irsync on the server, check its daemon and the grant, then sync. Uses the server's `ssh` destination, else its name. Default: off; a saved server is reached over iroh only. |
-| `--no-remote-dht` | When setting the server up over ssh, turn its DHT publishing off (`[daemon.discovery] dht = false`); a running daemon re-reads its settings. Goes through ssh for a saved server too, like `--ssh`. Without it the server's setting is left alone, and new servers publish. |
-| `--no-install` | When going through ssh, copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
 | `--identity FILE` | The private key to connect with. Default: `identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted key from the first line of this file. Without it, `IRSYNC_PASSPHRASE` is used, else a prompt when stdin is a terminal. |
 | `--no-resume` | Start a fresh plan instead of resuming a dormant session. Partial files are still picked up. |
@@ -296,10 +320,11 @@ table, then `[client]`, then the built-in default. See
 | --- | --- |
 | `irsync sync` | Copy files; the same as the rsync-style form. See [Operands](#operands). |
 | `irsync list` | List a host's exports, or the files under `HOST:PATH`. See [Operands](#operands). |
+| `irsync pair` | Set a server up over ssh and save it as a server. See [irsync pair](#irsync-pair). |
 | `irsync daemon` | Run the daemon. Its flags are under [irsync daemon](#irsync-daemon). |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions and stale index entries. See [Clean up state](../how-to/clean-up.md). |
-| `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync grant add immediate WHO` lets `WHO` reach any path, read-write; it is what the ssh setup grants. |
+| `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync grant add immediate WHO` lets `WHO` reach any path, read-write; it is what `irsync pair` grants. |
 
 ### Flags every command takes
 
@@ -390,7 +415,7 @@ irsync gc [-n] [-v] [-q] [--config PATH]
 | Variable | Effect |
 | --- | --- |
 | `IRSYNC_PASSPHRASE` | The passphrase of an encrypted key, when no `--passphrase-file` is given. |
-| `IRSYNC_RSH` | The remote shell for the ssh setup, when no `--rsh` is given. |
+| `IRSYNC_RSH` | The remote shell for `irsync pair`, when no `--rsh` is given. |
 | `RUST_LOG` | The log filter, in place of the one `-v` and `-q` choose. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Export traces and metrics over OpenTelemetry to this endpoint. Overrides `[telemetry]` in the config file. |
 | `TERM` | `dumb` turns the live progress block off. |

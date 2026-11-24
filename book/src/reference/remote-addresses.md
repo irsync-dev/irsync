@@ -11,8 +11,9 @@ A remote operand is `HOST:PATH`.
 - A `HOST` that is neither is looked up among the saved servers by their `ssh`
   value: the address a server was first set up by finds that server again. When
   servers with different `EndpointId`s share that `ssh` value, irsync stops
-  and names them. A `HOST` that matches nothing is an ssh destination, and
-  irsync sets it up over ssh.
+  and names them. A `HOST` that matches nothing is an error: it names
+  `irsync pair HOST`, which sets the server up over ssh, and
+  `irsync server add`, which adds it by hand. A sync never uses ssh.
 - An IPv6 address goes in brackets: `[fe80::1]:PATH`, or
   `mike@[fe80::1]:PATH`.
 - `PATH` is sent to the daemon as typed and resolved on the daemon's machine.

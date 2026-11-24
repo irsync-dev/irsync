@@ -150,6 +150,7 @@ fn report_roundtrips() {
                     },
                     stale_services: Vec::new(),
                     old_bin: OldBin::Absent,
+                    service: irsync::ssh::service::ServiceOutcome::Skipped,
                 };
                 let text = r.to_lines();
                 assert_eq!(SetupReport::parse(&text).unwrap(), r, "{text}");

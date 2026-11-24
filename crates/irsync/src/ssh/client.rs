@@ -469,13 +469,17 @@ pub fn setup_command(client: EndpointId, client_name: &str, flags: SetupFlags) -
     if flags.no_install {
         cmd.push_str(" --keep-old");
     }
+    if flags.no_service {
+        cmd.push_str(" --no-service");
+    }
     cmd
 }
 
 /// Run `ssh-setup` on the server and parse what it reports; `recheck`
 /// passes `--recheck` (a saved host: never add back a removed grant),
 /// `no_dht` passes `--no-dht` (turn the daemon's DHT publishing off),
-/// `no_install` passes `--keep-old` (nothing was installed this run).
+/// `no_install` passes `--keep-old` (nothing was installed this run),
+/// `no_service` passes `--no-service` (no user service).
 pub fn run_setup(
     rsh: &Rsh,
     dest: &str,

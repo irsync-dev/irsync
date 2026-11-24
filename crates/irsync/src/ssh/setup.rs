@@ -29,6 +29,7 @@ use irsync_proto::config as pb;
 
 use super::client::OLD_REMOTE_BIN;
 use super::legacy;
+use super::service::{self, ServiceOutcome};
 
 /// The first line of the report; text before it (a login shell's) is ignored.
 pub const BEGIN: &str = "irsync-setup-begin";
@@ -121,6 +122,8 @@ pub struct SetupReport {
     /// Service files that still start the old binary (or cannot be read).
     pub stale_services: Vec<PathBuf>,
     pub old_bin: OldBin,
+    /// What happened to the user service.
+    pub service: ServiceOutcome,
 }
 
 impl SetupReport {
@@ -185,6 +188,21 @@ impl SetupReport {
             OldBin::RemoveFailed(e) => {
                 lines.push("old_bin=failed".into());
                 lines.push(format!("old_bin_error={}", e.replace(['\r', '\n'], " ")));
+            }
+        }
+        match &self.service {
+            ServiceOutcome::Systemd => lines.push("service=systemd".into()),
+            ServiceOutcome::Launchd => lines.push("service=launchd".into()),
+            ServiceOutcome::Skipped => lines.push("service=skipped".into()),
+            ServiceOutcome::NotTouched => lines.push("service=not_touched".into()),
+            ServiceOutcome::Unavailable => lines.push("service=unavailable".into()),
+            ServiceOutcome::Failed(e) => {
+                lines.push("service=failed".into());
+                lines.push(format!("service_error={}", e.replace(['\r', '\n'], " ")));
+            }
+            ServiceOutcome::Foreign(f) => {
+                lines.push("service=foreign".into());
+                lines.push(format!("service_file={}", f.display()));
             }
         }
         lines.push(END.to_string());
@@ -271,6 +289,22 @@ impl SetupReport {
             ),
             Some(v) => return Err(bad("old_bin", v)),
         };
+        // No `service` line: nothing was done about a service.
+        let service = match fields.get("service").copied() {
+            None | Some("skipped") => ServiceOutcome::Skipped,
+            Some("systemd") => ServiceOutcome::Systemd,
+            Some("launchd") => ServiceOutcome::Launchd,
+            Some("not_touched") => ServiceOutcome::NotTouched,
+            Some("unavailable") => ServiceOutcome::Unavailable,
+            Some("failed") => ServiceOutcome::Failed(
+                fields
+                    .get("service_error")
+                    .map(|e| e.to_string())
+                    .unwrap_or_default(),
+            ),
+            Some("foreign") => ServiceOutcome::Foreign(PathBuf::from(get("service_file")?)),
+            Some(v) => return Err(bad("service", v)),
+        };
         Ok(SetupReport {
             version: get("version")?,
             endpoint_id,
@@ -285,6 +319,7 @@ impl SetupReport {
             },
             stale_services,
             old_bin,
+            service,
             addrs: match fields.get("addrs") {
                 Some(v) if !v.is_empty() => v
                     .split(',')
@@ -397,6 +432,7 @@ pub fn run(
     recheck: bool,
     no_dht: bool,
     keep_old: bool,
+    no_service: bool,
 ) -> anyhow::Result<SetupReport> {
     let Config { settings, .. } = Config::load(paths)?;
 
@@ -500,46 +536,48 @@ pub fn run(
         Dht::On
     };
 
-    // 4. The daemon (see `restart` above).
+    // 4. The daemon (see `restart` above), as a user service when there is
+    // a service manager. A daemon that is not ours is left alone, and so is
+    // the service then: it could not take the lock.
     let lock = probe(state);
     // Held, but by whom is not known: it may be a daemon from the old path
     // that is still starting.
     let owner_unknown = lock.as_ref().is_some_and(|i| i.pid == 0);
-    let daemon = match lock {
-        None => {
-            start_daemon(&exe, paths, state, &log)?;
-            DaemonOutcome::Started
-        }
-        Some(LockInfo {
-            pid,
-            exe: held,
-            version,
-        }) if pid != 0 && held == exe => {
-            if version == *LONG_VERSION && dht == Dht::TurnedOff {
-                reload_daemon(pid)?;
-                DaemonOutcome::Reloaded
-            } else if version == *LONG_VERSION {
-                DaemonOutcome::Running
-            } else {
-                stop_daemon(pid, state)?;
-                start_daemon(&exe, paths, state, &log)?;
-                DaemonOutcome::Restarted {
-                    old_version: version,
+    let ours =
+        |i: &LockInfo| i.pid != 0 && (i.exe == exe || (stale.is_empty() && is_old_bin(&i.exe)));
+    // Where a service finds the config: always named, in full, since the
+    // service manager's environment may differ from this session's.
+    let config = std::path::absolute(&paths.config)
+        .with_context(|| format!("finding {}", paths.config.display()))?;
+    let reload = dht == Dht::TurnedOff;
+    let bg = |lock| background(lock, &exe, paths, state, &log, reload, &ours);
+    let (daemon, service) = if lock.as_ref().is_some_and(|i| !ours(i)) {
+        (bg(lock)?, ServiceOutcome::NotTouched)
+    } else if no_service {
+        (bg(lock)?, ServiceOutcome::Skipped)
+    } else {
+        match service::detect().zip(home.as_deref()) {
+            None => (bg(lock)?, ServiceOutcome::Unavailable),
+            Some((m, h)) => {
+                let file = service::unit_path(h, m);
+                let text = std::fs::read_to_string(&file).ok();
+                if service::classify(text.as_deref(), m, &exe, h) == service::Existing::Foreign {
+                    (bg(lock)?, ServiceOutcome::Foreign(file))
+                } else {
+                    match as_service(m, h, lock, &exe, &config, state, &log, reload) {
+                        Ok(d) => (
+                            d,
+                            match m {
+                                service::Manager::Systemd => ServiceOutcome::Systemd,
+                                service::Manager::Launchd => ServiceOutcome::Launchd,
+                            },
+                        ),
+                        // As if there were no service manager.
+                        Err(e) => (bg(probe(state))?, ServiceOutcome::Failed(e)),
+                    }
                 }
             }
         }
-        Some(LockInfo {
-            pid,
-            exe: held,
-            version,
-        }) if pid != 0 && stale.is_empty() && is_old_bin(&held) => {
-            stop_daemon(pid, state)?;
-            start_daemon(&exe, paths, state, &log)?;
-            DaemonOutcome::Restarted {
-                old_version: version,
-            }
-        }
-        Some(LockInfo { exe, version, .. }) => DaemonOutcome::Foreign { exe, version },
     };
 
     // 5. The old binary, now that no daemon of ours runs from it.
@@ -566,7 +604,112 @@ pub fn run(
         addrs: reached.addrs,
         stale_services: stale,
         old_bin,
+        service,
     })
+}
+
+/// The daemon without a service: started in the background, in a session
+/// of its own, when the lock is free. A daemon of `ours` at this version is
+/// left running (and told to reload when `reload`); one at another
+/// version is restarted; any other is left alone.
+fn background(
+    lock: Option<LockInfo>,
+    exe: &Path,
+    paths: &Paths,
+    state: &Path,
+    log: &Path,
+    reload: bool,
+    ours: &dyn Fn(&LockInfo) -> bool,
+) -> anyhow::Result<DaemonOutcome> {
+    Ok(match lock {
+        None => {
+            start_daemon(exe, paths, state, log)?;
+            DaemonOutcome::Started
+        }
+        Some(i) if ours(&i) => {
+            if i.version == *LONG_VERSION && i.exe == exe && reload {
+                reload_daemon(i.pid)?;
+                DaemonOutcome::Reloaded
+            } else if i.version == *LONG_VERSION && i.exe == exe {
+                DaemonOutcome::Running
+            } else {
+                stop_daemon(i.pid, state)?;
+                start_daemon(exe, paths, state, log)?;
+                DaemonOutcome::Restarted {
+                    old_version: i.version,
+                }
+            }
+        }
+        Some(LockInfo { exe, version, .. }) => DaemonOutcome::Foreign { exe, version },
+    })
+}
+
+/// The daemon as a user service of `m`. A service that runs this build is
+/// left alone (and told to reload when `reload`). Otherwise the service is
+/// prepared first, and only then is a daemon of ours that runs outside it
+/// stopped, so a refusal (linger, say) leaves that daemon running. A
+/// service that runs an older build is restarted. Waits for the lock as
+/// [`start_daemon`] does; when it never comes, or the start fails, the
+/// service is turned off again, so the background start that follows is
+/// the only daemon. `lock`
+/// is held by a daemon of ours, or by none.
+#[allow(clippy::too_many_arguments)]
+fn as_service(
+    m: service::Manager,
+    home: &Path,
+    lock: Option<LockInfo>,
+    exe: &Path,
+    config: &Path,
+    state: &Path,
+    log: &Path,
+    reload: bool,
+) -> Result<DaemonOutcome, String> {
+    let active = service::is_active(m);
+    let current = |i: &LockInfo| i.exe == exe && i.version == *LONG_VERSION;
+    if let Some(i) = lock.as_ref().filter(|i| active && current(i)) {
+        if reload {
+            reload_daemon(i.pid).map_err(|e| format!("{e:#}"))?;
+            return Ok(DaemonOutcome::Reloaded);
+        }
+        return Ok(DaemonOutcome::Running);
+    }
+    service::prepare(m, home, exe, config, log)?;
+    let outcome = match lock {
+        Some(i) => {
+            if !active {
+                stop_daemon(i.pid, state).map_err(|e| format!("{e:#}"))?;
+            }
+            if current(&i) {
+                // A background daemon of this build, moved into the service.
+                DaemonOutcome::Started
+            } else {
+                DaemonOutcome::Restarted {
+                    old_version: i.version,
+                }
+            }
+        }
+        None => DaemonOutcome::Started,
+    };
+    // Turned off again on a failure: `enable --now` may have enabled the
+    // service before its start failed.
+    let off = |mut e: String| {
+        if let Err(off) = service::deactivate(m) {
+            e.push_str(&format!(", and turning it off again failed: {off}"));
+        }
+        e
+    };
+    service::activate(m, home, active).map_err(off)?;
+    let deadline = Instant::now() + DAEMON_WAIT;
+    while !probe(state).is_some_and(|i| i.pid != 0 && current(&i)) {
+        if Instant::now() >= deadline {
+            return Err(off(format!(
+                "the service did not start the daemon within {} s",
+                DAEMON_WAIT.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(outcome)
 }
 
 /// The home directory to look for the old install in: none unless it is
@@ -700,7 +843,43 @@ mod tests {
             addrs: Vec::new(),
             stale_services: Vec::new(),
             old_bin: OldBin::Absent,
+            service: ServiceOutcome::Skipped,
         }
+    }
+
+    #[test]
+    fn report_round_trips_each_service_outcome() {
+        for service in [
+            ServiceOutcome::Systemd,
+            ServiceOutcome::Launchd,
+            ServiceOutcome::Skipped,
+            ServiceOutcome::NotTouched,
+            ServiceOutcome::Unavailable,
+            ServiceOutcome::Failed("linger: denied".into()),
+            ServiceOutcome::Foreign(PathBuf::from("/h/.config/systemd/user/irsync.service")),
+        ] {
+            let mut r = report();
+            r.service = service;
+            assert_eq!(SetupReport::parse(&r.to_lines()).unwrap(), r);
+        }
+        let mut r = report();
+        r.service = ServiceOutcome::Failed("first\nsecond".into());
+        let text = r.to_lines();
+        assert!(text.contains("\nservice_error=first second\n"), "{text}");
+    }
+
+    #[test]
+    fn report_without_a_service_line_is_skipped() {
+        let text: String = report()
+            .to_lines()
+            .lines()
+            .filter(|l| !l.starts_with("service"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(
+            SetupReport::parse(&text).unwrap().service,
+            ServiceOutcome::Skipped
+        );
     }
 
     #[test]

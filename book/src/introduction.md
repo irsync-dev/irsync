@@ -86,7 +86,7 @@ Release binaries cover Linux on x86_64 and arm64, and macOS on Apple Silicon.
 Other Linux and macOS machines can build from source. All of these are
 supported, as client and as daemon.
 
-With ssh, the client is enough: the first sync installs irsync, fileset and
+With ssh, the client is enough: `irsync pair` installs irsync, fileset and
 the manual pages on the server. A released irsync downloads the release files
 for the server's platform on this machine, whatever that platform is. If the
 download fails and the server has the same OS and CPU, it sends this machine's
@@ -99,15 +99,18 @@ hand ([Your first sync](tutorial/first-sync.md#set-the-server-up-by-hand)).
 ## Quick start
 
 If `ssh myserver` logs you in to the server, irsync needs to be installed on
-the client only. Push to any path your account there can reach:
+the client only. Set the server up once, then push to any path your account
+there can reach:
 
 ```sh
+irsync pair myserver
 irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
-The first run sets the server up over ssh: it installs irsync there, grants
-this client access to any path (*immediate mode*), starts the daemon and saves
-`myserver` as a server. Later runs connect over iroh without ssh.
+`irsync pair` sets the server up over ssh: it installs irsync there, grants
+this client access to any path (*immediate mode*), starts the daemon as a user
+service and saves `myserver` as a server. It is the only command that uses
+ssh. Syncs connect over iroh.
 
 To share only named directories instead, set the server up by hand: export a
 directory, grant the client access to it and start the daemon.
@@ -130,7 +133,7 @@ The pages come in four kinds, and each kind answers a different question.
 - **Tutorial.** One guided run from nothing to a first transfer, for someone
   who has not used irsync before.
 - **How-to guides.** Short recipes for a task you already have in mind:
-  troubleshooting a first sync, setting a server up over ssh, running the
+  troubleshooting a first sync, pairing with a server over ssh, running the
   daemon, changing exports, choosing a connection path, cleaning up,
   measuring a transfer.
 - **Reference.** Every flag, command, configuration key, file and metric, and

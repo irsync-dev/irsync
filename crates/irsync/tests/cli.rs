@@ -38,6 +38,48 @@ fn parse_err(a: &[&str]) -> String {
 }
 
 #[test]
+fn pair_parses_host_and_flags() {
+    let a = parse(&[
+        "pair",
+        "--no-dht",
+        "--no-install",
+        "--rsh",
+        "ssh -p 2222",
+        "mike@myserver",
+    ]);
+    match a.cmd {
+        Some(Command::Pair(p)) => {
+            assert_eq!(p.host, "mike@myserver");
+            assert_eq!(p.rsh.as_deref(), Some("ssh -p 2222"));
+            assert!(p.no_dht && p.no_install);
+            assert_eq!(p.identity, None);
+        }
+        c => panic!("not Pair: {c:?}"),
+    }
+}
+
+#[test]
+fn sync_has_no_ssh_flags() {
+    for flag in [
+        &["--ssh"][..],
+        &["--rsh", "x"],
+        &["--no-install"],
+        &["--no-remote-dht"],
+    ] {
+        let mut a = flag.to_vec();
+        a.extend(["a/", "h:b"]);
+        let e = parse_err(&a);
+        assert!(e.contains(flag[0]), "{e}");
+    }
+}
+
+#[test]
+fn pair_refuses_a_sync_flag() {
+    let e = parse_err(&["pair", "-a", "myserver"]);
+    assert!(e.contains("-a"), "{e}");
+}
+
+#[test]
 fn short_sync_is_rewritten_into_sync_command() {
     for (short, long) in [
         (

@@ -15,6 +15,11 @@ fn fake_ssh() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-ssh")
 }
 
+/// Stand-ins for systemctl and loginctl.
+fn fake_service_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-service-bin")
+}
+
 /// A free loopback UDP port (iroh listens on UDP) for a daemon that binds
 /// it later. Taken below the ports the OS hands out for `:0` (from 49152 on
 /// macOS, 32768 on Linux): such a port, released here, could go to another
@@ -58,6 +63,12 @@ struct World {
     /// The server's irsync believes it runs as root (the probe does not
     /// say so).
     server_root: bool,
+    /// The server has a (fake) systemd user session: `pair` finds
+    /// systemctl and loginctl there. Without it, no service manager.
+    service: bool,
+    /// Extra environment for every irsync run, such as the `FAKE_*`
+    /// settings of the fake service tools.
+    env: Vec<(String, String)>,
 }
 
 impl World {
@@ -74,6 +85,8 @@ impl World {
             hostname: None,
             probe_root: false,
             server_root: false,
+            service: false,
+            env: Vec::new(),
         };
         w.server_config("", "");
         std::fs::write(w.src.path().join("a.txt"), "hello\n").unwrap();
@@ -99,6 +112,32 @@ impl World {
         self.client.path().join("ssh.log")
     }
 
+    /// The calls of the fake systemctl and loginctl, one per line.
+    fn service_log(&self) -> String {
+        std::fs::read_to_string(self.client.path().join("service.log")).unwrap_or_default()
+    }
+
+    /// The systemd unit in the server HOME.
+    fn unit(&self) -> PathBuf {
+        self.server
+            .path()
+            .join(".config/systemd/user/irsync.service")
+    }
+
+    /// The pid of the daemon the lock in the server HOME names.
+    fn lock_pid(&self) -> u32 {
+        probe(&self.server.path().join("xdg/irsync"))
+            .expect("a running daemon")
+            .pid
+    }
+
+    /// The pid the fake systemctl started last, if any.
+    fn service_pid(&self) -> Option<u32> {
+        std::fs::read_to_string(self.server.path().join(".fake-service.pid"))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    }
+
     fn ssh_calls(&self) -> usize {
         std::fs::read_to_string(self.ssh_log())
             .map(|s| s.lines().count())
@@ -108,6 +147,22 @@ impl World {
     fn client_config(&self) -> String {
         std::fs::read_to_string(self.client.path().join(".config/irsync/irsync.toml"))
             .unwrap_or_default()
+    }
+
+    /// Pairs the client with `host`, over ssh; returns the stderr.
+    fn pair(&self, host: &str) -> String {
+        ok(&self.irsync_bare(&["pair", host]))
+    }
+
+    /// As [`World::pair`], run on the server machine, pairing it with the
+    /// client machine.
+    fn pair_back(&self, host: &str) -> String {
+        ok(&self.run(
+            self.server.path(),
+            self.client.path(),
+            "myserver",
+            &["pair", host],
+        ))
     }
 
     fn src_arg(&self) -> String {
@@ -199,6 +254,15 @@ impl World {
         } else {
             cmd.env_remove("IRSYNC_TEST_EUID_ROOT");
         }
+        if self.service {
+            cmd.env("IRSYNC_TEST_SERVICE_BIN_DIR", fake_service_bin());
+        } else {
+            cmd.env_remove("IRSYNC_TEST_SERVICE_BIN_DIR");
+        }
+        cmd.env("FAKE_SERVICE_LOG", self.client.path().join("service.log"));
+        for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
         let mut child = cmd.spawn().unwrap();
         let deadline = Instant::now() + Duration::from_secs(180);
         while child.try_wait().unwrap().is_none() {
@@ -215,6 +279,11 @@ impl World {
 
 impl Drop for World {
     fn drop(&mut self) {
+        // A daemon the fake systemctl started, even one that never took
+        // the lock.
+        if let Some(pid) = self.service_pid() {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        }
         for home in [self.server.path(), self.client.path()] {
             if let Some(info) = probe(&home.join("xdg/irsync")) {
                 if info.pid != 0 {
@@ -243,14 +312,11 @@ fn same_tree(a: &Path, b: &Path) {
 }
 
 #[test]
-fn first_push_sets_up_and_syncs() {
+fn pair_reports_the_setup_and_the_service_howto() {
     let w = World::new();
-    let dest = w.server.path().join("dest");
-    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
-    let err = ok(&o);
-    same_tree(w.src.path(), &dest);
+    let err = w.pair("myserver");
     for want in [
-        "irsync: myserver is not a saved server; setting it up over ssh",
+        "irsync: pairing with myserver over ssh",
         "irsync: set up myserver over ssh:",
         "irsync:   installed irsync",
         "irsync:   started the daemon",
@@ -260,7 +326,7 @@ fn first_push_sets_up_and_syncs() {
     }
     // The notice comes before the report; the how-to is unprefixed so it
     // pastes.
-    assert!(err.find("not a saved server") < err.find("set up myserver"));
+    assert!(err.find("pairing with") < err.find("set up myserver"));
     // The fake server is this machine, so the how-to is for its platform.
     let lines: Vec<&str> = err.lines().collect();
     let service: &[&str] = if cfg!(target_os = "macos") {
@@ -285,12 +351,14 @@ fn first_push_sets_up_and_syncs() {
 }
 
 #[test]
-fn second_push_uses_no_ssh() {
+fn pair_then_push_syncs() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("myserver:{}", dest.display());
+    w.pair("myserver");
     ok(&w.irsync(&["-a", &w.src_arg(), &target]));
-    assert_eq!(w.ssh_calls(), 3);
+    let calls = w.ssh_calls();
+    assert!(calls > 0);
     std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
     let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     assert!(!err.contains("set up"), "{err}");
@@ -298,7 +366,36 @@ fn second_push_uses_no_ssh() {
         std::fs::read_to_string(dest.join("a.txt")).unwrap(),
         "changed\n"
     );
-    assert_eq!(w.ssh_calls(), 3);
+    assert_eq!(w.ssh_calls(), calls);
+}
+
+/// A sync to a host that was never paired stops and says how to pair it.
+#[test]
+fn first_push_to_an_unknown_host_stops_without_ssh() {
+    let w = World::new();
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.contains("irsync pair myserver"), "{err}");
+    assert_eq!(w.ssh_calls(), 0);
+    assert_eq!(w.client_config(), "", "no client config written");
+    assert!(!dest.exists());
+}
+
+/// A typo in the host name is not an ssh destination any more: it runs no
+/// ssh, and the message says how to pair it if it was meant.
+#[test]
+fn a_typo_in_the_host_runs_no_ssh() {
+    let w = World::new();
+    w.pair("myserver");
+    let calls = w.ssh_calls();
+    let dest = w.server.path().join("dest");
+    let o = w.irsync(&["-a", &w.src_arg(), &format!("myservr:{}", dest.display())]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.contains("irsync pair myservr"), "{err}");
+    assert_eq!(w.ssh_calls(), calls);
 }
 
 #[test]
@@ -306,28 +403,26 @@ fn user_at_host_alias() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("u@myserver:{}", dest.display());
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    let err = w.pair("u@myserver");
     assert!(err.contains("saved server u@myserver"), "{err}");
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     let cfg = w.client_config();
     assert!(cfg.contains("ssh = \"u@myserver\""), "{cfg}");
+    let calls = w.ssh_calls();
     std::fs::write(w.src.path().join("a.txt"), "again\n").unwrap();
     ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     assert_eq!(
         std::fs::read_to_string(dest.join("a.txt")).unwrap(),
         "again\n"
     );
-    assert_eq!(w.ssh_calls(), 3);
+    assert_eq!(w.ssh_calls(), calls);
 }
 
 #[test]
 fn user_at_host_saves_the_plain_name_too() {
     let w = World::new();
     let dest = w.server.path().join("dest");
-    let err = ok(&w.irsync(&[
-        "-a",
-        &w.src_arg(),
-        &format!("u@myserver:{}", dest.display()),
-    ]));
+    let err = w.pair("u@myserver");
     assert!(err.contains("saved server u@myserver"), "{err}");
     assert!(err.contains("saved server myserver"), "{err}");
     let cfg: toml::Table = w.client_config().parse().unwrap();
@@ -340,15 +435,63 @@ fn user_at_host_saves_the_plain_name_too() {
 }
 
 #[test]
+fn pair_sets_up_a_new_host() {
+    let w = World::new();
+    let err = ok(&w.irsync_bare(&["pair", "myserver"]));
+    assert!(
+        err.contains("irsync: paired with myserver; syncs go over iroh, not ssh"),
+        "{err}"
+    );
+    assert!(err.contains("saved server myserver"), "{err}");
+    let calls = w.ssh_calls();
+    assert!(calls > 0);
+    let dest = w.server.path().join("dest");
+    let target = format!("myserver:{}", dest.display());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    assert!(dest.join("a.txt").exists());
+    assert_eq!(w.ssh_calls(), calls, "a push needs no ssh");
+}
+
+#[test]
+fn pair_user_at_host_saves_both_names() {
+    let w = World::new();
+    let err = ok(&w.irsync_bare(&["pair", "u@myserver"]));
+    assert!(err.contains("saved server u@myserver"), "{err}");
+    assert!(err.contains("saved server myserver"), "{err}");
+    let cfg: toml::Table = w.client_config().parse().unwrap();
+    for a in ["u@myserver", "myserver"] {
+        assert_eq!(cfg["servers"][a]["ssh"].as_str(), Some("u@myserver"), "{a}");
+    }
+}
+
+/// A second pairing checks the server but does not put back a grant the
+/// owner removed.
+#[test]
+fn pair_again_does_not_regrant() {
+    let w = World::new();
+    ok(&w.irsync_bare(&["pair", "myserver"]));
+    let id = client_id(w.client.path());
+    let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
+    assert!(out.status.success(), "{out:?}");
+    w.kill_daemon();
+    let o = w.irsync_bare(&["pair", "myserver"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(err.contains("has no immediate grant"), "{err}");
+    assert!(
+        err.contains("the daemon rejected this client's key"),
+        "{err}"
+    );
+    assert!(!err.contains("paired with"), "{err}");
+    assert!(!immediate_granted(&w, &id), "{}", w.server_toml());
+}
+
+#[test]
 fn ip_address_is_saved_under_the_server_name() {
     let mut w = World::new();
     w.hostname = Some("myserver.example.com".into());
     let dest = w.server.path().join("dest");
-    let err = ok(&w.irsync(&[
-        "-a",
-        &w.src_arg(),
-        &format!("192.168.1.5:{}", dest.display()),
-    ]));
+    let err = w.pair("192.168.1.5");
     assert!(err.contains("saved server myserver"), "{err}");
     let cfg: toml::Table = w.client_config().parse().unwrap();
     assert_eq!(
@@ -356,6 +499,11 @@ fn ip_address_is_saved_under_the_server_name() {
         Some("192.168.1.5")
     );
     assert!(cfg["servers"].get("192.168.1.5").is_none());
+    ok(&w.irsync(&[
+        "-a",
+        &w.src_arg(),
+        &format!("192.168.1.5:{}", dest.display()),
+    ]));
     same_tree(w.src.path(), &dest);
     // Typed again, the address finds the saved host: no ssh.
     let calls = w.ssh_calls();
@@ -374,7 +522,7 @@ fn ip_address_is_saved_under_the_server_name() {
     // The other spelling of the address ends on the same alias, and is
     // remembered beside the first.
     let other = format!("u@192.168.1.5:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &other]));
+    w.pair("u@192.168.1.5");
     let cfg: toml::Table = w.client_config().parse().unwrap();
     assert_eq!(cfg["servers"].as_table().unwrap().len(), 1, "{cfg}");
     let h = &cfg["servers"]["myserver"];
@@ -401,16 +549,8 @@ fn an_address_does_not_replace_a_saved_ssh_name() {
     let mut w = World::new();
     w.hostname = Some("myserver".into());
     let dest = w.server.path().join("dest");
-    ok(&w.irsync(&[
-        "-a",
-        &w.src_arg(),
-        &format!("mike@myserver:{}", dest.display()),
-    ]));
-    let err = ok(&w.irsync(&[
-        "-a",
-        &w.src_arg(),
-        &format!("192.168.1.5:{}", dest.display()),
-    ]));
+    w.pair("mike@myserver");
+    let err = w.pair("192.168.1.5");
     assert!(
         err.contains("server myserver keeps ssh = mike@myserver"),
         "{err}"
@@ -469,8 +609,7 @@ fn client_name_with_shell_characters_runs_nothing() {
     let mut w = World::new();
     // A valid alias (no `/`, `:` or `.`) that a shell would act on.
     w.client_name = "x';cd;touch pwned;echo '$(cd;touch pwned)`cd;touch pwned`".into();
-    let dest = w.server.path().join("dest");
-    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    w.pair("myserver");
     assert!(!w.server.path().join("pwned").exists());
     assert!(!w.client.path().join("pwned").exists());
     // And it arrived as it was sent: the server saved the client under it.
@@ -490,7 +629,7 @@ fn client_name_with_shell_characters_runs_nothing() {
 fn unusable_client_name_stops_before_ssh() {
     let mut w = World::new();
     w.client_name = "localhost".into();
-    let out = w.irsync(&["-a", &w.src_arg(), "myserver:dest"]);
+    let out = w.irsync_bare(&["pair", "myserver"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("host name"), "{err}");
@@ -500,7 +639,7 @@ fn unusable_client_name_stops_before_ssh() {
 #[test]
 fn ipv6_without_a_server_name_changes_nothing() {
     let w = World::new();
-    let out = w.irsync(&["-a", &w.src_arg(), "[fe80::1]:dest"]);
+    let out = w.irsync_bare(&["pair", "fe80::1"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("host name"), "{err}");
@@ -532,8 +671,9 @@ fn immediate_off_still_saves_alias() {
         ),
     );
 
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), "myserver:dest"]));
+    let err = w.pair("myserver");
     assert!(err.contains("immediate mode is off on myserver"), "{err}");
+    ok(&w.irsync(&["-a", &w.src_arg(), "myserver:dest"]));
     same_tree(w.src.path(), &dest);
     let cfg = w.client_config();
     assert!(cfg.contains("[servers.myserver]"), "{cfg}");
@@ -544,8 +684,7 @@ fn other_platform_changes_nothing() {
     let mut w = World::new();
     w.uname = Some("Linux riscv64".into());
     std::fs::remove_dir_all(w.server.path().join(".config")).unwrap();
-    let dest = w.server.path().join("dest");
-    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    let o = w.irsync_bare(&["pair", "myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -575,22 +714,21 @@ fn other_platform_gets_the_release_binary() {
         Path::new(env!("CARGO_BIN_EXE_irsync")),
     ));
     let dest = w.server.path().join("dest");
-    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
-    let err = ok(&o);
+    let err = w.pair("myserver");
     assert!(err.contains("irsync: downloading irsync v"), "{err}");
     assert!(
         err.contains(&format!("(release files for {platform})")),
         "{err}"
     );
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
     same_tree(w.src.path(), &dest);
 }
 
 #[test]
 fn unsavable_alias_stops_before_ssh() {
     let w = World::new();
-    let dest = w.server.path().join("dest");
     // `all` means every peer: it can never be an alias.
-    let o = w.irsync(&["-a", &w.src_arg(), &format!("all:{}", dest.display())]);
+    let o = w.irsync_bare(&["pair", "all"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(!err.contains("over ssh"), "{err}");
@@ -643,35 +781,42 @@ fn client_id(home: &Path) -> String {
         .to_string()
 }
 
+/// A dead daemon stops the sync with a hint that names `irsync pair`; no ssh
+/// runs. With the default retry settings a paired host is dialled once,
+/// bounded (here to the test's 5 s, really 15 s), not retried for minutes.
+/// Pairing again starts the daemon, and the push then works.
 #[test]
-fn dead_daemon_is_restarted_over_ssh() {
+fn dead_daemon_stops_the_sync_with_the_pair_hint() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("myserver:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.pair("myserver");
     let calls = w.ssh_calls();
     w.kill_daemon();
     std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
-    // Default retry settings: one short dial, then ssh, well under the
-    // 60 s a single dial to a dead daemon would take.
     let started = Instant::now();
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
-    assert!(started.elapsed() < Duration::from_secs(40), "{err}");
-    assert!(
-        err.contains("irsync: myserver did not answer; checking it over ssh"),
-        "{err}"
-    );
+    let o = w.irsync(&["-a", &w.src_arg(), &target]);
+    let took = started.elapsed();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(took < Duration::from_secs(40), "took {took:?}:\n{err}");
+    assert!(err.contains("gave up after 1 attempt"), "{err}");
+    for want in [
+        "myserver did not answer",
+        "systemctl --user status irsync",
+        "irsync pair myserver",
+    ] {
+        assert!(err.contains(want), "missing {want:?} in:\n{err}");
+    }
+    assert!(!err.contains("copied this host's ID by hand"), "{err}");
+    assert_eq!(w.ssh_calls(), calls);
+    let err = w.pair("myserver");
     assert!(err.contains("started the daemon"), "{err}");
-    // Same id: the alias line is left out.
-    assert!(
-        !err.contains("saved server") && !err.contains("updated server"),
-        "{err}"
-    );
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     assert_eq!(
         std::fs::read_to_string(dest.join("a.txt")).unwrap(),
         "changed\n"
     );
-    assert!(w.ssh_calls() > calls);
 }
 
 /// A server saved under two names (`mike@myserver` and `myserver`) and
@@ -682,7 +827,7 @@ fn rebuilt_server_updates_every_alias_of_that_ssh_destination() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("mike@myserver:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.pair("mike@myserver");
     let before = w.saved_id("myserver");
     assert_eq!(w.saved_id("mike@myserver"), before);
     ok(&w.irsync_bare(&["server", "add", "elsewhere", &before]));
@@ -695,13 +840,14 @@ fn rebuilt_server_updates_every_alias_of_that_ssh_destination() {
             std::fs::remove_file(p).unwrap();
         }
     }
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    let err = w.pair("mike@myserver");
     assert!(err.contains("updated server mike@myserver:"), "{err}");
     assert!(err.contains("updated server myserver:"), "{err}");
     let now = w.saved_id("mike@myserver");
     assert_ne!(now, before);
     assert_eq!(w.saved_id("myserver"), now);
     assert_eq!(w.saved_id("elsewhere"), before);
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     same_tree(w.src.path(), &dest);
 }
 
@@ -710,7 +856,7 @@ fn rebuilt_server_updates_alias() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("myserver:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.pair("myserver");
     let before = w.saved_id("myserver");
     w.kill_daemon();
     for entry in std::fs::read_dir(w.server.path().join(".config/irsync")).unwrap() {
@@ -720,19 +866,17 @@ fn rebuilt_server_updates_alias() {
             std::fs::remove_file(p).unwrap();
         }
     }
-    let started = Instant::now();
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
-    assert!(started.elapsed() < Duration::from_secs(40), "{err}");
+    let err = w.pair("myserver");
     assert!(err.contains("updated server myserver:"), "{err}");
     assert_ne!(w.saved_id("myserver"), before);
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     same_tree(w.src.path(), &dest);
 }
 
 #[test]
 fn refusal_never_uses_ssh() {
     let w = World::new();
-    let dest = w.server.path().join("dest");
-    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    w.pair("myserver");
     let calls = w.ssh_calls();
     let id = client_id(w.client.path());
     let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
@@ -781,7 +925,7 @@ fn immediate_granted(w: &World, id: &str) -> bool {
 fn server_knows_the_client_by_name() {
     let w = World::new();
     let dest = w.server.path().join("dest");
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    let err = w.pair("myserver");
     assert!(err.contains("granted this client (myclient, "), "{err}");
     let t: toml::Table = w.server_toml().parse().unwrap();
     assert_eq!(
@@ -789,6 +933,8 @@ fn server_knows_the_client_by_name() {
         Some(&*client_id(w.client.path()))
     );
     assert_eq!(t["immediate"]["rw"][0].as_str(), Some("myclient"));
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    let t: toml::Table = w.server_toml().parse().unwrap();
     // The automatic export the daemon made for the push names it too.
     let exports = t["exports"].as_table().unwrap();
     assert_eq!(exports.len(), 1, "{t}");
@@ -812,6 +958,7 @@ fn two_machines_sync_in_both_directions() {
     };
     // myclient -> myserver.
     let there = format!("myserver:{}", w.server.path().join("dest").display());
+    w.pair("myserver");
     ok(&w.irsync(&["-a", &w.src_arg(), &there]));
     let t = table(w.server.path());
     assert!(t.get("servers").is_none(), "{t}");
@@ -821,12 +968,14 @@ fn two_machines_sync_in_both_directions() {
     // the name typed to dial it. Its daemon is set up over ssh.
     let back = w.client.path().join("back");
     let here = format!("myclient:{}", back.display());
-    let err = ok(&w.irsync_back(&["-a", &w.src_arg(), &here]));
-    assert!(
-        err.contains("myclient is saved as a client only; setting it up over ssh"),
-        "{err}"
-    );
+    let o = w.irsync_back(&["-a", &w.src_arg(), &here]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(err.contains("irsync pair myclient"), "{err}");
+    let err = w.pair_back("myclient");
+    assert!(err.contains("pairing with myclient over ssh"), "{err}");
     assert!(err.contains("saved server myclient"), "{err}");
+    ok(&w.irsync_back(&["-a", &w.src_arg(), &here]));
     same_tree(w.src.path(), &back);
 
     // One server and one client per machine, on both sides.
@@ -871,23 +1020,24 @@ fn config_in(home: &Path) -> toml::Table {
 }
 
 /// A machine known as a client only, dialled as `user@host` or by its
-/// address: the first run saves its daemon as a server beside the client
-/// of that name, and the grants that name the client stay with its id.
+/// address: pairing saves its daemon as a server beside the client of
+/// that name, and the grants that name the client stay with its id.
 #[test]
 fn a_first_run_joins_a_client_only_entry() {
     for back_host in ["mike@myclient", "192.168.1.9"] {
         let mut w = World::new();
         w.client_daemon_config();
         let there = format!("myserver:{}", w.server.path().join("dest").display());
-        ok(&w.irsync(&["-a", &w.src_arg(), &there]));
+        w.pair("myserver");
         let client = client_id(w.client.path());
 
         // What the client machine's `uname -n` prints, for the address.
         w.hostname = Some("myclient".into());
         let back = w.client.path().join("back");
         let here = format!("{back_host}:{}", back.display());
-        let err = ok(&w.irsync_back(&["-a", &w.src_arg(), &here]));
+        let err = w.pair_back(back_host);
         assert!(err.contains("saved server myclient"), "{err}");
+        ok(&w.irsync_back(&["-a", &w.src_arg(), &here]));
         same_tree(w.src.path(), &back);
 
         let t = config_in(w.server.path());
@@ -903,21 +1053,18 @@ fn a_first_run_joins_a_client_only_entry() {
     }
 }
 
-/// `--ssh` on a host saved as a client only sets its daemon up, as a
+/// `pair` on a host saved as a client only sets its daemon up, as a
 /// plain run does.
 #[test]
-fn force_ssh_sets_up_a_client_only_host() {
+fn pair_sets_up_a_client_only_host() {
     let w = World::new();
     w.client_daemon_config();
-    let there = format!("myserver:{}", w.server.path().join("dest").display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &there]));
+    w.pair("myserver");
     let back = w.client.path().join("back");
     let here = format!("myclient:{}", back.display());
-    let err = ok(&w.irsync_back(&["-a", "--ssh", &w.src_arg(), &here]));
-    assert!(
-        err.contains("myclient is saved as a client only; setting it up over ssh"),
-        "{err}"
-    );
+    let err = w.pair_back("myclient");
+    assert!(err.contains("pairing with myclient over ssh"), "{err}");
+    ok(&w.irsync_back(&["-a", &w.src_arg(), &here]));
     same_tree(w.src.path(), &back);
     let t = config_in(w.server.path());
     assert!(t["servers"]["myclient"]["endpoint_id"].is_str(), "{t}");
@@ -937,6 +1084,7 @@ fn a_machine_syncs_to_itself() {
     let dest = home.join("dest");
     let target = format!("myclient:{}", dest.display());
     let args = ["-a", &w.src_arg(), &target, "--address", &addr];
+    ok(&w.run(home, home, "myclient", &["pair", "myclient"]));
     ok(&w.run(home, home, "myclient", &args));
     same_tree(w.src.path(), &dest);
     let t = config_in(home);
@@ -958,29 +1106,32 @@ fn a_machine_syncs_to_itself() {
     );
 }
 
-/// `--ssh` and `--no-remote-dht` with a host's address check the entry
+/// `pair --no-dht` and `pair --no-install` with a host's address check the entry
 /// the address is saved under.
 #[test]
-fn an_address_takes_ssh_and_no_remote_dht() {
+fn pair_takes_an_address_and_no_dht() {
     let mut w = World::new();
     w.hostname = Some("myserver".into());
     let dest = w.server.path().join("dest");
     let target = format!("192.168.1.5:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.pair("192.168.1.5");
     let cfg = w.server.path().join(".config/irsync/irsync.toml");
     let text = std::fs::read_to_string(&cfg).unwrap();
     irsync::fs::private::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
     let calls = w.ssh_calls();
     for (flag, said) in [
-        ("--no-remote-dht", "turned off DHT publishing on myserver"),
-        ("--ssh", "irsync: checking myserver over ssh"),
+        ("--no-dht", "turned off DHT publishing on myserver"),
+        ("--no-install", "irsync: pairing with myserver over ssh"),
     ] {
-        let err = ok(&w.irsync(&["-a", flag, &w.src_arg(), &target]));
+        let err = ok(&w.irsync_bare(&["pair", flag, "192.168.1.5"]));
         assert!(err.contains("192.168.1.5 is saved as myserver"), "{err}");
         assert!(err.contains(said), "{flag}: {err}");
-        assert!(!err.contains("not a saved server"), "{err}");
     }
-    assert_eq!(w.ssh_calls(), calls + 4);
+    assert!(w.ssh_calls() > calls);
+    // The address finds the saved host for a sync, with no ssh.
+    let calls = w.ssh_calls();
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    assert_eq!(w.ssh_calls(), calls);
     let log = std::fs::read_to_string(w.ssh_log()).unwrap();
     assert!(log.lines().all(|l| l == "192.168.1.5"), "{log}");
     let doc: toml::Table = w.server_toml().parse().unwrap();
@@ -996,28 +1147,20 @@ fn an_address_takes_ssh_and_no_remote_dht() {
 /// A daemon that died is started again when the host is typed as its
 /// address: the check goes to the entry the address is saved under.
 #[test]
-fn a_dead_daemon_found_by_address_is_restarted() {
+fn a_dead_daemon_found_by_address_names_its_alias() {
     let mut w = World::new();
     w.hostname = Some("myserver".into());
     let dest = w.server.path().join("dest");
     let target = format!("192.168.1.5:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.pair("192.168.1.5");
     w.kill_daemon();
     std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
-    assert!(
-        err.contains("irsync: myserver did not answer; checking it over ssh"),
-        "{err}"
-    );
-    assert!(err.contains("started the daemon"), "{err}");
-    assert!(
-        !err.contains("saved server") && !err.contains("updated server"),
-        "{err}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(dest.join("a.txt")).unwrap(),
-        "changed\n"
-    );
+    let o = w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(err.contains("myserver did not answer"), "{err}");
+    assert!(err.contains("irsync pair myserver"), "{err}");
+    assert!(!err.contains("irsync pair 192.168.1.5"), "{err}");
     let t = config_in(w.client.path());
     assert_eq!(t["servers"].as_table().unwrap().len(), 1, "{t}");
 }
@@ -1038,7 +1181,7 @@ fn a_taken_client_name_is_refused_and_changes_no_configuration() {
         &format!("[clients.myclient]\nclient_id = \"{other}\"\n"),
     );
     let before = w.server_toml();
-    let out = w.irsync(&["-a", &w.src_arg(), "myserver:dest"]);
+    let out = w.irsync_bare(&["pair", "myserver"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("[clients.myclient]"), "{err}");
@@ -1054,70 +1197,12 @@ fn a_taken_client_name_is_refused_and_changes_no_configuration() {
     assert!(err.contains(note), "{err}");
     assert!(w.server.path().join(".local/bin/irsync").exists());
     // Again, with nothing to install: nothing at all is changed.
-    let out = w.irsync(&["-a", &w.src_arg(), "myserver:dest"]);
+    let out = w.irsync_bare(&["pair", "myserver"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("[clients.myclient]"), "{err}");
     assert!(!err.contains(note), "{err}");
     assert_eq!(w.server_toml(), before);
-}
-
-/// The owner removed the immediate grant and the daemon is down: the ssh
-/// check restarts the daemon but must not put the grant back; the sync
-/// stops with the refusal's hint and is not retried.
-#[test]
-fn fallback_after_grant_removed_does_not_regrant() {
-    let w = World::new();
-    let dest = w.server.path().join("dest");
-    let target = format!("myserver:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
-    let id = client_id(w.client.path());
-    let out = common::irsync_bin(w.server.path(), &["grant", "remove", "immediate", &id]);
-    assert!(out.status.success(), "{out:?}");
-    w.kill_daemon();
-    let other = w.server.path().join("other");
-    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", other.display())]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.contains("checking it over ssh"), "{err}");
-    assert!(
-        err.contains("the daemon rejected this client's key"),
-        "{err}"
-    );
-    assert!(!immediate_granted(&w, &id), "{}", w.server_toml());
-    assert!(!other.exists());
-}
-
-/// ssh itself fails (here: `--rsh false`): the client says so, tries the
-/// daemon once more with the usual settings, and reports both failures.
-#[test]
-fn ssh_failure_tries_the_daemon_again() {
-    let w = World::new();
-    let dest = w.server.path().join("dest");
-    let target = format!("myserver:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
-    w.kill_daemon();
-    let o = w.irsync(&[
-        "-a",
-        "--rsh",
-        "false",
-        "--dial-retries",
-        "0",
-        &w.src_arg(),
-        &target,
-    ]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(
-        err.contains("irsync: checking myserver over ssh failed: ")
-            && err.contains("; trying the daemon again"),
-        "{err}"
-    );
-    let last = err.lines().last().unwrap_or_default();
-    assert!(last.contains("cannot reach myserver over false"), "{err}");
-    assert!(last.contains("gave up after 1 attempt"), "{err}");
-    // A host set up over ssh never gets the hand-copied-ID hint.
-    assert!(!err.contains("copied this host's ID by hand"), "{err}");
 }
 
 /// The client's config with the ssh link of `myserver` removed: the alias
@@ -1137,7 +1222,7 @@ fn hand_added_host_that_never_answers_gets_the_id_hint() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("myserver:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.pair("myserver");
     forget_ssh(&w);
     w.kill_daemon();
     let o = w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]);
@@ -1152,8 +1237,7 @@ fn hand_added_host_that_never_answers_gets_the_id_hint() {
 #[test]
 fn hand_added_host_listing_gets_the_id_hint() {
     let w = World::new();
-    let dest = w.server.path().join("dest");
-    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    w.pair("myserver");
     forget_ssh(&w);
     w.kill_daemon();
     let o = w.irsync(&["myserver:"]);
@@ -1163,36 +1247,14 @@ fn hand_added_host_listing_gets_the_id_hint() {
     assert_eq!(err.matches("irsync id show --daemon").count(), 1, "{err}");
 }
 
-/// A host set up in this run that then does not answer is not checked
-/// over ssh again straight away: the setup just did that.
-#[test]
-fn no_second_ssh_round_right_after_setup() {
-    let mut w = World::new();
-    // The daemon listens on the old port; the client dials another.
-    w.port = free_port();
-    let dest = w.server.path().join("dest");
-    let o = w.irsync(&[
-        "-a",
-        "--dial-retries",
-        "0",
-        &w.src_arg(),
-        &format!("myserver:{}", dest.display()),
-    ]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.contains("saved server myserver"), "{err}");
-    assert!(!err.contains("checking it over ssh"), "{err}");
-    assert_eq!(w.ssh_calls(), 3, "{err}");
-}
-
 /// An alias whose name is not its ssh destination: the check goes to the
 /// destination and updates that alias, not one named after the
 /// destination.
 #[test]
-fn fallback_updates_the_alias_not_its_ssh_name() {
+fn pair_updates_the_alias_not_its_ssh_name() {
     let w = World::new();
     let dest = w.server.path().join("dest");
-    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    w.pair("myserver");
     let path = w.client.path().join(".config/irsync/irsync.toml");
     let cfg = w
         .client_config()
@@ -1210,16 +1272,14 @@ fn fallback_updates_the_alias_not_its_ssh_name() {
             std::fs::remove_file(p).unwrap();
         }
     }
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &format!("nas:{}", dest.display())]));
-    assert!(
-        err.contains("nas did not answer; checking it over ssh"),
-        "{err}"
-    );
+    let err = w.pair("nas");
+    assert!(err.contains("pairing with nas over ssh"), "{err}");
     assert!(err.contains("updated server nas:"), "{err}");
     assert_ne!(w.saved_id("nas"), before);
     let cfg = w.client_config();
     assert!(!cfg.contains("[servers.myserver]"), "{cfg}");
     assert!(cfg.contains("ssh = \"myserver\""), "{cfg}");
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("nas:{}", dest.display())]));
     same_tree(w.src.path(), &dest);
 }
 
@@ -1241,63 +1301,55 @@ fn alias_without_ssh_does_not_fall_back() {
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(err.contains("gave up after 1 attempt"), "{err}");
     assert!(!err.contains("over ssh"), "{err}");
+    assert!(!err.contains("irsync pair"), "{err}");
     assert_eq!(w.ssh_calls(), 0);
 }
 
-/// `--ssh` goes through ssh for a saved host (probe and setup, no copy:
-/// the build is current), reports it, then syncs.
+/// `pair` goes through ssh for a saved host (probe and setup, no copy:
+/// the build is current), reports it, then a push works.
 #[test]
-fn force_ssh_checks_a_saved_host() {
+fn pair_checks_a_saved_host() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("myserver:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.pair("myserver");
     let calls = w.ssh_calls();
-    std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
-    let err = ok(&w.irsync(&["-a", "--ssh", &w.src_arg(), &target]));
-    assert!(err.contains("irsync: checking myserver over ssh"), "{err}");
+    let err = w.pair("myserver");
+    assert!(
+        err.contains("irsync: pairing with myserver over ssh"),
+        "{err}"
+    );
     assert!(err.contains("irsync: set up myserver over ssh:"), "{err}");
-    assert!(!err.contains("not a saved server"), "{err}");
     assert!(!err.contains("installed"), "{err}");
     assert_eq!(w.ssh_calls(), calls + 2);
-    assert_eq!(
-        std::fs::read_to_string(dest.join("a.txt")).unwrap(),
-        "changed\n"
-    );
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    assert!(dest.join("a.txt").exists());
 }
 
-/// `--ssh` with a bare EndpointId has nothing to ssh to.
+/// `pair` with a bare EndpointId has nothing to ssh to.
 #[test]
-fn force_ssh_refuses_an_endpoint_id() {
+fn pair_refuses_an_endpoint_id() {
     let w = World::new();
     let id = iroh::SecretKey::from_bytes(&[9; 32]).public().to_string();
-    let o = w.irsync(&["-a", "--ssh", &w.src_arg(), &format!("{id}:/x")]);
+    let o = w.irsync_bare(&["pair", &id]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success(), "{err}");
     assert!(
-        err.contains("--ssh needs a server name or an ssh destination, not an EndpointId"),
+        err.contains("pair needs a server name or an ssh destination, not an EndpointId"),
         "{err}"
     );
     assert_eq!(w.ssh_calls(), 0);
 }
 
-/// `--no-remote-dht` on the first push writes `dht = false` on the server
+/// `pair --no-dht` on a first pairing writes `dht = false` on the server
 /// before its daemon starts (so this test never publishes), and says so.
 #[test]
-fn no_remote_dht_turns_server_publishing_off() {
+fn no_dht_turns_server_publishing_off() {
     let w = World::new();
     let cfg = w.server.path().join(".config/irsync/irsync.toml");
     let text = std::fs::read_to_string(&cfg).unwrap();
     irsync::fs::private::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
-    let dest = w.server.path().join("dest");
-    let o = w.irsync(&[
-        "-a",
-        "--no-remote-dht",
-        &w.src_arg(),
-        &format!("myserver:{}", dest.display()),
-    ]);
-    let err = ok(&o);
-    same_tree(w.src.path(), &dest);
+    let err = ok(&w.irsync_bare(&["pair", "--no-dht", "myserver"]));
     assert!(
         err.contains(
             "irsync:   turned off DHT publishing on myserver ([daemon.discovery] dht = false)"
@@ -1325,46 +1377,20 @@ fn assert_stopped_by_no_install(w: &World, o: &Output) {
 }
 
 #[test]
-fn no_install_flag_stops_a_first_push() {
+fn pair_no_install_stops_a_first_pairing() {
     let w = World::new();
-    let dest = w.server.path().join("dest");
-    let o = w.irsync(&[
-        "-a",
-        "--no-install",
-        &w.src_arg(),
-        &format!("myserver:{}", dest.display()),
-    ]);
+    let o = w.irsync_bare(&["pair", "--no-install", "myserver"]);
     assert_stopped_by_no_install(&w, &o);
 }
 
 #[test]
-fn ssh_install_false_in_config_does_the_same() {
+fn ssh_install_false_in_config_stops_a_first_pairing() {
     let w = World::new();
     let cfg = w.client.path().join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     irsync::fs::private::write(cfg.join("irsync.toml"), "[client]\nssh_install = false\n").unwrap();
-    let dest = w.server.path().join("dest");
-    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    let o = w.irsync_bare(&["pair", "myserver"]);
     assert_stopped_by_no_install(&w, &o);
-}
-
-/// A first push with no `--address` and every client lookup off: the only
-/// way to the new daemon is the address `ssh-setup` hands back. Without it
-/// the client finds no address (the daemon has published nothing yet).
-#[test]
-fn first_push_dials_the_address_setup_reports() {
-    let w = World::new();
-    let cfg = w.client.path().join(".config/irsync");
-    std::fs::create_dir_all(&cfg).unwrap();
-    irsync::fs::private::write(
-        cfg.join("irsync.toml"),
-        "[client]\ndht = false\nmdns = false\nrelay_mode = \"disabled\"\ndial_retries = 0\n",
-    )
-    .unwrap();
-    let dest = w.server.path().join("dest");
-    let o = w.irsync_bare(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
-    ok(&o);
-    same_tree(w.src.path(), &dest);
 }
 
 /// A root account is refused right after the probe: nothing is installed,
@@ -1374,8 +1400,7 @@ fn a_root_account_is_refused_before_anything_is_installed() {
     let mut w = World::new();
     w.probe_root = true;
     std::fs::remove_dir_all(w.server.path().join(".config")).unwrap();
-    let dest = w.server.path().join("dest");
-    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    let o = w.irsync_bare(&["pair", "myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -1397,7 +1422,6 @@ fn a_root_account_is_refused_before_anything_is_installed() {
     assert!(!w.server.path().join(".config/irsync").exists());
     assert!(!w.server.path().join(".local").exists());
     assert!(!w.server.path().join("xdg").exists());
-    assert!(!dest.exists());
 }
 
 /// The probe did not see root, but the server command does: it refuses
@@ -1406,8 +1430,7 @@ fn a_root_account_is_refused_before_anything_is_installed() {
 fn ssh_setup_itself_refuses_root_and_grants_nothing() {
     let mut w = World::new();
     w.server_root = true;
-    let dest = w.server.path().join("dest");
-    let o = w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]);
+    let o = w.irsync_bare(&["pair", "myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -1431,19 +1454,15 @@ fn ssh_setup_itself_refuses_root_and_grants_nothing() {
     );
 }
 
-/// The automatic check of a saved host goes through the same probe: a
-/// daemon that died is not started again through a root account.
+/// Pairing again with a saved host goes through the same probe: a daemon
+/// that died is not started again through a root account.
 #[test]
-fn a_dead_daemon_is_not_restarted_through_a_root_account() {
+fn pair_through_a_root_account_is_refused() {
     let mut w = World::new();
-    let dest = w.server.path().join("dest");
-    let target = format!("myserver:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.pair("myserver");
     w.kill_daemon();
     w.probe_root = true;
-    // As after any failed check over ssh, the client tries the daemon once
-    // more; no retries, so that try is short.
-    let o = w.irsync(&["-a", "--dial-retries", "0", &w.src_arg(), &target]);
+    let o = w.irsync_bare(&["pair", "myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -1486,17 +1505,29 @@ impl World {
     /// install left it, and waits until it holds the lock.
     fn start_old_daemon(&self) -> OldDaemon {
         self.plant_old_bin();
-        let child = Command::new(self.old_bin())
-            .args(["daemon", "-vv"])
-            .env("HOME", self.server.path())
-            .env("XDG_STATE_HOME", self.server.path().join("xdg"))
-            .env_remove("IRSYNC_PASSPHRASE")
-            .env_remove("RUST_LOG")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut tries = 0;
+        let child = loop {
+            let spawned = Command::new(self.old_bin())
+                .args(["daemon", "-vv"])
+                .env("HOME", self.server.path())
+                .env("XDG_STATE_HOME", self.server.path().join("xdg"))
+                .env_remove("IRSYNC_PASSPHRASE")
+                .env_remove("RUST_LOG")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+            match spawned {
+                // A child another test thread forked while the copy was
+                // open for writing holds it open until it runs its own
+                // program: wait for that.
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                r => break r.unwrap(),
+            }
+        };
         let mut d = OldDaemon(child);
         let state = self.server.path().join("xdg/irsync");
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1545,11 +1576,12 @@ fn old_daemon_is_moved_to_the_new_path() {
     let w = World::new();
     let _old = w.start_old_daemon();
     let dest = w.server.path().join("dest");
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    let err = w.pair("myserver");
     assert!(err.contains("irsync:   restarted the daemon"), "{err}");
     assert_eq!(w.lock_exe(), w.server_real(".local/bin/irsync"));
     assert!(!w.old_bin().exists());
     assert!(!w.old_bin().parent().unwrap().exists());
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
     same_tree(w.src.path(), &dest);
 }
 
@@ -1568,7 +1600,7 @@ fn service_file_keeps_the_old_binary_and_daemon() {
     .unwrap();
     let old = w.start_old_daemon();
     let dest = w.server.path().join("dest");
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    let err = w.pair("myserver");
     let info = probe(&w.server.path().join("xdg/irsync")).expect("a running daemon");
     assert_eq!(info.pid, old.0.id(), "{err}");
     assert_eq!(w.lock_exe(), w.server_real(OLD_BIN));
@@ -1581,7 +1613,251 @@ fn service_file_keeps_the_old_binary_and_daemon() {
             .any(|l| l.contains("Change the path in that file to ~/.local/bin/irsync")),
         "{err}"
     );
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
     same_tree(w.src.path(), &dest);
+}
+
+/// Whether process `pid` is still there.
+fn alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+// Only the Linux-only service tests use it.
+#[cfg(target_os = "linux")]
+const SYSTEMD_LINE: &str =
+    "irsync:   the daemon runs as a systemd user service (irsync.service), also after a reboot";
+const HOWTO: &str = "To keep the daemon running after a reboot, make it a user service.";
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_makes_a_systemd_user_service() {
+    let mut w = World::new();
+    w.service = true;
+    let err = w.pair("myserver");
+    let unit = std::fs::read_to_string(w.unit()).unwrap();
+    assert!(unit.contains(irsync::ssh::service::MARKER), "{unit}");
+    let log = w.service_log();
+    assert!(
+        log.contains("systemctl --user enable --now irsync"),
+        "{log}"
+    );
+    assert!(err.lines().any(|l| l == SYSTEMD_LINE), "{err}");
+    assert!(!err.contains(HOWTO), "{err}");
+    assert_eq!(Some(w.lock_pid()), w.service_pid());
+    let dest = w.server.path().join("dest");
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    same_tree(w.src.path(), &dest);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_twice_keeps_one_daemon() {
+    let mut w = World::new();
+    w.service = true;
+    w.pair("myserver");
+    let pid = w.lock_pid();
+    let err = w.pair("myserver");
+    assert!(err.lines().any(|l| l == SYSTEMD_LINE), "{err}");
+    let log = w.service_log();
+    assert!(!log.contains("restart"), "{log}");
+    assert_eq!(log.matches("enable --now").count(), 1, "{log}");
+    assert_eq!(w.lock_pid(), pid);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_moves_a_background_daemon_into_the_service() {
+    let mut w = World::new();
+    w.service = true;
+    ok(&w.irsync_bare(&["pair", "--no-service", "myserver"]));
+    let old = w.lock_pid();
+    let err = w.pair("myserver");
+    assert!(err.lines().any(|l| l == SYSTEMD_LINE), "{err}");
+    assert!(!alive(old), "the background daemon {old} still runs");
+    assert_eq!(Some(w.lock_pid()), w.service_pid());
+}
+
+#[test]
+fn pair_with_no_service_writes_no_unit() {
+    let mut w = World::new();
+    w.service = true;
+    let err = ok(&w.irsync_bare(&["pair", "--no-service", "myserver"]));
+    assert!(
+        err.lines().any(|l| {
+            l
+            == "irsync:   the daemon runs in the background until the server reboots (--no-service)"
+        }),
+        "{err}"
+    );
+    assert!(!w.unit().exists());
+    assert!(!w.service_log().contains("enable"), "{}", w.service_log());
+    assert!(alive(w.lock_pid()));
+}
+
+#[test]
+fn pair_without_a_user_session_falls_back() {
+    let mut w = World::new();
+    w.service = true;
+    w.env.push(("FAKE_SYSTEMD_DOWN".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.lines().any(|l| l
+            == "irsync:   no systemd or launchd user session there: the daemon runs in the background until the server reboots"),
+        "{err}"
+    );
+    assert!(err.lines().any(|l| l == HOWTO), "{err}");
+    assert!(!w.unit().exists());
+    assert!(alive(w.lock_pid()));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_falls_back_when_linger_is_refused() {
+    let mut w = World::new();
+    w.service = true;
+    w.env.push(("FAKE_LINGER".into(), "no".into()));
+    w.env.push(("FAKE_LINGER_REFUSED".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.contains("irsync:   warning: could not make the daemon a user service"),
+        "{err}"
+    );
+    assert!(err.lines().any(|l| l == HOWTO), "{err}");
+    assert!(!w.unit().exists());
+    assert!(alive(w.lock_pid()));
+    assert_eq!(w.service_pid(), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_leaves_a_foreign_unit_alone() {
+    let mut w = World::new();
+    w.service = true;
+    let text = "[Service]\nExecStart=/usr/bin/irsync daemon\n";
+    std::fs::create_dir_all(w.unit().parent().unwrap()).unwrap();
+    std::fs::write(w.unit(), text).unwrap();
+    let err = w.pair("myserver");
+    assert_eq!(std::fs::read_to_string(w.unit()).unwrap(), text);
+    assert!(
+        err.lines().any(|l| l
+            == "irsync:   ~/.config/systemd/user/irsync.service was not written by irsync; left it alone. The daemon runs in the background until the server reboots"),
+        "{err}"
+    );
+    assert!(!w.service_log().contains("enable"), "{}", w.service_log());
+    assert!(alive(w.lock_pid()));
+}
+
+/// A refused linger leaves the daemon that runs in the background alone:
+/// nothing is stopped before the service is ready.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_keeps_a_background_daemon_when_linger_is_refused() {
+    let mut w = World::new();
+    w.service = true;
+    ok(&w.irsync_bare(&["pair", "--no-service", "myserver"]));
+    let pid = w.lock_pid();
+    w.env.push(("FAKE_LINGER".into(), "no".into()));
+    w.env.push(("FAKE_LINGER_REFUSED".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.contains("irsync:   warning: could not make the daemon a user service"),
+        "{err}"
+    );
+    assert!(!err.contains("started the daemon"), "{err}");
+    assert_eq!(w.lock_pid(), pid);
+}
+
+/// A service that never starts the daemon is turned off again, so the
+/// daemon started in the background is the only one.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_turns_off_a_service_that_starts_nothing() {
+    let mut w = World::new();
+    w.service = true;
+    w.env.push(("FAKE_SERVICE_NO_START".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.contains(
+            "irsync:   warning: could not make the daemon a user service: \
+             the service did not start the daemon"
+        ),
+        "{err}"
+    );
+    let log = w.service_log();
+    assert!(
+        log.contains("systemctl --user disable --now irsync"),
+        "{log}"
+    );
+    assert_eq!(w.service_pid(), None);
+    assert!(alive(w.lock_pid()));
+    // Our unit stays, for the next `pair`.
+    assert!(w.unit().exists());
+}
+
+/// A unit written by hand from irsync's own steps (`ExecStart=%h/...`)
+/// starts this binary: it is used as it is, not called foreign.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_uses_a_hand_written_unit_of_this_binary() {
+    let mut w = World::new();
+    w.service = true;
+    let text = "[Unit]\nDescription=irsync daemon\n[Service]\n\
+                ExecStart=%h/.local/bin/irsync daemon -vv\nRestart=on-failure\n\
+                [Install]\nWantedBy=default.target\n";
+    std::fs::create_dir_all(w.unit().parent().unwrap()).unwrap();
+    std::fs::write(w.unit(), text).unwrap();
+    let err = w.pair("myserver");
+    assert!(!err.contains("not written by irsync"), "{err}");
+    assert!(err.lines().any(|l| l == SYSTEMD_LINE), "{err}");
+    assert_eq!(std::fs::read_to_string(w.unit()).unwrap(), text);
+    assert_eq!(Some(w.lock_pid()), w.service_pid());
+}
+
+/// A service that is enabled but fails to start is turned off again, not
+/// left to start after a reboot beside the background daemon.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_turns_off_a_service_whose_start_fails() {
+    let mut w = World::new();
+    w.service = true;
+    w.env.push(("FAKE_SERVICE_START_FAILS".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.contains("irsync:   warning: could not make the daemon a user service: "),
+        "{err}"
+    );
+    let log = w.service_log();
+    assert!(
+        log.contains("systemctl --user disable --now irsync"),
+        "{log}"
+    );
+    assert!(alive(w.lock_pid()));
+}
+
+/// Another daemon holds the lock: no unit is written and no service
+/// started, so the two never fight over the lock.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_leaves_a_foreign_daemon_without_a_service() {
+    let mut w = World::new();
+    w.service = true;
+    w.grant_client();
+    let unit = w.unit();
+    let text = "[Service]\nExecStart=%h/.local/share/irsync/bin/irsync daemon -vv\n";
+    std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    std::fs::write(&unit, text).unwrap();
+    let old = w.start_old_daemon();
+    let err = w.pair("myserver");
+    assert_eq!(w.lock_pid(), old.0.id(), "{err}");
+    assert_eq!(std::fs::read_to_string(&unit).unwrap(), text);
+    let log = w.service_log();
+    assert!(!log.contains("enable"), "{log}");
+    assert!(!err.contains("user service"), "{err}");
 }
 
 /// An old binary that nothing runs goes, with its empty directory.
@@ -1592,11 +1868,12 @@ fn stale_old_binary_without_a_daemon_is_removed() {
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, "old irsync\n").unwrap();
     let dest = w.server.path().join("dest");
-    let err = ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    let err = w.pair("myserver");
     assert!(!old.exists(), "{err}");
     assert!(!old.parent().unwrap().exists());
     // Only the bin directory goes.
     assert!(w.server.path().join(".local/share/irsync").exists());
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
     same_tree(w.src.path(), &dest);
 }
 
@@ -1607,14 +1884,15 @@ fn no_install_keeps_the_old_binary() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("myserver:{}", dest.display());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
+    w.pair("myserver");
     w.kill_daemon();
     let _old = w.start_old_daemon();
     std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
-    let err = ok(&w.irsync(&["-a", "--no-install", "--ssh", &w.src_arg(), &target]));
+    let err = ok(&w.irsync_bare(&["pair", "--no-install", "myserver"]));
     assert!(err.contains("irsync:   restarted the daemon"), "{err}");
     assert_eq!(w.lock_exe(), w.server_real(".local/bin/irsync"));
     assert!(w.old_bin().exists());
+    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     assert_eq!(
         std::fs::read_to_string(dest.join("a.txt")).unwrap(),
         "changed\n"

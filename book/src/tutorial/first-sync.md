@@ -21,24 +21,28 @@ first time a command needs it and says so on stderr:
 ## The quick way: over ssh
 
 If `ssh myserver` already logs you in to the server, one command on the
-client is enough:
+client sets it up, and then you can push:
 
 ```sh
+irsync pair myserver
 irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
-`myserver` is not a saved server yet, so irsync takes it as an ssh destination
-and sets the server up first. The account you log in to must not be root:
-irsync refuses to set up a daemon as root. It says what it did:
+`irsync pair` is the only command that uses ssh. It takes `myserver` as an
+ssh destination and sets the server up. A sync never uses ssh. The account you
+log in to must not be root: irsync refuses to set up a daemon as root.
+`pair` says what it did:
 
 ```text
-irsync: myserver is not a saved server; setting it up over ssh
+irsync: pairing with myserver over ssh
 irsync: set up myserver over ssh:
 irsync:   installed irsync 0.1.0 (1a2b3c4) in ~/.local/bin, with fileset and the manual pages
 irsync:   generated the daemon identity
 irsync:   granted this client (myclient, a3e4753e5e) access to any path
-irsync:   started the daemon (log: ~/.local/state/irsync/daemon.log)
+irsync:   started the daemon
+irsync:   the daemon runs as a systemd user service (irsync.service), also after a reboot
 irsync:   saved server myserver -> 4a29f16a4f
+irsync: paired with myserver; syncs go over iroh, not ssh
 ```
 
 In steps, it:
@@ -58,37 +62,43 @@ In steps, it:
   `--no-install` to copy nothing and use the irsync already at
   `~/.local/bin/irsync` there. The installer never edits your shell startup
   files. When the server's login shell does not find `irsync`, the installer
-  prints the line to add to a startup file there, and you see it during the
-  setup;
+  prints the line to add to a startup file there, and you see it while
+  `pair` runs;
 - lets this client reach any path your account on the server can, read-write
   (an [immediate grant](../reference/configuration.md#immediate-grants)). The
   server saves the client under its host name, here `myclient`, as a
   `[clients.myclient]` entry, so its grants show that name instead of a long id. The first push to
   `/srv/photos` makes it an export, granted to this client only;
-- starts the daemon, which keeps running in the background;
+- starts the daemon and makes it a user service: a systemd service on Linux,
+  a launchd agent on macOS. It keeps running and starts again after a reboot.
+  On a Mac that happens once someone logs in there. Pass `--no-service` to
+  start it in the background only, until the next reboot;
 - saves `myserver` as a server on the client, with the daemon's
   `EndpointId` and `ssh = "myserver"`. For `mike@myserver` or an IP
   address, see
-  [which names the setup saves](../how-to/ssh-setup.md#the-names-the-setup-saves).
+  [which names pair saves](../how-to/pair.md#the-names-pair-saves).
 
-After that, irsync prints how to make the daemon a user service, so that it
-survives a reboot (see
-[Run the daemon](../how-to/run-the-daemon.md#keep-a-daemon-started-over-ssh-running)).
-Then the push runs over iroh. `-a` recurses into directories and keeps
+If the server has no systemd or launchd user session, or the service file
+there is not one irsync wrote, `pair` starts the daemon in the background
+and prints the steps to make it a service yourself (see
+[Run the daemon](../how-to/run-the-daemon.md#run-the-daemon-as-a-user-service)).
+
+The push runs over iroh. `-a` recurses into directories and keeps
 symlinks, permissions, times, group, owner and device files; `-v` lists each
 file. The trailing `/` on `~/Photos/` copies the directory's contents, as in
 rsync. Add `-P` to see a live block at the bottom of the screen that shows
 the transfer as it runs.
 
-Later runs use the saved server and do not touch ssh. If the daemon has stopped,
-for example after a reboot, a sync waits about 15 seconds for an answer, then
-says `myserver did not answer; checking it over ssh`, starts the daemon again
-and carries on.
+Syncs use the saved server and never touch ssh. If the daemon has stopped, a sync
+waits 15 seconds for an answer, then stops and says
+`myserver did not answer`. It names what to check on the server. To start the
+daemon again, run `irsync pair myserver`. A sync to a name irsync does not
+know stops too, and tells you to run `irsync pair`.
 
-[Set a server up over ssh](../how-to/ssh-setup.md) covers the options:
-re-running the setup with `--ssh` after you update irsync, keeping the daemon
-out of the public DHT with `--no-remote-dht`, another ssh command with
-`--rsh`, and limiting the client to named exports.
+[Pair with a server over ssh](../how-to/pair.md) covers the options: pairing
+again after you update irsync, keeping the daemon out of the public DHT with
+`--no-dht`, another ssh command with `--rsh`, and limiting the client to
+named exports.
 
 ### Run it again
 
@@ -274,7 +284,7 @@ whether it exists or not.
 
 ## What you did
 
-- The quick way set the server up over ssh and saved a server; every sync
+- `irsync pair` set the server up over ssh and saved a server; every sync
   after that went over iroh.
 - By hand, you copied two `EndpointId`s, one in each direction: the client's
   to the server, the daemon's to the client. That exchange is the whole of the
@@ -290,7 +300,7 @@ The name is optional: the raw `EndpointId` works in its place, as in
 
 - [Troubleshoot a first sync](../how-to/troubleshooting.md): what the usual
   first-run errors mean.
-- [Set a server up over ssh](../how-to/ssh-setup.md): the options of the
+- [Pair with a server over ssh](../how-to/pair.md): the options of the
   quick way.
 - [Command line](../reference/command-line.md): every flag.
 - [Remote addresses](../reference/remote-addresses.md): how the daemon

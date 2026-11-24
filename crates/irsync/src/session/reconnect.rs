@@ -38,8 +38,8 @@ pub struct ReconnectOpts {
     /// connection has been made, a dropped one is redialled until `max`.
     pub dial_retries: u32,
     /// Bounds each dial until the server has answered once (`None`: iroh's
-    /// own handshake timeout). Used for a host that can be checked over ssh
-    /// instead of waiting long.
+    /// own handshake timeout). Set to [`PAIRED_FIRST_DIAL`] for a server
+    /// `irsync pair` saved, so a daemon that has stopped is reported soon.
     pub first_dial_timeout: Option<Duration>,
     /// `pq_key_exchange = "require"`: refuse a connection that did not get
     /// the hybrid key exchange.
@@ -243,6 +243,52 @@ pub fn describe_dial(target: &EndpointId, err: &ConnectError) -> String {
 pub const WRONG_ID_HINT: &str = "if you copied this host's ID by hand, it must be the \
      daemon's EndpointId: on the server, irsync id show --daemon prints it (plain \
      irsync id show prints the client's). Also check that the daemon is running there";
+
+/// A name that is neither a saved server nor an EndpointId. `config_file`
+/// is where saved servers are looked up.
+pub fn not_paired(host: &str, config_file: &std::path::Path) -> String {
+    format!(
+        "{host} is not a saved server or an EndpointId (saved servers are in {}). \
+         To set it up over ssh: irsync pair {host}. To add it by hand: \
+         irsync server add {host} <daemon-id>",
+        config_file.display()
+    )
+}
+
+/// A name saved as a client only, with no server of that name.
+pub fn client_only(host: &str) -> String {
+    format!(
+        "{host} is saved as a client only: this machine has never dialled its \
+         daemon. To set it up over ssh: irsync pair {host}"
+    )
+}
+
+/// How long the first dial to a server `irsync pair` saved (one with an
+/// `ssh` value) waits for an answer. Such a server is not retried before
+/// it has answered unless `--dial-retries` is given: its daemon is either
+/// up, or stopped and to be started again with `irsync pair`.
+pub const PAIRED_FIRST_DIAL: Duration = Duration::from_secs(15);
+
+/// A saved server with an `ssh` value that never answered.
+pub fn not_answering(alias: &str) -> String {
+    format!(
+        "{alias} did not answer. On {alias}, check that the daemon is running: \
+         systemctl --user status irsync (Linux) or launchctl list \
+         org.irsync.daemon (macOS). Its log: journalctl --user -u irsync for a \
+         systemd service, else ~/.local/state/irsync/daemon.log. To start it again \
+         from here: irsync pair {alias}"
+    )
+}
+
+/// A server that never answered, explained: `paired` (the name of a saved
+/// server with an `ssh` value) is told how to start its daemon again; any
+/// other gets [`WRONG_ID_HINT`] (see [`with_wrong_id_hint`]).
+pub fn never_reached(err: anyhow::Error, paired: Option<&str>) -> anyhow::Error {
+    match paired {
+        Some(alias) => anyhow::anyhow!("{err:#}; {}", not_answering(alias)),
+        None => with_wrong_id_hint(err),
+    }
+}
 
 /// `err` with [`WRONG_ID_HINT`] after it, unless it already points at
 /// `irsync id show --daemon` (as a dial that found no address does).
@@ -765,6 +811,29 @@ mod tests {
             anyhow::anyhow!("no address found. On the server, `irsync id show --daemon` prints it");
         let before = format!("{had:#}");
         assert_eq!(format!("{:#}", with_wrong_id_hint(had)), before);
+    }
+
+    #[test]
+    fn never_reached_names_pair_for_a_paired_server() {
+        let paired = format!(
+            "{:#}",
+            never_reached(anyhow::anyhow!("gave up after 1 attempt"), Some("myserver"))
+        );
+        assert!(
+            paired.starts_with("gave up after 1 attempt; myserver did not answer."),
+            "{paired}"
+        );
+        assert!(
+            paired.contains("launchctl list org.irsync.daemon"),
+            "{paired}"
+        );
+        assert!(paired.ends_with("irsync pair myserver"), "{paired}");
+        assert!(!paired.contains("irsync id show --daemon"), "{paired}");
+        let other = format!(
+            "{:#}",
+            never_reached(anyhow::anyhow!("gave up after 1 attempt"), None)
+        );
+        assert!(other.contains("copied this host's ID by hand"), "{other}");
     }
 
     #[test]

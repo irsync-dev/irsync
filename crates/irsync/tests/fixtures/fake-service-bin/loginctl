@@ -1,0 +1,25 @@
+#!/bin/sh
+# Stands in for loginctl in tests.
+# Env: FAKE_SERVICE_LOG (each call is appended to it), FAKE_LINGER
+# (optional: no makes show-user report linger off), FAKE_LINGER_REFUSED
+# (optional: 1 makes enable-linger fail).
+echo "loginctl $*" >> "$FAKE_SERVICE_LOG"
+case "$1" in
+    show-user)
+        if [ "$FAKE_LINGER" = no ]; then
+            echo Linger=no
+        else
+            echo Linger=yes
+        fi
+        ;;
+    enable-linger)
+        if [ "$FAKE_LINGER_REFUSED" = 1 ]; then
+            echo "Could not enable linger: Access denied" >&2
+            exit 1
+        fi
+        ;;
+    *)
+        echo "fake loginctl: $1 is not faked" >&2
+        exit 1
+        ;;
+esac
