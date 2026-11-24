@@ -29,6 +29,7 @@ use irsync_proto::config as pb;
 
 use super::client::OLD_REMOTE_BIN;
 use super::legacy;
+use super::service::ServiceOutcome;
 
 /// The first line of the report; text before it (a login shell's) is ignored.
 pub const BEGIN: &str = "irsync-setup-begin";
@@ -121,6 +122,8 @@ pub struct SetupReport {
     /// Service files that still start the old binary (or cannot be read).
     pub stale_services: Vec<PathBuf>,
     pub old_bin: OldBin,
+    /// What happened to the user service.
+    pub service: ServiceOutcome,
 }
 
 impl SetupReport {
@@ -185,6 +188,21 @@ impl SetupReport {
             OldBin::RemoveFailed(e) => {
                 lines.push("old_bin=failed".into());
                 lines.push(format!("old_bin_error={}", e.replace(['\r', '\n'], " ")));
+            }
+        }
+        match &self.service {
+            ServiceOutcome::Systemd => lines.push("service=systemd".into()),
+            ServiceOutcome::Launchd => lines.push("service=launchd".into()),
+            ServiceOutcome::Skipped => lines.push("service=skipped".into()),
+            ServiceOutcome::NotTouched => lines.push("service=not_touched".into()),
+            ServiceOutcome::Unavailable => lines.push("service=unavailable".into()),
+            ServiceOutcome::Failed(e) => {
+                lines.push("service=failed".into());
+                lines.push(format!("service_error={}", e.replace(['\r', '\n'], " ")));
+            }
+            ServiceOutcome::Foreign(f) => {
+                lines.push("service=foreign".into());
+                lines.push(format!("service_file={}", f.display()));
             }
         }
         lines.push(END.to_string());
@@ -271,6 +289,22 @@ impl SetupReport {
             ),
             Some(v) => return Err(bad("old_bin", v)),
         };
+        // No `service` line: nothing was done about a service.
+        let service = match fields.get("service").copied() {
+            None | Some("skipped") => ServiceOutcome::Skipped,
+            Some("systemd") => ServiceOutcome::Systemd,
+            Some("launchd") => ServiceOutcome::Launchd,
+            Some("not_touched") => ServiceOutcome::NotTouched,
+            Some("unavailable") => ServiceOutcome::Unavailable,
+            Some("failed") => ServiceOutcome::Failed(
+                fields
+                    .get("service_error")
+                    .map(|e| e.to_string())
+                    .unwrap_or_default(),
+            ),
+            Some("foreign") => ServiceOutcome::Foreign(PathBuf::from(get("service_file")?)),
+            Some(v) => return Err(bad("service", v)),
+        };
         Ok(SetupReport {
             version: get("version")?,
             endpoint_id,
@@ -285,6 +319,7 @@ impl SetupReport {
             },
             stale_services,
             old_bin,
+            service,
             addrs: match fields.get("addrs") {
                 Some(v) if !v.is_empty() => v
                     .split(',')
@@ -566,6 +601,8 @@ pub fn run(
         addrs: reached.addrs,
         stale_services: stale,
         old_bin,
+        // Wired up in a later step.
+        service: ServiceOutcome::Skipped,
     })
 }
 
@@ -700,7 +737,43 @@ mod tests {
             addrs: Vec::new(),
             stale_services: Vec::new(),
             old_bin: OldBin::Absent,
+            service: ServiceOutcome::Skipped,
         }
+    }
+
+    #[test]
+    fn report_round_trips_each_service_outcome() {
+        for service in [
+            ServiceOutcome::Systemd,
+            ServiceOutcome::Launchd,
+            ServiceOutcome::Skipped,
+            ServiceOutcome::NotTouched,
+            ServiceOutcome::Unavailable,
+            ServiceOutcome::Failed("linger: denied".into()),
+            ServiceOutcome::Foreign(PathBuf::from("/h/.config/systemd/user/irsync.service")),
+        ] {
+            let mut r = report();
+            r.service = service;
+            assert_eq!(SetupReport::parse(&r.to_lines()).unwrap(), r);
+        }
+        let mut r = report();
+        r.service = ServiceOutcome::Failed("first\nsecond".into());
+        let text = r.to_lines();
+        assert!(text.contains("\nservice_error=first second\n"), "{text}");
+    }
+
+    #[test]
+    fn report_without_a_service_line_is_skipped() {
+        let text: String = report()
+            .to_lines()
+            .lines()
+            .filter(|l| !l.starts_with("service"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(
+            SetupReport::parse(&text).unwrap().service,
+            ServiceOutcome::Skipped
+        );
     }
 
     #[test]

@@ -678,6 +678,7 @@ mod tests {
                 addrs: Vec::new(),
                 stale_services: Vec::new(),
                 old_bin: OldBin::Absent,
+                service: crate::ssh::service::ServiceOutcome::Skipped,
             },
             install,
             os,
