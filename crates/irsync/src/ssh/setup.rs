@@ -302,9 +302,9 @@ impl SetupReport {
 /// stand in the way.
 ///
 /// It is refused when it is not a valid name, when another client has it,
-/// and when grants name it without it being this client: they are for a
-/// peer named by hand, or left from a client that was removed, and must
-/// not pass to whoever has the name now. A client the server already has
+/// and when grants name it and `[clients]` has no such name: they are left
+/// from a client that was removed, or name a server, and must not pass to
+/// whoever has the name now. A client the server already has
 /// a name for keeps that one, whatever it calls itself.
 pub fn check_client_name(
     msg: &pb::Config,
@@ -312,9 +312,7 @@ pub fn check_client_name(
     client: EndpointId,
     name: &str,
 ) -> anyhow::Result<()> {
-    let Config {
-        servers, clients, ..
-    } = Config::from_message(msg, path)?;
+    let Config { clients, .. } = Config::from_message(msg, path)?;
     if clients.alias_of(&client).is_some() {
         return Ok(());
     }
@@ -328,16 +326,10 @@ pub fn check_client_name(
         );
     }
     if let Some(other) = clients.get(name) {
-        // The name may also be how this server dials that machine: then
-        // only its client id is to be replaced, not the server removed.
-        let fix = if servers.get(name).is_some() {
-            format!("replace it there with `irsync config set clients.{name}.client_id {client}`")
-        } else {
-            format!("remove it there with `irsync client remove {name} -f`")
-        };
         bail!(
             "the name {name:?} is already used on this server, as [clients.{name}] \
-             for the client {}. If that client is gone, {fix}; else rename this machine",
+             for the client {}. If that client is gone, remove it there with \
+             `irsync client remove {name} -f`; else rename this machine",
             other.client_id.fmt_short()
         );
     }
@@ -345,20 +337,11 @@ pub fn check_client_name(
     if !lists.is_empty() {
         let lists: Vec<String> = lists.iter().map(|l| format!("[{l}]")).collect();
         let lists = lists.join(", ");
-        match servers.get(name) {
-            Some(s) => bail!(
-                "grants on this server ({lists}) name {name:?}, which is [servers.{name}] \
-                 there, for {}, and no client. Rename this machine, or rename that \
-                 entry there",
-                s.endpoint_id.fmt_short()
-            ),
-            None => bail!(
-                "grants on this server still name {name:?} ({lists}), and no \
-                 [clients.{name}] says who that is. They are left from a client that \
-                 was removed; take {name:?} out of those lists there, or rename \
-                 this machine"
-            ),
-        }
+        bail!(
+            "grants on this server ({lists}) name {name:?}, and no [clients.{name}] \
+             says who that is. They are left from a client that was removed, or name \
+             a server; take {name:?} out of those lists there, or rename this machine"
+        );
     }
     Ok(())
 }

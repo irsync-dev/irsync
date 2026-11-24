@@ -254,7 +254,7 @@ fn first_push_sets_up_and_syncs() {
         "irsync: set up myserver over ssh:",
         "irsync:   installed irsync",
         "irsync:   started the daemon",
-        "irsync:   saved host alias myserver",
+        "irsync:   saved server myserver",
     ] {
         assert!(err.contains(want), "missing {want:?} in stderr:\n{err}");
     }
@@ -307,7 +307,7 @@ fn user_at_host_alias() {
     let dest = w.server.path().join("dest");
     let target = format!("u@myserver:{}", dest.display());
     let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
-    assert!(err.contains("saved host alias u@myserver"), "{err}");
+    assert!(err.contains("saved server u@myserver"), "{err}");
     let cfg = w.client_config();
     assert!(cfg.contains("ssh = \"u@myserver\""), "{cfg}");
     std::fs::write(w.src.path().join("a.txt"), "again\n").unwrap();
@@ -328,8 +328,8 @@ fn user_at_host_saves_the_plain_name_too() {
         &w.src_arg(),
         &format!("u@myserver:{}", dest.display()),
     ]));
-    assert!(err.contains("saved host alias u@myserver"), "{err}");
-    assert!(err.contains("saved host alias myserver"), "{err}");
+    assert!(err.contains("saved server u@myserver"), "{err}");
+    assert!(err.contains("saved server myserver"), "{err}");
     let cfg: toml::Table = w.client_config().parse().unwrap();
     for a in ["u@myserver", "myserver"] {
         assert_eq!(cfg["servers"][a]["ssh"].as_str(), Some("u@myserver"), "{a}");
@@ -349,7 +349,7 @@ fn ip_address_is_saved_under_the_server_name() {
         &w.src_arg(),
         &format!("192.168.1.5:{}", dest.display()),
     ]));
-    assert!(err.contains("saved host alias myserver"), "{err}");
+    assert!(err.contains("saved server myserver"), "{err}");
     let cfg: toml::Table = w.client_config().parse().unwrap();
     assert_eq!(
         cfg["servers"]["myserver"]["ssh"].as_str(),
@@ -412,7 +412,7 @@ fn an_address_does_not_replace_a_saved_ssh_name() {
         &format!("192.168.1.5:{}", dest.display()),
     ]));
     assert!(
-        err.contains("host alias myserver keeps ssh = mike@myserver"),
+        err.contains("server myserver keeps ssh = mike@myserver"),
         "{err}"
     );
     let cfg: toml::Table = w.client_config().parse().unwrap();
@@ -663,7 +663,10 @@ fn dead_daemon_is_restarted_over_ssh() {
     );
     assert!(err.contains("started the daemon"), "{err}");
     // Same id: the alias line is left out.
-    assert!(!err.contains("host alias"), "{err}");
+    assert!(
+        !err.contains("saved server") && !err.contains("updated server"),
+        "{err}"
+    );
     assert_eq!(
         std::fs::read_to_string(dest.join("a.txt")).unwrap(),
         "changed\n"
@@ -693,8 +696,8 @@ fn rebuilt_server_updates_every_alias_of_that_ssh_destination() {
         }
     }
     let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
-    assert!(err.contains("updated host alias mike@myserver:"), "{err}");
-    assert!(err.contains("updated host alias myserver:"), "{err}");
+    assert!(err.contains("updated server mike@myserver:"), "{err}");
+    assert!(err.contains("updated server myserver:"), "{err}");
     let now = w.saved_id("mike@myserver");
     assert_ne!(now, before);
     assert_eq!(w.saved_id("myserver"), now);
@@ -720,7 +723,7 @@ fn rebuilt_server_updates_alias() {
     let started = Instant::now();
     let err = ok(&w.irsync(&["-a", &w.src_arg(), &target]));
     assert!(started.elapsed() < Duration::from_secs(40), "{err}");
-    assert!(err.contains("updated host alias myserver:"), "{err}");
+    assert!(err.contains("updated server myserver:"), "{err}");
     assert_ne!(w.saved_id("myserver"), before);
     same_tree(w.src.path(), &dest);
 }
@@ -823,7 +826,7 @@ fn two_machines_sync_in_both_directions() {
         err.contains("myclient is saved as a client only; setting it up over ssh"),
         "{err}"
     );
-    assert!(err.contains("saved host alias myclient"), "{err}");
+    assert!(err.contains("saved server myclient"), "{err}");
     same_tree(w.src.path(), &back);
 
     // One server and one client per machine, on both sides.
@@ -884,7 +887,7 @@ fn a_first_run_joins_a_client_only_entry() {
         let back = w.client.path().join("back");
         let here = format!("{back_host}:{}", back.display());
         let err = ok(&w.irsync_back(&["-a", &w.src_arg(), &here]));
-        assert!(err.contains("saved host alias myclient"), "{err}");
+        assert!(err.contains("saved server myclient"), "{err}");
         same_tree(w.src.path(), &back);
 
         let t = config_in(w.server.path());
@@ -1007,7 +1010,10 @@ fn a_dead_daemon_found_by_address_is_restarted() {
         "{err}"
     );
     assert!(err.contains("started the daemon"), "{err}");
-    assert!(!err.contains("host alias"), "{err}");
+    assert!(
+        !err.contains("saved server") && !err.contains("updated server"),
+        "{err}"
+    );
     assert_eq!(
         std::fs::read_to_string(dest.join("a.txt")).unwrap(),
         "changed\n"
@@ -1115,7 +1121,7 @@ fn ssh_failure_tries_the_daemon_again() {
 }
 
 /// The client's config with the ssh link of `myserver` removed: the alias
-/// then looks like one added by hand with `irsync host add`.
+/// then looks like one added by hand with `irsync server add`.
 fn forget_ssh(w: &World) {
     let path = w.client.path().join(".config/irsync/irsync.toml");
     let cfg = w.client_config();
@@ -1174,7 +1180,7 @@ fn no_second_ssh_round_right_after_setup() {
     ]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.contains("saved host alias myserver"), "{err}");
+    assert!(err.contains("saved server myserver"), "{err}");
     assert!(!err.contains("checking it over ssh"), "{err}");
     assert_eq!(w.ssh_calls(), 3, "{err}");
 }
@@ -1209,7 +1215,7 @@ fn fallback_updates_the_alias_not_its_ssh_name() {
         err.contains("nas did not answer; checking it over ssh"),
         "{err}"
     );
-    assert!(err.contains("updated host alias nas:"), "{err}");
+    assert!(err.contains("updated server nas:"), "{err}");
     assert_ne!(w.saved_id("nas"), before);
     let cfg = w.client_config();
     assert!(!cfg.contains("[servers.myserver]"), "{cfg}");

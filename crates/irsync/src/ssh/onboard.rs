@@ -1,5 +1,5 @@
 //! The client's first run against a host it does not know: set the server
-//! up over SSH, save a host alias for it, and say what was done. It never
+//! up over SSH, save a server for it, and say what was done. It never
 //! asks first; it acts, then reports.
 
 use anyhow::Context;
@@ -21,7 +21,7 @@ pub const ROOT_ACCOUNT: &str = "irsync does not set up a daemon as root";
 /// Where the book explains running the daemon under its own account.
 const RUN_THE_DAEMON_URL: &str = "https://irsync.org/book/how-to/run-the-daemon";
 
-/// One host alias that onboarding wrote.
+/// One server that onboarding wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedAlias {
     pub alias: String,
@@ -92,7 +92,7 @@ pub fn check_first(dest: &str, server_name: Option<&str>) -> anyhow::Result<()> 
     if dest_kind(dest) == (DestKind::Ip { v6: true }) && server_name.is_none() {
         anyhow::bail!(
             "{dest} gave no host name to save it under, and an IPv6 address \
-             cannot be a host alias.\n  Set a host name on that machine, or add \
+             cannot be a server name.\n  Set a host name on that machine, or add \
              the server by hand with `irsync server add`"
         );
     }
@@ -241,7 +241,7 @@ pub fn onboard(
             ..ServerFlags::default()
         };
         let previous_id = manage::servers::server_add(&mut msg, &alias, id, &server_flags)
-            .with_context(|| format!("saving host alias {alias}"))?;
+            .with_context(|| format!("saving server {alias}"))?;
         if kept_ssh.is_some() {
             // So that typing this address again finds the host without ssh.
             manage::servers::server_add_ssh_alias(&mut msg, &alias, dest);
@@ -258,7 +258,7 @@ pub fn onboard(
     if let (Some(_), Some(old)) = (alias, saved[0].previous_id) {
         for other in aliases_of(&msg, old, dest) {
             manage::servers::server_add(&mut msg, &other, id, &ServerFlags::default())
-                .with_context(|| format!("saving host alias {other}"))?;
+                .with_context(|| format!("saving server {other}"))?;
             saved.push(SavedAlias {
                 alias: other,
                 previous_id: Some(old),
@@ -423,15 +423,15 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
                 // Already saved with this id (a restart): nothing to say,
                 // unless the host was reached another way than it is saved.
                 if let Some(ssh) = &a.kept_ssh {
-                    out.push(format!("  host alias {alias} keeps ssh = {ssh}"));
+                    out.push(format!("  server {alias} keeps ssh = {ssh}"));
                 }
             }
             None => out.push(format!(
-                "  saved host alias {alias} -> {}",
+                "  saved server {alias} -> {}",
                 short(&o.endpoint_id)
             )),
             Some(old) => out.push(format!(
-                "  updated host alias {alias}: {} -> {}",
+                "  updated server {alias}: {} -> {}",
                 short(&old),
                 short(&o.endpoint_id)
             )),
@@ -651,10 +651,7 @@ mod tests {
         let s = summary(&o).join("\n");
         assert!(!s.contains("alias u@myserver"), "{s}");
         assert!(
-            s.contains(&format!(
-                "  saved host alias myserver -> {}",
-                id(2).fmt_short()
-            )),
+            s.contains(&format!("  saved server myserver -> {}", id(2).fmt_short())),
             "{s}"
         );
     }
@@ -827,7 +824,7 @@ mod tests {
         )));
         assert!(s.contains("  restarted the daemon (was 0.0.1 (old))"));
         assert!(s.contains(&format!(
-            "  updated host alias myserver: {} -> {}",
+            "  updated server myserver: {} -> {}",
             id(3).fmt_short(),
             id(2).fmt_short()
         )));
@@ -944,15 +941,16 @@ mod tests {
         o.saved[0].existed = false;
         let s = summary(&o).join("\n");
         assert!(
-            s.contains(&format!(
-                "  saved host alias myserver -> {}",
-                id(2).fmt_short()
-            )),
+            s.contains(&format!("  saved server myserver -> {}", id(2).fmt_short())),
             "{s}"
         );
         o.saved[0].existed = true;
         let s = summary(&o);
-        assert!(!s.join("\n").contains("host alias"), "{s:#?}");
+        let all = s.join("\n");
+        assert!(
+            !all.contains("saved server") && !all.contains("updated server"),
+            "{s:#?}"
+        );
         assert_eq!(
             s.last().unwrap(),
             "  started the daemon (log: /s/daemon.log)"
@@ -961,7 +959,7 @@ mod tests {
         let s = summary(&o).join("\n");
         assert!(
             s.contains(&format!(
-                "  updated host alias myserver: {} -> {}",
+                "  updated server myserver: {} -> {}",
                 id(3).fmt_short(),
                 id(2).fmt_short()
             )),

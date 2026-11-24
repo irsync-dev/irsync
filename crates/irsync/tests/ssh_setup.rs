@@ -448,8 +448,15 @@ fn client_name_rules() {
     assert!(check(id(1), "myclient").is_ok());
     assert!(check(id(2), "other").is_ok());
     let e = check(id(2), "myclient").unwrap_err().to_string();
-    assert!(e.contains("[clients.myclient]"), "{e}");
-    assert!(e.contains(&id(1).fmt_short().to_string()), "{e}");
+    assert_eq!(
+        e,
+        format!(
+            "the name \"myclient\" is already used on this server, as [clients.myclient] \
+             for the client {}. If that client is gone, remove it there with \
+             `irsync client remove myclient -f`; else rename this machine",
+            id(1).fmt_short()
+        )
+    );
     for bad in ["", "all", "*", "a/b", "a:b"] {
         assert!(check(id(2), bad).is_err(), "{bad:?}");
     }
@@ -477,7 +484,7 @@ fn client_name_rules() {
 /// client called `desktop`. It is saved as a client beside the server:
 /// the daemon to dial and the client id for grants, each in its table.
 #[test]
-fn a_client_is_saved_beside_a_server_of_its_name() {
+fn a_server_of_the_same_name_is_no_obstacle() {
     let text = format!(
         "[servers.desktop]\nendpoint_id = \"{}\"\nssh = \"mike@desktop\"\n",
         id(5)
@@ -508,6 +515,8 @@ fn a_client_does_not_take_a_name_that_grants_name() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("[exports.x]") && e.contains("desktop"), "{e}");
+    assert!(e.contains("no [clients.desktop] says who that is"), "{e}");
+    assert!(e.contains("or name a server"), "{e}");
     assert_eq!(doc, read(&text, cfg()).unwrap());
 }
 
@@ -603,7 +612,7 @@ fn a_leftover_grant_name_is_not_taken_over() {
         let e = grant_client(&mut doc, cfg(), id(2), "myclient")
             .unwrap_err()
             .to_string();
-        assert!(e.contains("myclient") && e.contains("still"), "{e}");
+        assert!(e.contains("no [clients.myclient] says who that is"), "{e}");
         assert_eq!(doc, read(text, cfg()).unwrap());
     }
 }
@@ -634,25 +643,4 @@ fn recheck_does_not_revive_a_leftover_grant() {
         assert_eq!(std::fs::read_to_string(home.config()).unwrap(), text);
         assert!(probe(&home.state()).is_none());
     }
-}
-
-/// A taken name may also be how this server dials that machine. The
-/// advice then replaces only the client id, and gives it.
-#[test]
-fn a_taken_name_with_a_server_is_not_told_to_remove_the_client() {
-    let check = |text: &str| {
-        let doc = read(text, cfg()).unwrap();
-        check_client_name(&doc, cfg(), id(2), "myclient")
-            .unwrap_err()
-            .to_string()
-    };
-    let e = check(&format!(
-        "[servers.myclient]\nendpoint_id = \"{}\"\n[clients.myclient]\nclient_id = \"{}\"\n",
-        id(5),
-        id(1)
-    ));
-    let set = format!("irsync config set clients.myclient.client_id {}", id(2));
-    assert!(e.contains(&set) && !e.contains("client remove"), "{e}");
-    let e = check(&format!("[clients.myclient]\nclient_id = \"{}\"\n", id(1)));
-    assert!(e.contains("irsync client remove myclient -f"), "{e}");
 }
