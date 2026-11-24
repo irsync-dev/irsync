@@ -19,6 +19,7 @@ unsafe_op_in_unsafe_fn = "deny"
 undocumented_unsafe_blocks = "deny"
 
 [workspace.dependencies]
+semver = "1.0.28"
 prost = "0.14"
 prost-reflect = "0.16"
 prost-build = "0.14"

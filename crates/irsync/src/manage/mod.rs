@@ -21,6 +21,52 @@ use irsync_proto::config as pb;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// The first irsync release that reads `config_version` 2. If stage 2 of
+/// the server/client split ships in a later release, the release bump
+/// changes this to that release's version.
+pub const READS_CONFIG_V2: &str = "0.1.0-beta.7";
+
+/// Whether a daemon whose lock record says `version` (its long version,
+/// whose first word is its package version) reads layout 2.
+fn reads_config_v2(version: &str) -> bool {
+    let Some(word) = version.split_whitespace().next() else {
+        return false;
+    };
+    if word == env!("CARGO_PKG_VERSION") {
+        return true;
+    }
+    match (
+        semver::Version::parse(word),
+        semver::Version::parse(READS_CONFIG_V2),
+    ) {
+        (Ok(have), Ok(need)) => have >= need,
+        _ => false,
+    }
+}
+
+/// Refuses to convert a file of layout 1 while a daemon holds the lock of
+/// the state dir of `config` and cannot read layout 2: it would find a
+/// file it cannot read at its next reload.
+fn check_daemon(config: &Config) -> Result<(), ManageError> {
+    let state_dir = &config.settings.state_dir;
+    let Some(info) = crate::daemon_lock::probe(state_dir) else {
+        return Ok(());
+    };
+    if info.pid != 0 && reads_config_v2(&info.version) {
+        return Ok(());
+    }
+    let version = if info.version.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        info.version
+    };
+    Err(ManageError::OldDaemon {
+        state_dir: state_dir.clone(),
+        pid: info.pid,
+        version,
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ManageError {
     #[error("no home directory to expand ~")]
@@ -34,6 +80,15 @@ pub enum ManageError {
     Config(#[from] ConfigError),
     #[error("export {0:?} already exists")]
     Exists(String),
+    #[error(
+        "the irsync daemon running for {} (pid {pid}, version {version}) cannot read the file this would write (config_version 2, read from irsync {READS_CONFIG_V2} on); restart the daemon with this irsync, then run the command again",
+        state_dir.display()
+    )]
+    OldDaemon {
+        state_dir: PathBuf,
+        pid: u32,
+        version: String,
+    },
     #[error("no such entry {0:?}")]
     NotFound(String),
     #[error("server {0:?} already exists")]
@@ -255,6 +310,9 @@ impl ConfigLock {
         if canonicalize_doc(msg, &self.path)? {
             // The rewrite only renames and drops entries; checked all the same.
             typed(msg, &self.path)?;
+        }
+        if self.version == Some(1) {
+            check_daemon(&typed(msg, &self.path)?)?;
         }
         let io = |source| ManageError::Io {
             path: self.lock.clone(),
