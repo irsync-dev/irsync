@@ -37,7 +37,7 @@ pub fn process_usage() -> Option<Usage> {
 // The machine's name.
 
 /// This machine's name, from the `COMPUTERNAME` environment variable
-/// (anything that is not UTF-16 replaced).
+/// (an unpaired surrogate replaced).
 pub fn host_name() -> io::Result<String> {
     std::env::var_os("COMPUTERNAME")
         .map(|name| name.to_string_lossy().into_owned())
