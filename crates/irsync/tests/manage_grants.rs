@@ -665,17 +665,17 @@ fn grant_list_shows_all_paths_rights() {
         format!("all_paths:\n    rw: laptop ({})\n", id(1))
     );
     assert_eq!(
-        list_peer(&e, &h, "laptop", &id(1)),
+        list_peer(&e, &h, true, "laptop", &id(1)),
         "laptop:\n    all_paths: rw\n    auto-h: rw\n"
     );
     // all_exports never reaches an automatic export.
-    assert_eq!(list_peer(&e, &h, "other", &id(2)), "other:\n");
+    assert_eq!(list_peer(&e, &h, true, "other", &id(2)), "other:\n");
 }
 
 #[test]
 fn list_peer_marks_inherited_and_capped_grants() {
     let (h, e) = fixture();
-    let s = list_peer(&e, &h, &format!("laptop ({})", id(1)), &id(1));
+    let s = list_peer(&e, &h, true, &format!("laptop ({})", id(1)), &id(1));
     assert_eq!(
         s,
         format!(
@@ -684,10 +684,10 @@ fn list_peer_marks_inherited_and_capped_grants() {
         )
     );
     assert_eq!(
-        list_peer(&e, &h, &id(2).to_string(), &id(2)),
+        list_peer(&e, &h, true, &id(2).to_string(), &id(2)),
         format!("{}:\n    photos: ro\n", id(2))
     );
-    assert_eq!(list_peer(&e, &h, "x", &id(3)), "x:\n");
+    assert_eq!(list_peer(&e, &h, true, "x", &id(3)), "x:\n");
 }
 
 fn parse_clients(

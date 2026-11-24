@@ -195,7 +195,7 @@ fn shared_id_keeps_its_grants() {
     let new = new_snapshot(&c);
     let line = grants_lines(&new, &BTreeSet::from([x]));
     assert!(pinned("shared_id").contains(&line[0]), "{line:?}");
-    assert_eq!(new.grants(&x).access("photos"), Some(Access::ReadWrite));
+    assert_eq!(new.access(&x, "photos"), Some(Access::ReadWrite));
 }
 
 /// Review Focus 2: a host with only an `endpoint_id` gets its client
@@ -687,10 +687,7 @@ async fn a_daemon_on_a_v1_file_converts_it_and_still_lets_clients_in() {
             assert_eq!(b.all_exports, a.all_exports);
             assert_eq!(b.all_paths, a.all_paths);
         }
-        assert_eq!(
-            after.grants(&other).access("shared"),
-            Some(Access::ReadWrite)
-        );
+        assert_eq!(after.access(&other, "shared"), Some(Access::ReadWrite));
         h.daemon.shutdown.cancel();
     })
     .await

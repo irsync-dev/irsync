@@ -365,8 +365,8 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
         )),
         GrantOutcome::Already => {}
         GrantOutcome::Missing => out.push(format!(
-            "  this client ({}) has no all_paths right on {dest} any more; \
-             left it that way",
+            "  this client's ({}) all_paths on {dest} was lowered or removed; \
+             it is left as it is",
             short(&o.client)
         )),
         GrantOutcome::AllPathsOff => out.push(format!(

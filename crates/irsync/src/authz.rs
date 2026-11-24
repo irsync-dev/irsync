@@ -77,14 +77,8 @@ impl Grants {
         self.exports.is_empty() && self.all_exports.is_none() && self.all_paths.is_none()
     }
 
-    /// The access this key has to `export`: its own entry, else its
-    /// `all_exports`, else none.
-    pub fn access(&self, export: &str) -> Option<Access> {
-        self.exports.get(export).copied().or(self.all_exports)
-    }
-
-    /// The access this key has to `export`, named `name`: as
-    /// [`Grants::access`], except that `all_exports` never reaches an
+    /// The access this key has to `export`, named `name`: its own entry,
+    /// else its `all_exports`, except that `all_exports` never reaches an
     /// automatic export; those belong to the peer they were made for.
     pub fn access_to(&self, name: &str, export: &Export) -> Option<Access> {
         match self.exports.get(name) {
@@ -92,10 +86,6 @@ impl Grants {
             None if export.auto => None,
             None => self.all_exports,
         }
-    }
-
-    pub fn allows(&self, export: &str, write: bool) -> bool {
-        self.access(export).is_some_and(|a| a.permits(write))
     }
 }
 
@@ -204,6 +194,17 @@ impl Snapshot {
     /// The grants of `id`; empty when it is granted nothing.
     pub fn grants(&self, id: &EndpointId) -> Grants {
         self.grants.get(id).cloned().unwrap_or_default()
+    }
+
+    /// The access `id` has to the export `name`; none when there is no
+    /// such export. An automatic export never comes from `all_exports`.
+    pub fn access(&self, id: &EndpointId, name: &str) -> Option<Access> {
+        self.grants(id).access_to(name, self.exports.get(name)?)
+    }
+
+    /// True when `id` may read (or, with `write`, write) the export `name`.
+    pub fn allows(&self, id: &EndpointId, name: &str, write: bool) -> bool {
+        self.access(id, name).is_some_and(|a| a.permits(write))
     }
 }
 

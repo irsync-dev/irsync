@@ -2908,6 +2908,61 @@ fn client_set_with_a_bad_pair_changes_nothing() {
 }
 
 #[test]
+fn grant_remove_names_the_rights_the_client_still_holds() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, file) = home_with(&d, "");
+    ok(&home, &["client", "add", "laptop", &peer_id(5)]);
+    ok(&home, &["client", "add", "phone", &peer_id(6)]);
+    ok(
+        &home,
+        &["client", "set", "laptop", "all_exports=rw", "all_paths=ro"],
+    );
+    ok(&home, &["client", "set", "phone", "all_paths=rw"]);
+    let dir = d.path().join("x");
+    std::fs::create_dir(&dir).unwrap();
+    ok(&home, &["export", "add", &format!("x:{}", dir.display())]);
+    ok(&home, &["grant", "add", "x", "laptop"]);
+    let o = irsync(&home, &["grant", "remove", "x", "laptop"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{err}");
+    assert!(
+        err.contains("laptop still has all_exports=rw; remove it with: irsync client set laptop all_exports=none")
+            && err.contains("laptop still has all_paths=ro; remove it with: irsync client set laptop all_paths=none"),
+        "{err}"
+    );
+    // Nothing left to remove: the note comes with the error.
+    let before = std::fs::read(&file).unwrap();
+    let o = irsync(&home, &["grant", "remove", "all", "laptop"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(err.contains("laptop still has all_exports=rw"), "{err}");
+    assert!(!err.contains("phone still has"), "{err}");
+    assert_eq!(std::fs::read(&file).unwrap(), before);
+    // All peers: every client that holds a right.
+    let o = irsync(&home, &["grant", "remove", "all", "all"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("laptop still has all_exports=rw")
+            && err.contains("phone still has all_paths=rw"),
+        "{err}"
+    );
+    // Once the rights are gone, no note.
+    ok(
+        &home,
+        &[
+            "client",
+            "set",
+            "laptop",
+            "all_exports=none",
+            "all_paths=none",
+        ],
+    );
+    let o = irsync(&home, &["grant", "remove", "all", "laptop"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("still has"), "{err}");
+}
+
+#[test]
 fn grant_add_all_and_immediate_point_to_client_set() {
     let d = tempfile::tempdir().unwrap();
     let (home, file) = home_with(&d, "");

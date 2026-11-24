@@ -57,7 +57,7 @@ relay_mode = "default"       # or "disabled"
 congestion = "bbr"           # or "cubic", for pulls
 pq_key_exchange = "prefer"   # or "require"
 debug_addr = "127.0.0.1:9464"            # no default: off
-allow_all_paths = true      # false: ignore all_paths
+allow_all_paths = true       # false: ignore all_paths
 allow_root = false           # true: let the daemon run as root
 
 [daemon.discovery]
@@ -246,6 +246,7 @@ an `EndpointId`.
 Only a named client holds `all_exports` or `all_paths`. A key you did not
 name as a client cannot have them. A value left out means no right.
 `irsync client set` sets them; see [Management commands](management.md#client).
+
 A server and a client may have the same name. They are two entries, for the
 two ids a machine has: its daemon's, which you dial, and its own as a client,
 which grants are for. `irsync pair` writes both sides: the server's name on the
@@ -354,7 +355,7 @@ with `-` between its parts (`/srv/music` becomes `auto-srv-music`), listing
 that client only. The export is the directory itself, or the directory that
 holds a file. A push to a directory that does not exist yet creates it, when
 its parent exists; a client with `all_paths = "ro"` cannot push, so it
-creates nothing. A push to the home itself (`myserver:`) exports the whole
+creates no directory. A push to the home itself (`myserver:`) exports the whole
 home. `/` is never exported automatically; add that by hand. Remove an
 automatic export with `irsync export remove`.
 

@@ -324,6 +324,40 @@ pub fn grant_remove(
     Ok(n)
 }
 
+/// One line per server-wide right (of [`RIGHTS`]) still held by the clients
+/// `grant remove` was asked about: `who` (a client's name or id), or, with
+/// `who = None` and `export = None` (`grant remove all all`), every client.
+/// `grant remove` clears only the exports' own lists, so these stay.
+pub fn rights_still_held(
+    clients: &Clients,
+    export: Option<&str>,
+    who: Option<&PeerSpec>,
+    resolve: Resolve,
+) -> Vec<String> {
+    let id = who.and_then(|w| who_id(w, resolve));
+    let mut notes = Vec::new();
+    for (name, c) in &clients.entries {
+        let asked = match who {
+            None => export.is_none(),
+            Some(w) => *name == w.entry() || id == Some(c.client_id),
+        };
+        if !asked {
+            continue;
+        }
+        for right in RIGHTS {
+            if let Some(a) = right.of(c) {
+                notes.push(format!(
+                    "{name} still has {}={}; remove it with: irsync client set {name} {}=none",
+                    right.key(),
+                    a.as_str(),
+                    right.key()
+                ));
+            }
+        }
+    }
+    notes
+}
+
 /// `NAME:` and the grant lines of one table; the header always.
 fn block(name: &str, rw: &[String], ro: &[String], clients: &Clients) -> String {
     let mut out = format!("{name}:\n");
@@ -375,8 +409,14 @@ pub fn list_export(exports: &Exports, clients: &Clients, name: &str) -> Option<S
 /// access comes from `all_exports` rather than the export's own entry,
 /// ` (read_only export)` when a read-write grant is capped by the export's
 /// `read_only` flag.
-pub fn list_peer(exports: &Exports, clients: &Clients, label: &str, id: &EndpointId) -> String {
-    let grants = Snapshot::from_files(clients, exports, true).grants(id);
+pub fn list_peer(
+    exports: &Exports,
+    clients: &Clients,
+    allow_all_paths: bool,
+    label: &str,
+    id: &EndpointId,
+) -> String {
+    let grants = Snapshot::from_files(clients, exports, allow_all_paths).grants(id);
     let mut out = format!("{label}:\n");
     if let Some(a) = grants.all_paths {
         let _ = writeln!(out, "    all_paths: {}", a.as_str());

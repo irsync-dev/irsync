@@ -386,7 +386,7 @@ pub fn check_client_name(
 /// Saves `client` as `[clients.name]` (unless it has a name there
 /// already) and gives it `all_paths = "rw"`, after
 /// [`check_client_name`] on `msg` itself. False when the client was
-/// already `"rw"`; the `[clients]` entry is written all the same. The name
+/// already `"rw"`; the message is not changed then. The name
 /// is only ever a label: the daemon decides access by the id it stands for.
 pub fn grant_client(
     msg: &mut pb::Config,
@@ -505,12 +505,8 @@ pub fn run(
             .with_context(|| format!("in {}", paths.config.display()))?;
         match (added, recheck && !generated) {
             (false, _) => {
-                // The client already had `all_paths = "rw"`, which only a
-                // `[clients]` entry holds: no entry is new. Saved only
-                // should the message have changed after all.
-                if msg != before {
-                    lock.save(&mut msg)?;
-                }
+                // The client already had `all_paths = "rw"`: nothing changed.
+                debug_assert_eq!(msg, before);
                 GrantOutcome::Already
             }
             // Not saved: the edit is dropped with the lock.

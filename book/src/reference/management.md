@@ -90,7 +90,7 @@ everyone; `--warm-index` sets `warm_index`.
 | Command | Effect |
 | --- | --- |
 | `irsync grant add EXPORT WHO [--ro]` | Grant `WHO` read-write access to `EXPORT`, or read-only access with `--ro`. An earlier grant of the same peer there is replaced. For every export or any path, use `irsync client set`; `grant add all` and `grant add immediate` are refused, with a hint. |
-| `irsync grant remove EXPORT WHO` | Remove `WHO`'s grant on `EXPORT`. `irsync grant remove all WHO` removes `WHO` from every export's own list (not their `all_exports` or `all_paths`; those go with `irsync client set`); `irsync grant remove EXPORT all` empties an export's grants. |
+| `irsync grant remove EXPORT WHO` | Remove `WHO`'s grant on `EXPORT`. `irsync grant remove all WHO` removes `WHO` from every export's own list. It leaves their `all_exports` and `all_paths` alone, and says so when `WHO` still has one; those go with `irsync client set`. `irsync grant remove EXPORT all` empties an export's grants. |
 | `irsync grant list` | Every grant: an `all_exports:` block, an `all_paths:` block (the clients that hold each right), then one block per export. |
 | `irsync grant list EXPORT` | One export's grants. `all_exports` and `all_paths` list the clients that hold that right. |
 | `irsync grant list WHO` | What one peer may reach: `all_paths: rw` or `all_paths: ro` first when it has that right, then one `NAME: rw` or `NAME: ro` line per export, marked `(all_exports)` when the access comes from `all_exports` and `(read_only export)` when a read-write grant is capped by `read_only`. |

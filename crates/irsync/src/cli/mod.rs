@@ -78,7 +78,7 @@ Quick start over ssh (irsync installed on the client only):
   If `ssh myserver` logs you in, set the server up once:
     irsync pair myserver
   This installs irsync on the server (same OS and CPU), grants this client
-  access to any path (immediate mode), starts the daemon and saves `myserver`
+  access to any path (all_paths=rw), starts the daemon and saves `myserver`
   as a server. Then push and pull over iroh:
     irsync -av ~/Photos/ myserver:/srv/photos/
     irsync -av myserver:/srv/photos/ ~/Photos/  # pull them back
@@ -357,8 +357,8 @@ pub enum Command {
     /// Show the config files, identities, servers, clients and exports.
     Show,
     /// The server side of SSH onboarding, run by the client over ssh:
-    /// makes sure the daemon identity exists, grants the client immediate
-    /// access, gets this copy's daemon running and prints a report.
+    /// makes sure the daemon identity exists, gives the client
+    /// `all_paths = "rw"`, gets this copy's daemon running and prints a report.
     #[command(hide = true)]
     SshSetup {
         /// The client's EndpointId.
@@ -368,8 +368,8 @@ pub enum Command {
         /// name this server knows the client by.
         #[arg(long)]
         client_name_hex: String,
-        /// A client checking a saved host: do not add back an immediate
-        /// grant the owner removed (only a freshly generated daemon
+        /// A client checking a saved host: do not add back an
+        /// `all_paths` right the owner removed (only a freshly generated daemon
         /// identity gets one).
         #[arg(long)]
         recheck: bool,

@@ -1912,10 +1912,25 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 };
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                let n = manage::grants::grant_remove(&mut msg, export, spec.as_ref(), &resolve)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
+                let removed =
+                    manage::grants::grant_remove(&mut msg, export, spec.as_ref(), &resolve);
+                let held =
+                    manage::grants::rights_still_held(&clients, export, spec.as_ref(), &resolve);
+                let n = match removed {
+                    Ok(n) => n,
+                    Err(e) => {
+                        for line in &held {
+                            eprintln!("{line}");
+                        }
+                        return Err(anyhow::Error::from(e)
+                            .context(format!("in {}", paths.config.display())));
+                    }
+                };
                 lock.save(&mut msg)?;
                 eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
+                for line in &held {
+                    eprintln!("{line}");
+                }
                 Ok(())
             })(),
         ),
@@ -1923,7 +1938,10 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
             "grant list",
             (|| {
                 let Config {
-                    clients, exports, ..
+                    clients,
+                    exports,
+                    settings,
+                    ..
                 } = Config::load(&paths)?;
                 let text = match target.as_deref() {
                     None => manage::grants::list_all(&exports, &clients),
@@ -1941,7 +1959,13 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                             } else {
                                 id.to_string()
                             };
-                            manage::grants::list_peer(&exports, &clients, &label, &id)
+                            manage::grants::list_peer(
+                                &exports,
+                                &clients,
+                                settings.daemon.allow_all_paths,
+                                &label,
+                                &id,
+                            )
                         }
                     },
                 };

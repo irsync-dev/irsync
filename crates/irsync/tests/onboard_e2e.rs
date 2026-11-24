@@ -477,7 +477,10 @@ fn pair_again_does_not_regrant() {
     let o = w.irsync_bare(&["pair", "myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.contains("has no all_paths right"), "{err}");
+    assert!(
+        err.contains("all_paths on myserver was lowered or removed"),
+        "{err}"
+    );
     assert!(
         err.contains("the daemon rejected this client's key"),
         "{err}"

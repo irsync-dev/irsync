@@ -608,10 +608,7 @@ async fn immediate_push_creates_auto_export() {
     // The daemon records the real path (macOS: /var is a link to /private/var).
     assert_eq!(e.path, dest.canonicalize().unwrap());
     assert_eq!(e.rw, vec![client.id().to_string()]);
-    assert_eq!(
-        snap.grants(&client.id()).access(name),
-        Some(Access::ReadWrite)
-    );
+    assert_eq!(snap.access(&client.id(), name), Some(Access::ReadWrite));
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }

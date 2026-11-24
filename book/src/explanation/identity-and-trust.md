@@ -52,8 +52,11 @@ wrong one leads to a failed connection, never to the wrong daemon (see
 ## The daemon checks grants
 
 A grant names a key and an export, read-write or read-only. Grants live in the
-daemon's configuration, under each `[exports.NAME]`, as client names or raw `EndpointId`s. A client entry can also hold `all_exports` for every hand-made export and `all_paths` for any path; `irsync client set` writes them. `irsync grant add` also takes a pasted
-`ssh-ed25519` line or a `.pub` file and writes the id it holds. A grant that
+daemon's configuration, under each `[exports.NAME]`, as client names or raw
+`EndpointId`s. A client entry can also hold `all_exports` for every hand-made
+export and `all_paths` for any path. `irsync client set` writes them.
+`irsync grant add` also takes a pasted `ssh-ed25519` line or a `.pub` file and
+writes the id it holds. A grant that
 names a client follows the client: pointing `myclient` at a new id with
 `irsync client add` moves every grant that names `myclient`.
 

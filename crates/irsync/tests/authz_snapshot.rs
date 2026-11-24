@@ -21,8 +21,8 @@ fn alias_and_raw_id_entries_both_grant() {
             id(2)
         ),
     );
-    assert!(s.grants(&id(1)).allows("photos", true));
-    assert!(s.grants(&id(2)).allows("photos", false) && !s.grants(&id(2)).allows("photos", true));
+    assert!(s.allows(&id(1), "photos", true));
+    assert!(s.allows(&id(2), "photos", false) && !s.allows(&id(2), "photos", true));
     assert!(s.grants(&id(3)).is_empty());
 }
 
@@ -37,7 +37,7 @@ fn a_named_machine_is_granted_as_a_client() {
         ),
         "[exports.photos]\npath = \"/p\"\nrw = [\"laptop\"]\n",
     );
-    assert!(s.grants(&id(2)).allows("photos", true));
+    assert!(s.allows(&id(2), "photos", true));
     assert!(s.grants(&id(1)).is_empty());
 }
 
@@ -48,10 +48,10 @@ fn per_export_entry_wins_over_all_exports_and_rw_wins_over_ro() {
         id(1),
         id(2)
     );
-    let s = snap(&clients, &format!("[exports.x]\npath = \"/x\"\nro = [\"{a}\"]\nrw = [\"{b}\"]\n[exports.y]\npath = \"/y\"\nrw = [\"{a}\"]\nro = [\"{a}\"]\n", a = id(1), b = id(2)));
-    assert!(!s.grants(&id(1)).allows("x", true) && s.grants(&id(1)).allows("other", true));
-    assert!(s.grants(&id(2)).allows("x", true) && !s.grants(&id(2)).allows("other", true));
-    assert!(s.grants(&id(1)).allows("y", true));
+    let s = snap(&clients, &format!("[exports.x]\npath = \"/x\"\nro = [\"{a}\"]\nrw = [\"{b}\"]\n[exports.y]\npath = \"/y\"\nrw = [\"{a}\"]\nro = [\"{a}\"]\n[exports.other]\npath = \"/o\"\n", a = id(1), b = id(2)));
+    assert!(!s.allows(&id(1), "x", true) && s.allows(&id(1), "other", true));
+    assert!(s.allows(&id(2), "x", true) && !s.allows(&id(2), "other", true));
+    assert!(s.allows(&id(1), "y", true));
     assert_eq!(s.grants(&id(1)).exports.get("x"), Some(&Access::ReadOnly));
 }
 
@@ -76,7 +76,7 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
         format!("[exports.x]\npath = \"/x\"\nrw = [\"{}\"]\n", id(1)),
     )
     .unwrap();
-    assert!(a.snapshot().unwrap().grants(&id(1)).allows("x", true));
+    assert!(a.snapshot().unwrap().allows(&id(1), "x", true));
     irsync::fs::private::write(&e, "[x\n").unwrap();
     assert!(a.snapshot().is_err()); // broken = error, not stale
     irsync::fs::private::write(
@@ -87,7 +87,7 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
         ),
     )
     .unwrap();
-    assert!(a.snapshot().unwrap().grants(&id(1)).allows("x", true));
+    assert!(a.snapshot().unwrap().allows(&id(1), "x", true));
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn auto_export_grant_needs_all_paths() {
     let clients = |rights: &str| parse_clients(&laptop(rights), Path::new("h")).unwrap();
     let with = clients("all_paths = \"rw\"\n");
     let on = Snapshot::from_files(&with, &exports, true);
-    assert!(on.grants(&id(1)).allows("home-auto", true));
+    assert!(on.allows(&id(1), "home-auto", true));
     for (s, why) in [
         (
             Snapshot::from_files(&clients(""), &exports, true),
@@ -139,7 +139,7 @@ fn auto_export_grant_needs_all_paths() {
     ] {
         let g = s.grants(&id(1));
         assert_eq!(g.exports.get("home-auto"), None, "{why}");
-        assert!(g.allows("x", true), "{why}");
+        assert!(s.allows(&id(1), "x", true), "{why}");
         assert_eq!(g.all_paths, None, "{why}");
     }
 }
@@ -162,7 +162,7 @@ fn all_exports_reaches_every_hand_made_export() {
     );
     let g = s.grants(&id(1));
     assert_eq!(g.all_exports, Some(Access::ReadOnly));
-    assert_eq!(g.access("docs"), Some(Access::ReadOnly));
+    assert_eq!(s.access(&id(1), "docs"), Some(Access::ReadOnly));
     assert_eq!(
         g.access_to("docs", &s.exports["docs"]),
         Some(Access::ReadOnly)
@@ -176,7 +176,7 @@ fn an_exports_own_entry_wins_over_all_exports() {
         &laptop("all_exports = \"rw\"\n"),
         "[exports.docs]\npath = \"/d\"\nro = [\"laptop\"]\n",
     );
-    assert_eq!(s.grants(&id(1)).access("docs"), Some(Access::ReadOnly));
+    assert_eq!(s.access(&id(1), "docs"), Some(Access::ReadOnly));
 }
 
 /// The level through an automatic export is the client's `all_paths` now,
