@@ -157,3 +157,22 @@ fn rename_to_itself_changes_nothing() {
     assert_eq!(client_rename(&mut m, "box", "box").unwrap(), 0);
     assert_eq!(write(&m), before);
 }
+
+#[test]
+fn list_marks_a_missing_or_invalid_id() {
+    let m = pb::Config {
+        clients: vec![
+            pb::ClientEntry {
+                name: "none".into(),
+                ..Default::default()
+            },
+            pb::ClientEntry {
+                name: "bad".into(),
+                client_id: vec![1, 2, 3],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(client_list(&m), ["none: (missing)", "bad: (invalid)"]);
+}

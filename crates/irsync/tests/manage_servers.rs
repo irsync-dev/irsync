@@ -190,3 +190,42 @@ fn list_shows_the_keys_and_not_config_version() {
         ]
     );
 }
+
+#[test]
+fn add_writes_relay_relay_mode_dht_and_mdns() {
+    let mut m = pb::Config::default();
+    let f = ServerFlags {
+        relay: Some("https://relay.example.net".parse().unwrap()),
+        relay_mode: Some(irsync::config::settings::RelayMode::Disabled),
+        dht: Some(false),
+        mdns: Some(true),
+        ..Default::default()
+    };
+    server_add(&mut m, "home", id(1), &f).unwrap();
+    assert_eq!(
+        write(&m),
+        format!(
+            "[servers.home]\nendpoint_id = \"{}\"\nrelay = \"https://relay.example.net/\"\nrelay_mode = \"disabled\"\ndht = false\nmdns = true\n",
+            id(1)
+        )
+    );
+}
+
+#[test]
+fn list_marks_a_missing_or_invalid_id() {
+    let m = pb::Config {
+        servers: vec![
+            pb::ServerEntry {
+                name: "none".into(),
+                ..Default::default()
+            },
+            pb::ServerEntry {
+                name: "bad".into(),
+                endpoint_id: vec![1, 2, 3],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(server_list(&m), ["none: (missing)", "bad: (invalid)"]);
+}

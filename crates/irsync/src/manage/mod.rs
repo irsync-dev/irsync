@@ -447,3 +447,15 @@ impl PeerSpec {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A typo here would make every daemon count as too old.
+    #[test]
+    fn reads_config_v2_is_a_semver_version() {
+        semver::Version::parse(READS_CONFIG_V2).unwrap();
+        assert!(reads_config_v2(&format!("{READS_CONFIG_V2} (abc)")));
+    }
+}
