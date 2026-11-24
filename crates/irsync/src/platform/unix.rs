@@ -115,10 +115,11 @@ pub fn kind_of_mode(mode: u32) -> Kind {
     }
 }
 
-/// The `st_mode` bits of a kind; none for [`Kind::Other`].
+/// The `st_mode` bits of a kind; none for [`Kind::Other`]. With
+/// [`Stat::mode`] they make the whole `st_mode` a listing carries.
 // `mode_t` is narrower on macOS and FreeBSD.
 #[allow(clippy::unnecessary_cast)]
-fn mode_of_kind(kind: Kind) -> u32 {
+pub fn mode_of_kind(kind: Kind) -> u32 {
     let fmt = match kind {
         Kind::File => SFlag::S_IFREG,
         Kind::Dir => SFlag::S_IFDIR,
@@ -313,123 +314,163 @@ impl Dir {
     /// target's; the access time is set to the same.
     pub fn set_mtime(&self, name: &[u8], mtime: (i64, u32)) -> io::Result<()> {
         let name = one_name(name)?;
-        let t = TimeSpec::new(mtime.0 as _, mtime.1 as _);
-        utimensat(&self.0, name, &t, &t, UtimensatFlags::NoFollowSymlink).map_err(errno_of)
+        set_mtime_at(self.0.as_fd(), as_path(name), mtime)
     }
 
     /// `chmod` of `name` that never changes the target of a symlink
     /// swapped in at `name`. Where the system cannot do that in one call
     /// (an older Linux without `/proc`), the name is checked first, then
     /// changed.
-    // `st_mode` is narrower on macOS.
-    #[allow(clippy::unnecessary_cast)]
     pub fn set_mode(&self, name: &[u8], mode: u32) -> io::Result<()> {
         let name = one_name(name)?;
-        let mode = Mode::from_bits_truncate(mode as _);
-        match fchmodat(&self.0, name, mode, FchmodatFlags::NoFollowSymlink) {
-            Ok(()) => Ok(()),
-            Err(nix::Error::EOPNOTSUPP | nix::Error::ENOSYS | nix::Error::EINVAL) => {
-                let st = fstatat(&self.0, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno_of)?;
-                if kind_of_mode(st.st_mode as u32) == Kind::Symlink {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "refusing to follow symlink {}",
-                            Path::new(OsStr::from_bytes(name)).display()
-                        ),
-                    ));
-                }
-                fchmodat(&self.0, name, mode, FchmodatFlags::FollowSymlink).map_err(errno_of)
-            }
-            Err(e) => Err(errno_of(e)),
-        }
+        set_mode_at(self.0.as_fd(), as_path(name), mode)
     }
 
     /// Sets the owner and the group of `name` (a link's own); `None`
     /// leaves one as it is.
     pub fn set_owner(&self, name: &[u8], uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
         let name = one_name(name)?;
-        fchownat(
-            &self.0,
-            name,
-            uid.map(Uid::from_raw),
-            gid.map(Gid::from_raw),
-            AtFlags::AT_SYMLINK_NOFOLLOW,
-        )
-        .map_err(errno_of)
+        set_owner_at(self.0.as_fd(), as_path(name), uid, gid)
     }
 
     /// Makes the FIFO `name` with `mode` (less the umask).
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     pub fn make_fifo(&self, name: &[u8], mode: u32) -> io::Result<()> {
         let name = one_name(name)?;
-        nix::unistd::mkfifoat(&self.0, name, Mode::from_bits_truncate(mode as _)).map_err(errno_of)
-    }
-
-    /// Makes the FIFO `name` with `mode` (less the umask). The library
-    /// irsync uses for system calls leaves `mkfifoat` out on macOS, so it
-    /// is called directly.
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    pub fn make_fifo(&self, name: &[u8], mode: u32) -> io::Result<()> {
-        use std::os::fd::AsRawFd;
-        let c = name_cstring(one_name(name)?)?;
-        // SAFETY: `c` is a valid NUL-terminated string and `self.0` an open
-        // descriptor for the length of the call.
-        let r = unsafe {
-            libc::mkfifoat(
-                self.0.as_raw_fd(),
-                c.as_ptr(),
-                (mode & 0o7777) as libc::mode_t,
-            )
-        };
-        if r == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+        make_fifo_at(self.0.as_fd(), as_path(name), mode)
     }
 
     /// Makes the device node (or socket, or FIFO) `name` of `kind`, with
     /// `mode` (less the umask) and device number `rdev`.
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     pub fn make_device(&self, name: &[u8], kind: Kind, mode: u32, rdev: u64) -> io::Result<()> {
-        let fmt = match kind {
+        if kind == Kind::Fifo {
             // mkfifo, not mknod: FreeBSD's mknod makes device nodes only.
-            Kind::Fifo => return self.make_fifo(name, mode),
-            Kind::CharDev => SFlag::S_IFCHR,
-            Kind::BlockDev => SFlag::S_IFBLK,
-            Kind::Socket => SFlag::S_IFSOCK,
-            _ => return Err(not_special()),
-        };
-        let name = one_name(name)?;
-        let perm = Mode::from_bits_truncate(mode as _);
-        nix::sys::stat::mknodat(&self.0, name, fmt, perm, rdev as _).map_err(errno_of)
-    }
-
-    /// Makes the device node (or socket, or FIFO) `name` of `kind`, with
-    /// `mode` (less the umask) and device number `rdev`. The library
-    /// irsync uses for system calls leaves `mknodat` out on macOS, so it
-    /// is called directly.
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    pub fn make_device(&self, name: &[u8], kind: Kind, mode: u32, rdev: u64) -> io::Result<()> {
-        use std::os::fd::AsRawFd;
-        let fmt = match kind {
-            Kind::Fifo => return self.make_fifo(name, mode),
-            Kind::CharDev => libc::S_IFCHR,
-            Kind::BlockDev => libc::S_IFBLK,
-            Kind::Socket => libc::S_IFSOCK,
-            _ => return Err(not_special()),
-        };
-        let c = name_cstring(one_name(name)?)?;
-        let perm = (mode & 0o7777) as libc::mode_t;
-        // SAFETY: `c` is a valid NUL-terminated string and `self.0` an open
-        // descriptor for the length of the call.
-        let r = unsafe { libc::mknodat(self.0.as_raw_fd(), c.as_ptr(), fmt | perm, rdev as _) };
-        if r == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
+            return self.make_fifo(name, mode);
         }
+        let fmt = device_format(kind)?;
+        let name = one_name(name)?;
+        make_node_at(self.0.as_fd(), as_path(name), fmt, mode, rdev)
+    }
+}
+
+/// A name as the path the `*at` calls take.
+fn as_path(name: &[u8]) -> &Path {
+    Path::new(OsStr::from_bytes(name))
+}
+
+/// [`Dir::set_mtime`] of `name` in `dir`, or of a path (`AT_FDCWD`).
+fn set_mtime_at(dir: BorrowedFd<'_>, name: &Path, mtime: (i64, u32)) -> io::Result<()> {
+    let t = TimeSpec::new(mtime.0 as _, mtime.1 as _);
+    utimensat(dir, name, &t, &t, UtimensatFlags::NoFollowSymlink).map_err(errno_of)
+}
+
+/// [`Dir::set_mode`] of `name` in `dir`, or of a path (`AT_FDCWD`).
+// `st_mode` is narrower on macOS.
+#[allow(clippy::unnecessary_cast)]
+fn set_mode_at(dir: BorrowedFd<'_>, name: &Path, mode: u32) -> io::Result<()> {
+    let mode = Mode::from_bits_truncate(mode as _);
+    match fchmodat(dir, name, mode, FchmodatFlags::NoFollowSymlink) {
+        Ok(()) => Ok(()),
+        Err(nix::Error::EOPNOTSUPP | nix::Error::ENOSYS | nix::Error::EINVAL) => {
+            let st = fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(errno_of)?;
+            if kind_of_mode(st.st_mode as u32) == Kind::Symlink {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("refusing to follow symlink {}", name.display()),
+                ));
+            }
+            fchmodat(dir, name, mode, FchmodatFlags::FollowSymlink).map_err(errno_of)
+        }
+        Err(e) => Err(errno_of(e)),
+    }
+}
+
+/// [`Dir::set_owner`] of `name` in `dir`, or of a path (`AT_FDCWD`).
+fn set_owner_at(
+    dir: BorrowedFd<'_>,
+    name: &Path,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> io::Result<()> {
+    fchownat(
+        dir,
+        name,
+        uid.map(Uid::from_raw),
+        gid.map(Gid::from_raw),
+        AtFlags::AT_SYMLINK_NOFOLLOW,
+    )
+    .map_err(errno_of)
+}
+
+/// The `st_mode` kind bits [`make_node_at`] gives `mknod` for `kind`: a
+/// device or a socket, nothing else.
+fn device_format(kind: Kind) -> io::Result<SFlag> {
+    match kind {
+        Kind::CharDev => Ok(SFlag::S_IFCHR),
+        Kind::BlockDev => Ok(SFlag::S_IFBLK),
+        Kind::Socket => Ok(SFlag::S_IFSOCK),
+        _ => Err(not_special()),
+    }
+}
+
+/// [`Dir::make_fifo`] of `name` in `dir`, or of a path (`AT_FDCWD`).
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn make_fifo_at(dir: BorrowedFd<'_>, name: &Path, mode: u32) -> io::Result<()> {
+    nix::unistd::mkfifoat(dir, name, Mode::from_bits_truncate(mode as _)).map_err(errno_of)
+}
+
+/// [`Dir::make_fifo`] of `name` in `dir`, or of a path (`AT_FDCWD`). The
+/// library irsync uses for system calls leaves `mkfifoat` out on macOS,
+/// so it is called directly.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn make_fifo_at(dir: BorrowedFd<'_>, name: &Path, mode: u32) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let c = name_cstring(name)?;
+    // SAFETY: `c` is a valid NUL-terminated string and `dir` an open
+    // descriptor (or `AT_FDCWD`) for the length of the call.
+    let r = unsafe { libc::mkfifoat(dir.as_raw_fd(), c.as_ptr(), (mode & 0o7777) as libc::mode_t) };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// `mknod` of `name` in `dir` (or of a path, `AT_FDCWD`) as `fmt`, with
+/// `mode` (less the umask) and device number `rdev`.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn make_node_at(
+    dir: BorrowedFd<'_>,
+    name: &Path,
+    fmt: SFlag,
+    mode: u32,
+    rdev: u64,
+) -> io::Result<()> {
+    let perm = Mode::from_bits_truncate(mode as _);
+    nix::sys::stat::mknodat(dir, name, fmt, perm, rdev as _).map_err(errno_of)
+}
+
+/// `mknod` of `name` in `dir` (or of a path, `AT_FDCWD`) as `fmt`, with
+/// `mode` (less the umask) and device number `rdev`. The library irsync
+/// uses for system calls leaves `mknodat` out on macOS, so it is called
+/// directly.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn make_node_at(
+    dir: BorrowedFd<'_>,
+    name: &Path,
+    fmt: SFlag,
+    mode: u32,
+    rdev: u64,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let c = name_cstring(name)?;
+    let perm = (mode & 0o7777) as libc::mode_t;
+    // SAFETY: `c` is a valid NUL-terminated string and `dir` an open
+    // descriptor (or `AT_FDCWD`) for the length of the call.
+    let r = unsafe { libc::mknodat(dir.as_raw_fd(), c.as_ptr(), fmt.bits() | perm, rdev as _) };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
@@ -447,8 +488,8 @@ fn not_special() -> io::Error {
 }
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn name_cstring(name: &[u8]) -> io::Result<std::ffi::CString> {
-    std::ffi::CString::new(name)
+fn name_cstring(name: &Path) -> io::Result<std::ffi::CString> {
+    std::ffi::CString::new(name.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in a file name"))
 }
 
@@ -494,37 +535,151 @@ pub fn is_symlink_errno(e: nix::Error) -> bool {
     cause(&errno_of(e)) == Cause::LinkRefused
 }
 
-impl Stat {
-    /// TEMPORARY bridge for the callers that still take a `FileStat` (Task
-    /// 3 removes it). Every field [`Stat`] holds is carried over exactly;
-    /// `st_blocks` is made up so that `st_blocks * 512 < st_size` holds
-    /// exactly when [`Stat::sparse`] does; the rest is zero.
-    #[doc(hidden)]
-    // The `stat` field types differ by platform; some casts are no-ops here.
-    #[allow(clippy::unnecessary_cast)]
-    pub fn to_file_stat(&self) -> FileStat {
-        // SAFETY: `FileStat` is the C `struct stat`: integer fields only,
-        // for which all zeroes is a valid value.
-        let mut st: FileStat = unsafe { std::mem::zeroed() };
-        st.st_mode = (mode_of_kind(self.kind) | self.mode) as _;
-        st.st_uid = self.uid;
-        st.st_gid = self.gid;
-        st.st_size = self.size as _;
-        st.st_nlink = self.nlink as _;
-        st.st_ino = self.ino as _;
-        st.st_dev = self.dev as _;
-        st.st_rdev = self.rdev as _;
-        st.st_mtime = self.mtime.0 as _;
-        st.st_mtime_nsec = self.mtime.1 as _;
-        st.st_ctime = self.ctime.0 as _;
-        st.st_ctime_nsec = self.ctime.1 as _;
-        st.st_blocks = if self.sparse {
-            0
-        } else {
-            self.size.div_ceil(512) as _
-        };
-        st
+/// What is at `path`; a final link is described, not followed. Links
+/// before it are followed: the caller trusts them.
+pub fn lstat(path: &Path) -> io::Result<Stat> {
+    nix::sys::stat::lstat(path)
+        .map(|st| stat_of(&st))
+        .map_err(errno_of)
+}
+
+/// [`Dir::set_mtime`] of a path the caller trusts; a final link's own
+/// time is set.
+pub fn set_mtime_path(path: &Path, mtime: (i64, u32)) -> io::Result<()> {
+    set_mtime_at(AT_FDCWD, path, mtime)
+}
+
+/// [`Dir::set_mode`] of a path the caller trusts; a final link is never
+/// followed.
+pub fn set_mode_path(path: &Path, mode: u32) -> io::Result<()> {
+    set_mode_at(AT_FDCWD, path, mode)
+}
+
+/// [`Dir::set_owner`] of a path the caller trusts; a final link's own
+/// owner is set.
+pub fn set_owner_path(path: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
+    set_owner_at(AT_FDCWD, path, uid, gid)
+}
+
+/// [`Dir::make_device`] at a path the caller trusts.
+pub fn make_device_path(path: &Path, kind: Kind, mode: u32, rdev: u64) -> io::Result<()> {
+    if kind == Kind::Fifo {
+        // mkfifo, not mknod: FreeBSD's mknod makes device nodes only.
+        return make_fifo_at(AT_FDCWD, path, mode);
     }
+    let fmt = device_format(kind)?;
+    make_node_at(AT_FDCWD, path, fmt, mode, rdev)
+}
+
+/// Sets the modification time of the open `file`; the access time is set
+/// to the same.
+pub fn set_mtime_file(file: &File, mtime: (i64, u32)) -> io::Result<()> {
+    let t = TimeSpec::new(mtime.0 as _, mtime.1 as _);
+    nix::sys::stat::futimens(file, &t, &t).map_err(errno_of)
+}
+
+/// Sets the permission bits of the open `file`.
+pub fn set_mode_file(file: &File, mode: u32) -> io::Result<()> {
+    nix::sys::stat::fchmod(file, Mode::from_bits_truncate(mode as _)).map_err(errno_of)
+}
+
+/// Sets the owner and the group of the open `file`; `None` leaves one as
+/// it is.
+pub fn set_owner_file(file: &File, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
+    nix::unistd::fchown(file, uid.map(Uid::from_raw), gid.map(Gid::from_raw)).map_err(errno_of)
+}
+
+/// The process's umask. It can only be read by setting it: for the moment
+/// between the two calls, files other threads create are private, never
+/// more open.
+pub fn umask() -> u32 {
+    let old = nix::sys::stat::umask(Mode::from_bits_truncate(0o077));
+    nix::sys::stat::umask(old);
+    old.bits() as u32
+}
+
+/// The effective user id of this process.
+pub fn euid() -> u32 {
+    nix::unistd::geteuid().as_raw()
+}
+
+/// The effective group id of this process.
+pub fn egid() -> u32 {
+    nix::unistd::getegid().as_raw()
+}
+
+/// Whether this process runs as root.
+pub fn is_root() -> bool {
+    nix::unistd::geteuid().is_root()
+}
+
+/// The supplementary groups of this process, empty if they can't be read.
+/// Calls libc directly because nix leaves `getgroups` out on Apple targets.
+pub fn supplementary_groups() -> Vec<u32> {
+    #[cfg(not(target_os = "macos"))]
+    use libc::getgroups;
+    use libc::{c_int, gid_t};
+    // The plain macOS getgroups stops at 16 groups; this variant returns
+    // all of them.
+    #[cfg(target_os = "macos")]
+    extern "C" {
+        #[link_name = "getgroups$DARWIN_EXTSN"]
+        fn getgroups(size: c_int, list: *mut gid_t) -> c_int;
+    }
+    // SAFETY: with a size of 0, getgroups writes nothing and only returns
+    // the number of groups, so a null buffer is allowed.
+    let n = unsafe { getgroups(0, std::ptr::null_mut()) };
+    if n <= 0 {
+        return Vec::new();
+    }
+    // gid_t is u32 on Linux and macOS alike.
+    let mut buf: Vec<gid_t> = vec![0; n as usize];
+    // SAFETY: `buf` holds `n` writable gid_t slots and getgroups writes at
+    // most the size it is given. If the groups grew since the first call,
+    // it fails with EINVAL and writes nothing; the result is then empty.
+    let n = unsafe { getgroups(n as c_int, buf.as_mut_ptr()) };
+    buf.truncate(n.max(0) as usize);
+    buf
+}
+
+/// The groups this process is a member of: the supplementary ones, then
+/// the effective one.
+pub fn groups() -> Vec<u32> {
+    let mut groups = supplementary_groups();
+    groups.push(egid());
+    groups
+}
+
+/// The name of the user `uid`, if it has one.
+pub fn user_name(uid: u32) -> Option<String> {
+    nix::unistd::User::from_uid(Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map(|u| u.name)
+}
+
+/// The name of the group `gid`, if it has one.
+pub fn group_name(gid: u32) -> Option<String> {
+    nix::unistd::Group::from_gid(Gid::from_raw(gid))
+        .ok()
+        .flatten()
+        .map(|g| g.name)
+}
+
+/// The id of the user called `name`, if there is one.
+pub fn user_id(name: &str) -> Option<u32> {
+    nix::unistd::User::from_name(name)
+        .ok()
+        .flatten()
+        .map(|u| u.uid.as_raw())
+}
+
+/// The id of the group called `name`, if there is one.
+pub fn group_id(name: &str) -> Option<u32> {
+    nix::unistd::Group::from_name(name)
+        .ok()
+        .flatten()
+        .map(|g| g.gid.as_raw())
 }
 
 /// Helpers for tests, in this crate and in `tests/`: what a test needs

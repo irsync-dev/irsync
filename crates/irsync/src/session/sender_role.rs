@@ -1597,19 +1597,19 @@ fn tail_digest(
     // The open's type check already took the file's stat. No symlink is
     // followed on the way from the base.
     let (file, st) = crate::fs::safe::open_regular_beneath_stat(base, local)?;
-    tail_digest_at(file, st.to_file_stat(), key, from, check)
+    tail_digest_at(file, &st, key, from, check)
 }
 
 /// [`tail_digest`] of the open `file` (a clone, `--paranoid`).
 fn tail_digest_of(file: std::fs::File, key: &RelPath, from: u64) -> io::Result<Hashed> {
-    let st = nix::sys::stat::fstat(&file).map_err(crate::fs::safe::errno)?;
-    tail_digest_at(file, st, key, from, true)
+    let st = crate::platform::fstat(&file)?;
+    tail_digest_at(file, &st, key, from, true)
 }
 
 /// [`tail_digest`] of the open `file`, whose stat is `st`.
 fn tail_digest_at(
     mut file: std::fs::File,
-    st: nix::sys::stat::FileStat,
+    st: &crate::platform::Stat,
     key: &RelPath,
     from: u64,
     check: bool,

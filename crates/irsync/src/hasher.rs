@@ -465,7 +465,7 @@ impl Hasher {
             // Never follow a symlink swapped in since the walk lstat'ed it,
             // as the final name or anywhere on the way from the root.
             let (file, st) = crate::fs::safe::open_regular_beneath_stat(&root, &path)?;
-            let at_open = crate::fs::meta::stat_entry_with_ctime(st.to_file_stat(), &path);
+            let at_open = crate::fs::meta::stat_entry_with_ctime(&st, &path);
             let opened = Freshness::of_entry(&at_open.0, at_open.1);
             let (mut entry, ctime) = stat.unwrap_or(at_open);
             if let Some(p) = &progress {

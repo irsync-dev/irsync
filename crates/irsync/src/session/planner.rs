@@ -44,9 +44,9 @@ use crate::fs::meta::{apply_metadata_at, create_special_at};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::Beneath;
 use crate::plan::{decide, itemize, merge_join, meta_differs, Decision, PlanOpts, Side};
+use crate::platform::{Dir, LinkKind};
 use crate::telemetry::meter::Activity;
 use crate::telemetry::PhaseKind;
-use std::os::fd::{AsFd, BorrowedFd};
 
 /// A regular file the planner requested from the sender.
 pub(super) struct Planned {
@@ -207,21 +207,21 @@ fn shares_inode(d: &Side) -> bool {
 /// step works from that one descriptor.
 fn place_via_temp(
     at: &Beneath,
-    make: impl FnOnce(BorrowedFd<'_>, &Path) -> io::Result<()>,
+    make: impl FnOnce(&Dir, &[u8]) -> io::Result<()>,
     entry: &FileEntry,
     apply: &crate::fs::meta::ApplyOpts,
 ) -> io::Result<()> {
     use crate::fs::safe::errno;
     use nix::unistd::{unlinkat, UnlinkatFlags};
     let (dir, name) = at.parent()?;
-    let tmp = crate::recv::temp_name(&name, b".tmp");
-    let tmp = Path::new(std::ffi::OsStr::from_bytes(&tmp));
+    let tmp_name = crate::recv::temp_name(&name, b".tmp");
+    let tmp = Path::new(std::ffi::OsStr::from_bytes(&tmp_name));
     match unlinkat(&dir, tmp, UnlinkatFlags::NoRemoveDir) {
         Err(e) if e != nix::Error::ENOENT => return Err(errno(e)),
         _ => {}
     }
-    let res = make(dir.as_fd(), tmp)
-        .and_then(|()| apply_metadata_at(dir.as_fd(), tmp, entry, apply))
+    let res = make(&dir, &tmp_name)
+        .and_then(|()| apply_metadata_at(&dir, &tmp_name, entry, apply))
         .and_then(|()| nix::fcntl::renameat(&dir, tmp, &dir, &name[..]).map_err(errno));
     if res.is_err() {
         let _ = unlinkat(&dir, tmp, UnlinkatFlags::NoRemoveDir);
@@ -240,12 +240,7 @@ pub(super) fn apply_metadata_beneath(
         return crate::fs::meta::apply_metadata(&at.root, entry, apply);
     }
     let (dir, name) = at.parent()?;
-    apply_metadata_at(
-        dir.as_fd(),
-        Path::new(std::ffi::OsStr::from_bytes(&name)),
-        entry,
-        apply,
-    )
+    apply_metadata_at(&dir, &name, entry, apply)
 }
 
 /// Places `root/path` as a hard link to the regular file `root/target`
@@ -720,13 +715,9 @@ impl Planner {
                 drop(planning);
                 let _placing = meter.start(Activity::Place);
                 blocking(move || {
-                    let target = std::ffi::OsStr::from_bytes(&entry.link_target).to_owned();
                     place_via_temp(
                         &at,
-                        |dir, tmp| {
-                            nix::unistd::symlinkat(target.as_os_str(), dir, tmp)
-                                .map_err(crate::fs::safe::errno)
-                        },
+                        |dir, tmp| dir.symlink(tmp, &entry.link_target, LinkKind::File),
                         &entry,
                         &apply,
                     )
@@ -1191,7 +1182,7 @@ mod tests {
         let link = |at: &Beneath| {
             place_via_temp(
                 at,
-                |dir, tmp| nix::unistd::symlinkat("/etc", dir, tmp).map_err(crate::fs::safe::errno),
+                |dir, tmp| dir.symlink(tmp, b"/etc", LinkKind::File),
                 &entry(0o120777),
                 &ApplyOpts::default(),
             )

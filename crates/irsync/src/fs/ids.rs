@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 
 use irsync_proto::v1::FileEntry;
-use nix::unistd::{Gid, Group, Uid, User};
+
+use crate::platform;
 
 /// The names of this side's ids, for a listing.
 #[derive(Default)]
@@ -21,23 +22,15 @@ impl IdNames {
     }
 
     pub fn user(&mut self, uid: u32) -> &str {
-        self.users.entry(uid).or_insert_with(|| {
-            User::from_uid(Uid::from_raw(uid))
-                .ok()
-                .flatten()
-                .map(|u| u.name)
-                .unwrap_or_default()
-        })
+        self.users
+            .entry(uid)
+            .or_insert_with(|| platform::user_name(uid).unwrap_or_default())
     }
 
     pub fn group(&mut self, gid: u32) -> &str {
-        self.groups.entry(gid).or_insert_with(|| {
-            Group::from_gid(Gid::from_raw(gid))
-                .ok()
-                .flatten()
-                .map(|g| g.name)
-                .unwrap_or_default()
-        })
+        self.groups
+            .entry(gid)
+            .or_insert_with(|| platform::group_name(gid).unwrap_or_default())
     }
 
     /// Fills `user` and `group` from the entry's ids.
@@ -63,16 +56,14 @@ impl IdMap {
         *self
             .users
             .entry(name.to_string())
-            .or_insert_with(|| User::from_name(name).ok().flatten().map(|u| u.uid.as_raw()))
+            .or_insert_with(|| platform::user_id(name))
     }
 
     fn gid_of(&mut self, name: &str) -> Option<u32> {
-        *self.groups.entry(name.to_string()).or_insert_with(|| {
-            Group::from_name(name)
-                .ok()
-                .flatten()
-                .map(|g| g.gid.as_raw())
-        })
+        *self
+            .groups
+            .entry(name.to_string())
+            .or_insert_with(|| platform::group_id(name))
     }
 
     /// Replaces the entry's ids by the local ids of its names, where the
@@ -96,10 +87,7 @@ mod tests {
     use super::*;
 
     fn me() -> (u32, u32) {
-        (
-            nix::unistd::geteuid().as_raw(),
-            nix::unistd::getegid().as_raw(),
-        )
+        (platform::euid(), platform::egid())
     }
 
     #[test]
@@ -112,7 +100,7 @@ mod tests {
             ..FileEntry::default()
         };
         names.attach(&mut e);
-        let user = User::from_uid(Uid::from_raw(uid)).unwrap().unwrap().name;
+        let user = platform::user_name(uid).unwrap();
         assert_eq!(e.user, user);
         assert!(!e.group.is_empty());
         // The peer's numbers differ; the names bring them home.

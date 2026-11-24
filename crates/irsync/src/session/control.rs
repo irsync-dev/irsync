@@ -797,11 +797,7 @@ fn list_single(
         }
         let (dir, name) =
             crate::fs::safe::open_parent_beneath(base, &super::join_rel(prefix, rel))?;
-        lstat_at(
-            std::os::fd::AsFd::as_fd(&dir),
-            std::path::Path::new(&crate::platform::bytes_to_os(&name)?),
-            rel,
-        )
+        lstat_at(&dir, &name, rel)
     };
     match lstat(&RelPath::root()) {
         Ok((entry, ctime)) => {

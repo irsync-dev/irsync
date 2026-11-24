@@ -7,7 +7,6 @@ use crate::telemetry::meter::{Activity, Meter};
 use irsync_proto::v1::FileEntry;
 use jwalk::{Parallelism, WalkDirGeneric};
 use std::cell::RefCell;
-use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -352,12 +351,7 @@ fn run_walk(
             }
             Err(e) => return Err(e),
         };
-        crate::fs::meta::lstat_at(
-            std::os::fd::AsFd::as_fd(dir),
-            Path::new(OsStr::from_bytes(&name)),
-            rel,
-        )
-        .map(Some)
+        crate::fs::meta::lstat_at(dir, &name, rel).map(Some)
     };
     let send = |sum: &mut ScanSummary, rel: RelPath| -> bool {
         match lstat(&rel) {
