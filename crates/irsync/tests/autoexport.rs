@@ -8,6 +8,17 @@ use irsync::authz::{Authorizer, FileAuthorizer};
 use irsync::autoexport::{auto_root, check_root, AutoRootError};
 use irsync::config::paths::Paths;
 
+/// A `state_dir` line for a config in `dir`: adding an automatic export
+/// saves the file, and the save then looks for a running daemon in a state
+/// folder of the test's own, not in the default one of whoever runs the
+/// tests (#275).
+fn state_line(dir: &Path) -> String {
+    format!(
+        "state_dir = {:?}\n",
+        dir.join("state").display().to_string()
+    )
+}
+
 #[test]
 fn auto_root_dir_is_itself() {
     let tmp = tempfile::tempdir().unwrap();
@@ -82,7 +93,15 @@ fn id(n: u8) -> iroh::EndpointId {
 fn file_authorizer_waits_for_the_config_lock() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("irsync.toml");
-    irsync::fs::private::write(&config, format!("[immediate]\nrw = [\"{}\"]\n", id(1))).unwrap();
+    irsync::fs::private::write(
+        &config,
+        format!(
+            "{}[immediate]\nrw = [\"{}\"]\n",
+            state_line(dir.path()),
+            id(1)
+        ),
+    )
+    .unwrap();
     let lock = dir.path().join("irsync.toml.lock");
     std::fs::write(&lock, b"").unwrap();
     let release = std::thread::spawn({
@@ -137,7 +156,8 @@ fn auto_export_names_the_peer_by_its_alias() {
     irsync::fs::private::write(
         &config,
         format!(
-            "[clients.laptop]\nclient_id = \"{}\"\n[immediate]\nrw = [\"laptop\"]\n",
+            "{}[clients.laptop]\nclient_id = \"{}\"\n[immediate]\nrw = [\"laptop\"]\n",
+            state_line(dir.path()),
             id(1)
         ),
     )

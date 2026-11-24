@@ -498,12 +498,16 @@ async fn a_daemon_on_a_v1_file_converts_it_and_still_lets_clients_in() {
         let config_dir = tempfile::tempdir().unwrap();
         let config = config_dir.path().join("irsync.toml");
         let shared = tempfile::tempdir().unwrap();
+        // Its own state_dir: the conversion looks for a running daemon
+        // there, not in the default one of whoever runs the tests (#275).
         let old = format!(
-            "# who may push anywhere\n[immediate]\nrw = [\"laptop\"]\n\n\
+            "state_dir = {:?}\n\n\
+             # who may push anywhere\n[immediate]\nrw = [\"laptop\"]\n\n\
              [daemon]\nimmediate = true\n\n\
              # the laptop\n[hosts.laptop]\nclient_id = \"{}\"\n\n\
              # the nas\n[hosts.nas]\nendpoint_id = \"{}\"\n\n\
              [exports.shared]\npath = \"{}\"\nrw = [\"nas\"]\n",
+            config_dir.path().join("state").display().to_string(),
             client.id(),
             other,
             shared.path().display()
