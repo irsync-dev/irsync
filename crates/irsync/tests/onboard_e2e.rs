@@ -381,7 +381,13 @@ fn pair_again_does_not_regrant() {
     w.kill_daemon();
     let o = w.irsync_bare(&["pair", "myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(err.contains("has no immediate grant"), "{err}");
+    assert!(
+        err.contains("the daemon rejected this client's key"),
+        "{err}"
+    );
+    assert!(!err.contains("paired with"), "{err}");
     assert!(!immediate_granted(&w, &id), "{}", w.server_toml());
 }
 

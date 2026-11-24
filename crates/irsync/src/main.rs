@@ -82,7 +82,7 @@ fn main() {
         Some(Command::Grant(g)) => std::process::exit(run_grant(g, files)),
         Some(Command::Id(i)) => std::process::exit(run_id(i, files)),
         Some(Command::Config(c)) => std::process::exit(run_config(c, files)),
-        Some(Command::Pair(a)) => std::process::exit(run_pair(a, log, files)),
+        Some(Command::Pair(a)) => std::process::exit(run_pair(a, files)),
         Some(Command::Show) => std::process::exit(run_show(files)),
         Some(Command::SshSetup {
             client,
@@ -821,7 +821,7 @@ fn recheck_over_ssh(
 }
 
 /// `irsync pair HOST`: sets the server up over ssh and saves it.
-fn run_pair(a: &PairArgs, _log: LogArgs, files: &FilesArgs) -> i32 {
+fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
     let log = LogWriter::new();
     finish(
         "pair",
@@ -874,6 +874,12 @@ fn run_pair(a: &PairArgs, _log: LogArgs, files: &FilesArgs) -> i32 {
                 }
             })?;
             report_onboarded(&log, &o);
+            if o.report.grant == irsync::ssh::setup::GrantOutcome::Missing {
+                bail!(irsync::session::reconnect::no_access_hint(
+                    &format!("{}:", o.alias),
+                    &secret.public()
+                ));
+            }
             log.eprintln(&format!(
                 "irsync: {}",
                 irsync::ssh::pair::paired_line(&o.alias)
