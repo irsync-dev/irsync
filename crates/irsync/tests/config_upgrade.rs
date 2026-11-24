@@ -590,6 +590,7 @@ fn bad_config_version_values() {
 /// saves the file in layout 2; its clients keep their access, and the
 /// converted file grants what the old one did.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(unix)]
 async fn a_daemon_on_a_v1_file_converts_it_and_still_lets_clients_in() {
     use common::{archive_opts, Flow, Harness};
     use irsync::authz::{Authorizer, FileAuthorizer};

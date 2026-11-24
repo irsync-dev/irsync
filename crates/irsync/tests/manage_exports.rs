@@ -269,6 +269,7 @@ fn add_and_remove_keep_an_inline_exports_table() {
 }
 
 #[test]
+#[cfg(unix)]
 fn save_config_refuses_an_export_message_that_does_not_load() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
