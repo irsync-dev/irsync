@@ -140,6 +140,15 @@ fn unknown_key_text(key: &str) -> String {
         Some(path) if path.first().is_some_and(|p| p == "hosts") => {
             format!("unknown key {key:?}; hosts are now servers.NAME and clients.NAME")
         }
+        Some(path) if path.first().is_some_and(|p| p == "all") => {
+            format!("unknown key {key:?}; a client's right over every export is clients.NAME.all_exports")
+        }
+        Some(path) if path.first().is_some_and(|p| p == "immediate") => {
+            format!("unknown key {key:?}; a client's right over any path is clients.NAME.all_paths")
+        }
+        Some(path) if path == ["daemon", "immediate"] => {
+            format!("unknown key {key:?}; it is now daemon.allow_all_paths")
+        }
         _ => format!("unknown key {key:?}"),
     }
 }

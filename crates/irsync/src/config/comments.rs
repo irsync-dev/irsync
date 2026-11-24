@@ -405,8 +405,6 @@ fn table<'a>(c: &'a mut pb::Config, path: &[String]) -> Option<Parts<'a>> {
         ["daemon"] => parts!(c.daemon.as_mut()?, "listen" => listen),
         ["daemon", "discovery"] => parts!(c.daemon.as_mut()?.discovery.as_mut()?),
         ["telemetry"] => parts!(c.telemetry.as_mut()?),
-        ["all"] => parts!(c.all.as_mut()?, "rw" => rw, "ro" => ro),
-        ["immediate"] => parts!(c.immediate.as_mut()?, "rw" => rw, "ro" => ro),
         ["servers", name] => parts!(
             c.servers.iter_mut().find(|s| s.name == name)?,
             "address" => address,

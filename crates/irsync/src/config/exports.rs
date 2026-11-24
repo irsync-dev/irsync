@@ -1,14 +1,16 @@
-//! The `[exports]` and `[all]` tables: what the daemon shares and who may
-//! use it, in `irsync.toml`.
+//! The `[exports]` table: what the daemon shares and who may use it, in
+//! `irsync.toml`.
 
 use super::{expand_tilde, file_error, ConfigError};
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Names that cannot be export names: `all` is the word `grant add all WHO`
-/// uses for every export.
-pub const RESERVED: [&str; 2] = ["all", "immediate"];
+/// Names that cannot be export names: `all` is the word `grant remove all
+/// WHO` uses for every export, `all_exports` and `all_paths` are the
+/// rights `grant list` lists by those names, and `immediate` once named
+/// grants to any path.
+pub const RESERVED: [&str; 4] = ["all", "all_exports", "all_paths", "immediate"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Export {
@@ -19,7 +21,7 @@ pub struct Export {
     /// Flush every file a push writes into the export before placing it,
     /// as if the client had passed `--fsync`.
     pub fsync: bool,
-    /// Created by the daemon for a path an `[immediate]` client reached,
+    /// Created by the daemon for a path a client with `all_paths` reached,
     /// not written by hand.
     pub auto: bool,
     pub rw: Vec<String>,
@@ -29,22 +31,23 @@ pub struct Export {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Exports {
     pub path: PathBuf,
-    pub rw: Vec<String>,
-    pub ro: Vec<String>,
-    /// The `[immediate]` table's `rw`: peers that may reach any path the
-    /// daemon's user can.
-    pub immediate_rw: Vec<String>,
     pub exports: BTreeMap<String, Export>,
 }
 
 /// The message for a reserved export name.
 pub fn reserved(name: &str) -> String {
-    let word = if name == "immediate" {
-        "that used to mean a grant to any path; now it is `irsync client set NAME all_paths=rw`"
-    } else {
-        "`grant remove all WHO` and `export update all` use for every export"
+    let why = match name {
+        "immediate" => {
+            "it used to name grants to any path; use irsync client set NAME all_paths=rw"
+                .to_string()
+        }
+        "all_exports" | "all_paths" => {
+            format!("`irsync grant list {name}` lists the clients with that right")
+        }
+        _ => "it is the word `grant remove all WHO` and `export update all` use for every export"
+            .to_string(),
     };
-    format!("{name:?} is reserved: it is the word {word}")
+    format!("{name:?} is reserved: {why}")
 }
 
 /// The message for a name that cannot be an export's, or `None`.
@@ -73,7 +76,7 @@ fn values(entries: &[pb::Entry]) -> Vec<String> {
 }
 
 impl Exports {
-    /// `[all]`, `[immediate]` and the exports of the message, checked as
+    /// The exports of the message, checked as
     /// the reader checks the file: names, absolute paths (`~` expanded),
     /// and no name twice. `path` is the file named in errors (and
     /// recorded as `Exports.path`).
@@ -101,16 +104,8 @@ impl Exports {
                 return Err(file_error(path, format!("duplicate export {name:?}")));
             }
         }
-        let all = msg.all.as_ref();
         Ok(Exports {
             path: path.to_path_buf(),
-            rw: all.map(|g| values(&g.rw)).unwrap_or_default(),
-            ro: all.map(|g| values(&g.ro)).unwrap_or_default(),
-            immediate_rw: msg
-                .immediate
-                .as_ref()
-                .map(|g| values(&g.rw))
-                .unwrap_or_default(),
             exports,
         })
     }

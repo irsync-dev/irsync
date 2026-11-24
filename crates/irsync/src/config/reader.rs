@@ -43,8 +43,6 @@ struct RawFile {
     clients: BTreeMap<String, Spanned<RawClientEntry>>,
     #[serde(default)]
     exports: BTreeMap<String, Spanned<toml::Value>>,
-    all: Option<RawGrants>,
-    immediate: Option<RawImmediate>,
 }
 
 #[derive(Deserialize)]
@@ -83,7 +81,6 @@ struct RawDaemon {
     #[serde(default, deserialize_with = "de_opt_debug_addr")]
     debug_addr: Option<String>,
     allow_all_paths: Option<bool>,
-    immediate: Option<bool>,
     allow_root: Option<bool>,
 }
 
@@ -150,19 +147,6 @@ struct RawExport {
     auto: Option<bool>,
     rw: Option<Vec<String>>,
     ro: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawGrants {
-    rw: Option<Vec<String>>,
-    ro: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawImmediate {
-    rw: Option<Vec<String>>,
 }
 
 /// The enums as the file spells them. Named as the typed enums are, should
@@ -396,25 +380,6 @@ pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
     config.servers = servers(raw.servers, &at)?;
     config.clients = clients(raw.clients, &at)?;
     config.exports = exports(raw.exports, &at)?;
-    config.all = raw.all.map(|g| {
-        let (rw, rw_set) = entries(g.rw);
-        let (ro, ro_set) = entries(g.ro);
-        pb::GrantTable {
-            rw,
-            rw_set,
-            ro,
-            ro_set,
-            ..Default::default()
-        }
-    });
-    config.immediate = raw.immediate.map(|g| {
-        let (rw, rw_set) = entries(g.rw);
-        pb::GrantTable {
-            rw,
-            rw_set,
-            ..Default::default()
-        }
-    });
     Ok(config)
 }
 
@@ -425,24 +390,26 @@ fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
     let mut keys: Vec<_> = shape.iter().collect();
     keys.sort_by_key(|(_, v)| v.span().start);
     for (name, value) in keys {
-        let start = value.span().start;
+        let mut start = value.span().start;
         let value = value.get_ref();
         let message = match name.as_str() {
-            "immediate" => match immediate_problem(value) {
-                Some(m) => m,
-                None => continue,
-            },
+            "all" => old_table("all", Right::AllExports),
+            "immediate" => old_table("immediate", Right::AllPaths),
+            "daemon" if value.get("immediate").is_some() => {
+                start = daemon_immediate_at(text).unwrap_or(start);
+                "[daemon] immediate is now allow_all_paths".to_string()
+            }
             "hosts" => HOSTS_NOT_READ.to_string(),
             "config_version" => match version_of(value) {
                 Ok(_) => continue,
                 Err(m) => m,
             },
-            "servers" | "clients" | "exports" | "all" | "client" | "daemon" | "telemetry"
+            "servers" | "clients" | "exports" | "client" | "daemon" | "telemetry"
                 if value.is_table() =>
             {
                 continue
             }
-            "servers" | "clients" | "exports" | "all" | "client" | "daemon" | "telemetry" => {
+            "servers" | "clients" | "exports" | "client" | "daemon" | "telemetry" => {
                 format!("{name}: expected a table, found {}", value.type_str())
             }
             "unsafe_config_allowed" if value.is_bool() => continue,
@@ -469,9 +436,9 @@ fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
                     )
                 }
             }
-            "rw" | "ro" => {
-                format!("unknown key {name:?}; grants for every export live under [all]")
-            }
+            "rw" | "ro" => format!(
+                "unknown key {name:?}; a client's right over every export is all_exports under [clients.NAME]"
+            ),
             _ => format!("unknown key {name:?}"),
         };
         return Err(ConfigError::File {
@@ -483,17 +450,27 @@ fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// The message for a bad `[immediate]` table, or `None` when it is fine.
-fn immediate_problem(value: &toml::Value) -> Option<String> {
-    let Some(t) = value.as_table() else {
-        return Some(format!(
-            "immediate: expected a table, found {}",
-            value.type_str()
-        ));
-    };
-    t.keys().find(|k| *k != "rw").map(|k| {
-        format!("[immediate]: unknown key {k:?}; only `rw` is allowed (immediate grants are read-write)")
-    })
+/// The message for `[all]` or `[immediate]`, whose grants are now the
+/// right `right` of each client.
+fn old_table(name: &str, right: Right) -> String {
+    let key = right.key();
+    format!(
+        "[{name}] is not read any more: give a client {key} = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME {key}=rw)"
+    )
+}
+
+/// Where `immediate` of `[daemon]` starts in `text`, which has it.
+fn daemon_immediate_at(text: &str) -> Option<usize> {
+    #[derive(Deserialize)]
+    struct File {
+        daemon: Option<Daemon>,
+    }
+    #[derive(Deserialize)]
+    struct Daemon {
+        immediate: Option<Spanned<serde::de::IgnoredAny>>,
+    }
+    let file: File = toml::from_str(text).ok()?;
+    Some(file.daemon?.immediate?.span().start)
 }
 
 fn client(r: RawClient) -> pb::Client {
@@ -534,7 +511,6 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
         }),
         debug_addr: r.debug_addr,
         allow_all_paths: r.allow_all_paths,
-        immediate: r.immediate,
         allow_root: r.allow_root,
         ..Default::default()
     }

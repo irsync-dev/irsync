@@ -1,7 +1,7 @@
 config_version = 2
 
 [daemon]
-immediate = true
+allow_all_paths = true
 
 [servers.laptop]
 endpoint_id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"
@@ -9,6 +9,4 @@ endpoint_id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"
 # was the endpoint_id of [hosts.laptop]; kept as a client so the grants naming laptop still apply
 [clients.laptop]
 client_id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"
-
-[immediate]
-rw = ["laptop"]
+all_paths = "rw"

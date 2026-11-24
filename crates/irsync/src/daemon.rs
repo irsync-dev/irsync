@@ -1202,9 +1202,8 @@ pub async fn run_from_settings(
     let _lock = crate::daemon_lock::acquire(&settings.state_dir)?;
     let authz = Arc::new(FileAuthorizer::new(paths.clone()));
     // Clients with `all_paths` get their exports added as they connect.
-    let all_paths = settings.daemon.allow_all_paths
-        && (!exports.immediate_rw.is_empty()
-            || clients.entries.values().any(|c| c.all_paths.is_some()));
+    let all_paths =
+        settings.daemon.allow_all_paths && clients.entries.values().any(|c| c.all_paths.is_some());
     if exports.exports.is_empty() && !all_paths {
         tracing::warn!(
             "no exports defined in {}; run irsync export add",

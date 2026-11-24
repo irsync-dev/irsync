@@ -28,7 +28,6 @@ congestion = "cubic"
 pq_key_exchange = "require"
 debug_addr = "127.0.0.1:9000"
 allow_all_paths = false
-immediate = false
 allow_root = true
 
 [daemon.discovery]
@@ -68,10 +67,3 @@ fsync = true
 auto = true
 rw = ["nas"]
 ro = ["92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"]
-
-[all]
-rw = ["nas"]
-ro = ["92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"]
-
-[immediate]
-rw = ["nas"]

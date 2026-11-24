@@ -17,7 +17,7 @@ mod common;
 
 use iroh::EndpointId;
 use irsync::authz::{Access, Grants, Snapshot};
-use irsync::config::clients::Clients;
+use irsync::config::clients::{Clients, Right};
 use irsync::config::file::Config;
 use irsync::config::legacy_v1;
 use irsync::config::writer::write;
@@ -78,11 +78,9 @@ fn ids_named(msg: &pb::Config) -> BTreeSet<EndpointId> {
     let servers = msg.servers.iter().map(|s| key(&s.endpoint_id));
     let clients = msg.clients.iter().map(|c| key(&c.client_id));
     let lists = msg
-        .all
+        .exports
         .iter()
-        .chain(&msg.immediate)
-        .flat_map(|g| [&g.rw, &g.ro])
-        .chain(msg.exports.iter().flat_map(|e| [&e.rw, &e.ro]))
+        .flat_map(|e| [&e.rw, &e.ro])
         .flatten()
         .filter_map(|e| parse_endpoint_id(&e.value).ok());
     servers.chain(clients).chain(lists).collect()
@@ -231,6 +229,111 @@ fn every_grant_list_counts_for_keep_the_access() {
     }
     let text = format!("{host}[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n");
     assert!(converted(&text).config.clients.is_empty());
+}
+
+/// The right of the converted client `name`.
+fn right_of(c: &pb::Config, name: &str, right: Right) -> Option<Access> {
+    let entry = c.clients.iter().find(|e| e.name == name);
+    right.get(entry.unwrap_or_else(|| panic!("no client {name} in {c:?}")))
+}
+
+/// `[immediate]` becomes `all_paths` on its client and `[daemon]
+/// immediate` becomes `allow_all_paths`; neither is left in the file.
+#[test]
+fn immediate_only() {
+    let c = converted(&fixture("immediate_only")).config;
+    assert_eq!(
+        right_of(&c, "laptop", Right::AllPaths),
+        Some(Access::ReadWrite)
+    );
+    assert_eq!(right_of(&c, "laptop", Right::AllExports), None);
+    assert_eq!(c.daemon.as_ref().unwrap().allow_all_paths, Some(true));
+    let text = write(&c);
+    assert!(!text.contains("immediate"), "{text}");
+    assert!(
+        text.contains("[daemon]\nallow_all_paths = true\n"),
+        "{text}"
+    );
+}
+
+/// The entries of `[all]` land as `all_exports` on the clients they name,
+/// by name or by id, and `rw` beats `ro`.
+#[test]
+fn grants_by_name_and_id() {
+    let c = converted(&fixture("grants_by_name_and_id")).config;
+    assert_eq!(
+        right_of(&c, "laptop", Right::AllExports),
+        Some(Access::ReadOnly)
+    );
+    assert_eq!(right_of(&c, "desk", Right::AllExports), None);
+    assert!(!write(&c).contains("[all]"));
+
+    let text = format!(
+        "[hosts.lap]\nclient_id = \"{a}\"\n[hosts.desk]\nclient_id = \"{b}\"\n\
+         [all]\nrw = [\"{a}\"]\nro = [\"lap\", \"desk\"]\n[immediate]\nrw = [\"{b}\"]\n",
+        a = id(1),
+        b = id(2)
+    );
+    let c = legacy_v1::read(&text, p()).unwrap();
+    assert!(c.dropped.is_empty(), "{:?}", c.dropped);
+    let c = c.config;
+    assert_eq!(
+        right_of(&c, "lap", Right::AllExports),
+        Some(Access::ReadWrite)
+    );
+    assert_eq!(
+        right_of(&c, "desk", Right::AllExports),
+        Some(Access::ReadOnly)
+    );
+    assert_eq!(
+        right_of(&c, "desk", Right::AllPaths),
+        Some(Access::ReadWrite)
+    );
+    assert_eq!(c.clients.len(), 2);
+}
+
+/// An id in `[all]` or `[immediate]` that no host has becomes a client of
+/// its own, named after the start of the id; text that names nobody is
+/// dropped and said so.
+#[test]
+fn a_grant_to_an_unknown_id_becomes_a_client() {
+    let hex: String = id(5).as_bytes()[..5]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let name = format!("client-{hex}");
+    let text = format!("[all]\nrw = [\"{}\"]\n", id(5));
+    let c = converted(&text);
+    assert!(c.dropped.is_empty(), "{:?}", c.dropped);
+    assert_eq!(
+        write(&c.config),
+        format!(
+            "config_version = 2\n\n# made from a grant to this id in [all] or [immediate]\n[clients.{name}]\nclient_id = \"{}\"\nall_exports = \"rw\"\n",
+            id(5)
+        )
+    );
+
+    // The name is taken: the next free one, and both lists reach it.
+    let text = format!(
+        "[hosts.{name}]\nendpoint_id = \"{}\"\n[all]\nro = [\"{i}\", \"ghost\"]\n[immediate]\nrw = [\"{i}\"]\n",
+        id(6),
+        i = id(5)
+    );
+    let c = converted(&text);
+    assert_eq!(
+        c.dropped,
+        ["[all] ro: dropped \"ghost\": it names no host and is no id"]
+    );
+    let other = format!("{name}-2");
+    assert_eq!(
+        right_of(&c.config, &other, Right::AllExports),
+        Some(Access::ReadOnly)
+    );
+    assert_eq!(
+        right_of(&c.config, &other, Right::AllPaths),
+        Some(Access::ReadWrite)
+    );
+    assert_eq!(c.config.clients.len(), 1);
 }
 
 /// Review Focus 3: the comments of a bare `[hosts]`, or of

@@ -25,7 +25,7 @@ use std::time::Duration;
 /// A server and a client of the same name, and grants naming the client.
 fn both() -> String {
     format!(
-        "[hosts.box]\nendpoint_id = \"{}\"\nclient_id = \"{}\"\n[all]\nrw = [\"box\"]\n",
+        "[hosts.box]\nendpoint_id = \"{}\"\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n",
         id(1),
         id(2)
     )
@@ -106,7 +106,7 @@ fn remove_ignores_grants_and_keeps_the_client() {
     server_remove(&mut m, "box").unwrap();
     assert!(m.servers.is_empty());
     assert_eq!(m.clients.len(), 1);
-    assert_eq!(m.all.as_ref().map(|a| a.rw.len()), Some(1));
+    assert_eq!(m.exports[0].rw.len(), 1);
     assert!(matches!(
         server_remove(&mut m, "box"),
         Err(ManageError::NotFound(_))
@@ -117,7 +117,7 @@ fn remove_ignores_grants_and_keeps_the_client() {
 fn rename_keeps_place_and_comments_and_touches_no_grant() {
     let mut m = msg(&format!(
         "[hosts.a]\nendpoint_id = \"{}\"\n\n# the old box\n[hosts.box] # header\n\
-         endpoint_id = \"{}\" # id\n[hosts.c]\nclient_id = \"{}\"\n[all]\nrw = [\"c\"]\n",
+         endpoint_id = \"{}\" # id\n[hosts.c]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"c\"]\n",
         id(1),
         id(2),
         id(3)
@@ -126,7 +126,7 @@ fn rename_keeps_place_and_comments_and_touches_no_grant() {
     server_rename(&mut m, "box", "crate").unwrap();
     assert_eq!(server_names(&m), ["a", "crate"]);
     assert_eq!(m.clients[0].name, "c");
-    assert_eq!(m.all.as_ref().unwrap().rw[0].value, "c");
+    assert_eq!(m.exports[0].rw[0].value, "c");
     let s = write(&m);
     assert!(s.contains("# the old box\n[servers.crate] # header"), "{s}");
     assert!(s.contains("# id"), "{s}");

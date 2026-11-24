@@ -505,8 +505,9 @@ pub fn run(
             .with_context(|| format!("in {}", paths.config.display()))?;
         match (added, recheck && !generated) {
             (false, _) => {
-                // Granted by its bare id before it had a name: the name
-                // is new.
+                // The client already had `all_paths = "rw"`, which only a
+                // `[clients]` entry holds: no entry is new. Saved only
+                // should the message have changed after all.
                 if msg != before {
                     lock.save(&mut msg)?;
                 }

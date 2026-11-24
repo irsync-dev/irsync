@@ -669,11 +669,11 @@ async fn a_source_rewritten_after_its_listing_arrives_as_it_is_now() {
     assert_eq!(out.files_hashed, 1, "the retry re-read the file");
 }
 
-/// A key in `[immediate]` pushes to an absolute path no export names; the
+/// A client with `all_paths` pushes to an absolute path no export names; the
 /// daemon adds an automatic export there, and a second, unchanged push
 /// finds the files in that export's index instead of hashing them again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn immediate_push_then_resume_uses_index() {
+async fn all_paths_push_then_resume_uses_index() {
     within30(async {
         let opts = archive_opts();
         let client = common::client_endpoint().await;
@@ -684,7 +684,7 @@ async fn immediate_push_then_resume_uses_index() {
         irsync::fs::private::write(
             &config,
             format!(
-                "state_dir = {:?}\n[immediate]\nrw = [\"{}\"]\n",
+                "state_dir = {:?}\n[clients.c]\nclient_id = \"{}\"\nall_paths = \"rw\"\n",
                 config_dir.path().join("state").display().to_string(),
                 client.id()
             ),

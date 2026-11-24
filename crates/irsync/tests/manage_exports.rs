@@ -67,10 +67,13 @@ fn a_new_export_goes_last_and_the_path_stays_as_written() {
 
 #[test]
 fn remove_last_export_leaves_a_loadable_file() {
-    let mut m = msg("[all]\nrw = [\"x\"]\n[exports.a]\npath = \"/a\"\n");
+    let mut m = msg(&format!(
+        "[clients.x]\nclient_id = \"{}\"\nall_exports = \"rw\"\n[exports.a]\npath = \"/a\"\n",
+        id(1)
+    ));
     remove_export(&mut m, "a").unwrap();
     let c = typed(&m);
-    assert!(c.exports.exports.is_empty() && c.exports.rw == vec!["x"]);
+    assert!(c.exports.exports.is_empty() && c.clients.get("x").is_some());
     assert!(matches!(
         remove_export(&mut m, "all"),
         Err(ManageError::NotFound(_))
@@ -91,7 +94,7 @@ fn remove_drops_table_and_its_grants() {
 #[test]
 fn remove_only_removes_an_export() {
     let text = format!(
-        "[all]\nrw = [\"{}\"]\nro = []\n[exports.p]\npath = \"/p\"\n",
+        "[clients.c]\nclient_id = \"{}\"\nall_exports = \"rw\"\n[exports.p]\npath = \"/p\"\nro = []\n",
         id(1)
     );
     let mut m = msg(&text);

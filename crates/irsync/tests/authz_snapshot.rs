@@ -42,8 +42,13 @@ fn a_named_machine_is_granted_as_a_client() {
 }
 
 #[test]
-fn per_export_entry_wins_over_top_level_and_rw_wins_over_ro() {
-    let s = snap("", &format!("[all]\nrw = [\"{a}\"]\nro = [\"{b}\"]\n[exports.x]\npath = \"/x\"\nro = [\"{a}\"]\nrw = [\"{b}\"]\n[exports.y]\npath = \"/y\"\nrw = [\"{a}\"]\nro = [\"{a}\"]\n", a = id(1), b = id(2)));
+fn per_export_entry_wins_over_all_exports_and_rw_wins_over_ro() {
+    let clients = format!(
+        "[clients.a]\nclient_id = \"{}\"\nall_exports = \"rw\"\n[clients.b]\nclient_id = \"{}\"\nall_exports = \"ro\"\n",
+        id(1),
+        id(2)
+    );
+    let s = snap(&clients, &format!("[exports.x]\npath = \"/x\"\nro = [\"{a}\"]\nrw = [\"{b}\"]\n[exports.y]\npath = \"/y\"\nrw = [\"{a}\"]\nro = [\"{a}\"]\n", a = id(1), b = id(2)));
     assert!(!s.grants(&id(1)).allows("x", true) && s.grants(&id(1)).allows("other", true));
     assert!(s.grants(&id(2)).allows("x", true) && !s.grants(&id(2)).allows("other", true));
     assert!(s.grants(&id(1)).allows("y", true));
@@ -86,29 +91,17 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
 }
 
 #[test]
-fn immediate_grant_reaches() {
-    let s = Snapshot::from_files(
-        &parse_clients("", Path::new("h")).unwrap(),
-        &parse_exports(
-            &format!("[immediate]\nrw = [\"{}\"]\n", id(1)),
-            Path::new("e"),
-        )
-        .unwrap(),
-        true,
-    );
+fn all_paths_reaches() {
+    let s = snap(&laptop("all_paths = \"rw\"\n"), "");
     assert_eq!(s.grants(&id(1)).all_paths, Some(Access::ReadWrite));
     assert!(!s.grants(&id(1)).is_empty());
 }
 
 #[test]
-fn immediate_off_ignores_grant() {
+fn all_paths_not_allowed_is_ignored() {
     let s = Snapshot::from_files(
-        &parse_clients("", Path::new("h")).unwrap(),
-        &parse_exports(
-            &format!("[immediate]\nrw = [\"{}\"]\n", id(1)),
-            Path::new("e"),
-        )
-        .unwrap(),
+        &parse_clients(&laptop("all_paths = \"rw\"\n"), Path::new("h")).unwrap(),
+        &parse_exports("", Path::new("e")).unwrap(),
         false,
     );
     assert_eq!(s.grants(&id(1)).all_paths, None);
@@ -116,33 +109,32 @@ fn immediate_off_ignores_grant() {
 }
 
 /// An automatic export carries its peer's own `rw` entry; it counts only
-/// while that peer's immediate grant is in effect, so removing the grant
-/// or turning `immediate` off also ends access through earlier automatic
+/// while that peer's `all_paths` is in effect, so removing it or turning
+/// `allow_all_paths` off also ends access through earlier automatic
 /// exports. Exports written by hand are unaffected.
 #[test]
-fn auto_export_grant_needs_the_immediate_grant() {
-    let exports = |immediate: bool| {
-        let mut t = format!(
+fn auto_export_grant_needs_all_paths() {
+    let exports = parse_exports(
+        &format!(
             "[exports.home-auto]\npath = \"/h\"\nauto = true\nrw = [\"{a}\"]\n\
              [exports.x]\npath = \"/x\"\nrw = [\"{a}\"]\n",
             a = id(1)
-        );
-        if immediate {
-            t = format!("[immediate]\nrw = [\"{}\"]\n{t}", id(1));
-        }
-        parse_exports(&t, Path::new("e")).unwrap()
-    };
-    let clients = parse_clients("", Path::new("h")).unwrap();
-    let on = Snapshot::from_files(&clients, &exports(true), true);
+        ),
+        Path::new("e"),
+    )
+    .unwrap();
+    let clients = |rights: &str| parse_clients(&laptop(rights), Path::new("h")).unwrap();
+    let with = clients("all_paths = \"rw\"\n");
+    let on = Snapshot::from_files(&with, &exports, true);
     assert!(on.grants(&id(1)).allows("home-auto", true));
     for (s, why) in [
         (
-            Snapshot::from_files(&clients, &exports(false), true),
-            "no grant",
+            Snapshot::from_files(&clients(""), &exports, true),
+            "no all_paths",
         ),
         (
-            Snapshot::from_files(&clients, &exports(true), false),
-            "immediate off",
+            Snapshot::from_files(&with, &exports, false),
+            "allow_all_paths off",
         ),
     ] {
         let g = s.grants(&id(1));
@@ -248,19 +240,6 @@ fn two_names_for_one_id_take_the_higher_level() {
             "a = {a}, b = {b}"
         );
     }
-}
-
-/// Until they are removed, `[all]` and `[immediate]` still count, merged
-/// with the client's keys: `rw` beats `ro`.
-#[test]
-fn the_old_lists_merge_with_the_client_rights() {
-    let s = snap(
-        &laptop("all_exports = \"ro\"\nall_paths = \"ro\"\n"),
-        "[all]\nrw = [\"laptop\"]\n[immediate]\nrw = [\"laptop\"]\n",
-    );
-    let g = s.grants(&id(1));
-    assert_eq!(g.all_exports, Some(Access::ReadWrite));
-    assert_eq!(g.all_paths, Some(Access::ReadWrite));
 }
 
 fn parse_clients(

@@ -45,9 +45,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         | ["clients"]
         | ["clients", _]
         | ["exports"]
-        | ["exports", _]
-        | ["all"]
-        | ["immediate"] => Table,
+        | ["exports", _] => Table,
         ["client", "parallel"] => Int,
         ["client", "reconnect"] => Duration,
         ["client", "dial_retries"] => Int,
@@ -58,7 +56,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
         ["daemon", "max_dormant_sessions_per_key"] => Int,
         ["daemon", "listen"] => AddrArray,
-        ["daemon", "portmap" | "allow_all_paths" | "immediate" | "allow_root"] => Bool,
+        ["daemon", "portmap" | "allow_all_paths" | "allow_root"] => Bool,
         ["daemon", "relay"] => Url,
         ["daemon", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "debug_addr"] => Str,
@@ -77,7 +75,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["clients", _, key] if RIGHTS.iter().any(|r| r.key() == *key) => Str,
         ["exports", _, "path"] => Path,
         ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => Bool,
-        ["exports", _, "rw" | "ro"] | ["all", "rw" | "ro"] | ["immediate", "rw"] => StrArray,
+        ["exports", _, "rw" | "ro"] => StrArray,
         _ => return None,
     })
 }
@@ -489,7 +487,6 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "pq_key_exchange" => PqKeyExchange(&mut d.pq_key_exchange),
                 "debug_addr" => Text(&mut d.debug_addr),
                 "allow_all_paths" => Bool(&mut d.allow_all_paths),
-                "immediate" => Bool(&mut d.immediate),
                 "allow_root" => Bool(&mut d.allow_root),
                 _ => return None,
             };
@@ -548,19 +545,6 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             };
             (f, &mut e.key_comments)
         }
-        ["all", key] => {
-            let g = table(&mut msg.all, create)?;
-            let f = match *key {
-                "rw" => List(&mut g.rw, &mut g.rw_set),
-                "ro" => List(&mut g.ro, &mut g.ro_set),
-                _ => return None,
-            };
-            (f, &mut g.key_comments)
-        }
-        ["immediate", "rw"] => {
-            let g = table(&mut msg.immediate, create)?;
-            (List(&mut g.rw, &mut g.rw_set), &mut g.key_comments)
-        }
         _ => return None,
     };
     Some(Slot { field, comments })
@@ -598,7 +582,6 @@ const DAEMON: &[&str] = &[
     "pq_key_exchange",
     "debug_addr",
     "allow_all_paths",
-    "immediate",
     "allow_root",
 ];
 const DISCOVERY: &[&str] = &["dht", "dns", "mdns"];
@@ -628,8 +611,6 @@ const EXPORT: &[&str] = &[
     "rw",
     "ro",
 ];
-const GRANTS: &[&str] = &["rw", "ro"];
-const IMMEDIATE: &[&str] = &["rw"];
 
 /// The path of every key the message could hold, in the writer's order.
 fn key_paths(msg: &pb::Config) -> Vec<Vec<String>> {
@@ -658,8 +639,6 @@ fn key_paths(msg: &pb::Config) -> Vec<Vec<String>> {
     for e in &msg.exports {
         add(&["exports", &e.name], EXPORT);
     }
-    add(&["all"], GRANTS);
-    add(&["immediate"], IMMEDIATE);
     out
 }
 
@@ -693,8 +672,6 @@ fn has_table(msg: &pb::Config, path: &[String]) -> bool {
         ["clients", name] => msg.clients.iter().any(|c| c.name == *name),
         ["exports"] => !msg.exports.is_empty(),
         ["exports", name] => msg.exports.iter().any(|e| e.name == *name),
-        ["all"] => msg.all.is_some(),
-        ["immediate"] => msg.immediate.is_some(),
         _ => false,
     }
 }
@@ -728,8 +705,6 @@ fn remove_table(msg: &mut pb::Config, path: &[String]) -> bool {
             msg.exports.retain(|e| e.name != *name);
             msg.exports.len() < before
         }
-        ["all"] => msg.all.take().is_some(),
-        ["immediate"] => msg.immediate.take().is_some(),
         _ => false,
     }
 }
@@ -779,8 +754,6 @@ fn prune(msg: &mut pb::Config, path: &[String]) {
         ["exports", name, _] => msg
             .exports
             .retain(|e| e.name != *name || !keyless!(e, Export, name)),
-        ["all", _] => drop_if(&mut msg.all, |g| keyless!(g, GrantTable)),
-        ["immediate", _] => drop_if(&mut msg.immediate, |g| keyless!(g, GrantTable)),
         _ => {}
     }
 }

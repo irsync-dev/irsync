@@ -50,7 +50,10 @@ fn kinds_of_known_keys() {
     assert_eq!(kind_of(&p("servers.home")), Some(Kind::Table));
     assert_eq!(kind_of(&p("clients.home")), Some(Kind::Table));
     assert_eq!(kind_of(&p("daemon.discovery")), Some(Kind::Table));
-    assert_eq!(kind_of(&p("all.rw")), Some(Kind::StrArray));
+    assert_eq!(kind_of(&p("exports.photos.rw")), Some(Kind::StrArray));
+    // The old tables of rights are no keys any more.
+    assert!(kind_of(&p("all.rw")).is_none() && kind_of(&p("immediate")).is_none());
+    assert!(kind_of(&p("daemon.immediate")).is_none());
     assert_eq!(kind_of(&p("identity")), Some(Kind::Path));
     assert!(kind_of(&p("daemon.nope")).is_none() && kind_of(&p("nope")).is_none());
     assert!(kind_of(&p("servers.home.nope")).is_none());
@@ -504,7 +507,6 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("daemon.pq_key_exchange", &["require"]),
     ("daemon.debug_addr", &["127.0.0.1:9000"]),
     ("daemon.allow_all_paths", &["false"]),
-    ("daemon.immediate", &["true"]),
     ("daemon.allow_root", &["true"]),
     ("daemon.discovery.dht", &["false"]),
     ("daemon.discovery.dns", &["false"]),
@@ -534,9 +536,6 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("exports.p.auto", &["true"]),
     ("exports.p.rw", &["nas"]),
     ("exports.p.ro", &["nas"]),
-    ("all.rw", &["nas"]),
-    ("all.ro", &["nas"]),
-    ("immediate.rw", &["nas"]),
 ];
 
 /// A key path with the name of a server, a client or an export as `*`.
@@ -587,8 +586,6 @@ fn message_keys() -> Vec<String> {
     let config = pool.get_message_by_name("irsync.config.Config").unwrap();
     let mut out = Vec::new();
     walk(&config, &[], &mut out);
-    // `[immediate]` shares `GrantTable` with `[all]` and has only `rw`.
-    out.retain(|k| k != "immediate.ro");
     out
 }
 
@@ -698,8 +695,6 @@ fn unset_of_a_table_takes_its_comments() {
         "daemon",
         "client",
         "exports",
-        "all",
-        "immediate",
         "telemetry",
     ] {
         assert!(

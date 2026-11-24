@@ -25,8 +25,8 @@ fn msg(text: &str) -> pb::Config {
 
 fn named_everywhere() -> String {
     format!(
-        "[hosts.box]\nclient_id = \"{}\"\n[all]\nrw = [\"box\", \"x\"]\n\
-         [immediate]\nrw = [\"box\"]\n\
+        "[hosts.box]\nclient_id = \"{}\"\n[exports.a]\npath = \"/a\"\nrw = [\"box\", \"x\"]\n\
+         [exports.b]\npath = \"/b\"\nrw = [\"box\"]\n\
          [exports.p]\npath = \"/p\"\nro = [\"y\", \"box\"]\n\
          [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n",
         id(1)
@@ -65,11 +65,11 @@ fn add_refuses_an_invalid_name() {
 #[test]
 fn remove_without_grants() {
     let mut m = msg(&format!(
-        "[hosts.box]\nclient_id = \"{}\"\n[all]\nrw = [\"other\"]\n",
+        "[hosts.box]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n",
         id(1)
     ));
     assert_eq!(client_remove(&mut m, "box", false).unwrap(), 0);
-    assert_eq!(write(&m), "[all]\nrw = [\"other\"]\n");
+    assert_eq!(write(&m), "[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n");
     assert!(matches!(
         client_remove(&mut m, "box", false),
         Err(ManageError::NotFound(_))
@@ -82,10 +82,10 @@ fn remove_is_refused_while_grants_name_the_client() {
     let before = write(&m);
     let e = client_remove(&mut m, "box", false).unwrap_err();
     assert!(matches!(&e, ManageError::ClientInUse { name, lists }
-        if name == "box" && lists == &["all", "immediate", "exports.p"]));
+        if name == "box" && lists == &["exports.a", "exports.b", "exports.p"]));
     assert_eq!(
         e.to_string(),
-        "client \"box\" is named by grants in all, immediate, exports.p: \
+        "client \"box\" is named by grants in exports.a, exports.b, exports.p: \
          remove those grants first, or pass --force"
     );
     assert_eq!(write(&m), before);
@@ -98,10 +98,10 @@ fn force_removes_the_grants_then_the_client() {
     assert!(m.clients.is_empty());
     assert_eq!(
         write(&m),
-        "[exports.p]\npath = \"/p\"\nro = [\"y\"]\n\n\
-         [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n\n\
-         [all]\nrw = [\"x\"]\n\n\
-         [immediate]\nrw = []\n"
+        "[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n\n\
+         [exports.b]\npath = \"/b\"\nrw = []\n\n\
+         [exports.p]\npath = \"/p\"\nro = [\"y\"]\n\n\
+         [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n"
     );
 }
 

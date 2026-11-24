@@ -627,9 +627,8 @@ fn a_taken_client_name_changes_nothing() {
 #[test]
 fn a_leftover_grant_name_is_not_taken_over() {
     for text in [
-        "[immediate]\nrw = [\"myclient\"]\n",
-        "[all]\nro = [\"myclient\"]\n",
         "[exports.photos]\npath = \"/p\"\nrw = [\"myclient\"]\n",
+        "[exports.photos]\npath = \"/p\"\nro = [\"myclient\"]\n",
     ] {
         let mut doc = read(text, cfg()).unwrap();
         let e = grant_client(&mut doc, cfg(), id(2), "myclient")
@@ -656,13 +655,13 @@ fn a_name_taken_in_the_config_is_not_overwritten() {
 fn recheck_does_not_revive_a_leftover_grant() {
     let home = Home::new("");
     let mut text = std::fs::read_to_string(home.config()).unwrap();
-    text.push_str("[immediate]\nrw = [\"myclient\"]\n");
+    text.push_str("[exports.photos]\npath = \"/p\"\nrw = [\"myclient\"]\n");
     irsync::fs::private::write(home.config(), &text).unwrap();
     for extra in [&["--recheck"][..], &[]] {
         let out = home.try_setup(&id(2), "myclient", extra);
         assert_eq!(out.status.code(), Some(1), "{extra:?}");
         let err = String::from_utf8_lossy(&out.stderr);
-        assert!(err.contains("[immediate]"), "{err}");
+        assert!(err.contains("[exports.photos]"), "{err}");
         assert_eq!(std::fs::read_to_string(home.config()).unwrap(), text);
         assert!(probe(&home.state()).is_none());
     }

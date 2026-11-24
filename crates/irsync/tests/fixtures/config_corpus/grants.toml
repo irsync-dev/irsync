@@ -9,9 +9,7 @@ ro = [
     "92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18", # a raw id
 ]
 
-[all]
+[exports.q]
+path = "/q"
 rw = ["nas", "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"]
 ro = []
-
-[immediate]
-rw = []

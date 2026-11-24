@@ -351,16 +351,14 @@ fn hosts_old_layout_names_the_new_location() {
 }
 
 #[test]
-fn exports_parse_all_table_and_exports_tables() {
-    let t = "[all]\nrw = [\"admin\"]\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"laptop\"]\nro = [\"b2e1\"]\n[exports.docs]\npath = \"/srv/docs\"\nread_only = true\nwarm_index = true\nfsync = true\n";
+fn exports_parse_exports_tables() {
+    let t = "[exports.photos]\npath = \"/srv/photos\"\nrw = [\"laptop\"]\nro = [\"b2e1\"]\n[exports.docs]\npath = \"/srv/docs\"\nread_only = true\nwarm_index = true\nfsync = true\n";
     let x = parse_exports(t, p()).unwrap();
-    assert_eq!(x.rw, vec!["admin"]);
     assert_eq!(x.exports["photos"].rw, vec!["laptop"]);
     assert_eq!(x.exports["photos"].ro, vec!["b2e1"]);
     assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
     assert!(x.exports["docs"].fsync && !x.exports["photos"].fsync);
     assert_eq!(x.exports["docs"].path, Path::new("/srv/docs"));
-    assert!(parse_exports("[all]\n", p()).unwrap().rw.is_empty());
 }
 
 #[test]
@@ -371,7 +369,7 @@ fn exports_rw_and_ro_are_valid_export_names() {
 }
 
 #[test]
-fn exports_all_is_the_only_reserved_name() {
+fn exports_all_is_reserved() {
     let e = parse_exports("\n[exports.all]\npath = \"/x\"\n", p()).unwrap_err();
     assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
     let e = e.to_string();
@@ -396,14 +394,10 @@ fn exports_old_layout_names_the_new_location() {
         .unwrap_err()
         .to_string();
     assert!(
-        e.contains("unknown key \"rw\"; grants for every export live under [all]")
+        e.contains("unknown key \"rw\"; a client's right over every export is all_exports under [clients.NAME]")
             && e.contains(":1:"),
         "{e}"
     );
-    let e = parse_exports("[all]\npath = \"/x\"\n", p())
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains(":2:") && e.contains("path"), "{e}");
     let e = parse_exports("x = 1\n", p()).unwrap_err().to_string();
     assert!(e.contains("unknown key \"x\""), "{e}");
     // The first offender in the file is reported, not the first by name.
@@ -456,7 +450,7 @@ fn exports_missing_file_is_empty() {
     let d = tempfile::tempdir().unwrap();
     let paths = Paths::resolve(Some(&d.path().join("none.toml")));
     let x = Config::load(&paths).unwrap().exports;
-    assert!(x.exports.is_empty() && x.rw.is_empty());
+    assert!(x.exports.is_empty());
 }
 
 #[test]
@@ -500,10 +494,10 @@ fn exports_schema_errors_have_lines() {
     .unwrap_err()
     .to_string();
     assert!(e.contains("/x/f.toml:") && e.contains("bogus"), "{e}");
-    let e = parse_exports("[all]\nrw = 5\n", p())
+    let e = parse_exports("[exports.a]\npath = \"/x\"\nrw = 5\n", p())
         .unwrap_err()
         .to_string();
-    assert!(e.contains("/x/f.toml:2:"), "{e}");
+    assert!(e.contains("/x/f.toml:1:"), "{e}");
     let e = parse_exports("x = 1\n", p()).unwrap_err().to_string();
     assert!(
         e.contains("/x/f.toml:1:") && e.contains("unknown key \"x\""),
@@ -523,7 +517,7 @@ fn merged_file_holds_every_table() {
         d.path(),
         &format!(
             "state_dir = \"/var/lib/irsync\"\n[client]\nparallel = 4\n[daemon]\nlisten = [\"127.0.0.1:0\"]\n\
-             [servers.home]\nendpoint_id = \"{0}\"\n[clients.home]\nclient_id = \"{0}\"\n[all]\nro = [\"home\"]\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"home\"]\n",
+             [servers.home]\nendpoint_id = \"{0}\"\n[clients.home]\nclient_id = \"{0}\"\nall_exports = \"ro\"\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"home\"]\n",
             id(1)
         ),
     )
@@ -532,7 +526,10 @@ fn merged_file_holds_every_table() {
     assert_eq!(c.settings.client.parallel, Some(4));
     assert_eq!(c.servers.get("home").unwrap().endpoint_id, id(1));
     assert_eq!(c.clients.get("home").unwrap().client_id, id(1));
-    assert_eq!(c.exports.ro, ["home"]);
+    assert_eq!(
+        c.clients.get("home").unwrap().all_exports,
+        Some(irsync::authz::Access::ReadOnly)
+    );
     assert_eq!(c.exports.exports["photos"].rw, ["home"]);
     assert_eq!(
         (c.servers.path.clone(), c.exports.path.clone()),
@@ -554,7 +551,7 @@ fn merged_shape_errors_keep_the_old_layout_hints() {
         ),
         (
             "rw = [\"a\"]\n",
-            "unknown key \"rw\"; grants for every export live under [all]",
+            "unknown key \"rw\"; a client's right over every export is all_exports under [clients.NAME]",
         ),
         (
             "[nothing]\nx = 1\n",
@@ -679,19 +676,35 @@ fn daemon_debug_addr_bare_port() {
     assert!(e.contains("nope"), "{e}");
 }
 
+/// The error of each text, with and without `config_version = 2` above it
+/// (two lines more).
+fn refusals(body: &str) -> [String; 2] {
+    [body.to_string(), format!("config_version = 2\n\n{body}")]
+        .map(|t| Config::parse(&t, p()).unwrap_err().to_string())
+}
+
 #[test]
-fn immediate_table_parses() {
-    let a = iroh::SecretKey::from_bytes(&[1; 32]).public();
-    let x = parse_exports(&format!("[immediate]\nrw = [\"{a}\"]\n"), Path::new("e")).unwrap();
-    assert_eq!(x.immediate_rw, vec![a.to_string()]);
-    let e = parse_exports(&format!("[immediate]\nro = [\"{a}\"]\n"), Path::new("e"))
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("immediate"), "{e}");
-    let e = Config::parse(&format!("[immediate]\nro = [\"{a}\"]\n"), Path::new("c"))
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("immediate"), "{e}");
+fn old_all_table_is_refused_with_a_hint() {
+    let hint = "[all] is not read any more: give a client all_exports = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME all_exports=rw)";
+    let [plain, versioned] = refusals("[exports.p]\npath = \"/p\"\n[all]\nrw = [\"laptop\"]\n");
+    assert_eq!(plain, format!("/x/f.toml:3: {hint}"));
+    assert_eq!(versioned, format!("/x/f.toml:5: {hint}"));
+}
+
+#[test]
+fn old_immediate_table_is_refused_with_a_hint() {
+    let hint = "[immediate] is not read any more: give a client all_paths = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME all_paths=rw)";
+    let [plain, versioned] = refusals("[immediate]\nrw = [\"laptop\"]\n");
+    assert_eq!(plain, format!("/x/f.toml:1: {hint}"));
+    assert_eq!(versioned, format!("/x/f.toml:3: {hint}"));
+}
+
+#[test]
+fn old_daemon_immediate_is_refused_with_a_hint() {
+    let hint = "[daemon] immediate is now allow_all_paths";
+    let [plain, versioned] = refusals("[daemon]\nportmap = false\nimmediate = false\n");
+    assert_eq!(plain, format!("/x/f.toml:3: {hint}"));
+    assert_eq!(versioned, format!("/x/f.toml:5: {hint}"));
 }
 
 #[test]
@@ -736,14 +749,6 @@ fn allow_all_paths_defaults_to_on() {
 }
 
 #[test]
-fn daemon_immediate_defaults_on() {
-    let c = Config::parse("", Path::new("c")).unwrap();
-    assert!(c.settings.daemon.allow_all_paths);
-    let c = Config::parse("[daemon]\nimmediate = false\n", Path::new("c")).unwrap();
-    assert!(!c.settings.daemon.allow_all_paths);
-}
-
-#[test]
 fn daemon_dormant_session_limit_defaults_to_25() {
     let c = Config::parse("", Path::new("c")).unwrap();
     assert_eq!(c.settings.daemon.max_dormant_sessions_per_key, 25);
@@ -773,8 +778,29 @@ fn daemon_allow_root_defaults_off() {
 }
 
 #[test]
-fn export_named_immediate_is_reserved() {
-    assert!(parse_exports("[exports.immediate]\npath = \"/p\"\n", Path::new("e")).is_err());
+fn export_names_of_rights_are_reserved() {
+    for (name, why) in [
+        (
+            "immediate",
+            "it used to name grants to any path; use irsync client set NAME all_paths=rw",
+        ),
+        (
+            "all_exports",
+            "`irsync grant list all_exports` lists the clients with that right",
+        ),
+        (
+            "all_paths",
+            "`irsync grant list all_paths` lists the clients with that right",
+        ),
+    ] {
+        let e = parse_exports(
+            &format!("[exports.{name}]\npath = \"/p\"\n"),
+            Path::new("e"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(e, format!("e:1: {name:?} is reserved: {why}"));
+    }
 }
 
 /// The config file is for its owner only. One that other users can read

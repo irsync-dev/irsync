@@ -1220,11 +1220,18 @@ fn set_unset_and_the_nouns_share_one_file() {
         ok(&home, &["grant", "list", "p"]),
         format!("p:\n    rw: {id}\n")
     );
-    ok(&home, &["config", "set", "all.rw"]);
-    assert!(ok(&home, &["config", "get", "all.rw"]).is_empty());
+    ok(&home, &["config", "set", "exports.p.ro"]);
+    assert!(ok(&home, &["config", "get", "exports.p.ro"]).is_empty());
     assert!(std::fs::read_to_string(cfg.join("irsync.toml"))
         .unwrap()
-        .contains("rw = []"));
+        .contains("ro = []"));
+    // The old table of grants for every export is no key, with a pointer.
+    let o = irsync(&home, &["config", "set", "all.rw", &id]);
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        "irsync config set: unknown key \"all.rw\"; a client's right over every export is clients.NAME.all_exports\n"
+    );
     ok(
         &home,
         &["config", "set", "daemon.listen", "127.0.0.1:1", "[::1]:1"],
@@ -1574,14 +1581,17 @@ fn grant_add_by_id_writes_and_prints_the_alias() {
 fn host_add_renames_existing_grants() {
     let d = tempfile::tempdir().unwrap();
     let id = peer_id(5);
-    let (home, file) = home_with(&d, &format!("[all]\nrw = [\"{id}\"]\n"));
+    let (home, file) = home_with(
+        &d,
+        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"),
+    );
     // A server is no client: the grant keeps the id.
     ok(&home, &["server", "add", "box", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert_eq!(
         text,
         format!(
-            "config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[all]\nrw = [\"{id}\"]\n"
+            "config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"
         )
     );
     ok(&home, &["client", "add", "box", &id]);
@@ -1590,7 +1600,7 @@ fn host_add_renames_existing_grants() {
         text,
         format!(
             "config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n\
-             [clients.box]\nclient_id = \"{id}\"\n\n[all]\nrw = [\"box\"]\n"
+             [clients.box]\nclient_id = \"{id}\"\n\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
         )
     );
 }
@@ -1601,21 +1611,32 @@ fn unrelated_config_set_cleans_the_file() {
     let id = peer_id(5);
     let (home, file) = home_with(
         &d,
-        &format!("[clients.box]\nclient_id = \"{id}\"\n[all]\nrw = [\"{id}\"]\n"),
+        &format!(
+            "[clients.box]\nclient_id = \"{id}\"\n[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"
+        ),
     );
     ok(&home, &["config", "set", "client.parallel", "4"]);
     let text = std::fs::read_to_string(&file).unwrap();
-    assert!(text.contains("[all]\nrw = [\"box\"]\n"), "{text}");
+    assert!(
+        text.contains("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"),
+        "{text}"
+    );
 }
 
 #[test]
 fn alias_set_through_config_renames_grants() {
     let d = tempfile::tempdir().unwrap();
     let id = peer_id(5);
-    let (home, file) = home_with(&d, &format!("[all]\nrw = [\"{id}\"]\n"));
+    let (home, file) = home_with(
+        &d,
+        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"),
+    );
     ok(&home, &["config", "set", "clients.box.client_id", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
-    assert!(text.contains("[all]\nrw = [\"box\"]\n"), "{text}");
+    assert!(
+        text.contains("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -1643,14 +1664,14 @@ fn client_remove_counts_a_hand_written_id_as_a_grant() {
     let id = peer_id(5);
     let before = format!(
         "[servers.box]\nendpoint_id = \"{id}\"\n[clients.box]\nclient_id = \"{id}\"\n\
-         [all]\nrw = [\"{id}\"]\n[immediate]\nrw = [\"box\"]\n"
+         [exports.a]\npath = \"/a\"\nrw = [\"{id}\"]\n[exports.b]\npath = \"/b\"\nrw = [\"box\"]\n"
     );
     let (home, file) = home_with(&d, &before);
     let o = irsync(&home, &["client", "remove", "box"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
-        err.contains("named by grants in all, immediate") && err.contains("--force"),
+        err.contains("named by grants in exports.a, exports.b") && err.contains("--force"),
         "{err}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
@@ -1663,12 +1684,14 @@ fn client_remove_counts_a_hand_written_id_as_a_grant() {
     );
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!("config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[all]\nrw = []\n\n[immediate]\nrw = []\n")
+        format!("config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[exports.a]\npath = \"/a\"\nrw = []\n\n[exports.b]\npath = \"/b\"\nrw = []\n")
     );
     // One grant: singular.
     let (home, file) = home_with(
         &d,
-        &format!("[clients.box]\nclient_id = \"{id}\"\n[all]\nro = [\"box\"]\n"),
+        &format!(
+            "[clients.box]\nclient_id = \"{id}\"\n[exports.p]\npath = \"/p\"\nro = [\"box\"]\n"
+        ),
     );
     let o = irsync(&home, &["client", "remove", "--force", "box"]);
     assert_eq!(
@@ -1684,7 +1707,7 @@ fn config_unset_does_not_remove_a_client_that_grants_name() {
     let before = format!(
         "[servers.box]\nendpoint_id = \"{id}\"\n\
          [clients.box]\nclient_id = \"{id}\"\n[clients.free]\nclient_id = \"{}\"\n\
-         [all]\nrw = [\"{id}\"]\n",
+         [exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n",
         peer_id(6)
     );
     let (home, file) = home_with(&d, &before);
@@ -1693,7 +1716,7 @@ fn config_unset_does_not_remove_a_client_that_grants_name() {
         let err = String::from_utf8_lossy(&o.stderr);
         assert_eq!(o.status.code(), Some(1), "{key}: {err}");
         assert!(
-            err.contains("client \"box\" is named by grants in all")
+            err.contains("client \"box\" is named by grants in exports.p")
                 && err.contains("irsync client remove box --force"),
             "{key}: {err}"
         );
@@ -1743,21 +1766,27 @@ fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
     };
     let (home, file) = home_with(
         &d,
-        &format!("{}[all]\nrw = [\"{id}\"]\n", hosts(&["amy", "zed"])),
+        &format!(
+            "{}[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n",
+            hosts(&["amy", "zed"])
+        ),
     );
     // The id is not amy's alone: zed still names the peer.
     ok(&home, &["client", "remove", "amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         format!(
-            "config_version = 2\n\n{}\n[all]\nrw = [\"zed\"]\n",
+            "config_version = 2\n\n{}\n[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n",
             hosts(&["zed"])
         )
     );
     // A grant that names amy itself still stops the removal.
     std::fs::write(
         &file,
-        format!("{}[all]\nrw = [\"amy\"]\n", hosts(&["amy", "zed"])),
+        format!(
+            "{}[exports.p]\npath = \"/p\"\nrw = [\"amy\"]\n",
+            hosts(&["amy", "zed"])
+        ),
     )
     .unwrap();
     let o = irsync(&home, &["server", "remove", "amy"]);
@@ -1765,14 +1794,17 @@ fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
     // The same through config unset.
     std::fs::write(
         &file,
-        format!("{}[all]\nrw = [\"{id}\"]\n", hosts(&["amy", "zed"])),
+        format!(
+            "{}[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n",
+            hosts(&["amy", "zed"])
+        ),
     )
     .unwrap();
     ok(&home, &["config", "unset", "clients.amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         format!(
-            "config_version = 2\n\n{}\n[all]\nrw = [\"zed\"]\n",
+            "config_version = 2\n\n{}\n[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n",
             hosts(&["zed"])
         )
     );
@@ -2241,12 +2273,12 @@ fn server_and_client_rename_take_their_grants_in_the_file() {
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
-    // `[all]` names the host by its id and `[immediate]` by its alias;
-    // the export also names `work`, which is no host yet.
+    // Export `a` names the host by its id and `b` by its alias; `p` also
+    // names `work`, which is no host yet.
     let text = format!(
         "[servers.laptop]\nendpoint_id = \"{id}\"\n[clients.laptop]\nclient_id = \"{id}\"\n\
-         [all]\nro = [\"{id}\"]\n\
-         [immediate]\nrw = [\"laptop\"]\n\
+         [exports.a]\npath = \"/a\"\nro = [\"{id}\"]\n\
+         [exports.b]\npath = \"/b\"\nrw = [\"laptop\"]\n\
          [exports.p]\npath = \"/p\"\nrw = [\"laptop\", \"work\"]\n"
     );
     irsync::fs::private::write(cfg.join("irsync.toml"), &text).unwrap();
@@ -2273,9 +2305,9 @@ fn server_and_client_rename_take_their_grants_in_the_file() {
         format!(
             "config_version = 2\n\n[servers.work]\nendpoint_id = \"{id}\"\n\n\
              [clients.work]\nclient_id = \"{id}\"\n\n\
-             [exports.p]\npath = \"/p\"\nrw = [\"work\"]\n\n\
-             [all]\nro = [\"work\"]\n\n\
-             [immediate]\nrw = [\"work\"]\n"
+             [exports.a]\npath = \"/a\"\nro = [\"work\"]\n\n\
+             [exports.b]\npath = \"/b\"\nrw = [\"work\"]\n\n\
+             [exports.p]\npath = \"/p\"\nrw = [\"work\"]\n"
         )
     );
     // A second rename of the old name fails and changes nothing.
@@ -2341,7 +2373,7 @@ fn host_add_leaves_the_grants_with_the_client() {
         &d,
         &format!(
             "[servers.box]\nendpoint_id = \"{daemon}\"\n[clients.box]\nclient_id = \"{client}\"\n\
-             [clients.phone]\nclient_id = \"{client}\"\n[immediate]\nrw = [\"box\"]\n"
+             [clients.phone]\nclient_id = \"{client}\"\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
         ),
     );
     let o = irsync(&home, &["server", "add", "box", &new]);
@@ -2372,12 +2404,12 @@ fn config_says_when_a_clients_grants_move_to_another_id() {
         &format!(
             "[servers.box]\nendpoint_id = \"{daemon}\"\n[clients.box]\nclient_id = \"{client}\"\n\
              [clients.free]\nclient_id = \"{client}\"\n\
-             [immediate]\nrw = [\"box\"]\n"
+             [exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
         ),
     );
     let note = |cmd: &str, from: &str, to: &str| {
         format!(
-            "irsync config {cmd}: note: the grants that name box (in immediate) now apply \
+            "irsync config {cmd}: note: the grants that name box (in exports.p) now apply \
              to {to} (was {from})\n"
         )
     };
@@ -2397,7 +2429,7 @@ fn config_says_when_a_clients_grants_move_to_another_id() {
     assert_eq!(o.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&o.stderr)
-            .contains("client \"box\" is named by grants in immediate"),
+            .contains("client \"box\" is named by grants in exports.p"),
         "{o:?}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
@@ -2660,7 +2692,7 @@ fn the_first_save_of_an_old_file_notes_what_it_dropped() {
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         format!(
-            "config_version = 2\n\n[client]\nparallel = 2\n\n[clients.phone]\nclient_id = \"{}\"\n\n[all]\nro = [\"phone\"]\n",
+            "config_version = 2\n\n[client]\nparallel = 2\n\n[clients.phone]\nclient_id = \"{}\"\nall_exports = \"ro\"\n",
             peer_id(5)
         )
     );

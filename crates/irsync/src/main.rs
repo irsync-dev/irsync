@@ -1868,7 +1868,7 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                manage::grants::grant_add(&mut msg, Some(export), &spec, *ro, &resolve)
+                manage::grants::grant_add(&mut msg, export, &spec, *ro, &resolve)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
                 let mode = if *ro { "ro" } else { "rw" };

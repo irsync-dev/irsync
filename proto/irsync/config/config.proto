@@ -38,8 +38,6 @@ message Config {
   Daemon daemon = 9;
   Telemetry telemetry = 10;
   repeated Export exports = 12;
-  GrantTable all = 13;
-  GrantTable immediate = 14;   // only rw is used
   optional uint32 config_version = 15;
   repeated ServerEntry servers = 16;
   repeated ClientEntry clients = 17;
@@ -74,7 +72,6 @@ message Daemon {
   optional PqKeyExchange pq_key_exchange = 14;
   Discovery discovery = 15;
   optional string debug_addr = 16;
-  optional bool immediate = 17;
   optional bool allow_root = 18;
   optional bool allow_all_paths = 19;
 }
@@ -134,12 +131,4 @@ message Export {
   bool rw_set = 11;
   repeated Entry ro = 12;
   bool ro_set = 13;
-}
-
-message GrantTable {
-  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
-  repeated Entry rw = 4;
-  bool rw_set = 5;
-  repeated Entry ro = 6;
-  bool ro_set = 7;
 }

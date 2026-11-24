@@ -96,7 +96,7 @@ fn file_authorizer_waits_for_the_config_lock() {
     irsync::fs::private::write(
         &config,
         format!(
-            "{}[immediate]\nrw = [\"{}\"]\n",
+            "{}[clients.c]\nclient_id = \"{}\"\nall_paths = \"rw\"\n",
             state_line(dir.path()),
             id(1)
         ),
@@ -156,7 +156,7 @@ fn auto_export_names_the_peer_by_its_alias() {
     irsync::fs::private::write(
         &config,
         format!(
-            "{}[clients.laptop]\nclient_id = \"{}\"\n[immediate]\nrw = [\"laptop\"]\n",
+            "{}[clients.laptop]\nclient_id = \"{}\"\nall_paths = \"rw\"\n",
             state_line(dir.path()),
             id(1)
         ),

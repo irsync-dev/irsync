@@ -762,9 +762,9 @@ fn export_at(
     }
 }
 
-/// `[all]` covers the exports written by hand only: an automatic export
-/// belongs to the peer it was made for, so an `[all] rw` key can neither
-/// use nor list it.
+/// `all_exports` covers the exports written by hand only: an automatic
+/// export belongs to the peer it was made for, so a client with
+/// `all_exports = "rw"` can neither use nor list it.
 #[tokio::test]
 async fn all_grant_does_not_reach_auto_exports() {
     use irsync_proto::v1::export_entry::Access as A;

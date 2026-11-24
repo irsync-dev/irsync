@@ -47,16 +47,16 @@ fn grant_add_moves_between_arrays_replaces_other_spelling_and_keeps_comment() {
     ));
     let resolve = |s: &str| (s == "laptop").then(|| id(1));
     let laptop = PeerSpec::Alias("laptop".into());
-    grant_add(&mut m, Some("p"), &laptop, false, &resolve).unwrap(); // replaces the raw id
+    grant_add(&mut m, "p", &laptop, false, &resolve).unwrap(); // replaces the raw id
     assert_eq!(values(&export(&m, "p").rw), ["laptop"]);
-    grant_add(&mut m, Some("p"), &laptop, true, &resolve).unwrap(); // rw -> ro
+    grant_add(&mut m, "p", &laptop, true, &resolve).unwrap(); // rw -> ro
     assert!(export(&m, "p").rw.is_empty() && export(&m, "p").rw_set);
     assert_eq!(values(&export(&m, "p").ro), ["laptop"]);
     let keyed = PeerSpec::Id {
         id: id(2),
         comment: Some("mike@laptop".into()),
     };
-    grant_add(&mut m, Some("p"), &keyed, false, &resolve).unwrap();
+    grant_add(&mut m, "p", &keyed, false, &resolve).unwrap();
     let rw = &export(&m, "p").rw;
     assert_eq!(values(rw), [id(2).to_string()]);
     assert_eq!(trailing(&rw[0]), "# mike@laptop");
@@ -65,17 +65,15 @@ fn grant_add_moves_between_arrays_replaces_other_spelling_and_keeps_comment() {
         "{}",
         write(&m)
     );
-    grant_add(&mut m, None, &peer(3), true, &resolve).unwrap(); // [all]
-    assert_eq!(values(&m.all.as_ref().unwrap().ro), [id(3).to_string()]);
     assert!(matches!(
-        grant_add(&mut m, Some("zz"), &peer(3), false, &resolve),
+        grant_add(&mut m, "zz", &peer(3), false, &resolve),
         Err(ManageError::NotFound(_))
     ));
 }
 
 #[test]
 fn grant_remove_by_export_by_all_and_everywhere() {
-    let text = format!("[all]\nrw = [\"{a}\"]\n[exports.p]\npath = \"/p\"\nrw = [\"{a}\", \"{b}\"]\nro = [\"lap\"]\n[exports.q]\npath = \"/q\"\nro = [\"{a}\"]\n", a = id(1), b = id(2));
+    let text = format!("[exports.p]\npath = \"/p\"\nrw = [\"{a}\", \"{b}\"]\nro = [\"lap\"]\n[exports.q]\npath = \"/q\"\nro = [\"{a}\"]\n", a = id(1), b = id(2));
     let resolve = |s: &str| (s == "lap").then(|| id(1));
     let mut m = msg(&text);
     assert_eq!(
@@ -88,7 +86,7 @@ fn grant_remove_by_export_by_all_and_everywhere() {
     assert_eq!(
         grant_remove(&mut m, None, Some(&peer(1)), &resolve).unwrap(),
         3
-    ); // every export, not the old [all]
+    ); // every export
     let mut m = msg(&text);
     assert_eq!(grant_remove(&mut m, Some("p"), None, &resolve).unwrap(), 3); // all of p
     assert!(matches!(
@@ -105,8 +103,8 @@ fn a_second_grant_add_after_a_comment_keeps_the_comment_and_valid_toml() {
         id: id(1),
         comment: Some("c1".into()),
     };
-    grant_add(&mut m, Some("p"), &keyed, false, &none).unwrap();
-    grant_add(&mut m, Some("p"), &peer(2), false, &none).unwrap();
+    grant_add(&mut m, "p", &keyed, false, &none).unwrap();
+    grant_add(&mut m, "p", &peer(2), false, &none).unwrap();
     let text = write(&m);
     let back = msg(&text);
     assert_eq!(typed(&back).exports.exports["p"].rw.len(), 2, "{text}");
@@ -153,7 +151,7 @@ fn grant_add_refuses_a_comment_with_control_characters_and_leaves_the_message() 
             id: id(1),
             comment: Some(c.into()),
         };
-        let r = grant_add(&mut m, Some("p"), &evil, false, &none);
+        let r = grant_add(&mut m, "p", &evil, false, &none);
         assert!(matches!(r, Err(ManageError::BadComment(_))), "{c:?}: {r:?}");
         assert_eq!(m, before);
     }
@@ -163,19 +161,12 @@ fn grant_add_refuses_a_comment_with_control_characters_and_leaves_the_message() 
 fn a_name_or_comment_with_brackets_makes_no_second_table() {
     let mut m = msg("[exports.p]\npath = \"/p\"\n");
     let none = |_: &str| None;
-    grant_add(
-        &mut m,
-        Some("p"),
-        &PeerSpec::Alias(INJECTED.into()),
-        false,
-        &none,
-    )
-    .unwrap();
+    grant_add(&mut m, "p", &PeerSpec::Alias(INJECTED.into()), false, &none).unwrap();
     let bracket = PeerSpec::Id {
         id: id(1),
         comment: Some("x ] [etc] path = \"/etc\"".into()),
     };
-    grant_add(&mut m, Some("p"), &bracket, true, &none).unwrap();
+    grant_add(&mut m, "p", &bracket, true, &none).unwrap();
     let text = write(&m);
     let back = msg(&text);
     assert_eq!(
@@ -191,15 +182,6 @@ fn a_name_or_comment_with_brackets_makes_no_second_table() {
         trailing(&export(&back, "p").ro[0]),
         "# x ] [etc] path = \"/etc\""
     );
-}
-
-#[test]
-fn grant_add_to_all_creates_the_all_table() {
-    let mut m = msg("[exports.p]\npath = \"/p\"\n");
-    grant_add(&mut m, None, &peer(1), false, &|_| None).unwrap();
-    let s = write(&m);
-    assert!(s.contains(&format!("[all]\nrw = [\"{}\"]", id(1))), "{s}");
-    assert_eq!(typed(&msg(&s)).exports.rw, vec![id(1).to_string()]);
 }
 
 #[test]
@@ -238,11 +220,9 @@ fn grant_edits_reach_inline_tables() {
     );
     let x = typed(&m).exports;
     assert!(x.exports["photos"].rw.is_empty());
-    grant_add(&mut m, Some("photos"), &peer(2), true, &|_| None).unwrap();
-    grant_add(&mut m, None, &peer(2), false, &|_| None).unwrap();
+    grant_add(&mut m, "photos", &peer(2), true, &|_| None).unwrap();
     let x = typed(&m).exports;
     assert_eq!(x.exports["photos"].ro, vec![id(2).to_string()]);
-    assert_eq!(x.rw, vec![id(2).to_string()]);
     let mut m = msg(&format!(
         "[exports]\nphotos = {{ path = \"/p\", rw = [\"{a}\"] }}\n[exports.q]\npath = \"/q\"\nrw = [\"{a}\"]\n",
         a = id(1)
@@ -259,10 +239,10 @@ fn grant_edits_reach_inline_tables() {
     );
 }
 
-/// Grants that name `box` in three tables.
+/// Grants that name `box` in three exports.
 fn named_everywhere() -> pb::Config {
     msg(
-        "[all]\nrw = [\"box\", \"x\"]\n[immediate]\nrw = [\"box\"]\n\
+        "[exports.a]\npath = \"/a\"\nrw = [\"box\", \"x\"]\n[exports.b]\npath = \"/b\"\nrw = [\"box\"]\n\
          [exports.p]\npath = \"/p\"\nro = [\"y\", \"box\"]\n\
          [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n",
     )
@@ -271,17 +251,23 @@ fn named_everywhere() -> pb::Config {
 #[test]
 fn lists_naming_remove_named_and_rename_named_walk_every_table() {
     let m = named_everywhere();
-    assert_eq!(lists_naming(&m, "box"), ["all", "immediate", "exports.p"]);
+    assert_eq!(
+        lists_naming(&m, "box"),
+        ["exports.a", "exports.b", "exports.p"]
+    );
     assert_eq!(lists_naming(&m, "y"), ["exports.p", "exports.q"]);
     assert!(lists_naming(&m, "nobody").is_empty());
     let mut r = m.clone();
     assert_eq!(rename_named(&mut r, "box", "crate"), 3);
     assert!(lists_naming(&r, "box").is_empty());
-    assert_eq!(lists_naming(&r, "crate"), ["all", "immediate", "exports.p"]);
+    assert_eq!(
+        lists_naming(&r, "crate"),
+        ["exports.a", "exports.b", "exports.p"]
+    );
     let mut r = m.clone();
     assert_eq!(remove_named(&mut r, "box"), 3);
     assert!(lists_naming(&r, "box").is_empty());
-    assert_eq!(values(&r.all.as_ref().unwrap().rw), ["x"]);
+    assert_eq!(values(&export(&r, "a").rw), ["x"]);
 }
 
 /// `[clients.NAME]` tables for `(name, id number)` pairs.
@@ -314,8 +300,11 @@ const BOX: &[(&str, u8)] = &[("box", 1)];
 
 #[test]
 fn id_becomes_alias() {
-    let (text, changed) = canon(BOX, &format!("[all]\nrw = [\"{}\"]\n", id(1)));
-    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+    let (text, changed) = canon(
+        BOX,
+        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{}\"]\n", id(1)),
+    );
+    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
     assert!(changed);
 }
 
@@ -325,7 +314,7 @@ fn every_grant_list_is_visited() {
     let (text, _) = canon(
         BOX,
         &format!(
-            "[all]\nro = [\"{i}\"]\n[immediate]\nrw = [\"{i}\"]\n\
+            "[exports.a]\npath = \"/a\"\nro = [\"{i}\"]\n[exports.b]\npath = \"/b\"\nrw = [\"{i}\"]\n\
              [exports.p]\npath = \"/p\"\nrw = [\"{i}\"]\n\
              [exports.q]\npath = \"/q\"\nro = [\"{i}\"]\n"
         ),
@@ -333,7 +322,7 @@ fn every_grant_list_is_visited() {
     assert_eq!(
         text,
         written(
-            "[all]\nro = [\"box\"]\n[immediate]\nrw = [\"box\"]\n\
+            "[exports.a]\npath = \"/a\"\nro = [\"box\"]\n[exports.b]\npath = \"/b\"\nrw = [\"box\"]\n\
              [exports.p]\npath = \"/p\"\nrw = [\"box\"]\n\
              [exports.q]\npath = \"/q\"\nro = [\"box\"]\n"
         )
@@ -341,14 +330,14 @@ fn every_grant_list_is_visited() {
     // Inline tables count, as for the other editors; top-level keys come
     // before the clients tables.
     let mut m = msg(&format!(
-        "exports = {{ p = {{ path = \"/p\", rw = [\"{i}\"] }} }}\nall = {{ ro = [\"{i}\"] }}\n{}",
+        "exports = {{ p = {{ path = \"/p\", rw = [\"{i}\"] }}, q = {{ path = \"/q\", ro = [\"{i}\"] }} }}\n{}",
         host_tables(BOX)
     ));
     assert!(canonicalize(&mut m, &known(BOX)));
     m.clients.clear();
     assert_eq!(
         write(&m),
-        written("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n[all]\nro = [\"box\"]\n")
+        written("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n[exports.q]\npath = \"/q\"\nro = [\"box\"]\n")
     );
 }
 
@@ -356,14 +345,14 @@ fn every_grant_list_is_visited() {
 fn first_alias_in_order_wins() {
     let (text, _) = canon(
         &[("zed", 1), ("amy", 1)],
-        &format!("[all]\nrw = [\"{}\"]\n", id(1)),
+        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{}\"]\n", id(1)),
     );
-    assert_eq!(text, "[all]\nrw = [\"amy\"]\n");
+    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"amy\"]\n");
 }
 
 #[test]
 fn existing_alias_is_left_alone() {
-    let body = "[all]\nrw = [\"zed\"]\n";
+    let body = "[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n";
     assert_eq!(
         canon(&[("zed", 1), ("amy", 1)], body),
         (body.to_string(), false)
@@ -372,20 +361,38 @@ fn existing_alias_is_left_alone() {
 
 #[test]
 fn unknown_entries_are_left_alone() {
-    let body = format!("[all]\nrw = [\"{}\", \"ghost\"]\n", id(2));
+    let body = format!(
+        "[exports.p]\npath = \"/p\"\nrw = [\"{}\", \"ghost\"]\n",
+        id(2)
+    );
     assert_eq!(canon(BOX, &body), (body.clone(), false));
 }
 
 #[test]
 fn duplicate_in_one_list_keeps_the_first() {
-    let (text, changed) = canon(BOX, &format!("[all]\nrw = [\"box\", \"{}\"]\n", id(1)));
-    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+    let (text, changed) = canon(
+        BOX,
+        &format!(
+            "[exports.p]\npath = \"/p\"\nrw = [\"box\", \"{}\"]\n",
+            id(1)
+        ),
+    );
+    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
     assert!(changed);
-    let (text, _) = canon(BOX, &format!("[all]\nrw = [\"{}\", \"box\"]\n", id(1)));
-    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+    let (text, _) = canon(
+        BOX,
+        &format!(
+            "[exports.p]\npath = \"/p\"\nrw = [\"{}\", \"box\"]\n",
+            id(1)
+        ),
+    );
+    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
     // Duplicates that were already there go too.
-    let (text, changed) = canon(BOX, "[all]\nrw = [\"box\", \"x\", \"box\"]\n");
-    assert_eq!(text, "[all]\nrw = [\"box\", \"x\"]\n");
+    let (text, changed) = canon(
+        BOX,
+        "[exports.p]\npath = \"/p\"\nrw = [\"box\", \"x\", \"box\"]\n",
+    );
+    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\", \"x\"]\n");
     assert!(changed);
 }
 
@@ -402,14 +409,15 @@ fn rw_wins_over_ro() {
         text,
         written("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\nro = [\"x\"]\n")
     );
-    // Each table on its own: rw in [all] does not touch ro of an export.
-    let body = "[all]\nrw = [\"box\"]\n[exports.p]\npath = \"/p\"\nro = [\"box\"]\n";
+    // Each export on its own: rw in one does not touch ro of another.
+    let body =
+        "[exports.a]\npath = \"/a\"\nrw = [\"box\"]\n[exports.p]\npath = \"/p\"\nro = [\"box\"]\n";
     assert_eq!(canon(BOX, body), (written(body), false));
 }
 
 #[test]
 fn two_aliases_of_one_id_both_stay() {
-    let body = "[all]\nrw = [\"amy\", \"zed\"]\n";
+    let body = "[exports.p]\npath = \"/p\"\nrw = [\"amy\", \"zed\"]\n";
     assert_eq!(
         canon(&[("zed", 1), ("amy", 1)], body),
         (body.to_string(), false)
@@ -421,7 +429,7 @@ fn comments_are_kept() {
     let (text, _) = canon(
         BOX,
         &format!(
-            "# who may write\n[all]\nrw = [\n    \"{}\", # laptop\n    \"{}\",   # other\n] # end\n",
+            "# who may write\n[exports.p]\npath = \"/p\"\nrw = [\n    \"{}\", # laptop\n    \"{}\",   # other\n] # end\n",
             id(1),
             id(2)
         ),
@@ -429,7 +437,7 @@ fn comments_are_kept() {
     assert_eq!(
         text,
         format!(
-            "# who may write\n[all]\nrw = [\n    \"box\", # laptop\n    \"{}\", # other\n] # end\n",
+            "# who may write\n[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # laptop\n    \"{}\", # other\n] # end\n",
             id(2)
         )
     );
@@ -438,10 +446,10 @@ fn comments_are_kept() {
 #[test]
 fn canonicalize_keeps_the_comment_of_the_entry_that_stays() {
     // rw holds the id (with a comment) and its alias: the first stays, renamed to the alias, with its comment.
-    let mut m = msg(&format!("[clients.laptop]\nclient_id = \"{0}\"\n[all]\nrw = [\n    \"{0}\", # mine\n    \"laptop\",\n]\n", id(1)));
+    let mut m = msg(&format!("[clients.laptop]\nclient_id = \"{0}\"\n[exports.p]\npath = \"/p\"\nrw = [\n    \"{0}\", # mine\n    \"laptop\",\n]\n", id(1)));
     let hosts = Config::from_message(&m, Path::new("f")).unwrap().clients;
     assert!(canonicalize(&mut m, &hosts));
-    let rw = &m.all.as_ref().unwrap().rw;
+    let rw = &export(&m, "p").rw;
     assert_eq!(rw.len(), 1);
     assert_eq!(
         (
@@ -455,7 +463,7 @@ fn canonicalize_keeps_the_comment_of_the_entry_that_stays() {
 #[test]
 fn second_run_changes_nothing() {
     let mut m = msg(&format!(
-        "{}[all]\nrw = [\"{1}\", \"box\"]\nro = [\"{1}\"]\n[immediate]\nrw = [\"{1}\"]\n",
+        "{}[exports.p]\npath = \"/p\"\nrw = [\"{1}\", \"box\"]\nro = [\"{1}\"]\n[exports.q]\npath = \"/q\"\nrw = [\"{1}\"]\n",
         host_tables(BOX),
         id(1)
     ));
@@ -470,8 +478,11 @@ fn second_run_changes_nothing() {
 fn other_spelling_of_an_id_is_rewritten() {
     let z32 = id(1).to_z32();
     assert_ne!(z32, id(1).to_string());
-    let (text, _) = canon(BOX, &format!("[all]\nrw = [\"{z32}\"]\n"));
-    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+    let (text, _) = canon(
+        BOX,
+        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{z32}\"]\n"),
+    );
+    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
 }
 
 #[test]
@@ -530,16 +541,19 @@ fn removing_the_last_entry_moves_the_lines_before_the_bracket_above_the_one_befo
 
 #[test]
 fn removing_the_only_entry_moves_its_lines_above_the_key() {
-    let text = after("[all]\nrw = [\n    # heading\n    \"b\", # bee\n]\n", |m| {
-        assert_eq!(remove_named(m, "b"), 1);
-    });
-    assert_eq!(text, "[all]\n# heading\nrw = []\n");
+    let text = after(
+        "[exports.p]\npath = \"/p\"\nrw = [\n    # heading\n    \"b\", # bee\n]\n",
+        |m| {
+            assert_eq!(remove_named(m, "b"), 1);
+        },
+    );
+    assert_eq!(text, "[exports.p]\npath = \"/p\"\n# heading\nrw = []\n");
 }
 
 #[test]
 fn a_duplicate_dropped_by_canonicalize_leaves_its_lines_above() {
     let mut m = msg(&format!(
-        "{}[all]\nrw = [\n    \"box\", # mine\n    # the id\n    \"{}\", # dup\n    \"x\",\n]\n",
+        "{}[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # mine\n    # the id\n    \"{}\", # dup\n    \"x\",\n]\n",
         host_tables(BOX),
         id(1)
     ));
@@ -547,7 +561,7 @@ fn a_duplicate_dropped_by_canonicalize_leaves_its_lines_above() {
     m.clients.clear();
     assert_eq!(
         write(&m),
-        "[all]\nrw = [\n    \"box\", # mine\n    # the id\n    \"x\",\n]\n"
+        "[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # mine\n    # the id\n    \"x\",\n]\n"
     );
 }
 
@@ -556,24 +570,24 @@ fn grant_add_moves_an_entry_with_its_comment_and_replaces_another_spelling() {
     let resolve = |s: &str| (s == "lap").then(|| id(1));
     // Same text, rw to ro: the whole comment goes along.
     let text = after(
-        "[all]\nrw = [\n    \"x\",\n    # the laptop\n    \"lap\", # mine\n]\n",
-        |m| grant_add(m, None, &PeerSpec::Alias("lap".into()), true, &resolve).unwrap(),
+        "[exports.p]\npath = \"/p\"\nrw = [\n    \"x\",\n    # the laptop\n    \"lap\", # mine\n]\n",
+        |m| grant_add(m, "p", &PeerSpec::Alias("lap".into()), true, &resolve).unwrap(),
     );
     assert_eq!(
         text,
-        "[all]\nrw = [\"x\"]\nro = [\n    # the laptop\n    \"lap\", # mine\n]\n"
+        "[exports.p]\npath = \"/p\"\nrw = [\"x\"]\nro = [\n    # the laptop\n    \"lap\", # mine\n]\n"
     );
     // Another spelling: replaced, the lines above it stay.
     let text = after(
         &format!(
-            "[all]\nrw = [\n    \"x\",\n    # the laptop\n    \"{}\", # old\n]\n",
+            "[exports.p]\npath = \"/p\"\nrw = [\n    \"x\",\n    # the laptop\n    \"{}\", # old\n]\n",
             id(1)
         ),
-        |m| grant_add(m, None, &PeerSpec::Alias("lap".into()), false, &resolve).unwrap(),
+        |m| grant_add(m, "p", &PeerSpec::Alias("lap".into()), false, &resolve).unwrap(),
     );
     assert_eq!(
         text,
-        "[all]\nrw = [\n    # the laptop\n    \"x\",\n    \"lap\",\n]\n"
+        "[exports.p]\npath = \"/p\"\nrw = [\n    # the laptop\n    \"x\",\n    \"lap\",\n]\n"
     );
 }
 
@@ -709,23 +723,35 @@ fn a_comment_line_after_a_removed_last_entry_stays() {
     let (text, _) = canon(
         BOX,
         &format!(
-            "[all]\nrw = [\n    \"box\",\n    \"{}\"\n    # tail\n]\n",
+            "[exports.p]\npath = \"/p\"\nrw = [\n    \"box\",\n    \"{}\"\n    # tail\n]\n",
             id(1)
         ),
     );
-    assert_eq!(text, "[all]\nrw = [\n    # tail\n    \"box\",\n]\n");
+    assert_eq!(
+        text,
+        "[exports.p]\npath = \"/p\"\nrw = [\n    # tail\n    \"box\",\n]\n"
+    );
     // The removed entry's own comment goes with it; the line after stays.
     let (text, _) = canon(
         BOX,
         &format!(
-            "[all]\nrw = [\n    \"box\", # one\n    \"{}\" # two\n    # tail\n]\n",
+            "[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # one\n    \"{}\" # two\n    # tail\n]\n",
             id(1)
         ),
     );
-    assert_eq!(text, "[all]\nrw = [\n    # tail\n    \"box\", # one\n]\n");
+    assert_eq!(
+        text,
+        "[exports.p]\npath = \"/p\"\nrw = [\n    # tail\n    \"box\", # one\n]\n"
+    );
     // On one line there is nothing to keep.
-    let (text, _) = canon(BOX, &format!("[all]\nrw = [\"box\", \"{}\" ]\n", id(1)));
-    assert_eq!(text, "[all]\nrw = [\"box\"]\n");
+    let (text, _) = canon(
+        BOX,
+        &format!(
+            "[exports.p]\npath = \"/p\"\nrw = [\"box\", \"{}\" ]\n",
+            id(1)
+        ),
+    );
+    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
 }
 
 /// Shapes the old editor met in a file and had to step around: the reader
@@ -733,8 +759,8 @@ fn a_comment_line_after_a_removed_last_entry_stays() {
 #[test]
 fn odd_shapes_are_refused_by_the_reader() {
     for body in [
-        format!("[all]\nrw = [1, \"{}\"]\n", id(1)),
-        "[all]\nro = \"x\"\n".to_string(),
+        format!("[exports.p]\npath = \"/p\"\nrw = [1, \"{}\"]\n", id(1)),
+        "[exports.p]\npath = \"/p\"\nro = \"x\"\n".to_string(),
         "all = 5\n".to_string(),
         "exports = \"x\"\n".to_string(),
         "[exports]\np = 1\n".to_string(),

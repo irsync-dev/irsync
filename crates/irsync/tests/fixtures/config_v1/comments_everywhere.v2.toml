@@ -29,11 +29,13 @@ client_id = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"
 [clients.desk]
 # above client_id of desk
 client_id = "a35d848a3af131007b97b09bb866adce34f244db7816b4eb3f7a332ccf544b7c" # trailing client_id of desk
+all_exports = "ro"
 
 # the phone
 [clients.phone] # same line as phone
 # above client_id of phone
 client_id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1" # trailing client_id of phone
+all_paths = "rw"
 # above relay of phone
 # trailing relay of phone
 # above address of phone
@@ -52,14 +54,12 @@ rw = [
 # tail of photos
 
 # every export
-[all] # same line as all
+# same line as all
 # above ro of all
-ro = ["desk"] # trailing ro of all
-
+# trailing ro of all
 # immediate
-[immediate] # same line as immediate
+# same line as immediate
 # above rw of immediate
-rw = ["phone"] # trailing rw of immediate
+# trailing rw of immediate
 # tail of immediate
-
 # the footer

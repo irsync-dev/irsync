@@ -1545,7 +1545,7 @@ impl World {
         self.server.path().canonicalize().unwrap().join(rel)
     }
 
-    /// Grants the client immediate access on the server before any daemon
+    /// Gives the client `all_paths = "rw"` on the server before any daemon
     /// starts: a daemon `ssh-setup` leaves running reads its config only
     /// at the start.
     fn grant_client(&self) {

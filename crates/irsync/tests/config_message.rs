@@ -106,9 +106,9 @@ fn entries_keep_file_order() {
 
 #[test]
 fn an_empty_array_is_set() {
-    let c = values("[all]\nrw = []\n");
-    let all = c.all.unwrap();
-    assert!(all.rw.is_empty() && all.rw_set && !all.ro_set);
+    let c = values("[exports.p]\npath = \"/p\"\nrw = []\n");
+    let p = &c.exports[0];
+    assert!(p.rw.is_empty() && p.rw_set && !p.ro_set);
 }
 
 #[test]
@@ -151,17 +151,6 @@ fn a_client_id_is_32_bytes() {
     let c = values(&format!("[clients.lap]\nclient_id = \"{}\"\n", id(2)));
     assert_eq!(c.clients[0].client_id, id(2).as_bytes());
     assert!(c.servers.is_empty());
-}
-
-#[test]
-fn the_immediate_table() {
-    assert_eq!(values("").immediate, None);
-    let i = values("[immediate]\nrw = [\"lap\"]\n").immediate.unwrap();
-    assert_eq!(
-        i.rw.iter().map(|e| e.value.as_str()).collect::<Vec<_>>(),
-        ["lap"]
-    );
-    assert!(i.rw_set && !i.ro_set);
 }
 
 #[test]
@@ -291,7 +280,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "rw = [\"x\"]\n",
-            "f:1: unknown key \"rw\"; grants for every export live under [all]",
+            "f:1: unknown key \"rw\"; a client's right over every export is all_exports under [clients.NAME]",
         ),
         (
             "[daemon]\nlisten = [\"1.2.3.4:1\", \"1.2.3.5:1\"]\n",
@@ -299,7 +288,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[immediate]\nro = [\"x\"]\n",
-            "f:1: [immediate]: unknown key \"ro\"; only `rw` is allowed (immediate grants are read-write)",
+            "f:1: [immediate] is not read any more: give a client all_paths = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME all_paths=rw)",
         ),
         (
             "[hosts.all]\nendpoint_id = \"x\"\n",
@@ -363,7 +352,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[all]\nrw = \"x\"\n",
-            "f:2: invalid type: string \"x\", expected a sequence",
+            "f:1: [all] is not read any more: give a client all_exports = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME all_exports=rw)",
         ),
         (
             "identity = 1\n",
@@ -427,7 +416,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[daemon]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `discovery`, `debug_addr`, `allow_all_paths`, `immediate`, `allow_root`",
+            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `discovery`, `debug_addr`, `allow_all_paths`, `allow_root`",
         ),
         (
             "[telemetry]\nbogus = 1\n",
@@ -438,8 +427,8 @@ fn errors_are_those_of_config_parse() {
             "f:2: unknown field `bogus`, expected one of `endpoint_id`, `client_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`",
         ),
         (
-            "[all]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected `rw` or `ro`",
+            "[daemon]\nimmediate = true\n",
+            "f:2: [daemon] immediate is now allow_all_paths",
         ),
         (
             "[daemon.discovery]\ndht = 1\n",
@@ -638,9 +627,9 @@ fn a_comment_without_a_place_goes_to_the_footer() {
 #[test]
 fn comments_in_arrays() {
     let c = commented(
-        "[all]\nrw = [ # first\n  \"a\" # no comma\n  # after\n]\nro = [\n  # nothing yet\n] # ro\n",
+        "[exports.p]\npath = \"/p\"\nrw = [ # first\n  \"a\" # no comma\n  # after\n]\nro = [\n  # nothing yet\n] # ro\n",
     );
-    let all = c.all.unwrap();
+    let all = &c.exports[0];
     let a = all.rw[0].comment.as_ref().unwrap();
     assert_eq!(a.above, ["# first", "# after"]);
     assert_eq!(a.trailing, "# no comma");

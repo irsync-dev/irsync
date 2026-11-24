@@ -1,6 +1,5 @@
 //! Edits of the grant lists in the config message for `grant add` and
-//! `grant remove`: the `rw` and `ro` lists of `[all]`, `[immediate]`
-//! and every export. The editing functions are pure on a message; loading
+//! `grant remove`: the `rw` and `ro` lists of every export. The editing functions are pure on a message; loading
 //! and saving belong to the caller. The `list_*` reporters behind
 //! `grant list` read the typed config.
 
@@ -17,8 +16,8 @@ use std::fmt::Write;
 
 type Resolve<'a> = &'a dyn Fn(&str) -> Option<EndpointId>;
 
-/// The grant lists of one table, `rw` and `ro`, with their `*_set`
-/// flags and the table's key comments.
+/// The grant lists of one export, `rw` and `ro`, with their `*_set`
+/// flags and the export's key comments.
 struct Lists<'a> {
     rw: &'a mut Vec<pb::Entry>,
     rw_set: &'a mut bool,
@@ -28,16 +27,6 @@ struct Lists<'a> {
 }
 
 impl<'a> Lists<'a> {
-    fn of_table(t: &'a mut pb::GrantTable) -> Self {
-        Lists {
-            rw: &mut t.rw,
-            rw_set: &mut t.rw_set,
-            ro: &mut t.ro,
-            ro_set: &mut t.ro_set,
-            key_comments: &mut t.key_comments,
-        }
-    }
-
     fn of_export(e: &'a mut pb::Export) -> Self {
         Lists {
             rw: &mut e.rw,
@@ -121,50 +110,27 @@ impl<'a> Lists<'a> {
     }
 }
 
-/// The grant tables, read-only: `[all]`, `[immediate]` and every export,
-/// each with the name `lists_naming` reports it by and its `rw` and
-/// `ro` lists.
+/// The grant lists of every export, read-only, each with the name
+/// `lists_naming` reports it by and its `rw` and `ro` lists.
 fn grant_lists(msg: &pb::Config) -> Vec<(String, [&Vec<pb::Entry>; 2])> {
-    let mut out = Vec::new();
-    if let Some(t) = &msg.all {
-        out.push(("all".to_string(), [&t.rw, &t.ro]));
-    }
-    if let Some(t) = &msg.immediate {
-        out.push(("immediate".to_string(), [&t.rw, &t.ro]));
-    }
-    for e in &msg.exports {
-        out.push((format!("exports.{}", e.name), [&e.rw, &e.ro]));
-    }
-    out
+    msg.exports
+        .iter()
+        .map(|e| (format!("exports.{}", e.name), [&e.rw, &e.ro]))
+        .collect()
 }
 
-/// The grant tables, as `grant_lists`, for editing.
+/// The grant lists of every export, for editing.
 fn grant_lists_mut(msg: &mut pb::Config) -> Vec<Lists<'_>> {
-    let mut out = Vec::new();
-    if let Some(t) = msg.all.as_mut() {
-        out.push(Lists::of_table(t));
-    }
-    if let Some(t) = msg.immediate.as_mut() {
-        out.push(Lists::of_table(t));
-    }
-    out.extend(msg.exports.iter_mut().map(Lists::of_export));
-    out
+    msg.exports.iter_mut().map(Lists::of_export).collect()
 }
 
-/// The lists of export `export`, or of `[all]` for `None` (created when
-/// missing).
-fn target<'a>(msg: &'a mut pb::Config, export: Option<&str>) -> Result<Lists<'a>, ManageError> {
-    match export {
-        Some(n) => msg
-            .exports
-            .iter_mut()
-            .find(|e| e.name == n)
-            .map(Lists::of_export)
-            .ok_or_else(|| ManageError::NotFound(n.to_string())),
-        None => Ok(Lists::of_table(
-            msg.all.get_or_insert_with(Default::default),
-        )),
-    }
+/// The lists of export `export`.
+fn target<'a>(msg: &'a mut pb::Config, export: &str) -> Result<Lists<'a>, ManageError> {
+    msg.exports
+        .iter_mut()
+        .find(|e| e.name == export)
+        .map(Lists::of_export)
+        .ok_or_else(|| ManageError::NotFound(export.to_string()))
 }
 
 /// The id `who` stands for, when it has one.
@@ -216,7 +182,7 @@ fn grant_entry(who: &PeerSpec) -> Result<pb::Entry, ManageError> {
 /// first place, and an entry in both `rw` and `ro` leaves `ro`: `rw` wins
 /// when the file is read, so nobody's access changes.
 ///
-/// Covers `[all]`, `[immediate]` and every export. An entry keeps its
+/// Covers every export. An entry keeps its
 /// comments; a removed one takes only the rest of its line along. True when the message
 /// changed; a second run changes nothing.
 pub fn canonicalize(msg: &mut pb::Config, clients: &Clients) -> bool {
@@ -249,8 +215,8 @@ pub fn canonicalize(msg: &mut pb::Config, clients: &Clients) -> bool {
     changed
 }
 
-/// The tables with a grant entry whose text is `name`: `all`,
-/// `immediate`, then `exports.NAME` in file order, each once.
+/// The tables with a grant entry whose text is `name`: `exports.NAME` in
+/// file order, each once.
 pub fn lists_naming(msg: &pb::Config, name: &str) -> Vec<String> {
     grant_lists(msg)
         .into_iter()
@@ -259,8 +225,8 @@ pub fn lists_naming(msg: &pb::Config, name: &str) -> Vec<String> {
         .collect()
 }
 
-/// Removes every grant entry whose text is `name`, from `[all]`,
-/// `[immediate]` and every export; the count. The comment lines above a
+/// Removes every grant entry whose text is `name`, from every export;
+/// the count. The comment lines above a
 /// removed entry stay in the file.
 pub fn remove_named(msg: &mut pb::Config, name: &str) -> usize {
     grant_lists_mut(msg)
@@ -269,8 +235,8 @@ pub fn remove_named(msg: &mut pb::Config, name: &str) -> usize {
         .sum()
 }
 
-/// Writes every grant entry whose text is `old` as `new`, in `[all]`,
-/// `[immediate]` and every export, keeping its comments; the count.
+/// Writes every grant entry whose text is `old` as `new`, in every
+/// export, keeping its comments; the count.
 pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
     let mut n = 0;
     for lists in grant_lists_mut(msg) {
@@ -284,7 +250,7 @@ pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
     n
 }
 
-/// Grant `who` access to `export` (`[all]` for `None`): read-only or
+/// Grant `who` access to `export`: read-only or
 /// read-write. Any earlier grant of the same peer there, under either
 /// spelling, is replaced; the new entry goes last. An earlier entry of the
 /// same text moves there with its comments (the key's comment, when given,
@@ -292,7 +258,7 @@ pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
 /// comment lines above it behind.
 pub fn grant_add(
     msg: &mut pb::Config,
-    export: Option<&str>,
+    export: &str,
     who: &PeerSpec,
     ro: bool,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
@@ -330,8 +296,7 @@ fn remove_in(lists: &mut Lists, who: Option<&PeerSpec>, resolve: Resolve) -> usi
 
 /// Remove grants; the number of entries removed. `who = None` empties both
 /// lists of `export`; `export = None` walks every export, so
-/// `(None, None)` empties every export's lists. The old `[all]` table is not touched.
-/// An emptied list stays in the file, as `rw = []`.
+/// `(None, None)` empties every export's lists. An emptied list stays in the file, as `rw = []`.
 pub fn grant_remove(
     msg: &mut pb::Config,
     export: Option<&str>,
@@ -346,7 +311,7 @@ pub fn grant_remove(
             }
             n
         }
-        Some(_) => remove_in(&mut target(msg, export)?, who, resolve),
+        Some(name) => remove_in(&mut target(msg, name)?, who, resolve),
     };
     if n == 0 {
         let what = match (who, export) {

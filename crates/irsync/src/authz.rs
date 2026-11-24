@@ -126,10 +126,19 @@ pub struct Snapshot {
     grants: HashMap<EndpointId, Grants>,
 }
 
-/// Raises `slot` to `access`: `rw` beats `ro`, and nothing lowers it.
+/// The stronger of two rights: `rw` beats `ro`.
+fn stronger(a: Access, b: Access) -> Access {
+    if a == Access::ReadWrite {
+        a
+    } else {
+        b
+    }
+}
+
+/// Raises `slot` to `access`, as [`stronger`] says; nothing lowers it.
 fn raise(slot: &mut Option<Access>, access: Option<Access>) {
-    if access.is_some() && *slot != Some(Access::ReadWrite) {
-        *slot = access;
+    if let Some(a) = access {
+        *slot = Some(slot.map_or(a, |s| stronger(s, a)));
     }
 }
 
@@ -150,47 +159,19 @@ impl Snapshot {
             raise(&mut g.all_exports, c.all_exports);
             raise(&mut g.all_paths, all_paths);
         }
-        let mut apply = |export: Option<&str>, rw: &[String], ro: &[String]| {
-            let lists = [(rw, Access::ReadWrite), (ro, Access::ReadOnly)];
+        for (name, e) in &exports.exports {
+            let lists = [(&e.rw, Access::ReadWrite), (&e.ro, Access::ReadOnly)];
             for (list, access) in lists {
                 for entry in list {
                     let Ok(id) = clients.resolve_peer(entry) else {
-                        tracing::warn!(
-                            entry = %entry,
-                            export = export.unwrap_or("all"),
-                            "grant entry matches nobody"
-                        );
+                        tracing::warn!(entry = %entry, export = %name, "grant entry matches nobody");
                         continue;
                     };
                     let g = grants.entry(id).or_default();
-                    match export {
-                        Some(name) => {
-                            let slot = g.exports.entry(name.to_string()).or_insert(access);
-                            if access == Access::ReadWrite {
-                                *slot = Access::ReadWrite;
-                            }
-                        }
-                        // The old `[all]` table, as `all_exports`.
-                        None => raise(&mut g.all_exports, Some(access)),
-                    }
-                }
-            }
-        };
-        apply(None, &exports.rw, &exports.ro);
-        for (name, e) in &exports.exports {
-            apply(Some(name), &e.rw, &e.ro);
-        }
-        // The old `[immediate]` table, as `all_paths = "rw"`.
-        if allow_all_paths {
-            for entry in &exports.immediate_rw {
-                match clients.resolve_peer(entry) {
-                    Ok(id) => raise(
-                        &mut grants.entry(id).or_default().all_paths,
-                        Some(Access::ReadWrite),
-                    ),
-                    Err(_) => {
-                        tracing::warn!(entry = %entry, "immediate grant entry matches nobody")
-                    }
+                    g.exports
+                        .entry(name.clone())
+                        .and_modify(|a| *a = stronger(*a, access))
+                        .or_insert(access);
                 }
             }
         }

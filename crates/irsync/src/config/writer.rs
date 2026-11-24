@@ -59,17 +59,6 @@ pub fn write(msg: &pb::Config) -> String {
     for e in &msg.exports {
         sections.push(table(&["exports", &e.name], &e.comment, &e.tail, export(e)));
     }
-    if let Some(g) = &msg.all {
-        let mut keys = Keys::new(&g.key_comments);
-        keys.array("rw", &g.rw, g.rw_set);
-        keys.array("ro", &g.ro, g.ro_set);
-        sections.push(table(&["all"], &g.comment, &g.tail, keys));
-    }
-    if let Some(g) = &msg.immediate {
-        let mut keys = Keys::new(&g.key_comments);
-        keys.array("rw", &g.rw, g.rw_set);
-        sections.push(table(&["immediate"], &g.comment, &g.tail, keys));
-    }
     sections.push(msg.footer.clone());
 
     let parts: Vec<String> = sections
@@ -148,7 +137,6 @@ fn daemon(d: &pb::Daemon) -> Keys<'_> {
     );
     k.string("debug_addr", d.debug_addr.as_deref());
     k.bool("allow_all_paths", d.allow_all_paths);
-    k.bool("immediate", d.immediate);
     k.bool("allow_root", d.allow_root);
     k
 }
