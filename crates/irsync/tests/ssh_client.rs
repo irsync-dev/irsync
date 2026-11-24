@@ -1,11 +1,12 @@
 //! The client's SSH driver, run against the fake-ssh fixture.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use irsync::build::LONG_VERSION;
 use irsync::config::hosts::short_host_name;
+use irsync::platform::testutil::{set_mode, symlink};
+use irsync::platform::{is_root, mode_of};
 use irsync::ssh::client::{
     client_host_name, decode_name, ensure_installed, parse_uname, probe, set_exe_override,
     setup_command, Install, Rsh, REMOTE_BIN,
@@ -88,7 +89,7 @@ fn fake_at(uname: Option<&str>, home_name: &str) -> Fake {
     let exe_dir = aux.join("exe");
     std::fs::create_dir(&exe_dir).unwrap();
     let exe = exe_dir.join("irsync");
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_irsync"), &exe).unwrap();
+    symlink(Path::new(env!("CARGO_BIN_EXE_irsync")), &exe).unwrap();
     set_exe_override(exe);
     let rsh = Rsh::from_opts(Some(fake_ssh().to_str().unwrap()));
     Fake {
@@ -156,7 +157,7 @@ fn install_copies_then_is_current() {
         }
     );
     let dst = f.home.join(REMOTE_BIN);
-    assert_ne!(dst.metadata().unwrap().permissions().mode() & 0o111, 0);
+    assert_ne!(mode_of(&dst.metadata().unwrap()) & 0o111, 0);
     assert_eq!(std::fs::read(&dst).unwrap(), this_binary());
     let p = probe(&f.rsh, "myserver").unwrap();
     assert_eq!(
@@ -202,7 +203,7 @@ fn no_install_with_another_version_fails() {
     std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
     let old = "#!/bin/sh\necho 'irsync 0.0.1 (old)'\n";
     std::fs::write(&bin, old).unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&bin, 0o755).unwrap();
     let p = probe(&f.rsh, "myserver").unwrap();
     let msg = ensure_installed(&f.rsh, "myserver", &p, true)
         .unwrap_err()
@@ -219,7 +220,7 @@ fn install_lands_in_local_bin_with_no_leftovers() {
     let p = probe(&f.rsh, "myserver").unwrap();
     ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
     let dst = f.home.join(".local/bin/irsync");
-    assert_ne!(dst.metadata().unwrap().permissions().mode() & 0o111, 0);
+    assert_ne!(mode_of(&dst.metadata().unwrap()) & 0o111, 0);
     assert_eq!(std::fs::read(&dst).unwrap(), this_binary());
     assert_no_work_dir(&f);
     assert!(!f.home.join(".local/share/irsync").exists());
@@ -468,20 +469,20 @@ struct Restore(PathBuf, u32);
 
 impl Drop for Restore {
     fn drop(&mut self) {
-        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
+        let _ = set_mode(&self.0, self.1);
     }
 }
 
 #[test]
 fn unwritable_home_changes_nothing() {
-    if nix::unistd::geteuid().is_root() {
+    if is_root() {
         eprintln!("skipped: root can write to a read-only directory");
         return;
     }
     let f = fake(None);
     let p = probe(&f.rsh, "myserver").unwrap();
-    let mode = f.home.metadata().unwrap().permissions().mode() & 0o7777;
-    std::fs::set_permissions(&f.home, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let mode = mode_of(&f.home.metadata().unwrap()) & 0o7777;
+    set_mode(&f.home, 0o555).unwrap();
     let _restore = Restore(f.home.clone(), mode);
     let e = ensure_installed(&f.rsh, "myserver", &p, false)
         .unwrap_err()
@@ -545,7 +546,7 @@ fn install_replaces_other_version() {
     let dst = f.home.join(REMOTE_BIN);
     std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
     std::fs::write(&dst, "#!/bin/sh\necho 'irsync 0.0.1 (old)'\n").unwrap();
-    std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&dst, 0o755).unwrap();
     let p = probe(&f.rsh, "myserver").unwrap();
     assert_eq!(p.installed.as_deref(), Some("irsync 0.0.1 (old)"));
     let r = ensure_installed(&f.rsh, "myserver", &p, false).unwrap();
@@ -563,7 +564,7 @@ fn install_replaces_other_version() {
 fn script(f: &Fake, name: &str, body: &str) -> Rsh {
     let p = f.aux.join(name);
     std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&p, 0o755).unwrap();
     Rsh::from_opts(Some(p.to_str().unwrap()))
 }
 
@@ -709,12 +710,12 @@ fn client_host_name_is_the_short_usable_one() {
 #[test]
 fn probe_sees_root() {
     let f = fake(Some("Linux x86_64"));
-    assert!(!probe(&f.rsh, "myserver").unwrap().root || nix::unistd::geteuid().is_root());
+    assert!(!probe(&f.rsh, "myserver").unwrap().root || is_root());
     let bin = f.aux.join("fake-bin");
     std::fs::create_dir(&bin).unwrap();
     let id = bin.join("id");
     std::fs::write(&id, "#!/bin/sh\necho 0\n").unwrap();
-    std::fs::set_permissions(&id, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&id, 0o755).unwrap();
     let wrapper = script(
         &f,
         "root-ssh",
@@ -755,7 +756,7 @@ fn fake_exe(f: &Fake, version: Option<&str>) -> PathBuf {
         None => "#!/bin/sh\nexit 126\n".to_owned(),
     };
     std::fs::write(&p, body).unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&p, 0o755).unwrap();
     p
 }
 
@@ -778,7 +779,7 @@ fn assert_nothing_installed(f: &Fake) {
 /// `fileset` and the three man pages are in place under `~/.local`.
 fn assert_extras_installed(f: &Fake) {
     let fileset = f.home.join(".local/bin/fileset");
-    assert_ne!(fileset.metadata().unwrap().permissions().mode() & 0o111, 0);
+    assert_ne!(mode_of(&fileset.metadata().unwrap()) & 0o111, 0);
     for page in ["man1/irsync.1", "man1/fileset.1", "man5/irsync.toml.5"] {
         let p = f.home.join(".local/share/man").join(page);
         assert!(p.is_file(), "{} missing", p.display());
@@ -816,7 +817,7 @@ fn a_rejected_copy_keeps_the_old_binary() {
     let dst = f.home.join(REMOTE_BIN);
     std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
     std::fs::write(&dst, "#!/bin/sh\necho 'irsync 0.0.1 (old)'\n").unwrap();
-    std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&dst, 0o755).unwrap();
     set_exe_override(fake_exe(&f, Some("irsync 9.9.9 (other)")));
     let p = probe(&f.rsh, "myserver").unwrap();
     ensure_installed(&f.rsh, "myserver", &p, false).unwrap_err();
@@ -844,7 +845,7 @@ fn probe_keeps_its_lines_apart_when_one_is_empty() {
         "#!/bin/sh\nif [ \"$1\" = -n ]; then echo myserver.example.com; fi\n",
     )
     .unwrap();
-    std::fs::set_permissions(&uname, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&uname, 0o755).unwrap();
     let wrapper = script(
         &f,
         "quiet-uname-ssh",
@@ -858,12 +859,12 @@ fn probe_keeps_its_lines_apart_when_one_is_empty() {
     assert_eq!((p.os, p.arch), (None, None));
     assert_eq!(p.hostname.as_deref(), Some("myserver"));
     assert_eq!(p.installed, None);
-    assert!(!p.root || nix::unistd::geteuid().is_root());
+    assert!(!p.root || is_root());
     // With irsync there, its version is the version, not the host name.
     let exe = f.home.join(irsync::ssh::client::REMOTE_BIN);
     std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
     std::fs::write(&exe, "#!/bin/sh\necho irsync 9.9.9\necho more\n").unwrap();
-    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&exe, 0o755).unwrap();
     let p = probe(&wrapper, "192.168.1.5").unwrap();
     assert_eq!(p.hostname.as_deref(), Some("myserver"));
     assert_eq!(p.installed.as_deref(), Some("irsync 9.9.9"));

@@ -6,13 +6,14 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::{FileExt, PermissionsExt};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use common::{archive_opts, Flow, Harness};
 use irsync::cli::{Args, SyncOptions};
 use irsync::fs::paths::RelPath;
+use irsync::platform::testutil::{set_mode, symlink};
+use irsync::platform::write_all_at;
 use irsync::session::single::SingleFile;
 use irsync::session::SessionKey;
 use irsync_proto::v1::path_info::Kind;
@@ -47,7 +48,7 @@ fn data(n: usize, seed: u32) -> Vec<u8> {
 }
 
 fn mode(p: &Path) -> u32 {
-    fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
+    irsync::platform::mode_of(&fs::symlink_metadata(p).unwrap()) & 0o7777
 }
 
 fn mtime(p: &Path) -> SystemTime {
@@ -62,7 +63,7 @@ fn set_mtime(p: &Path, t: SystemTime) {
 fn source(h: &Harness, bytes: &[u8]) -> std::path::PathBuf {
     let f = h.local.path().join("f.iso");
     fs::write(&f, bytes).unwrap();
-    fs::set_permissions(&f, fs::Permissions::from_mode(0o640)).unwrap();
+    set_mode(&f, 0o640).unwrap();
     f
 }
 
@@ -181,12 +182,12 @@ async fn push_changed_file_uses_delta() {
         h.run_single_push(&archive_opts(), &f, b"m/T", false)
             .await
             .unwrap();
-        fs::OpenOptions::new()
-            .write(true)
-            .open(&f)
-            .unwrap()
-            .write_all_at(&data(4 * KIB, 2), 4 * MIB as u64)
-            .unwrap();
+        write_all_at(
+            &fs::OpenOptions::new().write(true).open(&f).unwrap(),
+            &data(4 * KIB, 2),
+            4 * MIB as u64,
+        )
+        .unwrap();
         set_mtime(
             &f,
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000),
@@ -211,7 +212,7 @@ async fn push_leaves_siblings_and_dir_metadata() {
         let h = Harness::new().await;
         let f = source(&h, b"image");
         // The source's holding directory has metadata that must not travel.
-        fs::set_permissions(h.local.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        set_mode(h.local.path(), 0o755).unwrap();
         set_mtime(
             h.local.path(),
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000),
@@ -219,7 +220,7 @@ async fn push_leaves_siblings_and_dir_metadata() {
         let t = h.export.path().join("T");
         fs::create_dir(&t).unwrap();
         fs::write(t.join("other"), b"keep me").unwrap();
-        fs::set_permissions(&t, fs::Permissions::from_mode(0o700)).unwrap();
+        set_mode(&t, 0o700).unwrap();
         let o = opts(&["-a", "--delete"]);
 
         // A new file: written into T (the kernel moves T's mtime, as with
@@ -261,7 +262,7 @@ async fn push_excluded_file_copies_nothing() {
 fn link_source(h: &Harness) -> std::path::PathBuf {
     fs::write(h.local.path().join("target"), b"pointed at").unwrap();
     let f = h.local.path().join("f.iso");
-    std::os::unix::fs::symlink("target", &f).unwrap();
+    symlink(Path::new("target"), &f).unwrap();
     f
 }
 
@@ -310,7 +311,7 @@ async fn push_onto_symlink_replaces_the_link() {
         let victim = h.export.path().join("victim");
         fs::write(&victim, b"untouched").unwrap();
         let t = h.export.path().join("T");
-        std::os::unix::fs::symlink("victim", &t).unwrap();
+        symlink(Path::new("victim"), &t).unwrap();
         let out = h
             .run_single_push(&archive_opts(), &f, b"m/T", false)
             .await
@@ -366,12 +367,12 @@ async fn push_to_new_name_again_transfers_nothing() {
 
 /// Changes 4 KiB in the middle of `f` and gives it a new mtime.
 fn change_middle(f: &Path) {
-    fs::OpenOptions::new()
-        .write(true)
-        .open(f)
-        .unwrap()
-        .write_all_at(&data(4 * KIB, 2), 4 * MIB as u64)
-        .unwrap();
+    write_all_at(
+        &fs::OpenOptions::new().write(true).open(f).unwrap(),
+        &data(4 * KIB, 2),
+        4 * MIB as u64,
+    )
+    .unwrap();
     set_mtime(
         f,
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000),
@@ -409,7 +410,7 @@ fn outside_link(h: &Harness) -> tempfile::TempDir {
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("secret"), b"outside").unwrap();
     fs::create_dir_all(outside.path().join("sub/f.iso")).unwrap();
-    std::os::unix::fs::symlink(outside.path(), h.export.path().join("link")).unwrap();
+    symlink(outside.path(), &h.export.path().join("link")).unwrap();
     outside
 }
 
@@ -513,7 +514,7 @@ async fn push_onto_symlink_to_dir_is_refused() {
 fn remote_source(h: &Harness, bytes: &[u8]) -> std::path::PathBuf {
     let f = h.export.path().join("f.iso");
     fs::write(&f, bytes).unwrap();
-    fs::set_permissions(&f, fs::Permissions::from_mode(0o640)).unwrap();
+    set_mode(&f, 0o640).unwrap();
     f
 }
 
@@ -608,7 +609,7 @@ async fn pull_into_busy_dir_touches_nothing_else() {
         let h = Harness::new().await;
         remote_source(&h, b"image");
         // The remote holding directory has metadata that must not travel.
-        fs::set_permissions(h.export.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        set_mode(h.export.path(), 0o755).unwrap();
         set_mtime(
             h.export.path(),
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000),
@@ -617,7 +618,7 @@ async fn pull_into_busy_dir_touches_nothing_else() {
         fs::create_dir_all(l.join("b")).unwrap();
         fs::write(l.join("a"), b"keep a").unwrap();
         fs::write(l.join("b/c"), b"keep c").unwrap();
-        fs::set_permissions(&l, fs::Permissions::from_mode(0o750)).unwrap();
+        set_mode(&l, 0o750).unwrap();
         let o = opts(&["-a", "--delete"]);
 
         // A new file: written into L (the kernel moves L's mtime, as with
@@ -919,7 +920,7 @@ async fn push_onto_a_symlink_out_of_the_export_says_nothing_about_its_target() {
         let mut answers = Vec::new();
         for target in ["file", "dir", "nothing"] {
             let t = h.export.path().join("T");
-            std::os::unix::fs::symlink(outside.path().join(target), &t).unwrap();
+            symlink(&outside.path().join(target), &t).unwrap();
             let err = h
                 .run_single_push(&archive_opts(), &f, b"m/T", false)
                 .await
@@ -949,7 +950,7 @@ async fn push_onto_a_symlink_to_a_directory_in_the_export_is_refused() {
         let f = source(&h, b"image");
         fs::create_dir(h.export.path().join("real")).unwrap();
         let t = h.export.path().join("T");
-        std::os::unix::fs::symlink("real", &t).unwrap();
+        symlink(Path::new("real"), &t).unwrap();
         let err = h
             .run_single_push(&archive_opts(), &f, b"m/T", false)
             .await

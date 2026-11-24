@@ -14,33 +14,6 @@ const BANNED: [&str; 7] = [
     "winapi_util",
 ];
 
-/// Files not moved yet. Each task of this pull request removes the files it
-/// converts. Task 5 empties the list and deletes this constant.
-const PENDING: &[&str] = &[
-    "tests/meta.rs",
-    "tests/paranoid_clone.rs",
-    "tests/posix_extras.rs",
-    "tests/progress_e2e.rs",
-    "tests/push_options.rs",
-    "tests/recursion_e2e.rs",
-    "tests/recv.rs",
-    "tests/rsync_compare.rs",
-    "tests/scan.rs",
-    "tests/send.rs",
-    "tests/single_file.rs",
-    "tests/single_file_e2e.rs",
-    "tests/single_place.rs",
-    "tests/ssh_client.rs",
-    "tests/ssh_release.rs",
-    "tests/ssh_setup.rs",
-    "tests/sub_chunk_delta.rs",
-    "tests/sync_e2e.rs",
-    "tests/telemetry_debug.rs",
-    "tests/telemetry_usage.rs",
-    "tests/transient.rs",
-    "tests/warm.rs",
-];
-
 /// The `.rs` files below `dir`, at any depth.
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {
@@ -62,17 +35,6 @@ fn names(line: &str, word: &str) -> bool {
             .next_back()
             .is_some_and(|c| c.is_alphanumeric() || c == '_')
     })
-}
-
-/// `file` relative to `crate_dir`, with `/` between components on every
-/// system, as [`PENDING`] spells it.
-fn relative(crate_dir: &Path, file: &Path) -> String {
-    let rel = file.strip_prefix(crate_dir).unwrap();
-    let parts: Vec<String> = rel
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    parts.join("/")
 }
 
 #[test]
@@ -100,45 +62,25 @@ fn only_the_platform_module_names_a_platform_api() {
         crate_dir.display()
     );
     let mut offending = Vec::new();
-    let mut seen_pending = Vec::new();
-    let mut moved = Vec::new();
     for file in files
         .iter()
         .filter(|f| !exempt.iter().any(|e| f.starts_with(e)))
     {
-        let rel = relative(crate_dir, file);
         let text = std::fs::read_to_string(file).unwrap();
-        let lines: Vec<String> = text
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| BANNED.iter().any(|word| names(line, word)))
-            .map(|(i, line)| format!("{rel}:{}: {}", i + 1, line.trim()))
-            .collect();
-        if PENDING.contains(&rel.as_str()) {
-            seen_pending.push(rel.clone());
-            if lines.is_empty() {
-                moved.push(rel);
+        for (i, line) in text.lines().enumerate() {
+            if BANNED.iter().any(|word| names(line, word)) {
+                offending.push(format!(
+                    "{}:{}: {}",
+                    file.strip_prefix(crate_dir).unwrap().display(),
+                    i + 1,
+                    line.trim()
+                ));
             }
-        } else {
-            offending.extend(lines);
         }
     }
     assert!(
         offending.is_empty(),
         "platform APIs named outside src/platform/:\n{}",
         offending.join("\n")
-    );
-    // The list cannot rot: a file that no longer names a platform API, or
-    // that is gone, leaves it.
-    moved.extend(
-        PENDING
-            .iter()
-            .filter(|p| !seen_pending.iter().any(|s| s == *p))
-            .map(|p| format!("{p} (no such file)")),
-    );
-    assert!(
-        moved.is_empty(),
-        "in PENDING but naming no platform API; take them off the list:\n{}",
-        moved.join("\n")
     );
 }

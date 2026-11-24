@@ -4,12 +4,12 @@ mod common;
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::time::Duration;
 
 use common::{Flow, Harness};
 use irsync::cli::{Args, SyncOptions};
 use irsync::fs::paths::RelPath;
+use irsync::platform::testutil::{set_mode, symlink};
 use irsync::session::reconnect::ReconnectOpts;
 use irsync::session::{Event, Outcome, Party};
 
@@ -107,7 +107,7 @@ fn tree(root: &std::path::Path) {
     fs::create_dir_all(root.join("d/e")).unwrap();
     fs::write(root.join("top.txt"), b"top").unwrap();
     fs::write(root.join("d/e/deep.bin"), vec![7u8; 5000]).unwrap();
-    symlink("top.txt", root.join("d/link")).unwrap();
+    symlink(std::path::Path::new("top.txt"), &root.join("d/link")).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -755,8 +755,7 @@ fn failed(events: &[Event], path: &str) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_the_sender_cannot_read_is_reported_as_failed_on_the_bus() {
-    use std::os::unix::fs::PermissionsExt;
-    if nix::unistd::geteuid().is_root() {
+    if irsync::platform::is_root() {
         eprintln!("skipping: running as root, mode 0o000 does not stop reads");
         return;
     }
@@ -765,7 +764,7 @@ async fn a_file_the_sender_cannot_read_is_reported_as_failed_on_the_bus() {
         let src = h.src(Flow::Push);
         fs::write(src.join("ok.txt"), b"fine").unwrap();
         fs::write(src.join("locked.bin"), vec![1u8; 3000]).unwrap();
-        fs::set_permissions(src.join("locked.bin"), fs::Permissions::from_mode(0o000)).unwrap();
+        set_mode(&src.join("locked.bin"), 0o000).unwrap();
         let (out, events) = run(&h, &opts(&[]), Flow::Push).await;
         let msgs = failed(&events, "locked.bin");
         assert_eq!(msgs.len(), 1, "one Failed event: {events:?}");
@@ -784,8 +783,7 @@ async fn a_file_the_sender_cannot_read_is_reported_as_failed_on_the_bus() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_file_the_receiver_cannot_write_is_reported_as_failed_on_the_bus() {
-    use std::os::unix::fs::PermissionsExt;
-    if nix::unistd::geteuid().is_root() {
+    if irsync::platform::is_root() {
         eprintln!("skipping: running as root, a read-only directory does not stop writes");
         return;
     }
@@ -796,9 +794,9 @@ async fn a_file_the_receiver_cannot_write_is_reported_as_failed_on_the_bus() {
         fs::write(src.join("ro/x.bin"), vec![2u8; 3000]).unwrap();
         let dst = h.dst(Flow::Pull);
         fs::create_dir(dst.join("ro")).unwrap();
-        fs::set_permissions(dst.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+        set_mode(&dst.join("ro"), 0o555).unwrap();
         let (out, events) = run(&h, &opts(&[]), Flow::Pull).await;
-        fs::set_permissions(dst.join("ro"), fs::Permissions::from_mode(0o755)).unwrap();
+        set_mode(&dst.join("ro"), 0o755).unwrap();
         let msgs = failed(&events, "ro/x.bin");
         assert_eq!(msgs.len(), 1, "one Failed event: {events:?}");
         assert!(msgs[0].contains("ermission denied"), "{msgs:?}");

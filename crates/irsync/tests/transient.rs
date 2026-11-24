@@ -8,6 +8,7 @@ use std::time::Duration;
 use irsync::fs::paths::RelPath;
 use irsync::fs::transient::{is_transient, retry_with, waits, RETRIES};
 use irsync::index::Index;
+use irsync::platform::testutil::errno;
 use irsync::recv::FileWriter;
 use irsync_proto::chunk::digest_bytes;
 
@@ -18,20 +19,20 @@ fn os(code: i32) -> io::Error {
 #[test]
 fn resource_exhaustion_is_transient_but_permission_and_space_are_not() {
     for code in [
-        nix::libc::EMFILE,
-        nix::libc::ENFILE,
-        nix::libc::EAGAIN,
-        nix::libc::ENOMEM,
-        nix::libc::ENOBUFS,
+        errno::EMFILE,
+        errno::ENFILE,
+        errno::EAGAIN,
+        errno::ENOMEM,
+        errno::ENOBUFS,
     ] {
         assert!(is_transient(&os(code)), "{code}");
     }
     for code in [
-        nix::libc::EACCES,
-        nix::libc::ENOSPC,
-        nix::libc::ENOENT,
-        nix::libc::EIO,
-        nix::libc::EBUSY,
+        errno::EACCES,
+        errno::ENOSPC,
+        errno::ENOENT,
+        errno::EIO,
+        errno::EBUSY,
     ] {
         assert!(!is_transient(&os(code)), "{code}");
     }
@@ -48,7 +49,7 @@ fn retry_returns_the_first_success() {
         || {
             let n = calls.fetch_add(1, Ordering::SeqCst);
             if n < 2 {
-                Err(os(nix::libc::EMFILE))
+                Err(os(errno::EMFILE))
             } else {
                 Ok(n)
             }
@@ -65,11 +66,11 @@ fn retry_gives_up_with_the_last_error_when_the_schedule_runs_out() {
     let r: io::Result<()> = retry_with(
         || {
             calls.fetch_add(1, Ordering::SeqCst);
-            Err(os(nix::libc::EMFILE))
+            Err(os(errno::EMFILE))
         },
         std::iter::repeat_n(Duration::ZERO, 3),
     );
-    assert_eq!(r.unwrap_err().raw_os_error(), Some(nix::libc::EMFILE));
+    assert_eq!(r.unwrap_err().raw_os_error(), Some(errno::EMFILE));
     assert_eq!(
         calls.load(Ordering::SeqCst),
         4,
@@ -83,11 +84,11 @@ fn a_permanent_error_is_not_retried() {
     let r: io::Result<()> = retry_with(
         || {
             calls.fetch_add(1, Ordering::SeqCst);
-            Err(os(nix::libc::EACCES))
+            Err(os(errno::EACCES))
         },
         std::iter::repeat_n(Duration::ZERO, RETRIES),
     );
-    assert_eq!(r.unwrap_err().raw_os_error(), Some(nix::libc::EACCES));
+    assert_eq!(r.unwrap_err().raw_os_error(), Some(errno::EACCES));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -106,16 +107,16 @@ fn the_default_schedule_is_bounded_to_about_a_second() {
 /// Fills the descriptor table (under a soft limit lowered to at most 256)
 /// and returns the files holding it full.
 fn exhaust_descriptors() -> Vec<std::fs::File> {
-    use nix::sys::resource::{getrlimit, setrlimit, Resource};
-    let (soft, hard) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
+    use irsync::platform::testutil::{open_file_limits, set_open_file_limits};
+    let (soft, hard) = open_file_limits().unwrap();
     let low = soft.min(256);
-    setrlimit(Resource::RLIMIT_NOFILE, low, hard).unwrap();
+    set_open_file_limits(low, hard).unwrap();
     let mut held = Vec::new();
     loop {
         match std::fs::File::open("/dev/null") {
             Ok(f) => held.push(f),
             Err(e) => {
-                assert_eq!(e.raw_os_error(), Some(nix::libc::EMFILE), "{e}");
+                assert_eq!(e.raw_os_error(), Some(errno::EMFILE), "{e}");
                 return held;
             }
         }

@@ -7,7 +7,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -39,12 +38,12 @@ fn data(n: usize, seed: u32) -> Vec<u8> {
 
 /// Overwrites `bytes` at `offset` in place (same size, mtime moves).
 fn patch(p: &Path, offset: u64, bytes: &[u8]) {
-    fs::OpenOptions::new()
-        .write(true)
-        .open(p)
-        .unwrap()
-        .write_all_at(bytes, offset)
-        .unwrap();
+    irsync::platform::write_all_at(
+        &fs::OpenOptions::new().write(true).open(p).unwrap(),
+        bytes,
+        offset,
+    )
+    .unwrap();
 }
 
 fn count(events: &[String], prefix: &str) -> usize {

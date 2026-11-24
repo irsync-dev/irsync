@@ -1,7 +1,7 @@
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
+use irsync::platform::testutil::symlink;
 use irsync::session::single::{place_file, source_is_single, split_last, PlaceError};
 
 fn parent_name(t: &Path) -> (PathBuf, Vec<u8>) {

@@ -8,6 +8,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use irsync::platform::testutil::{send_signal, Signal};
+
 /// Kills the child when the test ends, pass or fail.
 struct Guard(Child);
 
@@ -173,8 +175,7 @@ fn client_waits_until_sigint() {
         "exited without a signal"
     );
 
-    let pid = nix::unistd::Pid::from_raw(guard.0.id() as i32);
-    nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGINT).unwrap();
+    send_signal(guard.0.id(), Signal::Interrupt).unwrap();
     let status = guard.0.wait().unwrap();
     assert_eq!(status.code(), Some(0));
     assert_eq!(std::fs::read(tmp.join("dst/a.txt")).unwrap(), b"hello");

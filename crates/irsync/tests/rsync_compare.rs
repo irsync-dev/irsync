@@ -11,12 +11,13 @@ mod common;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
-use std::os::unix::fs::{symlink, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use common::{Flow, Harness};
+use irsync::platform::testutil::{is_fifo, mkfifo, set_mode, set_times, symlink};
+use irsync::platform::{file_id, mode_of, mtime_of, nlink_of};
 
 fn data(n: usize, seed: u32) -> Vec<u8> {
     let mut x = seed.wrapping_mul(2654435761).wrapping_add(1);
@@ -31,17 +32,7 @@ fn data(n: usize, seed: u32) -> Vec<u8> {
 }
 
 fn set_mtime(p: &Path, secs: i64, nsec: i64) {
-    use nix::sys::stat::{utimensat, UtimensatFlags};
-    use nix::sys::time::TimeSpec;
-    let t = TimeSpec::new(secs, nsec);
-    utimensat(
-        nix::fcntl::AT_FDCWD,
-        p,
-        &t,
-        &t,
-        UtimensatFlags::NoFollowSymlink,
-    )
-    .expect("utimensat");
+    set_times(p, secs, nsec, false).expect("utimensat");
 }
 
 /// Builds the source tree. Deterministic: building it twice gives equal trees.
@@ -61,12 +52,12 @@ fn build_tree(root: &Path) {
     for (name, body, mode) in files {
         let p = root.join(name);
         fs::write(&p, body).unwrap();
-        fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+        set_mode(&p, mode).unwrap();
     }
     // Symlinks: relative, absolute, dangling.
-    symlink("small.txt", root.join("rel_link")).unwrap();
-    symlink("/etc/hostname", root.join("abs_link")).unwrap();
-    symlink("../nowhere/at/all", root.join("a/dangling")).unwrap();
+    symlink(Path::new("small.txt"), &root.join("rel_link")).unwrap();
+    symlink(Path::new("/etc/hostname"), &root.join("abs_link")).unwrap();
+    symlink(Path::new("../nowhere/at/all"), &root.join("a/dangling")).unwrap();
     // Hard-link pair.
     fs::write(root.join("a/linked1"), data(40_000, 6)).unwrap();
     fs::hard_link(root.join("a/linked1"), root.join("a/b/linked2")).unwrap();
@@ -74,8 +65,8 @@ fn build_tree(root: &Path) {
     common::try_create_non_utf8(root, b"bad\xff\xfename");
     // FIFO.
     let fifo = root.join("fifo");
-    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o640)).unwrap();
-    fs::set_permissions(&fifo, fs::Permissions::from_mode(0o640)).unwrap();
+    mkfifo(&fifo, 0o640).unwrap();
+    set_mode(&fifo, 0o640).unwrap();
     // Sparse file: hole, data, hole.
     let mut f = fs::File::create(root.join("sparse")).unwrap();
     f.set_len(4 * 1024 * 1024).unwrap();
@@ -135,28 +126,29 @@ fn snapshot(root: &Path) -> Snapshot {
             "symlink"
         } else if t.is_file() {
             "file"
-        } else if t.is_fifo() {
+        } else if is_fifo(t) {
             "fifo"
         } else {
             "other"
         };
         let rel = p.strip_prefix(root).unwrap().to_path_buf();
-        if t.is_file() && m.nlink() > 1 {
-            inodes
-                .entry((m.dev(), m.ino()))
-                .or_default()
-                .push(rel.clone());
+        if t.is_file() && nlink_of(&m) > 1 {
+            inodes.entry(file_id(&m)).or_default().push(rel.clone());
         }
         nodes.insert(
             rel,
             Node {
                 kind,
                 // Symlink modes are not settable on Linux.
-                mode: if t.is_symlink() { 0 } else { m.mode() & 0o7777 },
-                mtime: (m.mtime(), m.mtime_nsec()),
+                mode: if t.is_symlink() {
+                    0
+                } else {
+                    mode_of(&m) & 0o7777
+                },
+                mtime: (mtime_of(&m).0, i64::from(mtime_of(&m).1)),
                 body: t.is_file().then(|| fs::read(&p).unwrap()),
                 link: t.is_symlink().then(|| fs::read_link(&p).unwrap()),
-                nlink: if t.is_file() { m.nlink() } else { 0 },
+                nlink: if t.is_file() { nlink_of(&m) } else { 0 },
             },
         );
     }

@@ -26,7 +26,8 @@ fn opts(flags: &[&str]) -> SyncOptions {
 
 fn seed(src: &std::path::Path) {
     fs::write(src.join("top.txt"), b"t").unwrap();
-    std::os::unix::fs::symlink("top.txt", src.join("link")).unwrap();
+    irsync::platform::testutil::symlink(std::path::Path::new("top.txt"), &src.join("link"))
+        .unwrap();
     fs::create_dir_all(src.join("sub/deeper")).unwrap();
     fs::write(src.join("sub/inner.txt"), b"i").unwrap();
     fs::write(src.join("sub/deeper/x"), b"x").unwrap();

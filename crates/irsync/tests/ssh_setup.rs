@@ -13,6 +13,7 @@ use irsync::config::hosts::Hosts;
 use irsync::config::reader::read;
 use irsync::config::writer::write;
 use irsync::daemon_lock::probe;
+use irsync::platform::testutil::{send_signal, Signal};
 use irsync::ssh::setup::{
     check_client_name, grant_client, Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport,
 };
@@ -87,10 +88,7 @@ impl Drop for Home {
     fn drop(&mut self) {
         if let Some(info) = probe(&self.state()) {
             if info.pid != 0 {
-                let _ = nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(info.pid as i32),
-                    nix::sys::signal::Signal::SIGKILL,
-                );
+                let _ = send_signal(info.pid, Signal::Kill);
             }
         }
     }

@@ -3,8 +3,8 @@ mod common;
 use irsync::cli::FilterRule;
 use irsync::filter::FilterSet;
 use irsync::fs::paths::RelPath;
+use irsync::platform::testutil::{name_from_bytes, set_mode, symlink};
 use irsync::scan::{walk, ScanEvent, ScanItem, ScanSummary, WalkOpts};
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -57,7 +57,7 @@ async fn walk_emits_sorted_relpaths() {
             if name == b"." {
                 continue;
             }
-            p.push(std::ffi::OsStr::from_bytes(&name));
+            p.push(name_from_bytes(&name));
         }
         if p.is_file() {
             continue;
@@ -88,8 +88,7 @@ async fn walk_excludes_subtree_without_descending() {
 
 #[tokio::test]
 async fn walk_reports_unreadable_dir_as_incomplete() {
-    use std::os::unix::fs::PermissionsExt;
-    if nix::unistd::geteuid().is_root() {
+    if irsync::platform::is_root() {
         eprintln!("skipping: running as root");
         return;
     }
@@ -97,17 +96,9 @@ async fn walk_reports_unreadable_dir_as_incomplete() {
     std::fs::create_dir(d.path().join("locked")).unwrap();
     std::fs::write(d.path().join("locked/f"), b"1").unwrap();
     std::fs::write(d.path().join("ok"), b"1").unwrap();
-    std::fs::set_permissions(
-        d.path().join("locked"),
-        std::fs::Permissions::from_mode(0o000),
-    )
-    .unwrap();
+    set_mode(&d.path().join("locked"), 0o000).unwrap();
     let (items, sum) = run(d.path(), &[], false).await;
-    std::fs::set_permissions(
-        d.path().join("locked"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    set_mode(&d.path().join("locked"), 0o755).unwrap();
     assert!(sum.incomplete);
     assert_eq!(sum.errors.len(), 1, "{:?}", sum.errors);
     assert_eq!(sum.errors[0].0, RelPath::new(b"locked").unwrap());
@@ -133,8 +124,8 @@ async fn root_symlink_followed_only_when_asked_and_not_below() {
     let real = d.path().join("real");
     std::fs::create_dir_all(real.join("sub")).unwrap();
     std::fs::write(real.join("sub/f"), b"1").unwrap();
-    std::os::unix::fs::symlink(&real, d.path().join("link")).unwrap();
-    std::os::unix::fs::symlink(&real, real.join("below")).unwrap();
+    symlink(&real, &d.path().join("link")).unwrap();
+    symlink(&real, &real.join("below")).unwrap();
     let (items, _) = run(&d.path().join("link"), &[], true).await;
     assert_eq!(
         names(&items),

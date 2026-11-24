@@ -63,7 +63,7 @@ async fn index_root_hashes_every_regular_file_once() {
     // Never indexed: irsync's own temporary files and anything that is
     // not a regular file.
     write(root.path(), ".irsync.c.txt.part", &data(5 * KIB, 3));
-    std::os::unix::fs::symlink("a.bin", root.path().join("l")).unwrap();
+    irsync::platform::testutil::symlink(Path::new("a.bin"), &root.path().join("l")).unwrap();
     let ix = Index::open(state.path(), root.path())
         .unwrap()
         .into_handle();

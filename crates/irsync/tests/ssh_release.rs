@@ -136,7 +136,7 @@ fn fetch_refuses_a_tarball_without_the_binary() {
 fn fetch_refuses_a_symlink_for_the_binary() {
     let w = world();
     release::pack(w.rel.path(), w.target, |inner| {
-        std::os::unix::fs::symlink("/bin/sh", inner.join("irsync")).unwrap();
+        irsync::platform::testutil::symlink(Path::new("/bin/sh"), &inner.join("irsync")).unwrap();
     });
     let e = fetch(&release::tag(), w.target).unwrap_err().to_string();
     assert!(e.contains("does not hold"), "{e}");

@@ -234,10 +234,12 @@ async fn links_and_specials_are_timed_as_place() {
     let (out, _h) = sync_trees(
         |r| {
             for i in 0..50 {
-                std::os::unix::fs::symlink(format!("target{i}"), r.join(format!("l{i:02}")))
-                    .unwrap();
-                nix::unistd::mkfifo(&r.join(format!("p{i:02}")), nix::sys::stat::Mode::S_IRWXU)
-                    .unwrap();
+                irsync::platform::testutil::symlink(
+                    std::path::Path::new(&format!("target{i}")),
+                    &r.join(format!("l{i:02}")),
+                )
+                .unwrap();
+                irsync::platform::testutil::mkfifo(&r.join(format!("p{i:02}")), 0o700).unwrap();
             }
         },
         |_| {},

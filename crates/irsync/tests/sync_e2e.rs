@@ -3,16 +3,14 @@
 
 mod common;
 
-use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use common::{archive_opts, assert_trees_equal, sync_trees, Flow, Harness};
 use irsync::fs::paths::RelPath;
+use irsync::platform::testutil::{mkfifo, name_from_bytes, set_mode, symlink};
 use irsync::session::SideHooks;
 
 const KIB: usize = 1024;
@@ -53,14 +51,10 @@ fn mixed_tree(root: &Path) {
     fs::write(root.join("a/big.bin"), data(3 * MIB + 12345, 1)).unwrap();
     fs::write(root.join("a/b/mid.bin"), data(300 * KIB, 2)).unwrap();
     fs::write(root.join("a/b/c/run.sh"), b"#!/bin/sh\necho hi\n").unwrap();
-    fs::set_permissions(root.join("a/b/c/run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
-    fs::set_permissions(root.join("small.txt"), fs::Permissions::from_mode(0o640)).unwrap();
-    symlink("b/mid.bin", root.join("a/link")).unwrap();
-    nix::unistd::mkfifo(
-        &root.join("fifo"),
-        nix::sys::stat::Mode::from_bits_truncate(0o644),
-    )
-    .unwrap();
+    set_mode(&root.join("a/b/c/run.sh"), 0o755).unwrap();
+    set_mode(&root.join("small.txt"), 0o640).unwrap();
+    symlink(Path::new("b/mid.bin"), &root.join("a/link")).unwrap();
+    mkfifo(&root.join("fifo"), 0o644).unwrap();
     set_mtime(&root.join("small.txt"), 1_500_000_000, 123_456_789);
 }
 
@@ -200,8 +194,8 @@ async fn sync_non_utf8_filename() {
         if common::try_create_non_utf8(probe.path(), b"caf\xe9.txt").is_none() {
             return;
         }
-        let dir = OsStr::from_bytes(b"d\xff\xfe");
-        let file = OsStr::from_bytes(b"caf\xe9.txt");
+        let dir = name_from_bytes(b"d\xff\xfe");
+        let file = name_from_bytes(b"caf\xe9.txt");
         for flow in [Flow::Push, Flow::Pull] {
             let (out, h) = sync_trees(
                 |r| {
@@ -234,8 +228,8 @@ async fn symlink_outside_root_not_followed() {
             let (out, h) = sync_trees(
                 |r| {
                     fs::create_dir(r.join("sub")).unwrap();
-                    symlink("../../etc/passwd", r.join("sub/escape")).unwrap();
-                    symlink("/etc", r.join("etc")).unwrap();
+                    symlink(Path::new("../../etc/passwd"), &r.join("sub/escape")).unwrap();
+                    symlink(Path::new("/etc"), &r.join("etc")).unwrap();
                 },
                 |_| {},
                 &opts,
@@ -333,8 +327,8 @@ async fn directory_mtimes_preserved() {
                     fs::metadata(h.dst(flow).join(d)).unwrap(),
                 );
                 assert_eq!(
-                    (s.mtime(), s.mtime_nsec()),
-                    (t.mtime(), t.mtime_nsec()),
+                    irsync::platform::mtime_of(&s),
+                    irsync::platform::mtime_of(&t),
                     "{flow:?}: mtime of {d:?}"
                 );
             }
@@ -346,7 +340,7 @@ async fn directory_mtimes_preserved() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn exit_code_23_on_partial_failure() {
-    if nix::unistd::geteuid().is_root() {
+    if irsync::platform::is_root() {
         eprintln!("skipping: root can read a mode-000 file");
         return;
     }
@@ -357,10 +351,10 @@ async fn exit_code_23_on_partial_failure() {
         let src = h.src(flow);
         fs::write(src.join("ok.txt"), b"fine").unwrap();
         fs::write(src.join("secret.txt"), b"unreadable").unwrap();
-        fs::set_permissions(src.join("secret.txt"), fs::Permissions::from_mode(0o000)).unwrap();
+        set_mode(&src.join("secret.txt"), 0o000).unwrap();
 
         let out = h.run(&opts, flow).await.unwrap();
-        fs::set_permissions(src.join("secret.txt"), fs::Permissions::from_mode(0o600)).unwrap();
+        set_mode(&src.join("secret.txt"), 0o600).unwrap();
 
         assert_eq!(out.exit_code(), 23);
         assert_eq!(out.errors.len(), 1, "{:?}", out.errors);
@@ -373,7 +367,7 @@ async fn exit_code_23_on_partial_failure() {
 }
 
 fn is_root() -> bool {
-    nix::unistd::geteuid().is_root()
+    irsync::platform::is_root()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -392,10 +386,10 @@ async fn push_with_unwritable_dest_dir_exits_23() {
         fs::write(src.join("ro/g.txt"), b"cannot be placed").unwrap();
         fs::write(src.join("ok.txt"), b"fine").unwrap();
         fs::create_dir(dst.join("ro")).unwrap();
-        fs::set_permissions(dst.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+        set_mode(&dst.join("ro"), 0o555).unwrap();
 
         let out = h.run(&opts, flow).await.unwrap();
-        fs::set_permissions(dst.join("ro"), fs::Permissions::from_mode(0o755)).unwrap();
+        set_mode(&dst.join("ro"), 0o755).unwrap();
 
         assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
         let failed: Vec<&[u8]> = out.errors.iter().map(|(p, _)| p.as_bytes()).collect();
@@ -424,10 +418,10 @@ async fn unreadable_source_subdir_exits_23() {
             fs::create_dir(src.join("locked")).unwrap();
             fs::write(src.join("locked/hidden.txt"), b"x").unwrap();
             fs::write(src.join("ok.txt"), b"fine").unwrap();
-            fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+            set_mode(&src.join("locked"), 0o000).unwrap();
 
             let out = h.run(&opts, flow).await;
-            fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+            set_mode(&src.join("locked"), 0o755).unwrap();
             let out = out.unwrap();
 
             assert!(
@@ -701,7 +695,7 @@ async fn immediate_push_then_resume_uses_index() {
         };
         mixed_tree(h.local.path());
         let mut hello = Harness::hello(Flow::Push);
-        hello.path = h.export.path().as_os_str().as_bytes().to_vec();
+        hello.path = irsync::platform::os_to_bytes(h.export.path().as_os_str());
 
         let first = h
             .run_hello(&opts, hello.clone(), h.local_side())

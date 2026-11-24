@@ -1,12 +1,12 @@
 use irsync::fs::meta::ApplyOpts;
 use irsync::fs::paths::RelPath;
 use irsync::index::{Index, IndexHandle};
+use irsync::platform::testutil::{blocks_of, errno, mkfifo, set_mode, symlink};
+use irsync::platform::{file_id, mode_of, mtime_of};
 use irsync::recv::{FileWriter, FinalizeError};
 use irsync_proto::chunk::{digest_bytes, ChunkRecord, FileDigest};
 use irsync_proto::v1::{self, file_entry::Kind, FileEntry};
 use std::fs;
-use std::os::unix::fs::symlink;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// ~1.5 MiB of xorshift pseudo-random data, so FastCDC yields several chunks.
@@ -250,7 +250,7 @@ async fn write_error_keeps_partial_and_no_final_file() {
     write_all(&mut w, &data, &cl, &[0, 1]).await;
     let written = w.bytes_written();
     let err = w.write_chunk(2, piece(&data, &cl, 2)).await.unwrap_err();
-    assert_eq!(err.raw_os_error(), Some(nix::libc::ENOSPC));
+    assert_eq!(err.raw_os_error(), Some(errno::ENOSPC));
     // The failed write put nothing into the `.part`.
     assert_eq!(w.bytes_written(), written);
     assert!(part_path(&e.root).exists());
@@ -279,9 +279,9 @@ async fn finalize_applies_mtime_and_mode() {
     ent.mtime_nsec = 500;
     w.finalize(&ent, &OPTS).await.unwrap();
     let m = fs::metadata(final_path(&e.root)).unwrap();
-    assert_eq!(m.permissions().mode() & 0o7777, 0o640);
-    assert_eq!(m.mtime(), 1_234_567_890);
-    assert_eq!(m.mtime_nsec(), 500);
+    assert_eq!(mode_of(&m) & 0o7777, 0o640);
+    assert_eq!(mtime_of(&m).0, 1_234_567_890);
+    assert_eq!(mtime_of(&m).1, 500);
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), data);
 }
 
@@ -335,7 +335,7 @@ async fn partial_dir_and_copy_local() {
     // A source behind a symlinked directory is not read.
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("src.bin"), &data).unwrap();
-    symlink(outside.path(), e.root.join("lnk")).unwrap();
+    symlink(outside.path(), &e.root.join("lnk")).unwrap();
     let err = w.copy_local(0, &at("lnk/src.bin"), 0).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     for (idx, c) in cl.chunks.iter().enumerate() {
@@ -376,16 +376,13 @@ async fn read_only_mode_with_dir_dest_stays_resumable() {
     assert!(matches!(err, FinalizeError::Io(_)), "{err:?}");
     // The failure came after the read-only mode was applied: owner
     // read/write is restored on the `.part` before anything reopens it.
-    let mode = fs::metadata(part_path(&e.root))
-        .unwrap()
-        .permissions()
-        .mode();
+    let mode = mode_of(&fs::metadata(part_path(&e.root)).unwrap());
     assert_eq!(mode & 0o777, 0o644, "{mode:o}");
     let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
     assert!(w.missing_chunks().is_empty());
     // Even a .part left read-only by an older failure is reopened.
     drop(w);
-    fs::set_permissions(part_path(&e.root), fs::Permissions::from_mode(0o444)).unwrap();
+    set_mode(&part_path(&e.root), 0o444).unwrap();
     let w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
     assert!(w.missing_chunks().is_empty());
 }
@@ -464,7 +461,7 @@ async fn symlink_at_destination_is_replaced_and_target_untouched() {
     let cl = chunk_list(&data);
     let target = e.root.join("target.txt");
     fs::write(&target, b"keep me").unwrap();
-    symlink(&target, final_path(&e.root)).unwrap();
+    symlink(&target, &final_path(&e.root)).unwrap();
     let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
@@ -508,9 +505,9 @@ async fn sparse_skips_zero_chunks_of_a_fresh_part() {
     assert!(fs::read(final_path(&e.root)).unwrap() == data);
     let m = fs::metadata(final_path(&e.root)).unwrap();
     assert!(
-        m.blocks() * 512 < data.len() as u64 - 1024 * 1024,
+        blocks_of(&m) * 512 < data.len() as u64 - 1024 * 1024,
         "zero run was written: {} bytes allocated",
-        m.blocks() * 512
+        blocks_of(&m) * 512
     );
 }
 
@@ -541,22 +538,19 @@ async fn part_symlink_is_refused() {
     // it, chmod its target, nor create the target.
     let target = e.root.join("victim.txt");
     fs::write(&target, b"keep me").unwrap();
-    fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
-    symlink(&target, part_path(&e.root)).unwrap();
+    set_mode(&target, 0o640).unwrap();
+    symlink(&target, &part_path(&e.root)).unwrap();
     let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
         .err()
         .expect("open through a symlinked .part must fail");
     assert!(err.to_string().contains("symlink"), "{err}");
     assert_eq!(fs::read(&target).unwrap(), b"keep me");
-    assert_eq!(
-        fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
-        0o640
-    );
+    assert_eq!(mode_of(&fs::metadata(&target).unwrap()) & 0o7777, 0o640);
     assert!(!final_path(&e.root).exists());
 
     fs::remove_file(part_path(&e.root)).unwrap();
     let absent = e.root.join("created-through-link");
-    symlink(&absent, part_path(&e.root)).unwrap();
+    symlink(&absent, &part_path(&e.root)).unwrap();
     assert!(FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).is_err());
     assert!(fs::symlink_metadata(&absent).is_err());
     assert!(fs::symlink_metadata(part_path(&e.root))
@@ -570,7 +564,7 @@ async fn part_that_is_not_a_regular_file_is_refused() {
     let e = env();
     let data = content(73);
     let cl = chunk_list(&data);
-    nix::unistd::mkfifo(&part_path(&e.root), nix::sys::stat::Mode::S_IRWXU).unwrap();
+    mkfifo(&part_path(&e.root), 0o700).unwrap();
     let err = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone())
         .err()
         .expect("a FIFO at the .part name must be refused");
@@ -743,7 +737,7 @@ async fn finalize_does_not_read_the_part_file_back() {
         .write(true)
         .open(part_path(&e.root))
         .unwrap();
-    std::os::unix::fs::FileExt::write_all_at(&f, &[data[100] ^ 0xFF], 100).unwrap();
+    irsync::platform::write_all_at(&f, &[data[100] ^ 0xFF], 100).unwrap();
     drop(f);
     w.finalize(&entry(data.len() as u64), &OPTS).await.unwrap();
     let placed = fs::read(final_path(&e.root)).unwrap();
@@ -825,10 +819,13 @@ async fn clone_of_the_old_file_adopts_its_unchanged_chunks_without_writing_them(
         .await
         .unwrap();
     assert_eq!(w.bytes_written(), u64::from(cl.chunks[changed].len));
-    let before = fs::metadata(final_path(&e.root)).unwrap().ino();
+    let before = file_id(&fs::metadata(final_path(&e.root)).unwrap()).1;
     w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
-    assert_ne!(fs::metadata(final_path(&e.root)).unwrap().ino(), before);
+    assert_ne!(
+        file_id(&fs::metadata(final_path(&e.root)).unwrap()).1,
+        before
+    );
     assert!(!part_path(&e.root).exists());
 }
 
@@ -911,7 +908,7 @@ async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     assert_eq!(cl.chunks.len(), old_cl.chunks.len());
     fs::write(final_path(&e.root), &old).unwrap();
     let old_file = fs::File::open(final_path(&e.root)).unwrap();
-    let ino = fs::metadata(final_path(&e.root)).unwrap().ino();
+    let ino = file_id(&fs::metadata(final_path(&e.root)).unwrap()).1;
     let mut w = FileWriter::open_inplace(
         &e.root,
         &rel(),
@@ -930,7 +927,7 @@ async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     assert_eq!(w.bytes_written(), u64::from(cl.chunks[changed].len));
     w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
-    assert_eq!(fs::metadata(final_path(&e.root)).unwrap().ino(), ino);
+    assert_eq!(file_id(&fs::metadata(final_path(&e.root)).unwrap()).1, ino);
     assert!(e.index.lock().unwrap().partial(&rel()).unwrap().is_none());
 }
 
@@ -1087,25 +1084,19 @@ async fn part_file_is_private_until_placed() {
     // What this process's umask gives a new file.
     let probe = e.root.join("probe");
     fs::write(&probe, b"").unwrap();
-    let default = fs::metadata(&probe).unwrap().permissions().mode() & 0o7777;
+    let default = mode_of(&fs::metadata(&probe).unwrap()) & 0o7777;
     assert_eq!(irsync::fs::meta::default_file_mode(), default);
 
     for (perms, sent, want) in [(false, 0o100640, default), (true, 0o100640, 0o640)] {
         let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
         write_all(&mut w, &data, &cl, &all(&cl)).await;
-        let mode = fs::metadata(part_path(&e.root))
-            .unwrap()
-            .permissions()
-            .mode();
+        let mode = mode_of(&fs::metadata(part_path(&e.root)).unwrap());
         assert_eq!(mode & 0o7777, 0o600, "{mode:o}");
         let mut ent = entry(data.len() as u64);
         ent.mode = sent;
         let opts = ApplyOpts { perms, ..OPTS };
         w.finalize(&ent, &opts).await.unwrap();
-        let mode = fs::metadata(final_path(&e.root))
-            .unwrap()
-            .permissions()
-            .mode();
+        let mode = mode_of(&fs::metadata(final_path(&e.root)).unwrap());
         assert_eq!(mode & 0o7777, want, "perms={perms}: {mode:o}");
         fs::remove_file(final_path(&e.root)).unwrap();
     }
@@ -1118,11 +1109,11 @@ fn index_directory_is_private() {
     let tmp = tempfile::tempdir().unwrap();
     let (root, state) = (tmp.path().join("root"), tmp.path().join("state"));
     fs::create_dir_all(&root).unwrap();
-    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    let mode = |p: &Path| mode_of(&fs::metadata(p).unwrap()) & 0o7777;
     drop(Index::open(&state, &root).unwrap());
     assert_eq!(mode(&state), 0o700);
     assert_eq!(mode(&state.join("index")), 0o700);
-    fs::set_permissions(state.join("index"), fs::Permissions::from_mode(0o755)).unwrap();
+    set_mode(&state.join("index"), 0o755).unwrap();
     drop(Index::open(&state, &root).unwrap());
     assert_eq!(mode(&state.join("index")), 0o700);
 }
@@ -1174,7 +1165,7 @@ async fn a_directory_swapped_for_a_link_gets_no_part_file() {
     let cl = chunk_list(&data);
     let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
     fs::remove_dir(e.root.join("dir")).unwrap();
-    symlink(outside.path(), e.root.join("dir")).unwrap();
+    symlink(outside.path(), &e.root.join("dir")).unwrap();
     let err = w.write_chunk(0, piece(&data, &cl, 0)).await.unwrap_err();
     assert!(format!("{err:?}").contains("symlink"), "{err:?}");
     assert!(names_in(outside.path()).is_empty());
@@ -1192,7 +1183,7 @@ async fn a_directory_swapped_for_a_link_gets_no_placed_file() {
     let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     fs::rename(e.root.join("dir"), e.root.join("moved")).unwrap();
-    symlink(outside.path(), e.root.join("dir")).unwrap();
+    symlink(outside.path(), &e.root.join("dir")).unwrap();
     assert!(w.finalize(&entry(data.len() as u64), &OPTS).await.is_err());
     assert_eq!(names_in(outside.path()), ["f.bin"]);
     assert_eq!(fs::read(outside.path().join("f.bin")).unwrap(), b"keep");
@@ -1205,7 +1196,7 @@ async fn a_directory_swapped_for_a_link_gets_no_placed_file() {
 async fn a_partial_dir_that_is_a_link_is_not_followed() {
     let e = env();
     let outside = tempfile::tempdir().unwrap();
-    symlink(outside.path(), e.root.join("p")).unwrap();
+    symlink(outside.path(), &e.root.join("p")).unwrap();
     let data = content(85);
     let cl = chunk_list(&data);
     let pd = irsync::recv::PartialDir::new(Path::new("p"));

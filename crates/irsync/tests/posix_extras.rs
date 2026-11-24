@@ -5,7 +5,6 @@ mod common;
 
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -14,6 +13,10 @@ use std::time::Duration;
 use common::{archive_opts, assert_trees_equal, sync_trees, Flow};
 use irsync::fs::meta::{apply_metadata, lstat_entry, ApplyOpts};
 use irsync::fs::paths::RelPath;
+use irsync::platform::testutil::{
+    bind_unix_socket, blocks_of, errno, is_fifo, makedev, mkfifo, set_mode, set_times, symlink,
+};
+use irsync::platform::{euid, file_id, mode_of, nlink_of, owner_of};
 
 const MIB: usize = 1024 * 1024;
 
@@ -51,7 +54,7 @@ fn opts_with(f: impl FnOnce(&mut irsync::cli::Preserve)) -> irsync::cli::SyncOpt
 
 fn ino(p: &Path) -> (u64, u64) {
     let m = fs::symlink_metadata(p).unwrap();
-    (m.dev(), m.ino())
+    file_id(&m)
 }
 
 #[tokio::test]
@@ -78,7 +81,7 @@ async fn hard_links_recreated_as_links() {
         let a = ino(&dst.join("a.bin"));
         assert_eq!(a, ino(&dst.join("d/b.bin")), "{flow:?}: d/b.bin not linked");
         assert_eq!(a, ino(&dst.join("z.bin")), "{flow:?}: z.bin not linked");
-        assert_eq!(fs::metadata(dst.join("a.bin")).unwrap().nlink(), 3);
+        assert_eq!(nlink_of(&fs::metadata(dst.join("a.bin")).unwrap()), 3);
         assert_ne!(a, ino(&dst.join("solo.txt")));
         // The linked content crossed the wire once.
         let one = (SIZE + 5) as u64;
@@ -121,7 +124,7 @@ async fn link_broken_at_source_with_equal_content_is_broken_at_destination() {
 
         let src = h.src(flow);
         fs::write(src.join("c"), b"").unwrap();
-        fs::set_permissions(src.join("c"), fs::Permissions::from_mode(0o600)).unwrap();
+        set_mode(&src.join("c"), 0o600).unwrap();
         set_mtime(&src.join("c"), 1_800_000_000, 0);
         fs::rename(src.join("c"), src.join("a")).unwrap();
 
@@ -139,7 +142,7 @@ async fn link_broken_at_source_with_equal_content_is_broken_at_destination() {
 /// `content` at `p` with mode `mode` and a fixed mtime.
 fn file_at(p: &Path, content: &[u8], mode: u32) {
     fs::write(p, content).unwrap();
-    fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+    set_mode(p, mode).unwrap();
     set_mtime(p, 1_700_000_000, 0);
 }
 
@@ -165,7 +168,11 @@ async fn mode_change_does_not_reach_a_destination_link_outside_the_tree() {
         assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
         assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
         let m = fs::metadata(&keep).unwrap();
-        assert_eq!(m.mode() & 0o7777, 0o644, "{flow:?}: outside link changed");
+        assert_eq!(
+            mode_of(&m) & 0o7777,
+            0o644,
+            "{flow:?}: outside link changed"
+        );
     }
 }
 
@@ -186,7 +193,7 @@ async fn mode_change_on_a_link_group_keeps_it_linked() {
         ))
         .await;
         assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
-        fs::set_permissions(h.src(flow).join("a"), fs::Permissions::from_mode(0o600)).unwrap();
+        set_mode(&h.src(flow).join("a"), 0o600).unwrap();
 
         let again = within60(h.run(&opts, flow)).await.expect("second run");
         assert!(again.errors.is_empty(), "{flow:?}: {:?}", again.errors);
@@ -257,14 +264,14 @@ async fn sparse_file_stays_sparse() {
         let m = fs::metadata(h.dst(flow).join("sparse.img")).unwrap();
         assert_eq!(m.len(), SIZE);
         assert!(
-            m.blocks() * 512 < SIZE / 2,
+            blocks_of(&m) * 512 < SIZE / 2,
             "{flow:?}: dst is not sparse: {} bytes allocated",
-            m.blocks() * 512
+            blocks_of(&m) * 512
         );
         let t = fs::metadata(h.dst(flow).join("tail.img")).unwrap();
         assert_eq!(t.len(), TAIL);
         assert!(
-            t.blocks() * 512 < 4 * MIB as u64,
+            blocks_of(&t) * 512 < 4 * MIB as u64,
             "{flow:?}: tail not sparse"
         );
     }
@@ -276,11 +283,7 @@ async fn fifo_recreated() {
         let opts = archive_opts();
         let (out, h) = within60(sync_trees(
             |src| {
-                nix::unistd::mkfifo(
-                    &src.join("pipe"),
-                    nix::sys::stat::Mode::from_bits_truncate(0o640),
-                )
-                .unwrap();
+                mkfifo(&src.join("pipe"), 0o640).unwrap();
             },
             |_| {},
             &opts,
@@ -289,8 +292,8 @@ async fn fifo_recreated() {
         .await;
         assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
         let m = fs::symlink_metadata(h.dst(flow).join("pipe")).unwrap();
-        assert!(m.file_type().is_fifo(), "{flow:?}: not a FIFO");
-        assert_eq!(m.mode() & 0o7777, 0o640);
+        assert!(is_fifo(m.file_type()), "{flow:?}: not a FIFO");
+        assert_eq!(mode_of(&m) & 0o7777, 0o640);
     }
 }
 
@@ -300,7 +303,7 @@ async fn sockets_skipped_with_warning() {
         let opts = archive_opts();
         let (out, h) = within60(sync_trees(
             |src| {
-                let _l = std::os::unix::net::UnixListener::bind(src.join("sock")).unwrap();
+                let _l = bind_unix_socket(&src.join("sock")).unwrap();
                 fs::write(src.join("f"), b"x").unwrap();
             },
             |_| {},
@@ -315,16 +318,16 @@ async fn sockets_skipped_with_warning() {
 }
 
 fn foreign_ids() -> (u32, u32) {
-    let uid = nix::unistd::geteuid().as_raw();
+    let uid = euid();
     let mut mine = irsync::fs::meta::supplementary_groups();
-    mine.push(nix::unistd::getegid().as_raw());
+    mine.push(irsync::platform::egid());
     let gid = (40_000..).find(|g| !mine.contains(g)).unwrap();
     (uid.wrapping_add(4242), gid)
 }
 
 #[test]
 fn owner_skipped_without_root() {
-    if nix::unistd::geteuid().is_root() {
+    if irsync::platform::is_root() {
         eprintln!("skipped: running as root");
         return;
     }
@@ -350,7 +353,7 @@ fn owner_skipped_without_root() {
 
 #[test]
 fn device_needs_privilege() {
-    if nix::unistd::geteuid().is_root() {
+    if irsync::platform::is_root() {
         eprintln!("skipped: running as root");
         return;
     }
@@ -358,14 +361,14 @@ fn device_needs_privilege() {
     let mut e = irsync_proto::v1::FileEntry {
         kind: irsync_proto::v1::file_entry::Kind::CharDev as i32,
         mode: 0o20644,
-        rdev: nix::libc::makedev(1, 3) as _,
+        rdev: makedev(1, 3),
         ..Default::default()
     };
     let err = irsync::fs::meta::create_special(&dir.path().join("null"), &e).unwrap_err();
-    assert_eq!(err.raw_os_error(), Some(nix::libc::EPERM), "{err}");
+    assert_eq!(err.raw_os_error(), Some(errno::EPERM), "{err}");
     e.kind = irsync_proto::v1::file_entry::Kind::BlockDev as i32;
     let err = irsync::fs::meta::create_special(&dir.path().join("blk"), &e).unwrap_err();
-    assert_eq!(err.raw_os_error(), Some(nix::libc::EPERM), "{err}");
+    assert_eq!(err.raw_os_error(), Some(errno::EPERM), "{err}");
 }
 
 #[tokio::test]
@@ -382,7 +385,7 @@ async fn ownership_sync_without_root_succeeds() {
     .await;
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     let m = fs::metadata(h.dst(Flow::Push).join("f")).unwrap();
-    assert_eq!(m.uid(), nix::unistd::geteuid().as_raw());
+    assert_eq!(owner_of(&m).0, euid());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -549,20 +552,13 @@ async fn links_to_files_placed_during_a_drop_are_checked() {
 }
 
 fn set_mtime(p: &Path, sec: i64, nsec: u32) {
-    let t = nix::sys::time::TimeSpec::new(sec, nsec as _);
-    nix::sys::stat::utimensat(
-        nix::fcntl::AT_FDCWD,
-        p,
-        &t,
-        &t,
-        nix::sys::stat::UtimensatFlags::NoFollowSymlink,
-    )
-    .unwrap();
+    set_times(p, sec, i64::from(nsec), false).unwrap();
 }
 
 fn mtime_of(p: &Path) -> (i64, i64) {
     let m = fs::symlink_metadata(p).unwrap();
-    (m.mtime(), m.mtime_nsec())
+    let (sec, nsec) = irsync::platform::mtime_of(&m);
+    (sec, i64::from(nsec))
 }
 
 /// A FIFO's modification time is applied when it is created and again when
@@ -573,11 +569,7 @@ async fn fifo_mtime_is_applied_and_updated() {
         let opts = archive_opts();
         let (out, h) = within60(sync_trees(
             |src| {
-                nix::unistd::mkfifo(
-                    &src.join("pipe"),
-                    nix::sys::stat::Mode::from_bits_truncate(0o640),
-                )
-                .unwrap();
+                mkfifo(&src.join("pipe"), 0o640).unwrap();
                 set_mtime(&src.join("pipe"), 1_000_000_000, 123_000_000);
             },
             |_| {},
@@ -587,7 +579,7 @@ async fn fifo_mtime_is_applied_and_updated() {
         .await;
         assert!(out.errors.is_empty(), "{flow:?}: {:?}", out.errors);
         let dst = h.dst(flow).join("pipe");
-        assert!(fs::symlink_metadata(&dst).unwrap().file_type().is_fifo());
+        assert!(is_fifo(fs::symlink_metadata(&dst).unwrap().file_type()));
         assert_eq!(
             mtime_of(&dst),
             (1_000_000_000, 123_000_000),
@@ -623,12 +615,8 @@ async fn name_max_entries_transfer() {
                 fs::write(src.join(long('g')), data(70_000, 4)).unwrap();
                 fs::write(src.join("a"), data(50_000, 5)).unwrap();
                 fs::hard_link(src.join("a"), src.join(long('h'))).unwrap();
-                std::os::unix::fs::symlink("a", src.join(long('l'))).unwrap();
-                nix::unistd::mkfifo(
-                    &src.join(long('p')),
-                    nix::sys::stat::Mode::from_bits_truncate(0o640),
-                )
-                .unwrap();
+                symlink(Path::new("a"), &src.join(long('l'))).unwrap();
+                mkfifo(&src.join(long('p')), 0o640).unwrap();
             },
             |_| {},
             &opts,
@@ -653,7 +641,7 @@ async fn name_max_entries_transfer() {
         f.write_all(&data(100_000, 6)).unwrap();
         fs::write(src.join(long('g')), data(80_000, 7)).unwrap();
         fs::remove_file(src.join(long('l'))).unwrap();
-        std::os::unix::fs::symlink(long('g'), src.join(long('l'))).unwrap();
+        symlink(Path::new(&long('g')), &src.join(long('l'))).unwrap();
         let again = within60(h.run(&opts, flow)).await.expect("second run");
         assert!(again.errors.is_empty(), "{flow:?}: {:?}", again.errors);
         assert_trees_equal(src, dst, &opts.preserve);
