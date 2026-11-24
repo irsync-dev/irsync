@@ -29,7 +29,7 @@ use irsync_proto::config as pb;
 
 use super::client::OLD_REMOTE_BIN;
 use super::legacy;
-use super::service::ServiceOutcome;
+use super::service::{self, ServiceOutcome};
 
 /// The first line of the report; text before it (a login shell's) is ignored.
 pub const BEGIN: &str = "irsync-setup-begin";
@@ -432,6 +432,7 @@ pub fn run(
     recheck: bool,
     no_dht: bool,
     keep_old: bool,
+    no_service: bool,
 ) -> anyhow::Result<SetupReport> {
     let Config { settings, .. } = Config::load(paths)?;
 
@@ -535,46 +536,47 @@ pub fn run(
         Dht::On
     };
 
-    // 4. The daemon (see `restart` above).
+    // 4. The daemon (see `restart` above), as a user service when there is
+    // a service manager. A daemon that is not ours is left alone, and so is
+    // the service then: it could not take the lock.
     let lock = probe(state);
     // Held, but by whom is not known: it may be a daemon from the old path
     // that is still starting.
     let owner_unknown = lock.as_ref().is_some_and(|i| i.pid == 0);
-    let daemon = match lock {
-        None => {
-            start_daemon(&exe, paths, state, &log)?;
-            DaemonOutcome::Started
-        }
-        Some(LockInfo {
-            pid,
-            exe: held,
-            version,
-        }) if pid != 0 && held == exe => {
-            if version == *LONG_VERSION && dht == Dht::TurnedOff {
-                reload_daemon(pid)?;
-                DaemonOutcome::Reloaded
-            } else if version == *LONG_VERSION {
-                DaemonOutcome::Running
-            } else {
-                stop_daemon(pid, state)?;
-                start_daemon(&exe, paths, state, &log)?;
-                DaemonOutcome::Restarted {
-                    old_version: version,
+    let ours =
+        |i: &LockInfo| i.pid != 0 && (i.exe == exe || (stale.is_empty() && is_old_bin(&i.exe)));
+    // Where a service would find the config: given only when it is not the
+    // default, as the background start does.
+    let config = (*paths != Paths::resolve(None)).then_some(paths.config.as_path());
+    let reload = dht == Dht::TurnedOff;
+    let bg = |lock| background(lock, &exe, paths, state, &log, reload, &ours);
+    let (daemon, service) = if lock.as_ref().is_some_and(|i| !ours(i)) {
+        (bg(lock)?, ServiceOutcome::NotTouched)
+    } else if no_service {
+        (bg(lock)?, ServiceOutcome::Skipped)
+    } else {
+        match service::detect().zip(home.as_deref()) {
+            None => (bg(lock)?, ServiceOutcome::Unavailable),
+            Some((m, h)) => {
+                let file = service::unit_path(h, m);
+                let text = std::fs::read_to_string(&file).ok();
+                if service::classify(text.as_deref(), m, &exe) == service::Existing::Foreign {
+                    (bg(lock)?, ServiceOutcome::Foreign(file))
+                } else {
+                    match as_service(m, h, lock, &exe, config, state, reload) {
+                        Ok(d) => (
+                            d,
+                            match m {
+                                service::Manager::Systemd => ServiceOutcome::Systemd,
+                                service::Manager::Launchd => ServiceOutcome::Launchd,
+                            },
+                        ),
+                        // As if there were no service manager.
+                        Err(e) => (bg(probe(state))?, ServiceOutcome::Failed(e)),
+                    }
                 }
             }
         }
-        Some(LockInfo {
-            pid,
-            exe: held,
-            version,
-        }) if pid != 0 && stale.is_empty() && is_old_bin(&held) => {
-            stop_daemon(pid, state)?;
-            start_daemon(&exe, paths, state, &log)?;
-            DaemonOutcome::Restarted {
-                old_version: version,
-            }
-        }
-        Some(LockInfo { exe, version, .. }) => DaemonOutcome::Foreign { exe, version },
     };
 
     // 5. The old binary, now that no daemon of ours runs from it.
@@ -601,9 +603,98 @@ pub fn run(
         addrs: reached.addrs,
         stale_services: stale,
         old_bin,
-        // Wired up in a later step.
-        service: ServiceOutcome::Skipped,
+        service,
     })
+}
+
+/// The daemon without a service: started in the background, in a session
+/// of its own, when the lock is free. A daemon of `ours` at this version is
+/// left running (and told to reload when `reload`); one at another
+/// version is restarted; any other is left alone.
+fn background(
+    lock: Option<LockInfo>,
+    exe: &Path,
+    paths: &Paths,
+    state: &Path,
+    log: &Path,
+    reload: bool,
+    ours: &dyn Fn(&LockInfo) -> bool,
+) -> anyhow::Result<DaemonOutcome> {
+    Ok(match lock {
+        None => {
+            start_daemon(exe, paths, state, log)?;
+            DaemonOutcome::Started
+        }
+        Some(i) if ours(&i) => {
+            if i.version == *LONG_VERSION && i.exe == exe && reload {
+                reload_daemon(i.pid)?;
+                DaemonOutcome::Reloaded
+            } else if i.version == *LONG_VERSION && i.exe == exe {
+                DaemonOutcome::Running
+            } else {
+                stop_daemon(i.pid, state)?;
+                start_daemon(exe, paths, state, log)?;
+                DaemonOutcome::Restarted {
+                    old_version: i.version,
+                }
+            }
+        }
+        Some(LockInfo { exe, version, .. }) => DaemonOutcome::Foreign { exe, version },
+    })
+}
+
+/// The daemon as a user service of `m`: a daemon of ours that runs
+/// outside the service is stopped first, so the service can take the lock;
+/// a service that runs an older build is restarted; one that runs this
+/// build is left alone (and told to reload when `reload`). Waits for the
+/// lock as [`start_daemon`] does. `lock` is held by a daemon of ours, or
+/// by none.
+fn as_service(
+    m: service::Manager,
+    home: &Path,
+    lock: Option<LockInfo>,
+    exe: &Path,
+    config: Option<&Path>,
+    state: &Path,
+    reload: bool,
+) -> Result<DaemonOutcome, String> {
+    let active = service::is_active(m);
+    let current = |i: &LockInfo| i.exe == exe && i.version == *LONG_VERSION;
+    let outcome = match lock {
+        Some(i) if active && current(&i) => {
+            if reload {
+                reload_daemon(i.pid).map_err(|e| format!("{e:#}"))?;
+                return Ok(DaemonOutcome::Reloaded);
+            }
+            return Ok(DaemonOutcome::Running);
+        }
+        Some(i) => {
+            if !active {
+                stop_daemon(i.pid, state).map_err(|e| format!("{e:#}"))?;
+            }
+            if current(&i) {
+                // A background daemon of this build, moved into the service.
+                DaemonOutcome::Started
+            } else {
+                DaemonOutcome::Restarted {
+                    old_version: i.version,
+                }
+            }
+        }
+        None => DaemonOutcome::Started,
+    };
+    service::start(m, home, exe, config, active)?;
+    let deadline = Instant::now() + DAEMON_WAIT;
+    while !probe(state).is_some_and(|i| i.pid != 0 && current(&i)) {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "the service did not start the daemon within {} s",
+                DAEMON_WAIT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(outcome)
 }
 
 /// The home directory to look for the old install in: none unless it is

@@ -1,0 +1,72 @@
+#!/bin/sh
+# Stands in for `systemctl --user` in tests: runs the irsync unit's
+# ExecStart in the background under the (fake) server HOME.
+# Env: FAKE_SERVICE_LOG (each call is appended to it), FAKE_SYSTEMD_DOWN
+# (optional: 1 makes show-environment fail, as with no user session).
+echo "systemctl $*" >> "$FAKE_SERVICE_LOG"
+if [ "$1" != --user ]; then
+    echo "fake systemctl: only --user is faked" >&2
+    exit 1
+fi
+shift
+unit="$HOME/.config/systemd/user/irsync.service"
+pidfile="$HOME/.fake-service.pid"
+
+alive() {
+    [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null
+}
+
+stop() {
+    if alive; then
+        pid=$(cat "$pidfile")
+        kill "$pid"
+        while kill -0 "$pid" 2>/dev/null; do sleep 0.05; done
+    fi
+    rm -f "$pidfile"
+}
+
+# Starts the ExecStart of the unit file $1.
+start() {
+    line=$(sed -n 's/^ExecStart=//p' "$1")
+    if [ -z "$line" ]; then
+        echo "fake systemctl: no ExecStart in $1" >&2
+        exit 1
+    fi
+    # The unit quotes each word in double quotes, as a shell would read them.
+    eval "set -- $line"
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$@" </dev/null >>"$HOME/fake-service.log" 2>&1 &
+    else
+        "$@" </dev/null >>"$HOME/fake-service.log" 2>&1 &
+    fi
+    echo $! > "$pidfile"
+}
+
+case "$1" in
+    show-environment)
+        [ "$FAKE_SYSTEMD_DOWN" = 1 ] && {
+            echo "Failed to connect to bus: No medium found" >&2
+            exit 1
+        }
+        echo "HOME=$HOME"
+        ;;
+    daemon-reload) ;;
+    is-active)
+        alive
+        ;;
+    enable)
+        # enable --now leaves a running service alone.
+        alive || start "$unit"
+        ;;
+    restart)
+        stop
+        start "$unit"
+        ;;
+    stop)
+        stop
+        ;;
+    *)
+        echo "fake systemctl: $1 is not faked" >&2
+        exit 1
+        ;;
+esac

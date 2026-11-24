@@ -7,6 +7,7 @@ use iroh::EndpointId;
 
 use super::client::{client_host_name, ensure_installed, probe, run_setup, Install, Rsh};
 use super::payload::Contents;
+use super::service::ServiceOutcome;
 use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport};
 use crate::build::LONG_VERSION;
 use crate::config::names::valid_alias;
@@ -171,6 +172,8 @@ pub struct SetupFlags {
     pub no_dht: bool,
     /// Copy nothing to the server: use the irsync already there.
     pub no_install: bool,
+    /// Start the daemon in the background, not as a user service.
+    pub no_service: bool,
 }
 
 /// Sets up `dest` (an ssh destination) for `client`: probe, install this
@@ -380,6 +383,12 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
         DaemonOutcome::Reloaded => {
             out.push("  told the daemon to reload its settings".into());
         }
+        // A service's output goes to the service manager, not to that log.
+        DaemonOutcome::Started
+            if matches!(r.service, ServiceOutcome::Systemd | ServiceOutcome::Launchd) =>
+        {
+            out.push("  started the daemon".into());
+        }
         DaemonOutcome::Started => {
             out.push(format!("  started the daemon (log: {})", r.log.display()));
         }
@@ -397,6 +406,9 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
                     .into(),
             );
         }
+    }
+    if let Some(line) = service_line(&r.service) {
+        out.push(line);
     }
     for file in &r.stale_services {
         out.push(format!(
@@ -440,6 +452,34 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
     out
 }
 
+/// How the daemon runs, after the daemon line; none when the service was
+/// not touched.
+fn service_line(s: &ServiceOutcome) -> Option<String> {
+    const UNTIL: &str = "the daemon runs in the background until the server reboots";
+    Some(match s {
+        ServiceOutcome::Systemd => "  the daemon runs as a systemd user service (irsync.service), \
+                                    also after a reboot"
+            .into(),
+        ServiceOutcome::Launchd => "  the daemon runs as a launchd agent (org.irsync.daemon); \
+                                    after a reboot it starts when you log in on the Mac"
+            .into(),
+        ServiceOutcome::Skipped => format!("  {UNTIL} (--no-service)"),
+        ServiceOutcome::Unavailable => {
+            format!("  no systemd or launchd user session there: {UNTIL}")
+        }
+        ServiceOutcome::Failed(e) => format!(
+            "  warning: could not make the daemon a user service: {e}; it runs in the \
+             background until the server reboots"
+        ),
+        ServiceOutcome::Foreign(p) => format!(
+            "  {} was not written by irsync; left it alone. The daemon runs in the \
+             background until the server reboots",
+            home_tilde(p)
+        ),
+        ServiceOutcome::NotTouched => return None,
+    })
+}
+
 /// What an install put beside `irsync`, as the tail of the install line:
 /// `, with fileset and the manual pages` and so on, then `note`.
 fn contents_phrase(c: &Contents, note: &str) -> String {
@@ -471,14 +511,21 @@ fn short(id: &EndpointId) -> String {
     id.fmt_short().to_string()
 }
 
-/// After a daemon was started or restarted: how to make it a user service
-/// on the server's OS. Printed without a prefix so it can be pasted. Empty
+/// After a daemon was started or restarted in the background because
+/// irsync could not make it a user service: how to do that by hand on the
+/// server's OS. Printed without a prefix so it can be pasted. Empty
 /// otherwise.
 pub fn howto(o: &Onboarded) -> Vec<String> {
-    if !matches!(
-        o.report.daemon,
-        DaemonOutcome::Started | DaemonOutcome::Restarted { .. }
-    ) {
+    let by_hand = matches!(
+        o.report.service,
+        ServiceOutcome::Unavailable | ServiceOutcome::Failed(_) | ServiceOutcome::Foreign(_)
+    );
+    if !by_hand
+        || !matches!(
+            o.report.daemon,
+            DaemonOutcome::Started | DaemonOutcome::Restarted { .. }
+        )
+    {
         return Vec::new();
     }
     // The daemon irsync started holds this lock (beside its log); the
@@ -678,7 +725,8 @@ mod tests {
                 addrs: Vec::new(),
                 stale_services: Vec::new(),
                 old_bin: OldBin::Absent,
-                service: crate::ssh::service::ServiceOutcome::Skipped,
+                // Says nothing, so each test adds only the lines it checks.
+                service: ServiceOutcome::NotTouched,
             },
             install,
             os,
@@ -808,7 +856,7 @@ mod tests {
 
     #[test]
     fn replaced_restarted_on_macos() {
-        let o = onboarded(
+        let mut o = onboarded(
             Install::Copied {
                 replaced: Some("irsync 0.0.1 (old)".into()),
                 contents: ALL,
@@ -818,6 +866,7 @@ mod tests {
             },
             Some("macos"),
         );
+        o.report.service = ServiceOutcome::Unavailable;
         let s = summary(&o).join("\n");
         assert!(s.contains(&format!(
             "  replaced irsync 0.0.1 (old) with {} in ~/.local/bin, with fileset and the manual pages",
@@ -831,7 +880,6 @@ mod tests {
         )));
         assert!(!s.contains("generated the daemon identity"));
         assert!(!s.contains("granted"));
-        assert!(!s.contains("user service"));
         let h = howto(&o);
         let text = h.join("\n");
         assert!(text.contains("org.irsync.daemon.plist"));
@@ -866,6 +914,7 @@ mod tests {
     #[test]
     fn started_on_linux_stops_then_hands_over() {
         let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        o.report.service = ServiceOutcome::Unavailable;
         o.report.log = PathBuf::from("/home/u/.local/state/irsync/daemon.log");
         let h = howto(&o);
         assert_eq!(
@@ -966,5 +1015,76 @@ mod tests {
             )),
             "{s}"
         );
+    }
+
+    /// One line after the daemon line says how the daemon runs.
+    #[test]
+    fn summary_names_the_service() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        o.saved[0].existed = true;
+        o.saved[0].previous_id = None;
+        for (service, want) in [
+            (
+                ServiceOutcome::Systemd,
+                Some("  the daemon runs as a systemd user service (irsync.service), also after a reboot".to_string()),
+            ),
+            (
+                ServiceOutcome::Launchd,
+                Some("  the daemon runs as a launchd agent (org.irsync.daemon); after a reboot it starts when you log in on the Mac".to_string()),
+            ),
+            (
+                ServiceOutcome::Skipped,
+                Some("  the daemon runs in the background until the server reboots (--no-service)".to_string()),
+            ),
+            (
+                ServiceOutcome::Unavailable,
+                Some("  no systemd or launchd user session there: the daemon runs in the background until the server reboots".to_string()),
+            ),
+            (
+                ServiceOutcome::Failed("linger: access denied".into()),
+                Some("  warning: could not make the daemon a user service: linger: access denied; it runs in the background until the server reboots".to_string()),
+            ),
+            (
+                ServiceOutcome::Foreign(PathBuf::from("/home/u/.config/systemd/user/irsync.service")),
+                Some("  ~/.config/systemd/user/irsync.service was not written by irsync; left it alone. The daemon runs in the background until the server reboots".to_string()),
+            ),
+            (ServiceOutcome::NotTouched, None),
+        ] {
+            o.report.service = service.clone();
+            let s = summary(&o);
+            // A service's output does not go to the log.
+            let daemon = match service {
+                ServiceOutcome::Systemd | ServiceOutcome::Launchd => at(&s, "  started the daemon"),
+                _ => at(&s, "  started the daemon (log: /s/daemon.log)"),
+            };
+            match want {
+                Some(want) => {
+                    assert_eq!(s.len(), daemon + 2, "{s:#?}");
+                    assert_eq!(s[daemon + 1], want);
+                }
+                None => assert_eq!(s.len(), daemon + 1, "{s:#?}"),
+            }
+        }
+    }
+
+    /// The manual steps only when irsync could not make the service itself.
+    #[test]
+    fn howto_only_without_a_service() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        for (service, steps) in [
+            (ServiceOutcome::Systemd, false),
+            (ServiceOutcome::Launchd, false),
+            (ServiceOutcome::Skipped, false),
+            (ServiceOutcome::NotTouched, false),
+            (ServiceOutcome::Unavailable, true),
+            (ServiceOutcome::Failed("no".into()), true),
+            (
+                ServiceOutcome::Foreign(PathBuf::from("/h/.config/systemd/user/irsync.service")),
+                true,
+            ),
+        ] {
+            o.report.service = service.clone();
+            assert_eq!(!howto(&o).is_empty(), steps, "{service:?}");
+        }
     }
 }

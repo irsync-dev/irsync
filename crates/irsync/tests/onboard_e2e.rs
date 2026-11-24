@@ -15,6 +15,11 @@ fn fake_ssh() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-ssh")
 }
 
+/// Stand-ins for systemctl and loginctl.
+fn fake_service_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-service-bin")
+}
+
 /// A free loopback UDP port (iroh listens on UDP) for a daemon that binds
 /// it later. Taken below the ports the OS hands out for `:0` (from 49152 on
 /// macOS, 32768 on Linux): such a port, released here, could go to another
@@ -58,6 +63,12 @@ struct World {
     /// The server's irsync believes it runs as root (the probe does not
     /// say so).
     server_root: bool,
+    /// The server has a (fake) systemd user session: `pair` finds
+    /// systemctl and loginctl there. Without it, no service manager.
+    service: bool,
+    /// Extra environment for every irsync run, such as the `FAKE_*`
+    /// settings of the fake service tools.
+    env: Vec<(String, String)>,
 }
 
 impl World {
@@ -74,6 +85,8 @@ impl World {
             hostname: None,
             probe_root: false,
             server_root: false,
+            service: false,
+            env: Vec::new(),
         };
         w.server_config("", "");
         std::fs::write(w.src.path().join("a.txt"), "hello\n").unwrap();
@@ -97,6 +110,32 @@ impl World {
 
     fn ssh_log(&self) -> PathBuf {
         self.client.path().join("ssh.log")
+    }
+
+    /// The calls of the fake systemctl and loginctl, one per line.
+    fn service_log(&self) -> String {
+        std::fs::read_to_string(self.client.path().join("service.log")).unwrap_or_default()
+    }
+
+    /// The systemd unit in the server HOME.
+    fn unit(&self) -> PathBuf {
+        self.server
+            .path()
+            .join(".config/systemd/user/irsync.service")
+    }
+
+    /// The pid of the daemon the lock in the server HOME names.
+    fn lock_pid(&self) -> u32 {
+        probe(&self.server.path().join("xdg/irsync"))
+            .expect("a running daemon")
+            .pid
+    }
+
+    /// The pid the fake systemctl started last, if any.
+    fn service_pid(&self) -> Option<u32> {
+        std::fs::read_to_string(self.server.path().join(".fake-service.pid"))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
     }
 
     fn ssh_calls(&self) -> usize {
@@ -215,6 +254,15 @@ impl World {
         } else {
             cmd.env_remove("IRSYNC_TEST_EUID_ROOT");
         }
+        if self.service {
+            cmd.env("IRSYNC_TEST_SERVICE_BIN_DIR", fake_service_bin());
+        } else {
+            cmd.env_remove("IRSYNC_TEST_SERVICE_BIN_DIR");
+        }
+        cmd.env("FAKE_SERVICE_LOG", self.client.path().join("service.log"));
+        for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
         let mut child = cmd.spawn().unwrap();
         let deadline = Instant::now() + Duration::from_secs(180);
         while child.try_wait().unwrap().is_none() {
@@ -231,6 +279,11 @@ impl World {
 
 impl Drop for World {
     fn drop(&mut self) {
+        // A daemon the fake systemctl started, even one that never took
+        // the lock.
+        if let Some(pid) = self.service_pid() {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        }
         for home in [self.server.path(), self.client.path()] {
             if let Some(info) = probe(&home.join("xdg/irsync")) {
                 if info.pid != 0 {
@@ -1544,6 +1597,160 @@ fn service_file_keeps_the_old_binary_and_daemon() {
     );
     ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
     same_tree(w.src.path(), &dest);
+}
+
+/// Whether process `pid` is still there.
+fn alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+const SYSTEMD_LINE: &str =
+    "irsync:   the daemon runs as a systemd user service (irsync.service), also after a reboot";
+const HOWTO: &str = "To keep the daemon running after a reboot, make it a user service.";
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_makes_a_systemd_user_service() {
+    let mut w = World::new();
+    w.service = true;
+    let err = w.pair("myserver");
+    let unit = std::fs::read_to_string(w.unit()).unwrap();
+    assert!(unit.contains(irsync::ssh::service::MARKER), "{unit}");
+    let log = w.service_log();
+    assert!(
+        log.contains("systemctl --user enable --now irsync"),
+        "{log}"
+    );
+    assert!(err.lines().any(|l| l == SYSTEMD_LINE), "{err}");
+    assert!(!err.contains(HOWTO), "{err}");
+    assert_eq!(Some(w.lock_pid()), w.service_pid());
+    let dest = w.server.path().join("dest");
+    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
+    same_tree(w.src.path(), &dest);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_twice_keeps_one_daemon() {
+    let mut w = World::new();
+    w.service = true;
+    w.pair("myserver");
+    let pid = w.lock_pid();
+    let err = w.pair("myserver");
+    assert!(err.lines().any(|l| l == SYSTEMD_LINE), "{err}");
+    let log = w.service_log();
+    assert!(!log.contains("restart"), "{log}");
+    assert_eq!(log.matches("enable --now").count(), 1, "{log}");
+    assert_eq!(w.lock_pid(), pid);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_moves_a_background_daemon_into_the_service() {
+    let mut w = World::new();
+    w.service = true;
+    ok(&w.irsync_bare(&["pair", "--no-service", "myserver"]));
+    let old = w.lock_pid();
+    let err = w.pair("myserver");
+    assert!(err.lines().any(|l| l == SYSTEMD_LINE), "{err}");
+    assert!(!alive(old), "the background daemon {old} still runs");
+    assert_eq!(Some(w.lock_pid()), w.service_pid());
+}
+
+#[test]
+fn pair_with_no_service_writes_no_unit() {
+    let mut w = World::new();
+    w.service = true;
+    let err = ok(&w.irsync_bare(&["pair", "--no-service", "myserver"]));
+    assert!(
+        err.lines().any(|l| {
+            l
+            == "irsync:   the daemon runs in the background until the server reboots (--no-service)"
+        }),
+        "{err}"
+    );
+    assert!(!w.unit().exists());
+    assert!(!w.service_log().contains("enable"), "{}", w.service_log());
+    assert!(alive(w.lock_pid()));
+}
+
+#[test]
+fn pair_without_a_user_session_falls_back() {
+    let mut w = World::new();
+    w.service = true;
+    w.env.push(("FAKE_SYSTEMD_DOWN".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.lines().any(|l| l
+            == "irsync:   no systemd or launchd user session there: the daemon runs in the background until the server reboots"),
+        "{err}"
+    );
+    assert!(err.lines().any(|l| l == HOWTO), "{err}");
+    assert!(!w.unit().exists());
+    assert!(alive(w.lock_pid()));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_falls_back_when_linger_is_refused() {
+    let mut w = World::new();
+    w.service = true;
+    w.env.push(("FAKE_LINGER".into(), "no".into()));
+    w.env.push(("FAKE_LINGER_REFUSED".into(), "1".into()));
+    let err = w.pair("myserver");
+    assert!(
+        err.contains("irsync:   warning: could not make the daemon a user service"),
+        "{err}"
+    );
+    assert!(err.lines().any(|l| l == HOWTO), "{err}");
+    assert!(!w.unit().exists());
+    assert!(alive(w.lock_pid()));
+    assert_eq!(w.service_pid(), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_leaves_a_foreign_unit_alone() {
+    let mut w = World::new();
+    w.service = true;
+    let text = "[Service]\nExecStart=/usr/bin/irsync daemon\n";
+    std::fs::create_dir_all(w.unit().parent().unwrap()).unwrap();
+    std::fs::write(w.unit(), text).unwrap();
+    let err = w.pair("myserver");
+    assert_eq!(std::fs::read_to_string(w.unit()).unwrap(), text);
+    assert!(
+        err.lines().any(|l| l
+            == "irsync:   ~/.config/systemd/user/irsync.service was not written by irsync; left it alone. The daemon runs in the background until the server reboots"),
+        "{err}"
+    );
+    assert!(!w.service_log().contains("enable"), "{}", w.service_log());
+    assert!(alive(w.lock_pid()));
+}
+
+/// Another daemon holds the lock: no unit is written and no service
+/// started, so the two never fight over the lock.
+#[cfg(target_os = "linux")]
+#[test]
+fn pair_leaves_a_foreign_daemon_without_a_service() {
+    let mut w = World::new();
+    w.service = true;
+    w.grant_client();
+    let unit = w.unit();
+    let text = "[Service]\nExecStart=%h/.local/share/irsync/bin/irsync daemon -vv\n";
+    std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    std::fs::write(&unit, text).unwrap();
+    let old = w.start_old_daemon();
+    let err = w.pair("myserver");
+    assert_eq!(w.lock_pid(), old.0.id(), "{err}");
+    assert_eq!(std::fs::read_to_string(&unit).unwrap(), text);
+    let log = w.service_log();
+    assert!(!log.contains("enable"), "{log}");
+    assert!(!err.contains("user service"), "{err}");
 }
 
 /// An old binary that nothing runs goes, with its empty directory.

@@ -379,6 +379,9 @@ pub enum Command {
         /// Nothing was installed this run (`--no-install`).
         #[arg(long, hide = true)]
         keep_old: bool,
+        /// Start the daemon in the background, not as a user service.
+        #[arg(long)]
+        no_service: bool,
     },
     /// Checks a minisign signature of FILE against the irsync release keys
     /// (or the keys given). Used by install.sh. Exit 0 is a good signature,
@@ -727,6 +730,11 @@ pub struct PairArgs {
     /// false`). Without it the server's setting is left alone.
     #[arg(long)]
     pub no_dht: bool,
+    /// Do not make the daemon a systemd or launchd user service: start it
+    /// in the background, until the server reboots. For a daemon you run
+    /// your own way.
+    #[arg(long)]
+    pub no_service: bool,
     /// The private key to pair with (default: `identity` in irsync.toml,
     /// else id_ed25519 in the config directory; generated if missing).
     #[arg(long, value_name = "FILE")]

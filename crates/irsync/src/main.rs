@@ -90,12 +90,14 @@ fn main() {
             recheck,
             no_dht,
             keep_old,
+            no_service,
         }) => std::process::exit(run_ssh_setup(
             client,
             client_name_hex,
             *recheck,
             *no_dht,
             *keep_old,
+            *no_service,
             files,
         )),
         Some(Command::VerifySignature {
@@ -697,6 +699,7 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
                 recheck: t.kind == irsync::ssh::pair::PairKind::Saved,
                 no_dht: a.no_dht,
                 no_install: a.no_install || config.settings.client.ssh_install == Some(false),
+                no_service: a.no_service,
             };
             let host = &t.host;
             let o = irsync::ssh::onboard::onboard(
@@ -1728,6 +1731,7 @@ fn run_ssh_setup(
     recheck: bool,
     no_dht: bool,
     keep_old: bool,
+    no_service: bool,
     files: &FilesArgs,
 ) -> i32 {
     // The client stops when its probe sees root; this holds when it did not.
@@ -1756,7 +1760,15 @@ fn run_ssh_setup(
             }
             let name =
                 irsync::ssh::client::decode_name(client_name_hex).context("--client-name-hex")?;
-            irsync::ssh::setup::run(&file_paths(files), id, &name, recheck, no_dht, keep_old)
+            irsync::ssh::setup::run(
+                &file_paths(files),
+                id,
+                &name,
+                recheck,
+                no_dht,
+                keep_old,
+                no_service,
+            )
         });
     match result {
         Ok(report) => {
