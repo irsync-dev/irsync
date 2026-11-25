@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - `admin = "rw"`: read, and change exports, clients and grants. `admin = "ro"`: read only. Left out: none. Only named clients hold it.
-- `PROTOCOL_VERSION` goes from 5 to 6. No backward compatibility (no users yet).
+- `PROTOCOL_VERSION` goes from 6 (unreleased on main) to 7. No backward compatibility (no users yet).
 - A transaction is all or nothing: a NACK means the config file is unchanged on disk.
 - The config lock is held only while a commit is applied; a commit waits for it up to `authz::LOCK_WAIT` (2 s), then NACKs "busy".
 - Checks run on the server at commit time, against the config loaded under the lock, including the committing client's own `admin = "rw"`. The final result must still give the committing client `admin = "rw"` (no removing or downgrading oneself remotely).
@@ -67,7 +67,7 @@ The SSH setup's `grant_client` returns true when it changed either right (it set
 
 ---
 
-### Task 2: The wire messages and protocol version 6
+### Task 2: The wire messages and protocol version 7
 
 **Files:**
 - Create: `proto/irsync/v1/admin.proto`
@@ -125,7 +125,7 @@ message ConfigText { repeated string lines = 1; }
 - [ ] **Step 2: Run them and see them fail.** `cargo test -q -p irsync-proto` → unresolved types.
 - [ ] **Step 3: Implement**; update every test that pins `5`.
 - [ ] **Step 4: Run all tests** → PASS.
-- [ ] **Step 5: Commit** `Add the admin wire messages; protocol version 6`.
+- [ ] **Step 5: Commit** `Add the admin wire messages; protocol version 7`.
 
 ---
 
@@ -211,7 +211,7 @@ Behaviour:
 - `export add`: PATH must start with `/` or `~`; one that starts with the local home directory is refused before dialling: `/home/me/Photos looks like your own home: the shell expanded ~. Quote it: irsync remote myserver export add 'photos:~/Photos'`.
 - `show`: the daemon identity, the clients with their rights, the exports.
 - `refused` UNAUTHORIZED → `irsync remote: myserver does not let this client manage it (it needs admin = "rw" or "ro" in its [clients] entry)`, exit 1.
-- `VERSION_MISMATCH` whose message says the daemon speaks a version below 6 → `myserver runs an older irsync without remote admin: update it there`; otherwise the usual version message.
+- `VERSION_MISMATCH` whose message says the daemon speaks a version below 7 → `myserver runs an older irsync without remote admin: update it there`; otherwise the usual version message.
 - `irsync remote --help` lists the remote commands.
 
 - [ ] **Step 1: Write the failing tests** (`remote_e2e.rs`):

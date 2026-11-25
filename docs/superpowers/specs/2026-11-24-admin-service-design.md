@@ -196,7 +196,7 @@ type, mirroring the local command's arguments.
 ## Protocol
 
 - New `Hello.Direction` value `ADMIN`.
-- `PROTOCOL_VERSION` goes from 5 to 6.
+- `PROTOCOL_VERSION` goes to 7 (main was already at 6 from an unreleased change; the last release speaks 5).
 - An older daemon refuses the unknown direction; the CLI turns that into a
   plain message: the server's irsync is too old for remote admin, update it.
 - New messages for: the changes (one per command), COMMIT, ACK, NACK, the
