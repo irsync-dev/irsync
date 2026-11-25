@@ -752,47 +752,21 @@ pub(super) async fn run_client_inner(
     };
     // `-c`: no index row is trusted; every file this side lists or
     // compares is read.
-    let hasher = if opts.checksum {
-        Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
-            .with_force(true)
-            .with_activity(activity.clone())
-            .with_progress(on_hash.clone())
-            .with_meter(meter.clone())
+    let main = if opts.checksum {
+        Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS).with_force(true)
     } else {
         // Shares the side's worker limit and counters across attempts.
         Hasher::clone(&local.hasher)
-            .with_progress(on_hash.clone())
-            .with_meter(meter.clone())
     };
-    let forced = Hasher::new(index.clone(), local.root.clone(), 1)
-        .with_force(true)
-        .with_activity(activity.clone())
-        .with_progress(on_hash)
-        .with_meter(meter.clone());
-    let verify = Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
-        .with_force(true)
-        .with_activity(activity.clone())
-        .with_meter(meter.clone());
-    #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = if local.hooks.no_change_checks {
-        (
-            hasher.without_change_check(),
-            forced.without_change_check(),
-            verify.without_change_check(),
-        )
-    } else {
-        (hasher, forced, verify)
-    };
-    #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = match &local.hooks.during_hash {
-        Some(h) => (
-            hasher.with_hash_hook(h.clone()),
-            forced.with_hash_hook(h.clone()),
-            verify.with_hash_hook(h.clone()),
-        ),
-        None => (hasher, forced, verify),
-    };
-    let (hasher, forced, verify) = (Arc::new(hasher), Arc::new(forced), Arc::new(verify));
+    let (hasher, forced, verify) = hashers(
+        main,
+        &index,
+        &local.root,
+        &activity,
+        &meter,
+        Some(on_hash),
+        &local.hooks,
+    );
     let ctx = Ctx {
         conn,
         session_id,
@@ -1104,6 +1078,49 @@ fn record_net(span: &tracing::Span, net: &crate::telemetry::meter::NetUsage) {
     span.record("lost_packets", net.lost_packets);
 }
 
+/// The three hashers a role uses, built alike on both sides: `main`, as
+/// the caller prepared it (forced or not, shared or new); `forced` (one
+/// worker, always re-reads, for a file that changed); and `verify`
+/// (`--paranoid`'s second hash, always re-reads, with workers of its own,
+/// so the checks neither queue behind nor hold up retries on `forced`).
+/// `progress` hears of every file `main` and `forced` read.
+#[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
+fn hashers(
+    main: Hasher,
+    index: &IndexHandle,
+    root: &Path,
+    activity: &Arc<AtomicU64>,
+    meter: &Arc<Meter>,
+    progress: Option<HashProgress>,
+    hooks: &SideHooks,
+) -> (Arc<Hasher>, Arc<Hasher>, Arc<Hasher>) {
+    let fresh = |workers| Hasher::new(index.clone(), root.to_path_buf(), workers).with_force(true);
+    let finish = |h: Hasher, progress: Option<&HashProgress>| {
+        let h = h.with_activity(activity.clone()).with_meter(meter.clone());
+        let h = match progress {
+            Some(p) => h.with_progress(p.clone()),
+            None => h,
+        };
+        #[cfg(feature = "test-hooks")]
+        let h = if hooks.no_change_checks {
+            h.without_change_check()
+        } else {
+            h
+        };
+        #[cfg(feature = "test-hooks")]
+        let h = match &hooks.during_hash {
+            Some(k) => h.with_hash_hook(k.clone()),
+            None => h,
+        };
+        Arc::new(h)
+    };
+    (
+        finish(main, progress.as_ref()),
+        finish(fresh(1), progress.as_ref()),
+        finish(fresh(HASH_WORKERS), None),
+    )
+}
+
 /// The body of [`serve_daemon`]; `session` is its `session` span.
 #[allow(clippy::too_many_arguments)]
 async fn serve_daemon_inner(
@@ -1270,40 +1287,21 @@ async fn serve_daemon_inner(
         telemetry::enabled(),
     );
     let index = index.metered(meter.clone());
+    #[cfg(feature = "test-hooks")]
+    let hooks = {
+        let mut h = shared.daemon_hooks.lock().unwrap().clone();
+        h.events = Some(shared.events.clone());
+        h.slow_finalize = *shared.slow_finalize.lock().unwrap();
+        h
+    };
+    #[cfg(not(feature = "test-hooks"))]
+    let hooks = SideHooks::default();
     // `-c` applies to both sides: the daemon reads every file it lists
     // or compares, whichever way the data flows.
-    let hasher = Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
-        .with_force(req.checksum)
-        .with_activity(activity.clone())
-        .with_meter(meter.clone());
-    let forced = Hasher::new(index.clone(), export_root.clone(), 1)
-        .with_force(true)
-        .with_activity(activity.clone())
-        .with_meter(meter.clone());
-    let verify = Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
-        .with_force(true)
-        .with_activity(activity.clone())
-        .with_meter(meter.clone());
-    #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = if shared.daemon_hooks.lock().unwrap().no_change_checks {
-        (
-            hasher.without_change_check(),
-            forced.without_change_check(),
-            verify.without_change_check(),
-        )
-    } else {
-        (hasher, forced, verify)
-    };
-    #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = match shared.daemon_hooks.lock().unwrap().during_hash.clone() {
-        Some(h) => (
-            hasher.with_hash_hook(h.clone()),
-            forced.with_hash_hook(h.clone()),
-            verify.with_hash_hook(h),
-        ),
-        None => (hasher, forced, verify),
-    };
-    let (hasher, forced, verify) = (Arc::new(hasher), Arc::new(forced), Arc::new(verify));
+    let main =
+        Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS).with_force(req.checksum);
+    let (hasher, forced, verify) =
+        hashers(main, &index, &export_root, &activity, &meter, None, &hooks);
     let ctx = Ctx {
         conn,
         session_id,
@@ -1357,18 +1355,7 @@ async fn serve_daemon_inner(
         },
         single,
         privs: Privs::current(),
-        hooks: {
-            #[cfg(feature = "test-hooks")]
-            let h = {
-                let mut h = shared.daemon_hooks.lock().unwrap().clone();
-                h.events = Some(shared.events.clone());
-                h.slow_finalize = *shared.slow_finalize.lock().unwrap();
-                h
-            };
-            #[cfg(not(feature = "test-hooks"))]
-            let h = SideHooks::default();
-            h
-        },
+        hooks,
         bus: super::EventBus::default(),
     };
     run_role(
