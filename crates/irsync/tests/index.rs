@@ -196,7 +196,7 @@ fn session_lookup_by_key_and_id() {
         progress: vec![2],
         created_at: 10,
         updated_at: 20,
-        peer: vec![],
+        owner: vec![],
     };
     assert_eq!(ix.save_session(&s).unwrap(), None);
     s.progress = vec![3];
@@ -311,7 +311,7 @@ fn save_session_waits_out_another_writer() {
         progress: vec![2],
         created_at: 10,
         updated_at: 20,
-        peer: vec![],
+        owner: vec![],
     };
     assert_eq!(ix.save_session(&s).unwrap(), None);
     other.join().unwrap();
@@ -734,7 +734,7 @@ fn a_new_index_takes_the_partials_and_sessions_of_the_version_1_file() {
         progress: vec![2],
         created_at: 10,
         updated_at: 20,
-        peer: vec![],
+        owner: vec![],
     };
     // An index with an entry, a partial and a session, then renamed to the
     // version 1 name: the copy reads only `partials` and `sessions`, whose
@@ -835,7 +835,7 @@ fn trimming_keeps_the_newest_sessions_of_one_key() {
         progress: vec![],
         created_at: at,
         updated_at: at,
-        peer: who.to_vec(),
+        owner: who.to_vec(),
     };
     for (id, at) in [(1, 10), (2, 20), (3, 30), (4, 40), (5, 50)] {
         ix.save_session(&row(id, b"alice", at)).unwrap();
@@ -843,10 +843,10 @@ fn trimming_keeps_the_newest_sessions_of_one_key() {
     ix.save_session(&row(6, b"bob", 1)).unwrap();
     ix.save_session(&row(7, b"", 2)).unwrap();
     assert_eq!(
-        ix.load_session_by_id(&[5; 16]).unwrap().unwrap().peer,
+        ix.load_session_by_id(&[5; 16]).unwrap().unwrap().owner,
         b"alice"
     );
-    assert_eq!(ix.load_session_by_id(&[7; 16]).unwrap().unwrap().peer, b"");
+    assert_eq!(ix.load_session_by_id(&[7; 16]).unwrap().unwrap().owner, b"");
 
     let have = |ix: &Index| -> Vec<u8> {
         let mut v: Vec<u8> = ix.all_sessions().unwrap().iter().map(|s| s.id[0]).collect();
@@ -880,10 +880,10 @@ fn trimming_keeps_the_newest_sessions_of_one_key() {
     assert_eq!(have(&ix), [5, 6, 7]);
 }
 
-/// An index made before sessions recorded their key gets the column when
+/// An index made before sessions recorded their owner gets the column when
 /// it is opened, and keeps its sessions.
 #[test]
-fn an_index_without_the_peer_column_is_upgraded() {
+fn an_index_without_the_owner_column_is_upgraded() {
     let d = tempfile::tempdir().unwrap();
     let old = SessionRow {
         id: [1; 16],
@@ -892,7 +892,7 @@ fn an_index_without_the_peer_column_is_upgraded() {
         progress: vec![2],
         created_at: 10,
         updated_at: 20,
-        peer: vec![],
+        owner: vec![],
     };
     Index::open(d.path(), d.path())
         .unwrap()
@@ -900,7 +900,7 @@ fn an_index_without_the_peer_column_is_upgraded() {
         .unwrap();
     let file = index_files(d.path()).pop().expect("the index file");
     let conn = rusqlite::Connection::open(&file).unwrap();
-    conn.execute_batch("ALTER TABLE sessions DROP COLUMN peer")
+    conn.execute_batch("ALTER TABLE sessions DROP COLUMN owner")
         .unwrap();
     drop(conn);
 
@@ -909,7 +909,7 @@ fn an_index_without_the_peer_column_is_upgraded() {
     let new = SessionRow {
         id: [2; 16],
         key: b"n".to_vec(),
-        peer: b"alice".to_vec(),
+        owner: b"alice".to_vec(),
         ..old.clone()
     };
     ix.save_session(&new).unwrap();

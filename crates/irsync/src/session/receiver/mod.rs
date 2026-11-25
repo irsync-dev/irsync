@@ -51,6 +51,7 @@ use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::options::DeleteMode;
 use crate::part_file::{FileWriter, FinalizeError, Verified};
+use crate::side::Side;
 use crate::telemetry::meter::Counter;
 use crate::telemetry::PhaseKind;
 pub(super) use delete::capped_paths;
@@ -247,7 +248,7 @@ struct RFile {
 /// Itemizes a file from the receiver: to the sending client when this is
 /// a daemon asked for `-i`, and on the local bus.
 fn emit_itemized(ctx: &Ctx, out: &Out, path: &RelPath, code: String) {
-    if ctx.opts.itemize && ctx.remote_id.is_some() {
+    if ctx.opts.itemize && ctx.meter.side() == Side::Daemon {
         out.send(Msg::Itemized(Itemized {
             path: path.as_bytes().to_vec(),
             code: code.clone(),

@@ -867,8 +867,8 @@ impl Persister {
         });
         rec.id = ctx.session_id;
         rec.key = ctx.key.clone();
-        if let Some(r) = &ctx.remote_id {
-            rec.plan.remote_id = r.clone();
+        if let Some(owner) = &ctx.owner {
+            rec.plan.owner = owner.as_bytes().to_vec();
         }
         let planned = rec
             .plan

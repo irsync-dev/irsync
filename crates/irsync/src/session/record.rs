@@ -27,7 +27,7 @@ impl SessionRecord {
             progress: self.progress.encode_to_vec(),
             created_at: self.created_at,
             updated_at: self.updated_at,
-            peer: self.plan.remote_id.clone(),
+            owner: self.plan.owner.clone(),
         }
     }
 
@@ -131,7 +131,7 @@ mod tests {
                     append_from: 0,
                 }],
                 plan_complete: true,
-                remote_id: vec![4; 32],
+                owner: vec![4; 32],
                 ..SessionPlan::default()
             },
             progress: SessionProgress {

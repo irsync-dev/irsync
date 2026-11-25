@@ -44,6 +44,7 @@ use crate::plan::{decide, itemize, merge_join, meta_differs, Decision, PathView,
 use crate::platform::{cause, Cause, Dir, Kind as FileKind, LinkKind};
 use crate::session::control::{is_own_temp, Ev, Listed, Out};
 use crate::session::engine::{blocking, Ctx};
+use crate::side::Side;
 use crate::telemetry::meter::Activity;
 use crate::telemetry::PhaseKind;
 
@@ -596,7 +597,7 @@ impl Planner {
                 // Paced: nothing else bounds these (directories, links and
                 // metadata-only changes take no in-flight slot), so a slow
                 // link stalls the planner instead of the queue growing.
-                if self.ctx.opts.itemize && self.ctx.remote_id.is_some() {
+                if self.ctx.opts.itemize && self.ctx.meter.side() == Side::Daemon {
                     self.out
                         .send_paced(Msg::Itemized(Itemized {
                             path: path.as_bytes().to_vec(),
