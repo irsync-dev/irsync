@@ -17,7 +17,7 @@ use irsync::cli::progress::Reporter;
 use irsync::cli::{
     validate, Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode,
     Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs,
-    LogArgs, PairArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
+    LogArgs, PairArgs, RemoteArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
 };
 use irsync::config::clients::Clients;
 use irsync::config::file::Config;
@@ -48,6 +48,8 @@ use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{export_entry, hello, path_info, Hello};
 use irsync_proto::PROTOCOL_VERSION;
+
+mod remote;
 
 fn main() {
     let args = Args::parse();
@@ -84,6 +86,10 @@ fn main() {
         Some(Command::Config(c)) => std::process::exit(run_config(c, files)),
         Some(Command::Pair(a)) => std::process::exit(run_pair(a, files)),
         Some(Command::Show) => std::process::exit(run_show(files)),
+        Some(Command::Remote(r)) => {
+            let opts = SyncOptions::for_command(&args);
+            exit_after_capture(run_remote(r, &opts));
+        }
         Some(Command::SshSetup {
             client,
             client_name_hex,
@@ -890,25 +896,7 @@ async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
         ..Hello::default()
     };
     let client = c.endpoint.id();
-    let dial = c.endpoint.connect(c.target.clone(), irsync_proto::ALPN);
-    let dialled = match c.first_dial() {
-        Some(limit) => match tokio::time::timeout(limit, dial).await {
-            Ok(r) => r.map_err(|e| describe_dial(&c.target.id, &e)),
-            Err(_) => Err(format!(
-                "connecting to {}: no answer within {} s",
-                c.target.id,
-                limit.as_secs()
-            )),
-        },
-        None => dial.await.map_err(|e| describe_dial(&c.target.id, &e)),
-    };
-    let conn = dialled.map_err(|msg| never_reached(anyhow::anyhow!(msg), c.paired()))?;
-    irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
-    irsync::session::reconnect::check_pq_key_exchange(
-        &conn,
-        pq_required(&c.opts, c.host_entry.as_ref(), &c.settings),
-        &c.target.id,
-    )?;
+    let conn = dial(c).await?;
     let entries = list_exports(&conn, hello)
         .await
         .map_err(|e| explain(e, Some(&conn), operand, &client))?;
@@ -922,6 +910,66 @@ async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
     }
     conn.close(0u32.into(), b"done");
     Ok(())
+}
+
+/// Dials the daemon of `c` once, bounded as a first dial is, and checks the
+/// post-quantum key exchange when it is required. For the one-shot exchanges
+/// (a listing, `remote`); the caller closes the connection.
+async fn dial(c: &Connected) -> anyhow::Result<iroh::endpoint::Connection> {
+    let dial = c.endpoint.connect(c.target.clone(), irsync_proto::ALPN);
+    let dialled = match c.first_dial() {
+        Some(limit) => match tokio::time::timeout(limit, dial).await {
+            Ok(r) => r.map_err(|e| describe_dial(&c.target.id, &e)),
+            Err(_) => Err(format!(
+                "connecting to {}: no answer within {} s",
+                c.target.id,
+                limit.as_secs()
+            )),
+        },
+        None => dial.await.map_err(|e| describe_dial(&c.target.id, &e)),
+    };
+    let conn = dialled.map_err(|msg| never_reached(anyhow::anyhow!(msg), c.paired()))?;
+    irsync::net::tap::ConnTap::of(&conn).set_local_id(c.endpoint.id());
+    irsync::session::reconnect::check_pq_key_exchange(
+        &conn,
+        pq_required(&c.opts, c.host_entry.as_ref(), &c.settings),
+        &c.target.id,
+    )?;
+    Ok(conn)
+}
+
+/// `irsync remote SERVER COMMAND`: one change or one read of the
+/// server's config, printed as the same command prints it locally.
+fn run_remote(r: &RemoteArgs, opts: &SyncOptions) -> i32 {
+    let plan = match remote::plan(&r.server, &r.cmd) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("irsync remote: {}", escape_text(&format!("{e:#}")));
+            return 1;
+        }
+    };
+    let log = LogWriter::new();
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("irsync remote: {e}");
+            return 1;
+        }
+    };
+    let done = rt.block_on(async {
+        let c = connect_for(&r.server, opts, &log).await?;
+        // Closed on every way out (#256).
+        let done = remote::run_remote(&c, plan.request).await;
+        c.endpoint.close().await;
+        done
+    });
+    match done.and_then(|outcome| remote::print(&plan.shape, &r.server, outcome)) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("irsync remote: {}", escape_text(&format!("{e:#}")));
+            1
+        }
+    }
 }
 
 /// `log`: where a failed source is reported (above the live block).
@@ -1888,37 +1936,53 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                     settings,
                     ..
                 } = Config::load(&paths)?;
-                let text = match target.as_deref() {
-                    None => manage::grants::list_all(&exports, &clients),
-                    Some(t) => match manage::grants::list_export(&exports, &clients, t) {
-                        Some(block) => block,
-                        None => {
-                            let Ok(id) = clients.resolve_peer(t) else {
-                                bail!(
-                                    "{t:?} is not an export, a client in {} or an EndpointId",
-                                    paths.config.display()
-                                );
-                            };
-                            let label = if clients.get(t).is_some() {
-                                format!("{t} ({id})")
-                            } else {
-                                id.to_string()
-                            };
-                            manage::grants::list_peer(
-                                &exports,
-                                &clients,
-                                settings.daemon.allow_all_paths,
-                                &label,
-                                &id,
-                            )
-                        }
-                    },
-                };
-                print!("{text}");
+                print!(
+                    "{}",
+                    grant_list_text(
+                        &exports,
+                        &clients,
+                        settings.daemon.allow_all_paths,
+                        target.as_deref(),
+                        &paths.config.display().to_string(),
+                    )?
+                );
                 Ok(())
             })(),
         ),
     }
+}
+
+/// What `grant list [TARGET]` prints: every grant, one export's, or what
+/// one peer may reach. `place` names where the clients are kept, for the
+/// error of a target that is none of those.
+fn grant_list_text(
+    exports: &irsync::config::exports::Exports,
+    clients: &Clients,
+    allow_all_paths: bool,
+    target: Option<&str>,
+    place: &str,
+) -> anyhow::Result<String> {
+    let Some(t) = target else {
+        return Ok(manage::grants::list_all(exports, clients));
+    };
+    if let Some(block) = manage::grants::list_export(exports, clients, t) {
+        return Ok(block);
+    }
+    let Ok(id) = clients.resolve_peer(t) else {
+        bail!("{t:?} is not an export, a client in {place} or an EndpointId");
+    };
+    let label = if clients.get(t).is_some() {
+        format!("{t} ({id})")
+    } else {
+        id.to_string()
+    };
+    Ok(manage::grants::list_peer(
+        exports,
+        clients,
+        allow_all_paths,
+        &label,
+        &id,
+    ))
 }
 
 /// `irsync host`: gone, replaced by `server` and `client`.

@@ -356,6 +356,13 @@ pub enum Command {
     Pair(PairArgs),
     /// Show the config files, identities, servers, clients and exports.
     Show,
+    /// Manage a server from this machine: its exports, grants and
+    /// clients. Needs `admin = "rw"` in this client's entry on the server
+    /// (`admin = "ro"` for the listings). The server must be running.
+    ///
+    /// Each command changes or reads the server's config file at once, as the
+    /// same command does on the server itself.
+    Remote(RemoteArgs),
     /// The server side of SSH onboarding, run by the client over ssh:
     /// makes sure the daemon identity exists, gives the client
     /// `all_paths = "rw"`, gets this copy's daemon running and prints a report.
@@ -430,6 +437,66 @@ pub enum ConfigCmd {
     /// Remove a key, or a whole table (`config unset servers.home`).
     Unset { key: String },
     /// Every key the file sets, as `dotted.key = value`, file order.
+    List,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemoteArgs {
+    /// A server name from `irsync server list`, or its daemon's EndpointId.
+    #[arg(value_name = "SERVER")]
+    pub server: String,
+    #[command(subcommand)]
+    pub cmd: RemoteCmd,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RemoteCmd {
+    /// Manage the server's exports. With no subcommand, runs `list`.
+    Export(RemoteExportArgs),
+    /// Manage the server's grants. With no subcommand, runs `list`.
+    Grant(GrantArgs),
+    /// Manage the clients the server lets in. With no subcommand, runs `list`.
+    Client(ClientArgs),
+    /// Show the server's identity, clients and exports.
+    Show,
+    /// Read the server's config file. With no subcommand, runs `list`.
+    Config(RemoteConfigArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemoteExportArgs {
+    #[command(subcommand)]
+    pub cmd: Option<RemoteExportCmd>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RemoteExportCmd {
+    /// Export a directory of the server. Quote a path that starts with ~,
+    /// so the shell leaves it for the server: `'photos:~/Photos'`.
+    Add(ExportAddArgs),
+    /// Stop exporting a directory, with its grants.
+    Remove {
+        /// The export's name.
+        name: String,
+    },
+    /// List the exports with their paths, flags and grants.
+    List,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct RemoteConfigArgs {
+    #[command(subcommand)]
+    pub cmd: Option<RemoteConfigCmd>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RemoteConfigCmd {
+    /// Print a key, as `irsync config get` does on the server.
+    Get {
+        /// A dotted path such as `daemon.listen`.
+        key: String,
+    },
+    /// Every key the server's file sets, as `dotted.key = value`.
     List,
 }
 
@@ -1182,7 +1249,16 @@ pub struct SyncOptions {
 
 impl SyncOptions {
     pub fn from_args(args: &Args) -> SyncOptions {
-        let a = args.sync_args();
+        Self::with(args, args.sync_args())
+    }
+
+    /// The options of a command that dials a server but syncs nothing
+    /// (`remote`): the defaults, with the global flags.
+    pub fn for_command(args: &Args) -> SyncOptions {
+        Self::with(args, &args.sync)
+    }
+
+    fn with(args: &Args, a: &SyncArgs) -> SyncOptions {
         let preserve = Preserve {
             recursive: (a.archive || a.recursive) && !a.no_recursive,
             dirs: a.dirs,
