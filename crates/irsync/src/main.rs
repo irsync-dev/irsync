@@ -15,9 +15,9 @@ use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::summary::SessionSummary;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
-    validate, Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode,
-    Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs,
-    LogArgs, PairArgs, RemoteArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
+    Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode, Direction,
+    ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs, LogArgs,
+    PairArgs, RemoteArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
 };
 use irsync::config::clients::Clients;
 use irsync::config::dial::{Dial, DialFlags};
@@ -177,10 +177,10 @@ fn early_settings(
     }
 }
 
-/// Exit codes: 0 ok, 1 configuration, operand or connection errors, 23
-/// partial transfer, 24 some source files vanished (`--paranoid`), 25
-/// deletions stopped at `--max-delete` (23, 24 and 25 as in rsync; a command
-/// line clap cannot parse has already exited 2).
+/// Exit codes: 0 ok, 1 configuration or connection errors, 23 partial
+/// transfer, 24 some source files vanished (`--paranoid`), 25 deletions
+/// stopped at `--max-delete` (23, 24 and 25 as in rsync; a bad command
+/// line, operands included, has already exited 2).
 fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     let settings = match early_settings(opts.config.as_deref()) {
         Ok(s) => s,
@@ -243,10 +243,9 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             };
             // With a block, log lines print above it.
             log.attach(screen.multi());
-            // A bad command line fails in `sync` below with the same error.
-            let source = match direction_of(args) {
-                Ok(Direction::DaemonSends) => Party::Peer,
-                Ok(Direction::ClientSends) | Err(_) => Party::Local,
+            let source = match args.sync_args().operands().direction {
+                Direction::DaemonSends => Party::Peer,
+                Direction::ClientSends => Party::Local,
             };
             let r =
                 Reporter::with_screen(screen, opts.verbose, opts.stats, opts.itemize, opts.dry_run)
@@ -492,24 +491,6 @@ struct Totals {
     sessions: usize,
     /// Sessions that ended in an error (their sources did not sync).
     failed: usize,
-}
-
-/// The sources, the destination and which way the data flows.
-fn locations(args: &Args) -> anyhow::Result<(Vec<Location>, Location, Direction)> {
-    let srcs = args
-        .sync_args()
-        .src()
-        .iter()
-        .map(|s| Location::parse(s))
-        .collect::<Result<Vec<_>, _>>()?;
-    let dest = Location::parse(args.sync_args().dest().context("missing destination")?)?;
-    let direction = validate(&srcs, &dest)?;
-    Ok((srcs, dest, direction))
-}
-
-/// Which way the data flows, from the source and destination arguments.
-fn direction_of(args: &Args) -> anyhow::Result<Direction> {
-    Ok(locations(args)?.2)
 }
 
 /// A client endpoint ready to dial `host`, plus what the session setup
@@ -950,7 +931,11 @@ async fn sync(
     bus: &EventBus,
     log: &LogWriter,
 ) -> anyhow::Result<Totals> {
-    let (srcs, dest, direction) = locations(args)?;
+    let irsync::cli::Operands {
+        srcs,
+        dest,
+        direction,
+    } = args.sync_args().operands();
     let remote = match direction {
         Direction::ClientSends => &dest,
         Direction::DaemonSends => &srcs[0],

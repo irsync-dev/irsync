@@ -451,8 +451,8 @@ irsync gc [-n] [-v] [-q] [--config PATH]
 | Code | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | Nothing got through: a configuration, identity or connection error; an operand pair `irsync` rejects (both sides local, both remote, several sources on a pull); or every source failed. |
-| 2 | The command line could not be parsed: an unknown flag, a bad value, a missing operand. |
+| 1 | Nothing got through: a configuration, identity or connection error, or every source failed. |
+| 2 | The command line is wrong: an unknown flag, a bad value, a missing operand, or operands `irsync` rejects (both sides local, both remote, several sources on a pull, an empty host). |
 | 23 | Partial transfer: some files could not be transferred, or some sources of a push failed while others synced. |
 | 24 | Some source files vanished. Only `--paranoid`, in its final re-check, gives this. |
 | 25 | Deletions stopped at `--max-delete`. |

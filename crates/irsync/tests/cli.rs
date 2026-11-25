@@ -181,6 +181,48 @@ fn sync_and_list_usage_errors() {
 }
 
 #[test]
+fn bad_operands_are_usage_errors_that_exit_2() {
+    for (bad, says) in [
+        (vec!["a", "b"], "neither source nor destination is remote"),
+        (vec!["h:a", "h:b"], "cannot both be remote"),
+        (vec!["h:a", "h:b", "c"], "multiple sources"),
+        (vec!["h:a", "b", "c"], "multiple sources"),
+        (vec![":x", "y"], "empty host"),
+        (vec![":x"], "empty host"),
+        (vec!["[::1:x", "y"], "no closing"),
+    ] {
+        for named in [false, true] {
+            let mut full = vec!["irsync"];
+            if named {
+                full.push("sync");
+            }
+            full.extend(bad.iter());
+            let e = Args::try_parse_from(&full).unwrap_err();
+            assert_eq!(e.exit_code(), 2, "{full:?}");
+            assert!(e.to_string().contains(says), "{full:?}: {e}");
+        }
+    }
+    let e = Args::try_parse_from(["irsync", "list", ":"]).unwrap_err();
+    assert_eq!(e.exit_code(), 2);
+    assert!(e.to_string().contains("empty host"), "{e}");
+}
+
+#[test]
+fn bad_operands_exit_2_from_the_binary() {
+    let home = tempfile::tempdir().unwrap();
+    let out = bin::irsync_command(home.path())
+        .args(["/nonexistent-a", "/nonexistent-b"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("neither source nor destination is remote"),
+        "{err}"
+    );
+}
+
+#[test]
 fn archive_expands_to_rlptgod() {
     let p = opts(&["-a", "src", "h:m/"]).preserve;
     assert!(p.recursive && p.links && p.perms && p.times && p.group && p.owner);
@@ -850,8 +892,8 @@ fn grant_positionals_are_always_two() {
 fn old_bare_verbs_are_gone() {
     // No subcommand is named so: the words are the two paths of a sync.
     for v in ["add", "remove", "allow", "revoke"] {
-        let a = parse(&[v, "photos"]);
-        assert!(a.sync_args().paths == vec![v, "photos"], "{v}: {a:?}");
+        let a = parse(&[v, "h:photos"]);
+        assert!(a.sync_args().paths == vec![v, "h:photos"], "{v}: {a:?}");
     }
 }
 
@@ -997,7 +1039,7 @@ fn config_noun_parses() {
 
 #[test]
 fn debug_addr_bare_port_is_loopback() {
-    let o = opts(&["--debug-addr", "9464", "a", "b"]);
+    let o = opts(&["--debug-addr", "9464", "a", "h:b"]);
     assert_eq!(o.debug_addr, Some("127.0.0.1:9464".parse().unwrap()));
     assert!(!o.debug_no_wait);
     let o = opts(&[
@@ -1005,11 +1047,11 @@ fn debug_addr_bare_port_is_loopback() {
         "0.0.0.0:1",
         "--debug-port-no-wait",
         "a",
-        "b",
+        "h:b",
     ]);
     assert_eq!(o.debug_addr, Some("0.0.0.0:1".parse().unwrap()));
     assert!(o.debug_no_wait);
-    assert!(Args::try_parse_from(["irsync", "--debug-addr", "x", "a", "b"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "--debug-addr", "x", "a", "h:b"]).is_err());
 }
 
 #[test]
@@ -1026,15 +1068,15 @@ fn no_wait_requires_debug_addr() {
 
 #[test]
 fn progress_block_is_asked_for_with_progress_p_or_info_progress() {
-    assert!(!opts(&["a/", "b/"]).progress);
-    assert!(!opts(&["-v", "a/", "b/"]).progress);
-    assert!(opts(&["--progress", "a/", "b/"]).progress);
-    assert!(opts(&["-P", "a/", "b/"]).progress);
-    assert!(opts(&["-avP", "a/", "b/"]).progress);
-    assert!(opts(&["--info=progress2", "a/", "b/"]).progress);
-    assert!(opts(&["--info=flist0,progress1", "a/", "b/"]).progress);
-    assert!(!opts(&["--info=progress0", "a/", "b/"]).progress);
-    assert!(!opts(&["--info=stats2", "a/", "b/"]).progress);
+    assert!(!opts(&["a/", "h:b/"]).progress);
+    assert!(!opts(&["-v", "a/", "h:b/"]).progress);
+    assert!(opts(&["--progress", "a/", "h:b/"]).progress);
+    assert!(opts(&["-P", "a/", "h:b/"]).progress);
+    assert!(opts(&["-avP", "a/", "h:b/"]).progress);
+    assert!(opts(&["--info=progress2", "a/", "h:b/"]).progress);
+    assert!(opts(&["--info=flist0,progress1", "a/", "h:b/"]).progress);
+    assert!(!opts(&["--info=progress0", "a/", "h:b/"]).progress);
+    assert!(!opts(&["--info=stats2", "a/", "h:b/"]).progress);
 }
 
 fn err(a: &[&str]) -> String {
@@ -1096,8 +1138,8 @@ fn a_sync_still_reads_verbose_and_quiet() {
 fn a_path_named_like_a_command_is_still_a_path() {
     let a = parse(&["-a", "myserver:photos/", "config"]);
     assert!(a.sync_args().paths == ["myserver:photos/", "config"]);
-    let a = parse(&["src", "gc"]);
-    assert!(a.sync_args().paths == ["src", "gc"]);
+    let a = parse(&["h:src", "gc"]);
+    assert!(a.sync_args().paths == ["h:src", "gc"]);
     let a = parse(&["-v", "./gc", "h:m/"]);
     assert!(a.sync_args().paths == ["./gc", "h:m/"]);
 }
@@ -1196,8 +1238,8 @@ fn a_flag_between_paths_does_not_turn_a_later_path_into_a_command() {
     let a = parse(&["src", "-v", "gc", "h:m/"]);
     assert!(a.sync_args().paths == ["src", "gc", "h:m/"]);
     // A path whose command would fail to parse is still a path.
-    let a = parse(&["h:photos/", "-v", "server", "add"]);
-    assert!(a.sync_args().paths == ["h:photos/", "server", "add"]);
+    let a = parse(&["src", "-v", "server", "h:add"]);
+    assert!(a.sync_args().paths == ["src", "server", "h:add"]);
     // With no path first, a command name is the command.
     assert!(matches!(parse(&["-v", "gc"]).cmd, Some(Command::Gc { .. })));
     assert!(matches!(parse(&["gc", "-v"]).cmd, Some(Command::Gc { .. })));

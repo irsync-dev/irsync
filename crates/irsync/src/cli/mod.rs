@@ -238,23 +238,34 @@ fn sub_matches<'a>(m: &'a clap::ArgMatches, name: &str) -> &'a clap::ArgMatches 
         .expect("clap parsed this subcommand")
 }
 
-fn is_remote(operand: &str) -> bool {
-    Location::parse(operand).is_ok_and(|l| l.is_remote())
-}
-
 /// A sync with one remote operand is a listing (`irsync HOST:`, `irsync
-/// HOST:PATH`); a lone local path is a usage error.
+/// HOST:PATH`); a lone local path is a usage error. The operands of a
+/// sync are checked here, so that every usage error exits 2.
 fn sync_or_list(s: SyncArgs) -> Result<Command, clap::Error> {
-    if s.paths.len() == 1 && is_remote(&s.paths[0]) {
-        return Ok(Command::List(s));
+    let locations = s
+        .paths
+        .iter()
+        .map(|p| Location::parse(p))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| usage_error(&e))?;
+    if let [one] = locations.as_slice() {
+        if one.is_remote() {
+            return Ok(Command::List(s));
+        }
     }
-    if s.paths.len() < 2 {
+    let Some((dest, srcs)) = locations.split_last().filter(|(_, s)| !s.is_empty()) else {
         return Err(Args::command().error(
             clap::error::ErrorKind::MissingRequiredArgument,
             "the following required arguments were not provided:\n  <SRC>... <DEST>",
         ));
-    }
+    };
+    validate(srcs, dest).map_err(|e| usage_error(&e))?;
     Ok(Command::Sync(s))
+}
+
+/// A usage error of the operands, as clap reports its own: exit code 2.
+fn usage_error(e: &UsageError) -> clap::Error {
+    Args::command().error(clap::error::ErrorKind::ValueValidation, &e.0)
 }
 
 /// `list` takes one remote operand (clap checks there is exactly one); a
@@ -265,7 +276,10 @@ fn list_operand(mut s: SyncArgs) -> Result<SyncArgs, clap::Error> {
     if !op.contains(':') && !op.contains('/') && op != "." && op != ".." {
         op.push(':');
     }
-    if !is_remote(op) {
+    let remote = Location::parse(op)
+        .map_err(|e| list_error(clap::error::ErrorKind::ValueValidation, &e.0))?
+        .is_remote();
+    if !remote {
         return Err(list_error(
             clap::error::ErrorKind::ValueValidation,
             "list takes one operand: HOST or HOST:PATH",
@@ -1127,7 +1141,32 @@ pub struct SyncArgs {
     pub filters: Vec<FilterRule>,
 }
 
+/// The operands of a sync, read: [`Args::try_parse_from`] has checked them.
+#[derive(Debug, Clone)]
+pub struct Operands {
+    pub srcs: Vec<Location>,
+    pub dest: Location,
+    pub direction: Direction,
+}
+
 impl SyncArgs {
+    /// The sources, the destination and which way the data flows. Panics
+    /// on operands [`Args::try_parse_from`] would have refused.
+    pub fn operands(&self) -> Operands {
+        let mut all: Vec<Location> = self
+            .paths
+            .iter()
+            .map(|p| Location::parse(p).expect("operands are checked while parsing"))
+            .collect();
+        let dest = all.pop().expect("a sync has a destination");
+        let direction = validate(&all, &dest).expect("operands are checked while parsing");
+        Operands {
+            srcs: all,
+            dest,
+            direction,
+        }
+    }
+
     /// All positionals but the last.
     pub fn src(&self) -> &[String] {
         self.paths.split_last().map_or(&[], |(_, s)| s)
