@@ -148,20 +148,6 @@ pub struct Onboarded {
     pub client_name: String,
 }
 
-impl Onboarded {
-    /// Where the daemon said it can be reached, to dial alongside the
-    /// lookups: a daemon that just started has published nothing yet.
-    pub fn hints(&self) -> Vec<iroh::TransportAddr> {
-        let r = &self.report;
-        r.relay
-            .iter()
-            .cloned()
-            .map(iroh::TransportAddr::Relay)
-            .chain(r.addrs.iter().copied().map(iroh::TransportAddr::Ip))
-            .collect()
-    }
-}
-
 /// What an onboarding run is asked to do beyond the defaults.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SetupFlags {

@@ -136,20 +136,6 @@ where
     }
 }
 
-/// [`read_msg`] for frames of at most `max` bytes; see [`read_body_max`].
-pub async fn read_msg_max<M, R>(r: &mut R, max: usize) -> io::Result<Option<M>>
-where
-    M: prost::Message + Default,
-    R: AsyncRead + Unpin,
-{
-    match read_body_max(r, max).await? {
-        None => Ok(None),
-        Some(body) => M::decode(body.as_slice())
-            .map(Some)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
-    }
-}
-
 /// [`write_msg`], reporting `m` to `tap` as sent (and a failed write as a reset).
 pub async fn write_msg_tapped<M, W>(w: &mut W, m: &M, tap: &StreamTap) -> io::Result<()>
 where

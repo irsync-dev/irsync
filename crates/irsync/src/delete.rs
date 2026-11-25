@@ -73,9 +73,6 @@ pub struct DeletePass {
     /// (they count against `max_delete`).
     spent: u64,
     candidates: Vec<(RelPath, Kind)>,
-    /// The candidates cannot be trusted (a listing was malformed): refuse
-    /// even with `ignore_errors`.
-    unreliable: bool,
     /// Directories that hold a protected (excluded) path: never removed.
     kept: HashSet<RelPath>,
     /// Bumped per path handled (the session's inactivity watchdogs read it).
@@ -116,7 +113,6 @@ impl DeletePass {
             ignore_errors,
             spent: 0,
             candidates: Vec::new(),
-            unreliable: false,
             kept: HashSet::new(),
             activity: Arc::default(),
             progress: None,
@@ -177,12 +173,6 @@ impl DeletePass {
         }
     }
 
-    /// A listing was malformed (out of order): the pass will refuse,
-    /// `ignore_errors` or not.
-    pub fn mark_unreliable(&mut self) {
-        self.unreliable = true;
-    }
-
     pub fn is_empty(&self) -> bool {
         self.candidates.is_empty()
     }
@@ -218,7 +208,6 @@ impl DeletePass {
             ignore_errors: self.ignore_errors,
             spent: self.spent,
             candidates: ready,
-            unreliable: self.unreliable,
             kept: self.kept.clone(),
             activity: self.activity.clone(),
             progress: self.progress.clone(),
@@ -248,7 +237,7 @@ impl DeletePass {
         prefix: RelPath,
         listing_incomplete: bool,
     ) -> Result<DeleteReport, DeleteRefused> {
-        if self.unreliable || (listing_incomplete && !self.ignore_errors) {
+        if listing_incomplete && !self.ignore_errors {
             tracing::warn!(
                 candidates = self.candidates.len(),
                 "a listing is incomplete: skipping deletions"
@@ -542,16 +531,6 @@ mod tests {
         plan_all(&mut p);
         let rep = p.execute(t.path().to_path_buf(), true).await.unwrap();
         assert_eq!(rep.deleted.len(), 5);
-        // A malformed listing is refused even with ignore_errors.
-        let t = tree();
-        let mut p = pass(None, false, true);
-        plan_all(&mut p);
-        p.mark_unreliable();
-        assert_eq!(
-            p.execute(t.path().to_path_buf(), false).await,
-            Err(DeleteRefused)
-        );
-        assert!(t.path().join("h").exists());
     }
 
     #[tokio::test]
