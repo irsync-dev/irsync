@@ -146,7 +146,10 @@ client's session, or exhaust the daemon.
 - **`admin = "rw"` is the whole account too.** Such a key can add an export
   for any directory and grant itself read-write access to it, so it can do
   what `all_paths = "rw"` can. Give it with the same care. `admin = "ro"`
-  only reads the exports, clients and grants: names, paths and ids.
+  only reads: the exports, clients and grants (names, paths and ids), and,
+  through `config get` and `config list`, every other setting in the file,
+  such as `state_dir`, the ids and addresses of the saved `[servers.*]` and
+  the `[client]` settings. None of it is a secret.
 - **Who can reach the admin service.** Only a named client with `admin` set.
   A key without it gets the plain answer `not allowed`, which says nothing
   about the server. A change is checked on the server, against the config as

@@ -344,7 +344,9 @@ server like a sync does. It never sets one up: use `irsync pair` for that.
 `config list`. Each takes the arguments it takes on the server; see
 [Management commands](management.md#remote-use). Each call sends one change,
 which the server applies all or not at all. Quote a path that starts with
-`~`: `irsync remote myserver export add 'photos:~/Photos'`. The book has a how-to, "Manage a server from your client".
+`~`: `irsync remote myserver export add 'photos:~/Photos'`.
+
+The book has a how-to, "Manage a server from your client".
 
 ### Flags every command takes
 
