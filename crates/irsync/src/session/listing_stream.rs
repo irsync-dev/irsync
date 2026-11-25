@@ -68,7 +68,7 @@ impl ListingOut {
     /// Queues a frame from the walk's blocking thread, waiting while the
     /// queue is full (the link, or the peer's planner, is slower than the
     /// walk). A closed writer surfaces as `Ev::WriterFailed`.
-    pub fn send_blocking(&self, c: Frame) {
+    pub(crate) fn send_blocking(&self, c: Frame) {
         #[cfg(feature = "test-hooks")]
         let c = match self.tx.try_send(c) {
             Ok(()) => return,
@@ -85,7 +85,7 @@ impl ListingOut {
 
     /// Queues the first frame from async code: the queue is empty, so this
     /// never waits.
-    pub fn send_first(&self, frame: Frame) {
+    pub(crate) fn send_first(&self, frame: Frame) {
         let _ = self.tx.try_send(frame);
     }
 

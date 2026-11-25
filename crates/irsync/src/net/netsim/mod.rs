@@ -171,7 +171,7 @@ pub enum Purpose {
 /// The seed of one random stream, from the run's seed, the side, the stream
 /// number and what it drives: each part is folded in through splitmix64, so
 /// streams that differ in any part are unrelated.
-pub fn fault_seed(seed: u64, side: Side, stream: u64, purpose: Purpose) -> u64 {
+pub(crate) fn fault_seed(seed: u64, side: Side, stream: u64, purpose: Purpose) -> u64 {
     let side = match side {
         Side::Client => 1,
         Side::Daemon => 2,
@@ -222,7 +222,7 @@ pub fn bound_addr() -> Option<SocketAddrV4> {
 }
 
 /// Says, at `warn` so any log level shows it, that the rig is on.
-pub fn log_active(spec: &Spec) {
+pub(crate) fn log_active(spec: &Spec) {
     tracing::warn!(
         profile = %spec.profile,
         side = ?spec.side,
@@ -244,7 +244,7 @@ pub fn custom_addr(a: SocketAddrV4) -> CustomAddr {
 
 /// The socket address in a custom address; `None` for another transport id or
 /// a wrong length.
-pub fn socket_addr(c: &CustomAddr) -> Option<SocketAddrV4> {
+pub(crate) fn socket_addr(c: &CustomAddr) -> Option<SocketAddrV4> {
     if c.id() != TRANSPORT_ID {
         return None;
     }

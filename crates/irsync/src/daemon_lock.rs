@@ -68,7 +68,7 @@ fn read_info(file: &mut File) -> LockInfo {
 }
 
 /// Takes the daemon lock in `state_dir` and records this process in it.
-pub fn acquire(state_dir: &Path) -> Result<DaemonLock, LockError> {
+pub(crate) fn acquire(state_dir: &Path) -> Result<DaemonLock, LockError> {
     let path = state_dir.join(LOCK_NAME);
     let io = |source| LockError::Io {
         path: path.clone(),

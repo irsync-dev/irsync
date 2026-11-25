@@ -50,7 +50,7 @@ pub enum DestKind {
     Plain,
 }
 
-pub fn dest_kind(dest: &str) -> DestKind {
+pub(crate) fn dest_kind(dest: &str) -> DestKind {
     let (user, host) = match dest.rsplit_once('@') {
         Some((_, h)) => (true, h),
         None => (false, dest),
@@ -88,7 +88,7 @@ pub fn check_dest(dest: &str) -> anyhow::Result<()> {
 /// [`check_dest`], and after the probe: an IPv6 address cannot be an
 /// alias, so the server must have given a host name (`server_name`) to
 /// save it under. Checked before anything on the server is changed.
-pub fn check_first(dest: &str, server_name: Option<&str>) -> anyhow::Result<()> {
+pub(crate) fn check_first(dest: &str, server_name: Option<&str>) -> anyhow::Result<()> {
     check_dest(dest)?;
     if dest_kind(dest) == (DestKind::Ip { v6: true }) && server_name.is_none() {
         anyhow::bail!(
@@ -106,7 +106,7 @@ pub fn check_first(dest: &str, server_name: Option<&str>) -> anyhow::Result<()> 
 /// daemon; without a name an IPv4 address is its own alias. `user@host`
 /// also gets the plain `host` when no alias has that name yet (the first
 /// one wins). `existing`: the id an alias is saved with.
-pub fn choose_aliases(
+pub(crate) fn choose_aliases(
     dest: &str,
     server_name: Option<&str>,
     id: EndpointId,

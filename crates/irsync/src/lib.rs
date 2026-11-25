@@ -9,7 +9,7 @@ pub mod cli;
 pub mod client;
 pub mod config;
 pub mod daemon;
-pub mod daemon_addr;
+pub(crate) mod daemon_addr;
 pub mod daemon_lock;
 pub mod data_stream;
 pub mod delete;

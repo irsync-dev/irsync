@@ -38,7 +38,7 @@ pub struct PairTarget {
 /// The saved server whose `ssh` value is `typed`, when `typed` is neither
 /// a server or client name nor an id: a saved server may have been set up
 /// by this very ssh destination (an address, say). Then it is that server.
-pub fn saved_by_ssh(
+pub(crate) fn saved_by_ssh(
     servers: &Servers,
     clients: &Clients,
     typed: &str,

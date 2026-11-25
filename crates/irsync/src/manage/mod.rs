@@ -78,7 +78,7 @@ pub enum ManageError {
 }
 
 /// A comment kept in a config file must be one line of printable text.
-pub fn check_comment(c: &str) -> Result<(), ManageError> {
+pub(crate) fn check_comment(c: &str) -> Result<(), ManageError> {
     if c.chars().any(char::is_control) {
         return Err(ManageError::BadComment(c.to_string()));
     }
@@ -86,7 +86,7 @@ pub fn check_comment(c: &str) -> Result<(), ManageError> {
 }
 
 /// An endpoint id as the message holds it: its 32 bytes.
-pub fn id_bytes(id: EndpointId) -> Vec<u8> {
+pub(crate) fn id_bytes(id: EndpointId) -> Vec<u8> {
     id.as_bytes().to_vec()
 }
 
@@ -149,7 +149,7 @@ pub fn canonicalize_doc(msg: &mut pb::Config, path: &Path) -> Result<bool, Manag
 /// not counted: an id written in a grant is then written as that other
 /// name and so does not stand in the way of the removal. An id that only
 /// `name` names is written as `name`, and is found as a grant naming it.
-pub fn canonicalize_without(
+pub(crate) fn canonicalize_without(
     msg: &mut pb::Config,
     path: &Path,
     name: &str,
@@ -309,7 +309,7 @@ impl PeerSpec {
 
     /// As [`PeerSpec::parse`], without reading a file: for a `who` sent by
     /// a remote client, which names nothing on this machine's disk.
-    pub fn parse_text(
+    pub(crate) fn parse_text(
         who: &str,
         clients: &Clients,
         servers: &Servers,
@@ -321,7 +321,7 @@ impl PeerSpec {
     /// no longer in the clients table, or a server's) still matches grant
     /// entries literally, so `parsed` failing for that reason is the text
     /// itself.
-    pub fn or_literal(
+    pub(crate) fn or_literal(
         who: &str,
         parsed: Result<PeerSpec, ManageError>,
     ) -> Result<PeerSpec, ManageError> {

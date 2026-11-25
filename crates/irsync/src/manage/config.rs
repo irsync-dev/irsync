@@ -23,7 +23,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
 }
 
 /// The error for a key the file does not know, `key` as typed.
-pub fn unknown_key(key: &str) -> ManageError {
+pub(crate) fn unknown_key(key: &str) -> ManageError {
     ManageError::UnknownKey(key.to_string())
 }
 

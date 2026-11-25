@@ -73,13 +73,13 @@ impl Connected {
 
     /// The bound on each dial before the daemon has answered: see
     /// [`PAIRED_FIRST_DIAL`] for a paired server, else iroh's own.
-    pub fn first_dial(&self) -> Option<std::time::Duration> {
+    pub(crate) fn first_dial(&self) -> Option<std::time::Duration> {
         first_dial_limit(self.paired().map(|_| PAIRED_FIRST_DIAL))
     }
 
     /// How a session or a one-request exchange with this server dials and
     /// redials, from the dial's settings.
-    pub fn reconnect_opts(&self) -> ReconnectOpts {
+    pub(crate) fn reconnect_opts(&self) -> ReconnectOpts {
         ReconnectOpts {
             max: self.dial.reconnect,
             dial_retries: self.dial.dial_retries,

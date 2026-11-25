@@ -240,7 +240,7 @@ fn paths(
 
 /// Removes a leftover `.part` of `rel` and its progress record, unless
 /// another writer holds the `.part` (then both stay for that writer).
-pub fn discard_part(
+pub(crate) fn discard_part(
     root: &Path,
     rel: &RelPath,
     partial_dir: Option<&PartialDir>,
@@ -744,7 +744,7 @@ impl FileWriter {
     /// Whether `finalize` compares the whole-file hash with the expected
     /// one. Off for an `APPEND`: the sender never read the prefix, so the
     /// receiver's folded hash is the only one there is.
-    pub fn set_verify_whole(&mut self, verify: bool) {
+    pub(crate) fn set_verify_whole(&mut self, verify: bool) {
         self.verify_whole = verify;
     }
 
@@ -1425,7 +1425,7 @@ impl Verified {
     /// it is left behind or adopted. In place there is no `.part`: the
     /// destination already holds the written data, and its progress is
     /// recorded as for any writer dropped.
-    pub async fn discard(self) {
+    pub(crate) async fn discard(self) {
         let Verified { mut w, file, .. } = self;
         if w.inplace {
             return;

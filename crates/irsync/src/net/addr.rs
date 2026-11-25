@@ -84,7 +84,7 @@ impl HostPort {
 /// offers the daemon only that one for extra paths, instead of every
 /// interface it has. An IP version with no route is left out; the dial to
 /// it would fail anyway.
-pub fn source_binds(dial: &[SocketAddr]) -> Vec<SocketAddr> {
+pub(crate) fn source_binds(dial: &[SocketAddr]) -> Vec<SocketAddr> {
     let mut binds = Vec::new();
     for v6 in [false, true] {
         let Some(first) = dial.iter().find(|a| a.is_ipv6() == v6) else {

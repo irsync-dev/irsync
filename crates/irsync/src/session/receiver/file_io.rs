@@ -148,7 +148,7 @@ impl Gate {
 
     /// Waits until chunk `idx` may be written; false once the gate is
     /// closed (the writer was retired).
-    pub async fn admit(&self, idx: u32) -> bool {
+    pub(crate) async fn admit(&self, idx: u32) -> bool {
         let mut rx = self.tx.subscribe();
         loop {
             let c = *rx.borrow_and_update();

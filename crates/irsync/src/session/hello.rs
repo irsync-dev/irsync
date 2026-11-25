@@ -38,7 +38,7 @@ impl SyncHello {
     }
 
     /// `hello`'s push or pull; `None` for any other request.
-    pub fn from_hello(hello: Hello) -> Option<SyncHello> {
+    pub(crate) fn from_hello(hello: Hello) -> Option<SyncHello> {
         let (direction, req) = match hello.request? {
             hello::Request::Push(r) => (Direction::ClientSends, r),
             hello::Request::Pull(r) => (Direction::DaemonSends, r),

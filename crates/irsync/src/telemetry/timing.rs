@@ -17,7 +17,7 @@ pub fn clock(d: Duration) -> String {
 }
 
 /// `0.4s`, `21.0s`, `2:47`, `1:02:03`.
-pub fn short_dur(d: Duration) -> String {
+pub(crate) fn short_dur(d: Duration) -> String {
     let secs = d.as_secs_f64();
     if (secs * 10.0).round() < 600.0 {
         return format!("{:.1}s", secs);

@@ -115,7 +115,7 @@ impl SyncOptions {
     /// anything, since nothing else in the file's directory is part of it.
     /// The client asks for a single-file session with these; the daemon
     /// enforces the same rule on its side.
-    pub fn without_deletion(&self) -> SyncOptions {
+    pub(crate) fn without_deletion(&self) -> SyncOptions {
         SyncOptions {
             delete: DeleteMode::Off,
             delete_excluded: false,

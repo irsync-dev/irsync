@@ -231,7 +231,7 @@ impl ListBudget {
     /// that held is released first and returned, for the caller to grant
     /// back. `Err` when the records held would exceed the limit; nothing is
     /// reserved then (an earlier list stays held).
-    pub fn reserve(&mut self, file_id: u64, total: u64) -> Result<u64, String> {
+    pub(crate) fn reserve(&mut self, file_id: u64, total: u64) -> Result<u64, String> {
         let old = self.held.get(&file_id).copied().unwrap_or(0);
         let held = self.total - old + total;
         if held > self.limit {

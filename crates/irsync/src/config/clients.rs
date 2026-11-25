@@ -86,7 +86,7 @@ impl Right {
     }
 
     /// The message of a value that is not `"rw"` or `"ro"`.
-    pub fn not_an_access(self) -> String {
+    pub(crate) fn not_an_access(self) -> String {
         format!("{} must be \"rw\" or \"ro\"", self.key())
     }
 }

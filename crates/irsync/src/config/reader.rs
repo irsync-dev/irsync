@@ -249,7 +249,7 @@ fn toml_err(text: &str, path: &Path, e: toml::de::Error) -> ConfigError {
 /// The segments of a dotted key in TOML's key grammar:
 /// `exports."www.example.com".path` is three. `None` for text that is
 /// no key.
-pub fn dotted_key(key: &str) -> Option<Vec<String>> {
+pub(crate) fn dotted_key(key: &str) -> Option<Vec<String>> {
     let keys = toml_edit::Key::parse(key).ok()?;
     Some(keys.into_iter().map(|k| k.get().to_string()).collect())
 }

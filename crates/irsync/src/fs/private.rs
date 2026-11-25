@@ -27,7 +27,7 @@ pub fn refusal(path: &Path, problem: &str) -> String {
 
 /// Reads `path` as text and judges the file that was opened, not the name:
 /// the text, and what [`open_file_problem`] says of it.
-pub fn read_with_problem(path: &Path) -> io::Result<(String, Option<String>)> {
+pub(crate) fn read_with_problem(path: &Path) -> io::Result<(String, Option<String>)> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
     let problem = open_file_problem(&file.metadata()?);

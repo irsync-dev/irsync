@@ -52,7 +52,7 @@ pub fn lstat_entry(root: &Path, rel: &RelPath) -> io::Result<FileEntry> {
 /// below `base` is followed on the way to it (see
 /// [`open_parent_beneath`](crate::fs::safe::open_parent_beneath)). The
 /// root itself is `lstat`ed by name.
-pub fn lstat_beneath(base: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
+pub(crate) fn lstat_beneath(base: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
     if rel.as_bytes().is_empty() {
         return lstat_entry_with_ctime(base, rel);
     }
@@ -61,7 +61,11 @@ pub fn lstat_beneath(base: &Path, rel: &RelPath) -> io::Result<(FileEntry, (i64,
 }
 
 /// `lstat` of `name` in the open directory `dir`, as the entry of `rel`.
-pub fn lstat_at(dir: &Dir, name: &[u8], rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
+pub(crate) fn lstat_at(
+    dir: &Dir,
+    name: &[u8],
+    rel: &RelPath,
+) -> io::Result<(FileEntry, (i64, u32))> {
     let st = dir.stat(name)?;
     let link_target = if st.kind == platform::Kind::Symlink {
         dir.read_link(name)?
@@ -89,7 +93,10 @@ pub fn lstat_entry_with_ctime(root: &Path, rel: &RelPath) -> io::Result<(FileEnt
 
 /// [`lstat_entry_with_ctime`] of the file open as `file` (never a
 /// symlink), for the entry at `rel`.
-pub fn fstat_entry_with_ctime(file: &File, rel: &RelPath) -> io::Result<(FileEntry, (i64, u32))> {
+pub(crate) fn fstat_entry_with_ctime(
+    file: &File,
+    rel: &RelPath,
+) -> io::Result<(FileEntry, (i64, u32))> {
     Ok(stat_entry_with_ctime(&platform::fstat(file)?, rel))
 }
 
@@ -202,7 +209,7 @@ pub fn apply_metadata(path: &Path, e: &FileEntry, opts: &ApplyOpts) -> io::Resul
 /// from [`open_parent_beneath`](crate::fs::safe::open_parent_beneath)
 /// nothing is reached through a symlink: not on the way, and not at the
 /// name itself.
-pub fn apply_metadata_at(
+pub(crate) fn apply_metadata_at(
     dir: &Dir,
     name: &[u8],
     e: &FileEntry,
@@ -228,14 +235,14 @@ fn apply_at(at: Target<'_>, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
 
 /// [`apply_metadata`] through an open regular file (never by path, so
 /// nothing can be swapped in underneath).
-pub fn apply_metadata_fd(file: &File, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
+pub(crate) fn apply_metadata_fd(file: &File, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
     apply_fd(file, e, opts, None)
 }
 
 /// [`apply_metadata_fd`] on a file whose owner and group are known to be
 /// `now` (`(uid, gid)`): an owner or group it already has is not set again,
 /// so a file that already has both needs no `fchown`.
-pub fn apply_metadata_fd_owned(
+pub(crate) fn apply_metadata_fd_owned(
     file: &File,
     e: &FileEntry,
     opts: &ApplyOpts,
@@ -280,6 +287,6 @@ pub fn create_special(path: &Path, e: &FileEntry) -> io::Result<()> {
 }
 
 /// [`create_special`] at `name` in the open directory `dir`.
-pub fn create_special_at(dir: &Dir, name: &[u8], e: &FileEntry) -> io::Result<()> {
+pub(crate) fn create_special_at(dir: &Dir, name: &[u8], e: &FileEntry) -> io::Result<()> {
     dir.make_device(name, special_kind(e.kind()), e.mode & 0o7777, e.rdev)
 }

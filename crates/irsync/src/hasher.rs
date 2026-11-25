@@ -104,7 +104,7 @@ impl<'a, R> Ticking<'a, R> {
     }
 
     /// Tells `hook`, if any, the bytes read so far of `path` after each read.
-    pub fn with_hook(mut self, hook: Option<&'a HashHook>, path: &'a RelPath) -> Self {
+    pub(crate) fn with_hook(mut self, hook: Option<&'a HashHook>, path: &'a RelPath) -> Self {
         self.hook = hook.map(|h| (h, path));
         self
     }
@@ -188,7 +188,7 @@ pub struct Hashed {
 }
 
 /// The error of a file that changed while it was read for its digest.
-pub fn changed_while_hashed(path: &RelPath) -> io::Error {
+pub(crate) fn changed_while_hashed(path: &RelPath) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
         format!(
@@ -200,7 +200,11 @@ pub fn changed_while_hashed(path: &RelPath) -> io::Error {
 
 /// Fails with [`changed_while_hashed`] unless the open `file` still has
 /// the stat `opened` it had before it was read.
-pub fn check_unchanged(file: &std::fs::File, path: &RelPath, opened: Freshness) -> io::Result<()> {
+pub(crate) fn check_unchanged(
+    file: &std::fs::File,
+    path: &RelPath,
+    opened: Freshness,
+) -> io::Result<()> {
     let (entry, ctime) = crate::fs::meta::fstat_entry_with_ctime(file, path)?;
     if Freshness::of_entry(&entry, ctime) == opened {
         Ok(())
@@ -248,7 +252,7 @@ impl Hasher {
 
     /// Do not stat a file after reading it (test only).
     #[cfg(feature = "test-hooks")]
-    pub fn without_change_check(mut self) -> Self {
+    pub(crate) fn without_change_check(mut self) -> Self {
         self.no_change_check = true;
         self
     }
@@ -267,20 +271,20 @@ impl Hasher {
 
     /// Meter every file actually read (not a cache hit) into `m`.
     /// Time this hasher's work, and its waits on the index, on `m`.
-    pub fn with_meter(mut self, m: Arc<Meter>) -> Self {
+    pub(crate) fn with_meter(mut self, m: Arc<Meter>) -> Self {
         self.index = self.index.metered(m.clone());
         self.meter = Some(m);
         self
     }
 
     /// Share `activity` as this hasher's activity marker.
-    pub fn with_activity(mut self, activity: Arc<AtomicU64>) -> Self {
+    pub(crate) fn with_activity(mut self, activity: Arc<AtomicU64>) -> Self {
         self.activity = activity;
         self
     }
 
     /// The marker bumped by this hasher's local work.
-    pub fn activity(&self) -> &Arc<AtomicU64> {
+    pub(crate) fn activity(&self) -> &Arc<AtomicU64> {
         &self.activity
     }
 
@@ -333,7 +337,11 @@ impl Hasher {
     /// digest of what the walk saw; the send checks what it reads against
     /// the digest, and the receiver the whole file. The returned stat is
     /// the one the digest was taken under, not the walk's.
-    pub async fn digest_walked(&self, path: RelPath, walked: Freshness) -> io::Result<Hashed> {
+    pub(crate) async fn digest_walked(
+        &self,
+        path: RelPath,
+        walked: Freshness,
+    ) -> io::Result<Hashed> {
         self.digest_as(path, walked, None).await
     }
 
@@ -359,7 +367,7 @@ impl Hasher {
     /// Runs `read`, a blocking read of a file of `size` bytes that is not a
     /// whole-file digest (an `APPEND` tail), under this hasher's limits on
     /// concurrent reads.
-    pub async fn bounded_read<T: Send + 'static>(
+    pub(crate) async fn bounded_read<T: Send + 'static>(
         &self,
         size: u64,
         read: impl FnOnce() -> io::Result<T> + Send + 'static,
@@ -379,7 +387,7 @@ impl Hasher {
     /// `path`), read from its start, under this hasher's limits; the index
     /// is neither asked nor told. `path` names the file to the progress
     /// callback and the hook.
-    pub async fn digest_file(
+    pub(crate) async fn digest_file(
         &self,
         file: &std::fs::File,
         path: &RelPath,

@@ -217,13 +217,13 @@ impl Sender {
     }
 
     /// The hashing step before a `ChunkList` is sent.
-    pub async fn lookahead_digest(&self, item: &ScanItem) -> io::Result<Hashed> {
+    pub(crate) async fn lookahead_digest(&self, item: &ScanItem) -> io::Result<Hashed> {
         self.inner.hasher.digest(item).await
     }
 
     /// [`Sender::lookahead_digest`] of the file at index key `path`, with
     /// the walk's stat of it (see [`Hasher::digest_walked`]).
-    pub async fn lookahead_digest_walked(
+    pub(crate) async fn lookahead_digest_walked(
         &self,
         path: RelPath,
         walked: Freshness,
@@ -238,13 +238,13 @@ impl Sender {
     }
 
     /// Installs (once) the meter that times reads and stream writes.
-    pub fn set_meter(&self, m: Arc<Meter>) {
+    pub(crate) fn set_meter(&self, m: Arc<Meter>) {
         let _ = self.inner.meter.set(m);
     }
 
     /// Installs (once) a hook that cuts data streams short.
     #[cfg(feature = "test-hooks")]
-    pub fn set_truncate(&self, hook: Arc<TruncateHook>) {
+    pub(crate) fn set_truncate(&self, hook: Arc<TruncateHook>) {
         let _ = self.inner.truncate.set(hook);
     }
 
@@ -271,7 +271,7 @@ impl Sender {
     /// [`Sender::send_chunks`], with the receiver's bases for some of the
     /// chunks (by index): those go as operations against its old file when
     /// that is clearly smaller.
-    pub async fn send_chunks_against(
+    pub(crate) async fn send_chunks_against(
         &self,
         file_id: u64,
         path: &RelPath,

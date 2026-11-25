@@ -305,7 +305,7 @@ impl Meter {
     }
 
     /// Whether this meter records anything.
-    pub fn is_enabled(&self) -> bool {
+    pub(crate) fn is_enabled(&self) -> bool {
         self.enabled
     }
 
@@ -327,7 +327,11 @@ impl Meter {
     }
 
     /// [`Meter::labels`] plus `key=value`.
-    pub fn labels_with(&self, key: &'static str, value: &'static str) -> Vec<metrics::Label> {
+    pub(crate) fn labels_with(
+        &self,
+        key: &'static str,
+        value: &'static str,
+    ) -> Vec<metrics::Label> {
         let mut v = self.labels();
         v.push(metrics::Label::from_static_parts(key, value));
         v

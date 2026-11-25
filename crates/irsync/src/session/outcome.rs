@@ -63,7 +63,7 @@ pub struct Outcome {
 
 impl Outcome {
     /// Adds another session's counts (several sources in one run).
-    pub fn absorb(&mut self, o: Outcome) {
+    pub(crate) fn absorb(&mut self, o: Outcome) {
         self.files_transferred += o.files_transferred;
         self.bytes_transferred += o.bytes_transferred;
         self.files_skipped += o.files_skipped;

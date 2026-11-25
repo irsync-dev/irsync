@@ -213,14 +213,14 @@ impl Out {
     /// caller instead of growing the queue. Only for spawned tasks that may
     /// wait on the peer, never a main loop. Frames from `send` and
     /// `send_paced` share one queue, so their order is kept.
-    pub async fn send_paced(&self, msg: Msg) {
+    pub(crate) async fn send_paced(&self, msg: Msg) {
         self.reserve(msg).await.send();
     }
 
     /// Waits for room for `msg` as [`Out::send_paced`] does, without
     /// queueing it yet, so a caller can check after the wait that the frame
     /// is still wanted. Once the writer is gone it returns at once.
-    pub async fn reserve(&self, msg: Msg) -> Paced {
+    pub(crate) async fn reserve(&self, msg: Msg) -> Paced {
         let frame = Control { msg: Some(msg) };
         let n = frame.encoded_len();
         let gone = tokio::select! {
@@ -900,11 +900,11 @@ impl Persister {
     }
 
     /// The plan as stored when this connection started (plus what was added since).
-    pub fn stored_plan(&self) -> &SessionPlan {
+    pub(crate) fn stored_plan(&self) -> &SessionPlan {
         &self.rec.plan
     }
 
-    pub fn is_done(&self, file_id: u64) -> bool {
+    pub(crate) fn is_done(&self, file_id: u64) -> bool {
         self.done.contains(&file_id)
     }
 
@@ -956,7 +956,7 @@ impl Persister {
         self.rec.progress.deleted_count
     }
 
-    pub fn add_deleted(&mut self, n: u64) {
+    pub(crate) fn add_deleted(&mut self, n: u64) {
         if n > 0 {
             self.rec.progress.deleted_count += n;
             self.dirty = true;
@@ -982,7 +982,7 @@ impl Persister {
     }
 
     /// What [`Persister::placed`] recorded, this connection and earlier ones.
-    pub fn placed_stats(&self) -> &[PlacedStat] {
+    pub(crate) fn placed_stats(&self) -> &[PlacedStat] {
         &self.rec.progress.placed
     }
 
@@ -1021,7 +1021,7 @@ impl Persister {
         self.dirty = false;
     }
 
-    pub async fn maybe_flush(&mut self) {
+    pub(crate) async fn maybe_flush(&mut self) {
         if self.dirty && self.last.elapsed() >= PERSIST_EVERY {
             self.flush().await;
         }

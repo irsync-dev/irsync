@@ -205,7 +205,7 @@ pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// [`crate::manage::lock_config`]), waiting up to [`LOCK_WAIT`] while
 /// someone else holds it; then it is [`ManageError::Locked`]. Blocks:
 /// call it off the async runtime.
-pub fn lock_config_waiting(path: &Path) -> Result<crate::manage::ConfigLock, ManageError> {
+pub(crate) fn lock_config_waiting(path: &Path) -> Result<crate::manage::ConfigLock, ManageError> {
     let deadline = std::time::Instant::now() + LOCK_WAIT;
     loop {
         match crate::manage::lock_config(path) {

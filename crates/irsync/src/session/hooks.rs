@@ -391,7 +391,7 @@ pub type ListingHook =
 /// Whether `IRSYNC_TEST_NO_CHANGE_CHECKS=1` is set (see
 /// [`SideHooks::no_change_checks`]); only a test-hooks build reads it.
 #[cfg(feature = "test-hooks")]
-pub fn no_change_checks_from_env() -> bool {
+pub(crate) fn no_change_checks_from_env() -> bool {
     no_change_checks_value(
         std::env::var("IRSYNC_TEST_NO_CHANGE_CHECKS")
             .ok()

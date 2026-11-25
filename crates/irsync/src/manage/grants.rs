@@ -288,7 +288,7 @@ pub fn grant_add(
 /// Refuses the export `grant add` takes no grant on: `all`, which is a
 /// right of a client (`all_exports`). `ro`: the grant asked for was
 /// read-only.
-pub fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError> {
+pub(crate) fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError> {
     if export == "all" {
         return Err(ManageError::BadValue(format!(
             "\"all\" is not an export: give a client every export with: irsync client set NAME all_exports={}",
@@ -300,7 +300,7 @@ pub fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError> {
 
 /// Refuses what `grant remove EXPORT WHO` does not take: `*` for a peer
 /// (`all` is everyone).
-pub fn check_remove(export: &str, who: &str) -> Result<(), ManageError> {
+pub(crate) fn check_remove(export: &str, who: &str) -> Result<(), ManageError> {
     if who == "*" {
         return Err(ManageError::BadValue(format!(
             "\"*\" names no peer: irsync grant remove {export} all removes every grant {}",
@@ -321,7 +321,7 @@ pub fn added_line(who: &PeerSpec, clients: &Clients, export: &str, ro: bool) -> 
 }
 
 /// What `grant remove` reports once `n` entries are removed.
-pub fn removed_line(n: usize) -> String {
+pub(crate) fn removed_line(n: usize) -> String {
     format!("removed {n} {}", if n == 1 { "entry" } else { "entries" })
 }
 
@@ -370,7 +370,7 @@ pub fn grant_remove(
 /// `grant remove` was asked about: `who` (a client's name or id), or, with
 /// `who = None` and `export = None` (`grant remove all all`), every client.
 /// `grant remove` clears only the exports' own lists, so these stay.
-pub fn rights_still_held(
+pub(crate) fn rights_still_held(
     clients: &Clients,
     export: Option<&str>,
     who: Option<&PeerSpec>,

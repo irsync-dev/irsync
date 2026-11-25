@@ -316,7 +316,7 @@ impl KeySource {
 
 /// The file [`load_client_identity`] reads or creates: `ssh` when there is
 /// nothing at `path` and the ssh key exists, else `path`.
-pub fn client_key_path<'a>(path: &'a Path, ssh: Option<&'a Path>) -> &'a Path {
+pub(crate) fn client_key_path<'a>(path: &'a Path, ssh: Option<&'a Path>) -> &'a Path {
     if path.symlink_metadata().is_err() {
         if let Some(ssh) = ssh.filter(|s| s.symlink_metadata().is_ok()) {
             return ssh;

@@ -143,7 +143,7 @@ impl EventBus {
     /// finished walk, and the other side's walk as finished too, so the
     /// progress display has its total from the start, and `settled`, how
     /// many of those bytes need nothing more (see [`Event::Settled`]).
-    pub fn emit_listed(&self, source: Party, listed: &crate::scan::ListStats, settled: u64) {
+    pub(crate) fn emit_listed(&self, source: Party, listed: &crate::scan::ListStats, settled: u64) {
         let other = match source {
             Party::Local => Party::Peer,
             Party::Peer => Party::Local,

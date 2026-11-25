@@ -134,12 +134,12 @@ impl DeletePass {
     }
 
     /// Share the session's activity marker: a long pass counts as progress.
-    pub fn set_activity(&mut self, activity: Arc<AtomicU64>) {
+    pub(crate) fn set_activity(&mut self, activity: Arc<AtomicU64>) {
         self.activity = activity;
     }
 
     /// Time the removals into `m`.
-    pub fn set_meter(&mut self, m: Arc<Meter>) {
+    pub(crate) fn set_meter(&mut self, m: Arc<Meter>) {
         self.meter = Some(m);
     }
 
@@ -149,7 +149,7 @@ impl DeletePass {
     }
 
     /// Deletions already made by earlier connections of this session.
-    pub fn set_spent(&mut self, n: u64) {
+    pub(crate) fn set_spent(&mut self, n: u64) {
         self.spent = n;
     }
 
@@ -165,7 +165,7 @@ impl DeletePass {
 
     /// A destination path that must survive (excluded, without
     /// `delete_excluded`): its parent directories are not removed either.
-    pub fn protect(&mut self, path: &RelPath) {
+    pub(crate) fn protect(&mut self, path: &RelPath) {
         let mut b = path.as_bytes();
         while let Some(i) = b.iter().rposition(|&c| c == b'/') {
             b = &b[..i];
@@ -188,7 +188,7 @@ impl DeletePass {
     }
 
     /// The last candidate in path order (candidates arrive in that order).
-    pub fn last_candidate(&self) -> Option<&RelPath> {
+    pub(crate) fn last_candidate(&self) -> Option<&RelPath> {
         self.candidates.last().map(|(p, _)| p)
     }
 
@@ -198,7 +198,7 @@ impl DeletePass {
     /// order and nothing below those candidates can still come. The rest
     /// stay here. The new pass shares this one's settings and protected
     /// directories; `None` when nothing is ready.
-    pub fn split_ready(&mut self, current: &RelPath) -> Option<DeletePass> {
+    pub(crate) fn split_ready(&mut self, current: &RelPath) -> Option<DeletePass> {
         let under = |p: &RelPath| {
             let (c, p) = (current.as_bytes(), p.as_bytes());
             c.starts_with(p) && (c.len() == p.len() || p.is_empty() || c[p.len()] == b'/')
@@ -242,7 +242,7 @@ impl DeletePass {
     /// `prefix` is followed as a symlink either. A daemon's session root
     /// lies below its export, and the other side may have changed what is
     /// on the way since the session began.
-    pub async fn execute_below(
+    pub(crate) async fn execute_below(
         self,
         root: PathBuf,
         prefix: RelPath,

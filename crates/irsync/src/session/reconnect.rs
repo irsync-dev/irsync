@@ -219,7 +219,7 @@ fn describe_close(code: u32, reason: &str, remote: &str, client: &EndpointId) ->
 /// A failed dial to `target`. When no lookup found any address for it, the
 /// usual cause is a host entry holding the server's client ID instead of its
 /// daemon's, or a daemon that isn't running, so the message says how to check.
-pub fn describe_dial(target: &EndpointId, err: &ConnectError) -> String {
+pub(crate) fn describe_dial(target: &EndpointId, err: &ConnectError) -> String {
     let no_address = matches!(
         err,
         ConnectError::Connect {
@@ -246,7 +246,7 @@ pub const WRONG_ID_HINT: &str = "if you added this server's ID by hand, it must 
 
 /// A name that is neither a saved server nor an EndpointId. `config_file`
 /// is where saved servers are looked up.
-pub fn not_paired(host: &str, config_file: &std::path::Path) -> String {
+pub(crate) fn not_paired(host: &str, config_file: &std::path::Path) -> String {
     format!(
         "{host} is not a saved server or an EndpointId (saved servers are in {}). \
          To set it up over ssh: irsync pair {host}. To add it by hand: \
@@ -256,7 +256,7 @@ pub fn not_paired(host: &str, config_file: &std::path::Path) -> String {
 }
 
 /// A name saved as a client only, with no server of that name.
-pub fn client_only(host: &str) -> String {
+pub(crate) fn client_only(host: &str) -> String {
     format!(
         "{host} is saved as a client only: this machine has never dialled its \
          daemon. To set it up over ssh: irsync pair {host}"
@@ -271,7 +271,7 @@ pub fn client_only(host: &str) -> String {
 pub const PAIRED_FIRST_DIAL: Duration = Duration::from_secs(15);
 
 /// A saved server with an `ssh` value that never answered.
-pub fn not_answering(alias: &str) -> String {
+pub(crate) fn not_answering(alias: &str) -> String {
     format!(
         "{alias} did not answer. On {alias}, check that the daemon is running: \
          systemctl --user status irsync (Linux) or launchctl list \
@@ -284,7 +284,7 @@ pub fn not_answering(alias: &str) -> String {
 /// A server that never answered, explained: `paired` (the name of a saved
 /// server with an `ssh` value) is told how to start its daemon again; any
 /// other gets [`WRONG_ID_HINT`] (see [`with_wrong_id_hint`]).
-pub fn never_reached(err: anyhow::Error, paired: Option<&str>) -> anyhow::Error {
+pub(crate) fn never_reached(err: anyhow::Error, paired: Option<&str>) -> anyhow::Error {
     match paired {
         Some(alias) => anyhow::anyhow!("{err:#}; {}", not_answering(alias)),
         None => with_wrong_id_hint(err),
@@ -293,7 +293,7 @@ pub fn never_reached(err: anyhow::Error, paired: Option<&str>) -> anyhow::Error 
 
 /// `err` with [`WRONG_ID_HINT`] after it, unless it already points at
 /// `irsync id show --daemon` (as a dial that found no address does).
-pub fn with_wrong_id_hint(err: anyhow::Error) -> anyhow::Error {
+pub(crate) fn with_wrong_id_hint(err: anyhow::Error) -> anyhow::Error {
     let text = format!("{err:#}");
     if text.contains("irsync id show --daemon") {
         err
@@ -330,7 +330,7 @@ pub fn explain(
 /// iroh's own handshake timeout, about 60 s). The connection is marked with
 /// this side's id for a capture. The error is the line that says why the
 /// dial failed.
-pub async fn dial_once(
+pub(crate) async fn dial_once(
     endpoint: &Endpoint,
     target: &EndpointAddr,
     limit: Option<Duration>,
@@ -380,7 +380,7 @@ pub fn check_pq_key_exchange(
 /// within `opts.max`. A connection lost before the reply counts as a failed
 /// try too; a daemon that never answered gives [`NeverReached`]. A refusal
 /// or a final close is explained as for a session and not retried.
-pub async fn ask_with_retries<T, F, Fut>(
+pub(crate) async fn ask_with_retries<T, F, Fut>(
     endpoint: &Endpoint,
     target: EndpointAddr,
     remote: &str,

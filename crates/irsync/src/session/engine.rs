@@ -247,7 +247,7 @@ impl RoleOpts {
 /// Puts the client's options into `Hello`: the receiver-side ones (Ruling
 /// 19), which the daemon honours when it receives, the preserve flags (R36)
 /// and the compiled filter rules (R38), which it honours in both directions.
-pub fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: &FilterSet) {
+pub(crate) fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: &FilterSet) {
     // Relative only: an absolute one is this side's business (and refused on
     // a push by `check_options`).
     req.partial_dir = o
@@ -311,7 +311,7 @@ pub fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: &Filter
 /// is the daemon's filesystem, so only a path inside the destination (a
 /// canonical relative path) may be chosen; an absolute one, or one with
 /// `..`, is refused.
-pub fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
+pub(crate) fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
     if direction == Direction::ClientSends {
         if let Some(pd) = &o.partial_dir {
             if pd.is_absolute()
@@ -436,7 +436,7 @@ impl Ctx {
     /// `--partial-dir` for a file writer, which works from `base` with index
     /// keys: the option is relative to the session root, so the root's path
     /// below `base` is put in front (nothing, when they are the same).
-    pub fn partial_dir_from_base(&self) -> Option<crate::part_file::PartialDir> {
+    pub(crate) fn partial_dir_from_base(&self) -> Option<crate::part_file::PartialDir> {
         let pd = self.opts.partial_dir.as_deref()?;
         let below = self.root.strip_prefix(&self.base).unwrap_or(Path::new(""));
         Some(crate::part_file::PartialDir {
@@ -451,7 +451,7 @@ impl Ctx {
 
     /// An index key as a path below `base` (see [`Ctx::full_key`] for the
     /// single-file mapping): what the opens that follow no symlink take.
-    pub fn local_key(&self, key: &RelPath) -> RelPath {
+    pub(crate) fn local_key(&self, key: &RelPath) -> RelPath {
         match &self.single {
             Some(s) if *key == self.scope.key(&s.wire) => self.scope.key(&s.local),
             _ => key.clone(),
@@ -463,7 +463,7 @@ impl Ctx {
     /// key already built from the local name, so that mapping never fires;
     /// it is kept as a guard for a caller that passes the wire key.
     #[cfg(test)]
-    pub fn full_key(&self, key: &RelPath) -> PathBuf {
+    pub(crate) fn full_key(&self, key: &RelPath) -> PathBuf {
         let key = &self.local_key(key);
         if key.as_bytes().is_empty() {
             self.base.clone()
@@ -484,7 +484,7 @@ impl Ctx {
     }
 
     /// Which metadata to apply for `e` on this side.
-    pub fn apply_opts(&self, e: &FileEntry) -> ApplyOpts {
+    pub(crate) fn apply_opts(&self, e: &FileEntry) -> ApplyOpts {
         let p = &self.opts.preserve;
         ApplyOpts {
             perms: p.perms,
@@ -588,7 +588,7 @@ fn remote_location(daemon: EndpointId, req: &SyncRequest) -> Location {
 
 /// The client's [`SessionKey`] for a session with `daemon` described by
 /// `hello` over `local` (canonicalizes the local path, so off the async threads).
-pub async fn client_session_key(
+pub(crate) async fn client_session_key(
     daemon: EndpointId,
     hello: &SyncHello,
     local: &LocalSide,
@@ -940,7 +940,7 @@ pub struct Place {
 
 /// `HelloAck` and plays the role opposite to the client's.
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_daemon(
+pub(crate) async fn serve_daemon(
     conn: Connection,
     send: SendStream,
     recv: RecvStream,

@@ -288,7 +288,7 @@ impl ByteBudget {
 
     /// Takes `n` bytes, waiting until they fit. Cancel-safe: nothing is
     /// taken unless it returns.
-    pub async fn acquire(&self, n: usize) {
+    pub(crate) async fn acquire(&self, n: usize) {
         loop {
             let freed = self.freed.notified();
             tokio::pin!(freed);
@@ -302,7 +302,7 @@ impl ByteBudget {
     }
 
     /// Takes `n` bytes if they fit now.
-    pub fn try_acquire(&self, n: usize) -> bool {
+    pub(crate) fn try_acquire(&self, n: usize) -> bool {
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
         if *held > 0 && *held + n > self.limit {
             return false;
@@ -341,7 +341,7 @@ impl Held {
     }
 
     /// Takes `n` more bytes if they fit now.
-    pub fn try_take(&mut self, n: usize) -> bool {
+    pub(crate) fn try_take(&mut self, n: usize) -> bool {
         let ok = self.budget.try_acquire(n);
         if ok {
             self.n += n;

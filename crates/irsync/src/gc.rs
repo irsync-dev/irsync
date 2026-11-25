@@ -369,7 +369,7 @@ pub async fn gc_if_due(
 }
 
 /// [`gc_if_due`] with [`gc_skipping`]'s `skip`.
-pub async fn gc_if_due_skipping(
+pub(crate) async fn gc_if_due_skipping(
     index: IndexHandle,
     root: &Path,
     older_than: Duration,

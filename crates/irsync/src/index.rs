@@ -646,7 +646,7 @@ impl IndexHandle {
 
     /// Queues [`Index::remove_entry`] (the file was deleted), like
     /// [`IndexHandle::queue_entry`].
-    pub fn queue_forget(&self, path: RelPath) {
+    pub(crate) fn queue_forget(&self, path: RelPath) {
         self.queue(Write::Forget(path));
     }
 
@@ -1278,7 +1278,7 @@ impl Index {
     }
 
     /// How many sessions `delete_sessions_older_than(age)` would remove.
-    pub fn count_sessions_older_than(&self, age: Duration) -> Result<u32> {
+    pub(crate) fn count_sessions_older_than(&self, age: Duration) -> Result<u32> {
         Ok(self
             .conn
             .prepare_cached("SELECT COUNT(*) FROM sessions WHERE updated_at <= ?1")?
@@ -1286,7 +1286,7 @@ impl Index {
     }
 
     /// Removes one session row (a finished session). Returns whether it existed.
-    pub fn delete_session(&mut self, id: &[u8; 16]) -> Result<bool> {
+    pub(crate) fn delete_session(&mut self, id: &[u8; 16]) -> Result<bool> {
         let n = self
             .conn
             .prepare_cached("DELETE FROM sessions WHERE id = ?1")?

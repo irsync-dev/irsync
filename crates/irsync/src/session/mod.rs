@@ -121,7 +121,7 @@ pub(crate) fn record_file(m: &Meter, since: Option<std::time::Instant>, size: u6
 /// for the daemon to join after resolving `remote`. On a pull, the last
 /// component of `remote` names the local directory. The remote path is
 /// never changed here: the daemon resolves it.
-pub fn resolve_roots(
+pub(crate) fn resolve_roots(
     direction: Direction,
     local: &Path,
     local_contents_only: bool,

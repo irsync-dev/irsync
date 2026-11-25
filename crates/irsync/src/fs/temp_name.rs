@@ -54,7 +54,7 @@ pub fn is_temp_name(name: &[u8]) -> bool {
 
 /// Whether a final path component has exactly the shape of a receiver's
 /// partial file, `.irsync.<name>.part` (the GC removes only these).
-pub fn is_part_name(name: &[u8]) -> bool {
+pub(crate) fn is_part_name(name: &[u8]) -> bool {
     name.len() > TEMP_PREFIX.len() + PART_SUFFIX.len()
         && name.starts_with(TEMP_PREFIX)
         && name.ends_with(PART_SUFFIX)

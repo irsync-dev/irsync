@@ -272,7 +272,7 @@ pub fn target_name(arg: &str) -> String {
 /// must be absolute or start with `~`, since there is no working
 /// directory to join it onto. The name and the path as the file is to
 /// hold it: under `~` when it was typed so and stays under `home`.
-pub fn parse_remote_target(
+pub(crate) fn parse_remote_target(
     arg: &str,
     home: Option<&Path>,
 ) -> Result<(String, String), ManageError> {
@@ -316,12 +316,12 @@ pub fn added_line(name: &str, path: &Path, old: Option<&str>, config: &Path) -> 
 }
 
 /// What `export rename` reports.
-pub fn renamed_line(old: &str, new: &str, config: &Path) -> String {
+pub(crate) fn renamed_line(old: &str, new: &str, config: &Path) -> String {
     format!("renamed export {old} to {new} in {}", config.display())
 }
 
 /// What `export remove` reports once the export is gone.
-pub fn removed_line(name: &str, config: &Path) -> String {
+pub(crate) fn removed_line(name: &str, config: &Path) -> String {
     format!("removed export {name} from {}", config.display())
 }
 

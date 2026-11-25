@@ -68,7 +68,7 @@ impl IdMap {
 
     /// Replaces the entry's ids by the local ids of its names, where the
     /// names exist here; an unknown or empty name leaves the number as sent.
-    pub fn localize(&mut self, e: &mut FileEntry) {
+    pub(crate) fn localize(&mut self, e: &mut FileEntry) {
         if !e.user.is_empty() {
             if let Some(uid) = self.uid_of(&e.user) {
                 e.uid = uid;

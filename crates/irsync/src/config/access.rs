@@ -9,7 +9,7 @@ pub enum Access {
 }
 
 impl Access {
-    pub fn permits(self, write: bool) -> bool {
+    pub(crate) fn permits(self, write: bool) -> bool {
         !write || self == Access::ReadWrite
     }
 

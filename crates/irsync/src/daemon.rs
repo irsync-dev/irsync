@@ -1107,7 +1107,7 @@ pub async fn run_from_settings(
 
 /// What the daemon prints first when stdout is a terminal: its version and
 /// which network services it uses.
-pub fn startup_banner(version: &str, settings: &Settings) -> String {
+pub(crate) fn startup_banner(version: &str, settings: &Settings) -> String {
     let d = &settings.daemon;
     let relay = match &d.relay {
         Relay::Default => "default (n0)".to_string(),
