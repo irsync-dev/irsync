@@ -8,9 +8,10 @@ You use it for two things:
 - **Check important data sets in storage for bitrot.** Bitrot is data that
   changes on disk without anyone writing to it.
 
-`fileset` is a separate tool. It shares no code with `irsync`, and you do not
-need `irsync` to use it. That is on purpose: a check made with the same code
-as the copy can repeat the copy's mistakes. This part of the book assumes you
+`fileset` is a separate tool, and you do not need `irsync` to use it. What
+it records and checks is its own code, not `irsync`'s. That is on purpose: a
+check made with the same code as the copy can repeat the copy's mistakes. The
+one part they share is the wildcard matcher of `fileset list`. This part of the book assumes you
 have never used `irsync`.
 
 ## The idea

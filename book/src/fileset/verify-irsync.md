@@ -1,7 +1,7 @@
 # Verify an irsync transfer
 
-Use this when you want proof, from a tool that shares no code with `irsync`,
-that a tree arrived intact. (For `rsync`, `rclone` and other tools, see
+Use this when you want proof, from a tool that does not check with `irsync`'s
+code, that a tree arrived intact. (For `rsync`, `rclone` and other tools, see
 [Verify an rsync or rclone transfer](verify-other-tools.md).) You record a manifest of the tree on the client,
 let `irsync` carry the tree and the manifest to the daemon, and check the copy
 against the manifest there. The same manifest later tells you whether either
