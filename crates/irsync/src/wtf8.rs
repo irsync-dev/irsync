@@ -12,7 +12,8 @@
 //! This is safe, platform-neutral code, compiled and tested everywhere (and
 //! under Miri); only the step between units and an `OsString` is in
 //! `platform/windows/`. It is irsync's own copy of the conversion;
-//! `fileset` has a copy of its own.
+//! `fileset` and `filegen` have copies of their own, kept the same code by
+//! fileset's `tests/wtf8_copies.rs`.
 
 /// Bytes that are not WTF-8.
 #[derive(Debug, PartialEq, Eq)]
