@@ -898,7 +898,7 @@ pub struct SideHooks {
     /// hashed (a test replaces it meanwhile).
     #[cfg(feature = "test-hooks")]
     pub before_identical_check: Option<PathHook>,
-    /// Sender: records per `ChunkListPart` instead of the default.
+    /// Sender: records per chunk list part instead of the default.
     #[cfg(feature = "test-hooks")]
     pub chunk_list_part_records: Option<usize>,
     /// Sender: close the connection once this many parts have been queued

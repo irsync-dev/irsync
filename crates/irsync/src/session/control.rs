@@ -1098,7 +1098,9 @@ pub(super) fn capped_errors(errors: &[(RelPath, String)]) -> Vec<PathError> {
 pub(super) fn msg_name(m: &Msg) -> &'static str {
     match m {
         Msg::Plan(_) => "PlanItem",
-        Msg::ChunkListPart(_) => "ChunkListPart",
+        Msg::ChunkListStart(_) => "ChunkListStart",
+        Msg::ChunkListMore(_) => "ChunkListMore",
+        Msg::WithdrawChunkList(_) => "WithdrawChunkList",
         Msg::Need(_) => "NeedChunks",
         Msg::ChunkBasis(_) => "ChunkBasis",
         Msg::Ack(_) => "FileAck",

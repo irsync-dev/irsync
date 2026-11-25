@@ -758,10 +758,9 @@ async fn a_chunk_list_beyond_the_room_fails_the_session() {
         local.hooks.list_budget = Some(LIST_ROOM);
         local.hooks.chunk_list_part_records = Some(3);
         local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
-            Msg::ChunkListPart(mut p) => {
-                // Every part: they must agree for the list to look sound.
-                p.total = LIST_ROOM as u32 + 1;
-                vec![Msg::ChunkListPart(p)]
+            Msg::ChunkListStart(mut s) => {
+                s.total = LIST_ROOM as u32 + 1;
+                vec![Msg::ChunkListStart(s)]
             }
             m => vec![m],
         }));
@@ -785,9 +784,13 @@ async fn a_chunk_list_for_an_unplanned_file_fails_the_session() {
         fs::write(h.src(flow).join("f.bin"), data(MIB, 8)).unwrap();
         let mut local = h.local_side();
         local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
-            Msg::ChunkListPart(mut p) => {
-                p.file_id += 1000;
-                vec![Msg::ChunkListPart(p)]
+            Msg::ChunkListStart(mut s) => {
+                s.file_id += 1000;
+                vec![Msg::ChunkListStart(s)]
+            }
+            Msg::ChunkListMore(mut m) => {
+                m.file_id += 1000;
+                vec![Msg::ChunkListMore(m)]
             }
             m => vec![m],
         }));
@@ -1015,11 +1018,10 @@ async fn list_room_beyond_the_budget_fails_the_session() {
     .await;
 }
 
-/// A sender that starts a file's chunk list over and over (empty first
-/// parts, each withdrawing the list so far, then the real list): more
-/// first parts than an honest sender's retries allow fail the session.
-/// (Empty ones free no room, so this sender never sees a grant it did not
-/// expect.)
+/// A sender that starts a file's chunk list over and over (withdrawals,
+/// then the real list): more starts and withdrawals than an honest
+/// sender's retries allow fail the session. (Withdrawals of nothing free
+/// no room, so this sender never sees a grant it did not expect.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chunk_list_started_too_often_fails_the_session() {
     within60(async {
@@ -1028,13 +1030,10 @@ async fn a_chunk_list_started_too_often_fails_the_session() {
         fs::write(h.src(flow).join("f.bin"), data(MIB, 40)).unwrap();
         let mut local = h.local_side();
         local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
-            Msg::ChunkListPart(p) if p.first == 0 && p.total > 0 => {
-                let empty = irsync_proto::v1::ChunkListPart {
-                    file_id: p.file_id,
-                    ..Default::default()
-                };
-                let mut v = vec![Msg::ChunkListPart(empty); 4];
-                v.push(Msg::ChunkListPart(p));
+            Msg::ChunkListStart(s) if s.total > 0 => {
+                let withdraw = irsync_proto::v1::WithdrawChunkList { file_id: s.file_id };
+                let mut v = vec![Msg::WithdrawChunkList(withdraw); 4];
+                v.push(Msg::ChunkListStart(s));
                 v
             }
             m => vec![m],

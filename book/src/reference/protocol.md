@@ -23,7 +23,7 @@ version is refused with `VERSION_MISMATCH`.
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
 | Chunking | FastCDC 2020, normalisation level 1; minimum 64 KiB, average 256 KiB, maximum 1 MiB |
-| Chunk list part | At most 32,768 records |
+| Chunk list part | At most 32,768 records in a `ChunkListStart` or `ChunkListMore` |
 | Chunk list | At most 2^24 records. Every chunk but a file's last is at least 64 KiB; the receiver refuses a list with a shorter one. |
 | List room | 2^24 records per connection, across all files |
 | `NeedChunks` | At most 2^18 chunk indices and 16 entries of `held` per message; the sender treats more as a protocol error |
@@ -206,7 +206,9 @@ export.
 | Message | Direction | Meaning |
 | --- | --- | --- |
 | `PlanItem` | receiver to sender | Send this file: `WHOLE` (nothing to reuse at that path), `DELTA` (the receiver holds an old version) or `APPEND` (the receiver trusts its first `append_from` bytes). |
-| `ChunkListPart` | sender to receiver | Part of a file's chunk list. The first part also carries the stat the file was hashed under: mtime, mode, owner and group (with their names), change time and inode. With the `size`, the receiver places the file with them instead of the walk's. The change time and inode are for the link check (`CheckLink`). |
+| `ChunkListStart` | sender to receiver | The start of a file's chunk list: its total record count, the whole-file hash, the first records, and the stat the file was hashed under (`SourceStat`: size, mtime, change time, inode, mode, uid and gid, with the names of the owner and group). The receiver places the file with the size, mtime, mode, owner and group instead of the walk's. The change time and inode are for the link check (`CheckLink`). |
+| `ChunkListMore` | sender to receiver | The next records of a file's chunk list. |
+| `WithdrawChunkList` | sender to receiver | Drop the file's chunk list and free its room: a new list follows. |
 | `ListRoom` | receiver to sender | Room for this many more chunk records, freed by lists the receiver dropped. |
 | `ChunkBasis` | receiver to sender | Block signatures over a region of the receiver's old file, for one chunk. |
 | `NeedChunks` | receiver to sender | The chunks to send; empty means none. |
@@ -226,32 +228,34 @@ export.
 | `Error` | either | The session failed on this side, with `INTERNAL` and why; it ends the session. |
 
 Every message on the control stream is a `Control` frame with exactly one of
-these set. A file costs a `PlanItem`, at least one `ChunkListPart`, a
+these set. A file costs a `PlanItem`, a `ChunkListStart`, a
 `NeedChunks`, a `MayPlace`, a `PlaceVerdict` and a `FileAck`; the room its list took comes back in a
 `ListRoom`, which may cover several files.
 
 ### Chunk lists
 
-A chunk list travels as `ChunkListPart` frames of at most 32,768 records, in
-order, the last one flagged `last`; an empty file's list is one empty last
-part. Every part repeats the file id, the size, the whole-file hash and the
-total record count. The receiver reassembles them and fails the file when a
-sequence skips, describes another file, or announces more records than 2^24 or
-than the size allows at the minimum chunk length. The first part also holds the
-stat the file was hashed under: mtime, mode, uid and gid, with the names of the
-uid and gid on the sender. These and the list's size replace the walk's for the
-file, and the names are mapped to the receiver's ids as for a listing entry
-(not with `--numeric-ids`). An `APPEND` tail's list carries the whole file's
-stat.
+A chunk list travels as one `ChunkListStart` and then `ChunkListMore`
+frames, in order, each with at most 32,768 records; an empty file's list is
+one `ChunkListStart` without records. The start carries the file id, the
+total record count, the whole-file hash and the stat the file was hashed
+under; each `ChunkListMore` carries the file id and the index of its first
+record. The list is complete once `total` records have come. The receiver
+reassembles them and fails the file when a sequence skips or announces more
+records than 2^24 or than the size allows at the minimum chunk length. The
+stat (`SourceStat`) is the size, mtime, change time, inode, mode, uid and
+gid, and the start also holds the names of the uid and gid on the sender.
+These replace the walk's for the file, and the names are mapped to the
+receiver's ids as for a listing entry (not with `--numeric-ids`). An
+`APPEND` tail's list carries the whole file's stat.
 
 Lists travel in room the receiver grants. Each connection starts with room for
-2^24 records on both sides; a list's first part takes its whole `total` of it,
+2^24 records on both sides; a list's start takes its whole `total` of it,
 and a sender sends a list only once it fits. The receiver gives room back with
 `ListRoom` when it drops a list: the file was placed, failed or replaced. A
-first part that does not fit, or a grant above the starting room, is a
-protocol error. A first part for a file that already has a list replaces that
-list; a sender that lists a file again first sends an empty unfinished first
-part, so the old list is dropped without waiting for room.
+start that does not fit, or a grant above the starting room, is a
+protocol error. A start for a file that already has a list replaces that
+list; a sender that lists a file again first sends a `WithdrawChunkList`,
+so the old list is dropped without waiting for room.
 
 For an `APPEND`, the list covers only the tail from `append_from` and carries
 no whole-file hash; the receiver folds the hash from the bytes it places. Every

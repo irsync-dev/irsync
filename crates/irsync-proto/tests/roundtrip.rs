@@ -109,8 +109,9 @@ fn hello_reply_arms_stay_apart() {
 #[test]
 fn control_oneof_roundtrips() {
     use irsync_proto::v1::{
-        control::Msg, file_ack::Status, plan_item::Action, ChunkBasis, ChunkListPart, ChunkRecord,
-        Control, Error, FileAck, Hash, MayPlace, NeedChunks, PlaceVerdict, PlanItem, SessionDone,
+        control::Msg, file_ack::Status, plan_item::Action, ChunkBasis, ChunkListMore,
+        ChunkListStart, ChunkRecord, Control, Error, FileAck, Hash, MayPlace, NeedChunks,
+        PlaceVerdict, PlanItem, SessionDone, SourceStat, WithdrawChunkList,
     };
     use prost::Message;
     let h = |b: u8| Hash { bytes: vec![b; 32] };
@@ -127,23 +128,23 @@ fn control_oneof_roundtrips() {
             action: Action::Append as i32,
             append_from: 1 << 35,
         }),
-        Msg::ChunkListPart(ChunkListPart {
+        Msg::ChunkListStart(ChunkListStart {
             file_id: 3,
-            size: 2048,
             whole_hash: Some(h(9)),
-            total: 2,
-            first: 0,
-            last: true,
-            mtime_sec: -5,
-            mtime_nsec: 999_999_999,
-            mode: 0o100644,
-            uid: 1000,
-            gid: 100,
+            total: 3,
+            stat: Some(SourceStat {
+                size: 3072,
+                mtime_sec: -5,
+                mtime_nsec: 999_999_999,
+                ctime_sec: 1_700_000_000,
+                ctime_nsec: 1,
+                inode: 1 << 40,
+                mode: 0o100644,
+                uid: 1000,
+                gid: 100,
+            }),
             user: "alice".into(),
             group: "users".into(),
-            ctime_sec: 1_700_000_000,
-            ctime_nsec: 1,
-            inode: 1 << 40,
             chunks: vec![
                 ChunkRecord {
                     offset: 0,
@@ -157,6 +158,16 @@ fn control_oneof_roundtrips() {
                 },
             ],
         }),
+        Msg::ChunkListMore(ChunkListMore {
+            file_id: 3,
+            first: 2,
+            chunks: vec![ChunkRecord {
+                offset: 2048,
+                len: 1024,
+                hash: Some(h(3)),
+            }],
+        }),
+        Msg::WithdrawChunkList(WithdrawChunkList { file_id: 3 }),
         Msg::Need(NeedChunks {
             file_id: 3,
             chunk_idx: vec![0, 5, 7],

@@ -18,9 +18,9 @@ use std::time::Duration;
 use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, CheckLink, ChunkBasis, ChunkListPart,
-    FileAck, LinksChecked, MayPlace, NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan,
-    SessionDone, Settled, Unlinked,
+    control::Msg, file_ack::Status, file_entry::Kind, CheckLink, ChunkBasis, FileAck, LinksChecked,
+    MayPlace, NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone, Settled,
+    SourceStat, Unlinked, WithdrawChunkList,
 };
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
@@ -319,7 +319,7 @@ struct SenderRole {
     links_ended: bool,
 }
 
-/// Records per `ChunkListPart` (a test hook may shrink it).
+/// Records per chunk list part (a test hook may shrink it).
 fn part_records(ctx: &Ctx) -> usize {
     #[cfg(feature = "test-hooks")]
     if let Some(n) = ctx.hooks.chunk_list_part_records {
@@ -598,17 +598,11 @@ impl SenderRole {
         if listed && !self.lists.cancel(file_id) {
             // The old list went out, and the receiver holds it until a new
             // one replaces it. The new one may have to wait for room, which
-            // the old one may be taking: restart the list now with an empty,
-            // unfinished first part, so the receiver drops the old one and
-            // frees its room. No room needed (it announces no records), so
-            // it goes out at once.
-            self.out.send(Msg::ChunkListPart(ChunkListPart {
-                file_id,
-                total: 0,
-                first: 0,
-                last: false,
-                ..ChunkListPart::default()
-            }));
+            // the old one may be taking: withdraw the old one now, so the
+            // receiver drops it and frees its room. No room needed, so it
+            // goes out at once.
+            self.out
+                .send(Msg::WithdrawChunkList(WithdrawChunkList { file_id }));
         }
         self.spawn_digest(file_id, gen, path, true, false, None);
     }
@@ -788,16 +782,21 @@ impl SenderRole {
                 // tail's stat is the whole file's too): the file is placed
                 // with its mtime, mode and ids, never the walk's.
                 let list_stat = ListStat {
-                    mtime: stat.mtime,
-                    ctime: stat.ctime,
-                    inode: stat.inode,
-                    mode: stat.mode,
-                    uid: stat.uid,
-                    gid: stat.gid,
+                    stat: SourceStat {
+                        size: d.size,
+                        mtime_sec: stat.mtime.0,
+                        mtime_nsec: stat.mtime.1,
+                        ctime_sec: stat.ctime.0,
+                        ctime_nsec: stat.ctime.1,
+                        inode: stat.inode,
+                        mode: stat.mode,
+                        uid: stat.uid,
+                        gid: stat.gid,
+                    },
                     user: self.names.user(stat.uid).to_string(),
                     group: self.names.group(stat.gid).to_string(),
                 };
-                let parts = split(file_id, &d, &list_stat, part_records(&self.ctx), with_hash);
+                let parts = split(file_id, &d, list_stat, part_records(&self.ctx), with_hash);
                 self.lists.push(file_id, parts, Some(held));
                 #[cfg(feature = "test-hooks")]
                 if let Some(p) = &self.ctx.hooks.lists_ahead_peak {
@@ -820,15 +819,14 @@ impl SenderRole {
     /// They are bounded already, by the room granted.
     fn pump_lists(&mut self) {
         for p in self.lists.ready() {
-            // A list's first part (never the empty one withdrawing a list,
-            // which does not come this way): counted as the receiver does.
-            if p.first == 0 && (p.total > 0 || p.last) {
-                if let Some(f) = self.files.get_mut(&p.file_id) {
+            // A list's start: counted as the receiver does.
+            if let Msg::ChunkListStart(s) = &p {
+                if let Some(f) = self.files.get_mut(&s.file_id) {
                     f.lists_sent += 1;
                     f.listed_gen = Some(f.gen);
                 }
             }
-            self.out.send(Msg::ChunkListPart(p));
+            self.out.send(p);
             #[cfg(feature = "test-hooks")]
             if let Some(h) = &self.ctx.hooks.drop_after_parts {
                 if h.queued() {

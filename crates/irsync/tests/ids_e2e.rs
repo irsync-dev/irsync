@@ -104,10 +104,11 @@ async fn chunk_list_ids_are_mapped_by_name_unless_numeric_ids() {
             let mut local = h.local_side();
             let name = name.clone();
             local.hooks.tamper_frames = Some(Arc::new(move |msg| match msg {
-                Msg::ChunkListPart(mut p) if p.first == 0 => {
-                    assert_eq!((p.gid, p.group.as_str()), (g2, name.as_str()));
-                    p.gid = stranger;
-                    vec![Msg::ChunkListPart(p)]
+                Msg::ChunkListStart(mut s) => {
+                    let stat = s.stat.as_mut().unwrap();
+                    assert_eq!((stat.gid, s.group.as_str()), (g2, name.as_str()));
+                    stat.gid = stranger;
+                    vec![Msg::ChunkListStart(s)]
                 }
                 m => vec![m],
             }));

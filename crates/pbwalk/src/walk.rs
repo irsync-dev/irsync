@@ -433,12 +433,13 @@ mod tests {
                 listed_settled: 4,
                 received_bytes: 5,
             }),
-            Msg::ChunkListPart(v1::ChunkListPart {
+            Msg::ChunkListStart(v1::ChunkListStart {
                 file_id: 4,
-                size: 5,
                 whole_hash: hash(1),
-                total: 2,
-                first: 0,
+                total: 3,
+                stat: Some(stat()),
+                user: "u".into(),
+                group: "g".into(),
                 chunks: vec![
                     v1::ChunkRecord {
                         offset: 0,
@@ -451,18 +452,17 @@ mod tests {
                         hash: hash(4),
                     },
                 ],
-                last: true,
-                mtime_sec: -1,
-                mtime_nsec: 1,
-                mode: 2,
-                uid: 3,
-                gid: 4,
-                user: "u".into(),
-                group: "g".into(),
-                ctime_sec: 5,
-                ctime_nsec: 6,
-                inode: 7,
             }),
+            Msg::ChunkListMore(v1::ChunkListMore {
+                file_id: 4,
+                first: 2,
+                chunks: vec![v1::ChunkRecord {
+                    offset: 5,
+                    len: 1,
+                    hash: hash(5),
+                }],
+            }),
+            Msg::WithdrawChunkList(v1::WithdrawChunkList { file_id: 4 }),
             Msg::ChunkBasis(v1::ChunkBasis {
                 file_id: 5,
                 chunk_idx: 6,
@@ -916,7 +916,7 @@ mod tests {
         let bytes = v1::Control {
             msg: control_variants()
                 .into_iter()
-                .find(|m| matches!(m, Msg::ChunkListPart(_))),
+                .find(|m| matches!(m, Msg::ChunkListStart(_))),
         }
         .encode_to_vec();
         let d = desc("irsync.v1.Control");

@@ -1477,7 +1477,7 @@ async fn run_role(
     // writer: the main loop queues them, and sends those that fit with
     // `Out::send` (the room bounds them). The receiver grants room from its
     // main loop, also without waiting, as files leave it, and a retried
-    // file's old list is dropped at once (an empty first part), so the room
+    // file's old list is dropped at once (`WithdrawChunkList`), so the room
     // a waiting list needs is always freed by files that can progress.
     let (ev_tx, ev_rx) = mpsc::unbounded_channel();
     let (peer_ev_tx, peer_ev_rx) = control::PeerTx::channel(&ctx.hooks);

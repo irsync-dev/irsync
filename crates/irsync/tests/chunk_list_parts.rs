@@ -1,5 +1,5 @@
-//! Chunk lists in parts: every chunk list travels as `ChunkListPart`
-//! messages, reassembled on the receiver; the rest of the transfer is
+//! Chunk lists in parts: every chunk list travels as a `ChunkListStart`
+//! and `ChunkListMore` messages, reassembled on the receiver; the rest of the transfer is
 //! unchanged, and a connection lost between parts resumes cleanly.
 
 mod common;

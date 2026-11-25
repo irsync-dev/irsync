@@ -21,8 +21,9 @@ use std::time::Duration;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, file_entry::Kind, listing_frame::Frame, plan_item::Action,
-    ChunkListPart, FileAck, FileEntry, Itemized, ListRoom, ListingEnd, MayPlace, NeedChunks,
-    PathError, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone, Settle, Settled, SourceStat,
+    ChunkListMore, ChunkListStart, FileAck, FileEntry, Itemized, ListRoom, ListingEnd, MayPlace,
+    NeedChunks, PathError, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone, Settle, Settled,
+    SourceStat, WithdrawChunkList,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -37,7 +38,7 @@ use super::limits::{
     basis_budget, list_budget, need_piece, need_pieces, ByteBudget, LISTING_QUEUE,
 };
 use super::listing_stream::ListingOut;
-use super::parts::{assemble, Assembly, ListBudget};
+use super::parts::{self, Assembled, Assembly, ListBudget};
 use super::planner::apply_metadata_beneath;
 use super::planner::{
     inflight_cap, parent_of, plan, replan, Deferred, Itemize, Linked, Planned, PlannerReport, Prior,
@@ -69,9 +70,9 @@ const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_MISMATCHES: u32 = 2;
 /// Re-requests per file and connection for chunks its data streams did not deliver.
 pub(super) const MAX_REREQUESTS: u32 = 3;
-/// Chunk lists a sender starts per file and connection (first parts): the
-/// first list, and per retry an empty part withdrawing the list so far and
-/// the new list (see `SenderRole::retry`).
+/// Chunk lists a sender starts per file and connection: the first list,
+/// and per retry a `WithdrawChunkList` and the new list (see
+/// `SenderRole::retry`).
 const MAX_LIST_STARTS: u32 = 1 + 2 * super::sender_role::MAX_RETRIES;
 /// How long a failed session waits for its own file tasks to stop.
 const TASK_DRAIN: Duration = Duration::from_secs(10);
@@ -211,8 +212,8 @@ struct RFile {
     /// A chunk list that arrived while the `.part` was busy (opening or finalizing).
     pending: Option<(Arc<FileDigest>, u32)>,
     /// Chunk lists the sender has started for this file on this connection
-    /// (first parts, not counting the empty part that withdraws a list):
-    /// the number of the latest. The sender counts the same.
+    /// (`ChunkListStart`s): the number of the latest. The sender counts the
+    /// same.
     lists: u32,
     /// The number (see `lists`) of the list the current writer was opened
     /// for; `MayPlace` and `PlaceVerdict` carry it.
@@ -301,7 +302,7 @@ struct Receiver {
     /// the sender's room is.
     lists: ListBudget,
     /// Every file id requested on this connection, with the chunk lists the
-    /// sender has started for it (first parts): a chunk list part for any
+    /// sender has started or withdrawn for it: a chunk list part for any
     /// other id is a protocol error, one for a file that has left `files`
     /// is late and ignored, and more than [`MAX_LIST_STARTS`] lists for a
     /// file are a protocol error (each would make us grant room again).
@@ -777,66 +778,104 @@ impl Receiver {
         self.grant_lists(n);
     }
 
-    /// One part of a chunk list; the complete list goes to `on_chunk_list`.
-    /// A malformed sequence fails the file, like a list that does not tile
-    /// it. A list beyond the room granted fails the session, and is checked
-    /// first: before the part is looked at, and before any of it is held.
-    async fn on_chunk_list_part(&mut self, p: ChunkListPart) -> anyhow::Result<()> {
-        let file_id = p.file_id;
+    /// Counts a list start or a withdrawal for `file_id` against
+    /// [`MAX_LIST_STARTS`] and reserves the room the new list announces
+    /// (`total`; 0 for a withdrawal). A new list for the file replaces the
+    /// old one, whose room is freed; a file no longer in flight keeps
+    /// nothing. A list beyond the room granted fails the session.
+    fn restart_list(&mut self, file_id: u64, total: u32) -> anyhow::Result<()> {
         let Some(starts) = self.planned.get_mut(&file_id) else {
             anyhow::bail!(
-                "protocol error: chunk list part for file id {file_id}, which was never planned"
+                "protocol error: chunk list for file id {file_id}, which was never planned"
             );
         };
-        let known = self.files.contains_key(&file_id);
-        if p.first == 0 {
-            *starts += 1;
-            if *starts > MAX_LIST_STARTS {
-                anyhow::bail!(
-                    "protocol error: more than {MAX_LIST_STARTS} chunk lists for file id {file_id}"
-                );
-            }
-            // The first part takes the list's whole announced total; the
-            // later parts are covered by it (assembly refuses more). A new
-            // list for the file replaces the old one, whose room is freed.
-            let freed = self
-                .lists
-                .reserve(file_id, u64::from(p.total))
-                .map_err(|e| {
-                    anyhow::anyhow!("protocol error: chunk list beyond the granted room: {e}")
-                })?;
-            #[cfg(feature = "test-hooks")]
-            if let Some(peak) = &self.ctx.hooks.list_peak {
-                peak.fetch_max(self.lists.total(), Ordering::SeqCst);
-            }
-            // Late (the file failed or was placed): nothing is kept.
-            let late = if known {
-                0
-            } else {
-                self.lists.release(file_id)
-            };
-            self.grant_lists(freed + late);
+        *starts += 1;
+        if *starts > MAX_LIST_STARTS {
+            anyhow::bail!(
+                "protocol error: more than {MAX_LIST_STARTS} chunk lists for file id {file_id}"
+            );
+        }
+        let freed = self.lists.reserve(file_id, u64::from(total)).map_err(|e| {
+            anyhow::anyhow!("protocol error: chunk list beyond the granted room: {e}")
+        })?;
+        #[cfg(feature = "test-hooks")]
+        if let Some(peak) = &self.ctx.hooks.list_peak {
+            peak.fetch_max(self.lists.total(), Ordering::SeqCst);
+        }
+        // Late (the file failed or was placed): nothing is kept.
+        let late = if self.files.contains_key(&file_id) {
+            0
+        } else {
+            self.lists.release(file_id)
+        };
+        self.grant_lists(freed + late);
+        Ok(())
+    }
+
+    /// The start of a chunk list. It takes the list's whole announced
+    /// total of room before anything of it is looked at or held; the later
+    /// parts are covered by it (assembly refuses more).
+    async fn on_chunk_list_start(&mut self, s: ChunkListStart) -> anyhow::Result<()> {
+        let file_id = s.file_id;
+        self.restart_list(file_id, s.total)?;
+        let Some(f) = self.files.get_mut(&file_id) else {
+            tracing::debug!(file_id, "chunk list for a file not in flight");
+            return Ok(());
+        };
+        self.ctx.hooks.event("part", &f.path);
+        f.lists += 1;
+        let assembled = parts::start(&mut f.assembly, s);
+        self.on_assembled(file_id, assembled).await;
+        Ok(())
+    }
+
+    /// More of a chunk list. A malformed sequence fails the file, like a
+    /// list that does not tile it.
+    async fn on_chunk_list_more(&mut self, m: ChunkListMore) -> anyhow::Result<()> {
+        let file_id = m.file_id;
+        if !self.planned.contains_key(&file_id) {
+            anyhow::bail!(
+                "protocol error: chunk list for file id {file_id}, which was never planned"
+            );
         }
         let Some(f) = self.files.get_mut(&file_id) else {
             tracing::debug!(file_id, "chunk list part for a file not in flight");
             return Ok(());
         };
         self.ctx.hooks.event("part", &f.path);
-        if p.first == 0 && (p.total > 0 || p.last) {
-            f.lists += 1;
+        let assembled = parts::more(&mut f.assembly, m);
+        self.on_assembled(file_id, assembled).await;
+        Ok(())
+    }
+
+    /// The sender drops the file's list: a new one follows.
+    fn on_withdraw_chunk_list(&mut self, w: WithdrawChunkList) -> anyhow::Result<()> {
+        self.restart_list(w.file_id, 0)?;
+        if let Some(f) = self.files.get_mut(&w.file_id) {
+            f.assembly = None;
         }
+        Ok(())
+    }
+
+    /// What a part of a chunk list made of the file's list: the complete
+    /// list goes to `on_chunk_list`; a malformed one fails the file.
+    async fn on_assembled(&mut self, file_id: u64, assembled: Result<Option<Assembled>, String>) {
+        let Some(f) = self.files.get_mut(&file_id) else {
+            return;
+        };
         let n = f.lists;
-        match assemble(&mut f.assembly, p) {
-            Ok(Some((d, stat))) => {
+        match assembled {
+            Ok(Some((d, hashed))) => {
                 // The file is placed with the size, mtime, mode and ids its
                 // list was hashed under, not the walk's: a change between
                 // the walk and the hash (a `chmod`, or a file renamed over
                 // it) must not leave new content with old metadata.
+                let st = &hashed.stat;
                 f.entry.size = d.size;
-                f.hashed = Some(super::parts::source_stat(d.size, &stat));
-                (f.entry.mtime_sec, f.entry.mtime_nsec) = stat.mtime;
-                (f.entry.mode, f.entry.uid, f.entry.gid) = (stat.mode, stat.uid, stat.gid);
-                (f.entry.user, f.entry.group) = (stat.user, stat.group);
+                (f.entry.mtime_sec, f.entry.mtime_nsec) = (st.mtime_sec, st.mtime_nsec);
+                (f.entry.mode, f.entry.uid, f.entry.gid) = (st.mode, st.uid, st.gid);
+                (f.entry.user, f.entry.group) = (hashed.user, hashed.group);
+                f.hashed = Some(hashed.stat);
                 if let Some(map) = self.ids.as_mut() {
                     map.localize(&mut f.entry);
                 }
@@ -848,7 +887,6 @@ impl Receiver {
                 self.fail(file_id, Some(Status::WriteError), msg).await;
             }
         }
-        Ok(())
     }
 
     /// The complete chunk list number `n` (see `RFile::lists`).
@@ -1412,7 +1450,9 @@ impl Receiver {
     async fn handle(&mut self, ev: Ev) -> anyhow::Result<()> {
         match ev {
             Ev::Recv(d) => self.on_done(d).await,
-            Ev::Ctrl(Msg::ChunkListPart(p)) => self.on_chunk_list_part(p).await?,
+            Ev::Ctrl(Msg::ChunkListStart(s)) => self.on_chunk_list_start(s).await?,
+            Ev::Ctrl(Msg::ChunkListMore(m)) => self.on_chunk_list_more(m).await?,
+            Ev::Ctrl(Msg::WithdrawChunkList(w)) => self.on_withdraw_chunk_list(w)?,
             Ev::Ctrl(Msg::PlaceVerdict(v)) => self.on_verdict(v).await,
             Ev::Ctrl(Msg::Replan(r)) => self.on_replan(r).await?,
             Ev::Ctrl(Msg::Settled(s)) => self.on_settled(s)?,

@@ -26,7 +26,7 @@ pub(super) const PEER_EVENTS: usize = 1024;
 /// link stalls the task instead of growing the queue.
 pub(super) const OUT_BUDGET: usize = 4 * 1024 * 1024;
 
-/// The most bytes one chunk record takes in a `ChunkListPart`: its offset
+/// The most bytes one chunk record takes in a chunk list part: its offset
 /// (a varint of at most 10 bytes) and length (at most 5), each with a tag
 /// byte, its 32-byte hash in a nested `Hash` (with tag and length, 36
 /// bytes), and the record's own tag and length (2). A typical record is a
@@ -93,7 +93,7 @@ pub(super) fn need_pieces(
 /// What a main loop queues per file in flight besides chunk records and
 /// indices, rounded up: a `PlanItem` and an `Itemized`, each with a path
 /// (at most 4 KiB, `PATH_MAX`); `FileAck`s with their messages; the
-/// `ChunkListPart` headers of up to three lists (see
+/// `ChunkListStart` and `ChunkListMore` headers of up to three lists (see
 /// `receiver::MAX_LIST_STARTS`) and a `ListRoom`; a `MayPlace` and a
 /// `PlaceVerdict` per list (a few dozen bytes each). About 9 KiB at most.
 const FILE_WIRE: usize = 16 * 1024;
@@ -108,8 +108,8 @@ const FILE_WIRE: usize = 16 * 1024;
 ///   ([`OUT_BUDGET`]: the final re-check's `Replan`s, one per listed file
 ///   that changed, and its `Settled`; the link check's `Unlinked`s and
 ///   `LinksChecked`); per file in flight
-///   ([`MAX_INFLIGHT`]) a `FileAck` (`SOURCE_ERROR`), the empty first
-///   part that withdraws a retried file's list and a `PlaceVerdict` per
+///   ([`MAX_INFLIGHT`]) a `FileAck` (`SOURCE_ERROR`), the
+///   `WithdrawChunkList` of a retried file's list and a `PlaceVerdict` per
 ///   list (`FILE_WIRE`).
 /// - Receiver: paced frames ([`OUT_BUDGET`]: the planner's `Itemized`,
 ///   `offer_bases`, the link check's `CheckLink`s); `NeedChunks` for at most every chunk of the lists it
@@ -432,8 +432,8 @@ mod tests {
     #[test]
     fn the_wire_sizes_behind_the_ceiling_hold() {
         use irsync_proto::v1::{
-            control::Msg, file_ack::Status, ChunkListPart, Control, FileAck, Hash, Itemized,
-            ListRoom, NeedChunks, PlanItem,
+            control::Msg, file_ack::Status, ChunkListStart, Control, FileAck, Hash, Itemized,
+            ListRoom, NeedChunks, PlanItem, SourceStat,
         };
         use prost::Message as _;
         let len = |m: Msg| Control { msg: Some(m) }.encoded_len();
@@ -444,29 +444,29 @@ mod tests {
                 bytes: vec![0xff; 32],
             }),
         };
-        let part = |n: usize| ChunkListPart {
+        let part = |n: usize| ChunkListStart {
             file_id: u64::MAX,
-            size: u64::MAX,
             whole_hash: Some(Hash {
                 bytes: vec![0xff; 32],
             }),
             total: u32::MAX,
-            first: u32::MAX,
-            chunks: vec![record.clone(); n],
-            last: true,
-            mtime_sec: i64::MIN,
-            mtime_nsec: u32::MAX,
-            mode: u32::MAX,
-            uid: u32::MAX,
-            gid: u32::MAX,
+            stat: Some(SourceStat {
+                size: u64::MAX,
+                mtime_sec: i64::MIN,
+                mtime_nsec: u32::MAX,
+                ctime_sec: i64::MIN,
+                ctime_nsec: u32::MAX,
+                inode: u64::MAX,
+                mode: u32::MAX,
+                uid: u32::MAX,
+                gid: u32::MAX,
+            }),
             user: "u".repeat(256),
             group: "g".repeat(256),
-            ctime_sec: i64::MIN,
-            ctime_nsec: u32::MAX,
-            inode: u64::MAX,
+            chunks: vec![record.clone(); n],
         };
-        let header = len(Msg::ChunkListPart(part(0)));
-        let full = len(Msg::ChunkListPart(part(super::super::parts::PART_RECORDS)));
+        let header = len(Msg::ChunkListStart(part(0)));
+        let full = len(Msg::ChunkListStart(part(super::super::parts::PART_RECORDS)));
         // A few bytes more for the longer lengths of the part and the frame.
         assert!(
             full - header <= super::super::parts::PART_RECORDS * RECORD_WIRE + 8,

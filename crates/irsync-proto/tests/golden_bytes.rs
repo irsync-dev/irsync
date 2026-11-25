@@ -2,8 +2,8 @@
 //! (a roundtrip test passes whatever the numbers are).
 
 use irsync_proto::v1::{
-    control::Msg, ChunkListPart, ChunkRecord, Control, DataStreamHeader, Hash, Heartbeat, ListRoom,
-    MayPlace, PlaceVerdict,
+    control::Msg, ChunkListStart, ChunkRecord, Control, DataStreamHeader, Hash, Heartbeat,
+    ListRoom, MayPlace, PlaceVerdict, SourceStat,
 };
 use prost::Message;
 
@@ -18,7 +18,7 @@ fn enc(m: Msg) -> Vec<u8> {
 
 #[test]
 fn control_heartbeat_golden_bytes() {
-    // heartbeat = 10, walking = 1, skipped_bytes = 2
+    // heartbeat = 12, walking = 1, skipped_bytes = 2
     let hb = enc(Msg::Heartbeat(Heartbeat {
         walking: Some(b"a".to_vec()),
         skipped_bytes: 5,
@@ -28,42 +28,42 @@ fn control_heartbeat_golden_bytes() {
         listed_settled: 0,
         received_bytes: 0,
     }));
-    assert_eq!(hb, [0x52, 0x05, 0x0A, 0x01, 0x61, 0x10, 0x05]);
+    assert_eq!(hb, [0x62, 0x05, 0x0A, 0x01, 0x61, 0x10, 0x05]);
 }
 
 #[test]
 fn control_list_room_golden_bytes() {
-    // list_room = 3, records = 1 (varint 300)
+    // list_room = 5, records = 1 (varint 300)
     let room = enc(Msg::ListRoom(ListRoom { records: 300 }));
-    assert_eq!(room, [0x1A, 0x03, 0x08, 0xAC, 0x02]);
+    assert_eq!(room, [0x2A, 0x03, 0x08, 0xAC, 0x02]);
 }
 
 #[test]
 fn control_may_place_golden_bytes() {
-    // may_place = 6, file_id = 1 (varint 300), gen = 2
+    // may_place = 8, file_id = 1 (varint 300), gen = 2
     let m = enc(Msg::MayPlace(MayPlace {
         file_id: 300,
         gen: 2,
     }));
-    assert_eq!(m, [0x32, 0x05, 0x08, 0xAC, 0x02, 0x10, 0x02]);
+    assert_eq!(m, [0x42, 0x05, 0x08, 0xAC, 0x02, 0x10, 0x02]);
 }
 
 #[test]
 fn control_place_verdict_golden_bytes() {
-    // place_verdict = 7, file_id = 1, changed = 2, gen = 3
+    // place_verdict = 9, file_id = 1, changed = 2, gen = 3
     let v = enc(Msg::PlaceVerdict(PlaceVerdict {
         file_id: 7,
         changed: true,
         gen: 4,
     }));
-    assert_eq!(v, [0x3A, 0x06, 0x08, 0x07, 0x10, 0x01, 0x18, 0x04]);
+    assert_eq!(v, [0x4A, 0x06, 0x08, 0x07, 0x10, 0x01, 0x18, 0x04]);
 }
 
 #[test]
 fn control_links_checked_golden_bytes() {
-    // links_checked = 17 (two-byte tag), empty
+    // links_checked = 19 (two-byte tag), empty
     let l = enc(Msg::LinksChecked(irsync_proto::v1::LinksChecked {}));
-    assert_eq!(l, [0x8A, 0x01, 0x00]);
+    assert_eq!(l, [0x9A, 0x01, 0x00]);
 }
 
 #[test]
@@ -80,40 +80,40 @@ fn listing_frame_golden_bytes() {
 }
 
 #[test]
-fn control_chunk_list_part_golden_bytes() {
-    // chunk_list_part = 2, with a nested Hash and a nested ChunkRecord
-    let part = enc(Msg::ChunkListPart(ChunkListPart {
+fn control_chunk_list_start_golden_bytes() {
+    // chunk_list_start = 2, with a nested Hash, SourceStat and ChunkRecord
+    let start = enc(Msg::ChunkListStart(ChunkListStart {
         file_id: 1,
-        size: 2,
         whole_hash: Some(Hash {
             bytes: vec![0xAB; 2],
         }),
         total: 3,
-        first: 0,
+        stat: Some(SourceStat {
+            size: 2,
+            mtime_sec: 6,
+            mtime_nsec: 7,
+            ctime_sec: 11,
+            ctime_nsec: 12,
+            inode: 13,
+            mode: 8,
+            uid: 9,
+            gid: 10,
+        }),
+        user: "u".into(),
+        group: "g".into(),
         chunks: vec![ChunkRecord {
             offset: 4,
             len: 5,
             hash: Some(Hash { bytes: vec![0xCD] }),
         }],
-        last: true,
-        mtime_sec: 6,
-        mtime_nsec: 7,
-        mode: 8,
-        uid: 9,
-        gid: 10,
-        user: "u".into(),
-        group: "g".into(),
-        ctime_sec: 11,
-        ctime_nsec: 12,
-        inode: 13,
     }));
     assert_eq!(
-        part,
+        start,
         [
-            0x12, 0x31, 0x08, 0x01, 0x10, 0x02, 0x1A, 0x04, 0x0A, 0x02, 0xAB, 0xAB, 0x20, 0x03,
-            0x32, 0x09, 0x08, 0x04, 0x10, 0x05, 0x1A, 0x03, 0x0A, 0x01, 0xCD, 0x38, 0x01, 0x40,
-            0x06, 0x48, 0x07, 0x50, 0x08, 0x58, 0x09, 0x60, 0x0A, 0x6A, 0x01, 0x75, 0x72, 0x01,
-            0x67, 0x78, 0x0B, 0x80, 0x01, 0x0C, 0x88, 0x01, 0x0D
+            0x12, 0x2F, 0x08, 0x01, 0x12, 0x04, 0x0A, 0x02, 0xAB, 0xAB, 0x18, 0x03, 0x22, 0x12,
+            0x08, 0x02, 0x10, 0x06, 0x18, 0x07, 0x20, 0x0B, 0x28, 0x0C, 0x30, 0x0D, 0x38, 0x08,
+            0x40, 0x09, 0x48, 0x0A, 0x2A, 0x01, 0x75, 0x32, 0x01, 0x67, 0x3A, 0x09, 0x08, 0x04,
+            0x10, 0x05, 0x1A, 0x03, 0x0A, 0x01, 0xCD
         ]
     );
 }

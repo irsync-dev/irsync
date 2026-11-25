@@ -191,7 +191,7 @@ mod tests {
     use super::*;
     use irsync_proto::capture::v1::record::Msg;
     use irsync_proto::v1::{
-        control, delta_op, ChunkBasis, ChunkListPart, ChunkRecord, Control, CopyOld, DataChunk,
+        control, delta_op, ChunkBasis, ChunkListStart, ChunkRecord, Control, CopyOld, DataChunk,
         DeltaOp, Hash, Heartbeat,
     };
 
@@ -215,7 +215,7 @@ mod tests {
     }
 
     fn part_with_records(n: usize) -> control::Msg {
-        control::Msg::ChunkListPart(ChunkListPart {
+        control::Msg::ChunkListStart(ChunkListStart {
             file_id: 7,
             total: n as u32,
             chunks: (0..n)
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(t.original_len as usize, before);
         assert!(t.dropped_entries > 0);
         let Some(Msg::Control(Control {
-            msg: Some(control::Msg::ChunkListPart(p)),
+            msg: Some(control::Msg::ChunkListStart(p)),
         })) = &r.msg
         else {
             panic!()
