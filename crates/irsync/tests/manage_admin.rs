@@ -18,7 +18,7 @@ fn id(n: u8) -> iroh::EndpointId {
 }
 
 fn msg(text: &str) -> pb::Config {
-    read(text, Path::new(FILE)).unwrap().config
+    read(text, Path::new(FILE)).unwrap()
 }
 
 /// "me" (id 1) with the given admin line, "laptop" (id 2) without rights.

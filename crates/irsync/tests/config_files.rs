@@ -769,7 +769,7 @@ fn admin_is_read_and_written_back() {
         c.clients.get("laptop").unwrap().admin,
         Some(Access::ReadOnly)
     );
-    let msg = read(&text, Path::new("c")).unwrap().config;
+    let msg = read(&text, Path::new("c")).unwrap();
     assert_eq!(write(&msg), text);
     let bad = format!(
         "[clients.laptop]\nclient_id = \"{}\"\nadmin = \"yes\"\n",
