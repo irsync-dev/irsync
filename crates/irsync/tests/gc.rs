@@ -425,7 +425,7 @@ fn long_name(c: u8) -> Vec<u8> {
 }
 
 fn long_part(c: u8) -> RelPath {
-    RelPath::new(&irsync::recv::temp_name(&long_name(c), b".part")).unwrap()
+    RelPath::new(&irsync::fs::temp_name::temp_name(&long_name(c), b".part")).unwrap()
 }
 
 #[tokio::test]

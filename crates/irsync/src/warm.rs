@@ -131,7 +131,7 @@ pub async fn index_root(
                 .path
                 .components()
                 .last()
-                .is_some_and(crate::recv::is_temp_name);
+                .is_some_and(crate::fs::temp_name::is_temp_name);
             if item.entry.kind() != Kind::Regular || own_temp {
                 return;
             }

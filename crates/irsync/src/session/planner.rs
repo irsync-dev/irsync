@@ -211,7 +211,7 @@ fn place_via_temp(
     apply: &crate::fs::meta::ApplyOpts,
 ) -> io::Result<()> {
     let (dir, name) = at.parent()?;
-    let tmp = crate::recv::temp_name(&name, b".tmp");
+    let tmp = crate::fs::temp_name::temp_name(&name, b".tmp");
     match dir.remove_file(&tmp) {
         Err(e) if cause(&e) != Cause::NotThere => return Err(e),
         _ => {}
@@ -266,7 +266,7 @@ pub(super) fn place_hardlink(
     if tm.kind != FileKind::File {
         return Err(io::Error::other("hard link target is not a regular file"));
     }
-    let tmp = crate::recv::temp_name(&lname, b".tmp");
+    let tmp = crate::fs::temp_name::temp_name(&lname, b".tmp");
     match lfd.remove_file(&tmp) {
         Ok(()) => {}
         Err(e) if cause(&e) == Cause::NotThere => {}

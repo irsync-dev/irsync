@@ -28,9 +28,9 @@ use irsync_proto::v1::file_entry::Kind;
 
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{open_dir_beneath, split_last};
+use crate::fs::temp_name::is_temp_name;
 use crate::options::DeleteMode;
 use crate::platform::{cause, Cause, Create, Dir, Kind as FileKind, Open};
-use crate::recv::is_temp_name;
 use crate::telemetry::meter::{Activity, Meter};
 
 /// The deletion pass was not run because a listing was incomplete: a path

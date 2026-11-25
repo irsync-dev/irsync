@@ -463,7 +463,7 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
 pub(super) fn is_own_temp(path: &RelPath) -> bool {
     path.components()
         .last()
-        .is_some_and(crate::recv::is_temp_name)
+        .is_some_and(crate::fs::temp_name::is_temp_name)
 }
 
 /// Paths of regular files this side has listed, the only paths it will

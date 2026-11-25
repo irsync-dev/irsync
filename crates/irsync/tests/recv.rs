@@ -757,7 +757,7 @@ async fn busy_part_waits_for_previous_holder() {
 }
 
 mod temp_names {
-    use irsync::recv::{is_temp_name, temp_name, NAME_MAX};
+    use irsync::fs::temp_name::{is_temp_name, temp_name, NAME_MAX};
 
     #[test]
     fn short_names_are_wrapped_verbatim() {

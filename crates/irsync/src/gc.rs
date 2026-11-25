@@ -13,6 +13,7 @@ use prost::Message;
 
 use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
+use crate::fs::temp_name::is_part_name;
 use crate::index::IndexHandle;
 use crate::scan::WalkOpts;
 
@@ -41,21 +42,14 @@ fn io_err(e: impl std::fmt::Display) -> io::Error {
     io::Error::other(e.to_string())
 }
 
-/// True for the exact name pattern the receiver gives its partial files.
-fn is_part_name(name: &[u8]) -> bool {
-    name.len() > ".irsync.".len() + ".part".len()
-        && name.starts_with(b".irsync.")
-        && name.ends_with(b".part")
-}
-
 /// The `.part` file the receiver keeps for destination `rel`. The name may
-/// be shortened (see [`crate::recv::temp_name`]), so there is no inverse:
+/// be shortened (see [`crate::fs::temp_name::temp_name`]), so there is no inverse:
 /// the GC maps every known destination forward and compares.
 fn part_of(rel: &RelPath) -> Option<RelPath> {
     let b = rel.as_bytes();
     let i = b.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1);
     let mut p = b[..i].to_vec();
-    p.extend_from_slice(&crate::recv::temp_name(&b[i..], b".part"));
+    p.extend_from_slice(&crate::fs::temp_name::temp_name(&b[i..], b".part"));
     RelPath::new(&p).ok()
 }
 
