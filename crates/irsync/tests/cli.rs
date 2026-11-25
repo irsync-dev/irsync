@@ -975,22 +975,6 @@ fn config_noun_parses() {
 }
 
 #[test]
-fn help_does_not_name_the_old_split_files() {
-    use clap::CommandFactory;
-    fn render(cmd: &mut clap::Command, out: &mut String) {
-        out.push_str(&cmd.render_long_help().to_string());
-        for sub in cmd.get_subcommands_mut() {
-            render(sub, out);
-        }
-    }
-    let mut help = String::new();
-    render(&mut Args::command(), &mut help);
-    for stale in ["exports.toml", "hosts.toml"] {
-        assert!(!help.contains(stale), "{stale:?} still in help");
-    }
-}
-
-#[test]
 fn debug_addr_bare_port_is_loopback() {
     let o = opts(&["--debug-addr", "9464", "a", "b"]);
     assert_eq!(o.debug_addr, Some("127.0.0.1:9464".parse().unwrap()));

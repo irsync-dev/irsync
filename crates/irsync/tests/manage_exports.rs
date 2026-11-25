@@ -12,7 +12,7 @@ fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("f")).unwrap().config
+    reader::read(text, Path::new("f")).unwrap()
 }
 fn typed(m: &pb::Config) -> Config {
     Config::from_message(m, Path::new("f")).unwrap()

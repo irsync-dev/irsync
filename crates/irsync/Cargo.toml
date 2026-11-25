@@ -55,7 +55,6 @@ tonic = { workspace = true, optional = true, features = ["tls-native-roots"] }
 # For the crypto provider: the key exchange list of the endpoint
 # (net/endpoint.rs), and the process default that the OTLP client needs.
 rustls = { workspace = true, features = ["aws-lc-rs"] }
-semver = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }

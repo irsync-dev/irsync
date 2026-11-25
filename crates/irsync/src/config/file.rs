@@ -1,19 +1,15 @@
 //! `irsync.toml` as one file: settings, servers, clients, exports and
 //! grants.
-//! A `hosts.toml` or `exports.toml` beside it, once read as part of it, is
-//! ignored with a warning.
 
 use super::clients::Clients;
 use super::exports::Exports;
 use super::paths::Paths;
-use super::reader::read_values_any;
+use super::reader::read_values;
 use super::servers::Servers;
 use super::settings::Settings;
 use super::{read_optional, ConfigError};
 use irsync_proto::config as pb;
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::Path;
 
 /// Everything irsync is configured with, as of one read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,50 +20,12 @@ pub struct Config {
     pub exports: Exports,
 }
 
-/// Those of `hosts.toml` and `exports.toml` that exist beside `config`, in
-/// that order. They were split files once; nothing reads them now.
-pub fn ignored_split_files(config: &Path) -> Vec<PathBuf> {
-    let dir = config.parent().unwrap_or(Path::new(""));
-    ["hosts.toml", "exports.toml"]
-        .into_iter()
-        .map(|name| dir.join(name))
-        .filter(|p| p.exists())
-        .collect()
-}
-
-/// Says on stderr that a `hosts.toml` or `exports.toml` beside `config` is
-/// ignored, the first time this process finds it. Every read of the config
-/// calls this, for use and for editing alike. Printed, not logged, so that
-/// neither `-q` nor a command that does not log hides it: the file may
-/// hold the grants a server ran on.
-pub fn warn_ignored_split_files(config: &Path) {
-    for split in ignored_split_files(config) {
-        if first_sighting(&split) {
-            eprintln!(
-                "irsync: warning: ignoring {}: hosts.toml and exports.toml are no longer read; move its tables into {}",
-                split.display(),
-                config.display()
-            );
-        }
-    }
-}
-
-/// True the first time this process asks about `path`, false after: a
-/// daemon loads the config for every connection and warns only once.
-pub fn first_sighting(path: &Path) -> bool {
-    static SEEN: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
-    SEEN.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(path.to_path_buf())
-}
-
 impl Config {
-    /// Parses the text of the config file, of any layout (see
-    /// [`super::reader::read`]). Without its comments, which the typed
-    /// view has no use for: the daemon parses the file for every
-    /// connection.
+    /// Parses the text of the config file. Without its comments, which
+    /// the typed view has no use for: the daemon parses the file for
+    /// every connection.
     pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
-        Self::from_message(&read_values_any(text, path)?, path)
+        Self::from_message(&read_values(text, path)?, path)
     }
 
     /// The typed view of the message: the defaults for what it leaves
@@ -83,11 +41,8 @@ impl Config {
         })
     }
 
-    /// `paths.config`, or the defaults when it is missing. A `hosts.toml`
-    /// or `exports.toml` beside it is not read; see
-    /// [`warn_ignored_split_files`].
+    /// `paths.config`, or the defaults when it is missing.
     pub fn load(paths: &Paths) -> Result<Config, ConfigError> {
-        warn_ignored_split_files(&paths.config);
         let text = read_optional(&paths.config)?.unwrap_or_default();
         Self::parse(&text, &paths.config)
     }

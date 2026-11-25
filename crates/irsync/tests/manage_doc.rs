@@ -9,7 +9,7 @@ fn id(n: u8) -> iroh::EndpointId {
 }
 
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("irsync.toml")).unwrap().config
+    reader::read(text, Path::new("irsync.toml")).unwrap()
 }
 
 /// A `state_dir` line for a config in `dir`: a save then looks for a
@@ -132,7 +132,7 @@ fn a_save_that_would_not_load_leaves_the_file_and_frees_the_lock() {
 fn a_file_that_does_not_load_cannot_be_edited() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("irsync.toml");
-    irsync::fs::private::write(&path, "[hosts.nas]\nendpoint_id = \"nope\"\n").unwrap();
+    irsync::fs::private::write(&path, "[servers.nas]\nendpoint_id = \"nope\"\n").unwrap();
     let e = lock_config(&path).unwrap().load().unwrap_err();
     assert!(e.to_string().contains("irsync.toml:2:"), "{e}");
 }
@@ -373,37 +373,11 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     }
 }
 
-/// A file of layout 1 is converted when it is loaded for an edit and saved
-/// in the current layout, with the same comments; a file of the current
-/// layout gets `config_version` on its first save.
+/// A file without `config_version` gets it on its first save.
 #[test]
-fn a_save_writes_the_current_layout() {
+fn a_save_writes_config_version() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
-    irsync::fs::private::write(
-        &path,
-        format!(
-            "{2}# the nas\n[hosts.nas]\nendpoint_id = \"{0}\"\nclient_id = \"{1}\" # its client\n\n[all]\nrw = [\"nas\"]\n",
-            id(1),
-            id(2),
-            state_line(d.path())
-        ),
-    )
-    .unwrap();
-    let mut lock = lock_config(&path).unwrap();
-    let mut m = lock.load().unwrap();
-    assert_eq!(m.config_version, Some(2));
-    lock.save(&mut m).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        format!(
-            "config_version = 2\n{2}\n# the nas\n[servers.nas]\nendpoint_id = \"{0}\"\n\n[clients.nas]\nclient_id = \"{1}\" # its client\nall_exports = \"rw\"\n",
-            id(1),
-            id(2),
-            state_line(d.path())
-        )
-    );
-
     irsync::fs::private::write(
         &path,
         format!("{}[client]\nparallel = 2\n", state_line(d.path())),

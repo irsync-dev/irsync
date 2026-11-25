@@ -1,6 +1,5 @@
 use irsync::authz::Access;
 use irsync::config::clients::Right;
-use irsync::config::legacy_v1;
 use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::clients::{
@@ -14,18 +13,15 @@ fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
 
-/// A message from a file of layout 1 (`[hosts]`), which `legacy_v1` splits
-/// into servers and clients; `config_version` is cleared so `write` does
+/// The message of `text`; `config_version` stays unset, so `write` does
 /// not print it.
 fn msg(text: &str) -> pb::Config {
-    let mut m = legacy_v1::read(text, Path::new("f")).unwrap().config;
-    m.config_version = None;
-    m
+    reader::read(text, Path::new("f")).unwrap()
 }
 
 fn named_everywhere() -> String {
     format!(
-        "[hosts.box]\nclient_id = \"{}\"\n[exports.a]\npath = \"/a\"\nrw = [\"box\", \"x\"]\n\
+        "[clients.box]\nclient_id = \"{}\"\n[exports.a]\npath = \"/a\"\nrw = [\"box\", \"x\"]\n\
          [exports.b]\npath = \"/b\"\nrw = [\"box\"]\n\
          [exports.p]\npath = \"/p\"\nro = [\"y\", \"box\"]\n\
          [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n",
@@ -65,7 +61,7 @@ fn add_refuses_an_invalid_name() {
 #[test]
 fn remove_without_grants() {
     let mut m = msg(&format!(
-        "[hosts.box]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n",
+        "[clients.box]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n",
         id(1)
     ));
     assert_eq!(client_remove(&mut m, "box", false).unwrap(), 0);
@@ -119,7 +115,7 @@ fn rename_renames_the_client_and_every_grant() {
 #[test]
 fn rename_keeps_place_and_comments() {
     let mut m = msg(&format!(
-        "[hosts.a]\nclient_id = \"{}\"\n\n# the old box\n[hosts.box] # header\n\
+        "[clients.a]\nclient_id = \"{}\"\n\n# the old box\n[clients.box] # header\n\
          client_id = \"{}\" # id\n",
         id(1),
         id(2)
@@ -134,7 +130,7 @@ fn rename_keeps_place_and_comments() {
 #[test]
 fn rename_to_an_existing_name_or_bad_name_is_refused() {
     let mut m = msg(&format!(
-        "{}[hosts.taken]\nclient_id = \"{}\"\n",
+        "{}[clients.taken]\nclient_id = \"{}\"\n",
         named_everywhere(),
         id(2)
     ));
@@ -186,7 +182,6 @@ fn client_file() -> pb::Config {
         Path::new("f"),
     )
     .unwrap()
-    .config
 }
 
 #[test]

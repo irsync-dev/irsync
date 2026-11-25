@@ -21,7 +21,7 @@ fn peer(n: u8) -> PeerSpec {
     }
 }
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("f")).unwrap().config
+    reader::read(text, Path::new("f")).unwrap()
 }
 /// The typed config the message builds; panics when it does not load.
 fn typed(m: &pb::Config) -> Config {

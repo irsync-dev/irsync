@@ -2127,7 +2127,6 @@ dependencies = [
  "rpassword",
  "rusqlite",
  "rustls",
- "semver",
  "serde",
  "sha2",
  "ssh-key",

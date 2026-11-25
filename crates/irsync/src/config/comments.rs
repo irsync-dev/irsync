@@ -37,53 +37,26 @@ use toml_edit::{DocumentMut, Item, RawString, TableLike, Value};
 /// is an error rather than a message without comments, which the next
 /// save would write without them.
 pub(crate) fn attach(text: &str, path: &Path, msg: &mut pb::Config) -> Result<(), ConfigError> {
-    attach_with(text, path, msg, &|_, place| place)
-}
-
-/// Like [`attach`], but runs `map` on each place before it is resolved,
-/// so a caller can move the comments of one table to another (those of
-/// `[hosts.N]` to a server or a client).
-pub(crate) fn attach_with(
-    text: &str,
-    path: &Path,
-    msg: &mut pb::Config,
-    map: &dyn Fn(&pb::Config, Place) -> Place,
-) -> Result<(), ConfigError> {
-    attach_doc_with(&document(text, path)?, msg, map);
-    Ok(())
-}
-
-/// The text of a config file as `toml_edit` reads it, with its comments;
-/// an error at its line when it does not take the text (see [`attach`]).
-pub(crate) fn document(text: &str, path: &Path) -> Result<DocumentMut, ConfigError> {
-    text.parse::<DocumentMut>().map_err(|e| ConfigError::File {
+    let doc = text.parse::<DocumentMut>().map_err(|e| ConfigError::File {
         path: path.to_path_buf(),
         line: e.span().map(|s| line_of(text, s.start)),
         message: e.message().to_string(),
-    })
-}
-
-/// [`attach_with`] for a file already read by [`document`].
-pub(crate) fn attach_doc_with(
-    doc: &DocumentMut,
-    msg: &mut pb::Config,
-    map: &dyn Fn(&pb::Config, Place) -> Place,
-) {
+    })?;
     let mut walk = Walk {
         lines: Vec::new(),
         at_start: true,
     };
-    walk.document(doc);
+    walk.document(&doc);
     for (place, line) in walk.lines {
-        let place = map(msg, place);
         put(msg, place, line);
     }
+    Ok(())
 }
 
 /// What a comment belongs to: a table by its path, a key in a table, or
 /// an element of the array under a key.
 #[derive(Clone)]
-pub(crate) enum Spot {
+enum Spot {
     Table(Vec<String>),
     Key(Vec<String>, String),
     Entry(Vec<String>, String, usize),
@@ -91,7 +64,7 @@ pub(crate) enum Spot {
 
 /// Where a line goes in the message.
 #[derive(Clone)]
-pub(crate) enum Place {
+enum Place {
     Header,
     Footer,
     Tail(Vec<String>),
@@ -576,35 +549,5 @@ mod tests {
         attach(&text, Path::new("irsync.toml"), &mut got).unwrap();
         assert_eq!(got, want);
         assert_eq!(crate::config::writer::write(&got), text);
-    }
-
-    /// `attach_with` runs the map on each place before it is resolved.
-    #[test]
-    fn attach_with_maps_places_first() {
-        let mut msg = pb::Config {
-            clients: vec![pb::ClientEntry {
-                name: "lap".into(),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        attach_with(
-            "# above\n[hosts.lap] # same line\n",
-            Path::new("irsync.toml"),
-            &mut msg,
-            &|_, place| match place {
-                Place::Above(Spot::Table(p)) if p[0] == "hosts" => {
-                    Place::Above(Spot::Table(vec!["clients".into(), p[1].clone()]))
-                }
-                Place::Trailing(Spot::Table(p)) if p[0] == "hosts" => {
-                    Place::Trailing(Spot::Table(vec!["clients".into(), p[1].clone()]))
-                }
-                other => other,
-            },
-        )
-        .unwrap();
-        let c = msg.clients[0].comment.as_ref().unwrap();
-        assert_eq!(c.trailing, "# same line");
-        assert!(msg.header.is_empty() && msg.footer.is_empty());
     }
 }

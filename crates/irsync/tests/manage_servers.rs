@@ -1,4 +1,4 @@
-use irsync::config::legacy_v1;
+use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::servers::{
     server_add, server_add_ssh_alias, server_list, server_names, server_remove, server_rename,
@@ -12,20 +12,17 @@ fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
 
-/// A message from a file of layout 1 (`[hosts]`), which `legacy_v1` splits
-/// into servers and clients; `config_version` is cleared so `write` does
+/// The message of `text`; `config_version` stays unset, so `write` does
 /// not print it.
 fn msg(text: &str) -> pb::Config {
-    let mut m = legacy_v1::read(text, Path::new("f")).unwrap().config;
-    m.config_version = None;
-    m
+    reader::read(text, Path::new("f")).unwrap()
 }
 use std::time::Duration;
 
 /// A server and a client of the same name, and grants naming the client.
 fn both() -> String {
     format!(
-        "[hosts.box]\nendpoint_id = \"{}\"\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n",
+        "[servers.box]\nendpoint_id = \"{}\"\n[clients.box]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n",
         id(1),
         id(2)
     )
@@ -116,8 +113,8 @@ fn remove_ignores_grants_and_keeps_the_client() {
 #[test]
 fn rename_keeps_place_and_comments_and_touches_no_grant() {
     let mut m = msg(&format!(
-        "[hosts.a]\nendpoint_id = \"{}\"\n\n# the old box\n[hosts.box] # header\n\
-         endpoint_id = \"{}\" # id\n[hosts.c]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"c\"]\n",
+        "[servers.a]\nendpoint_id = \"{}\"\n\n# the old box\n[servers.box] # header\n\
+         endpoint_id = \"{}\" # id\n[clients.c]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"c\"]\n",
         id(1),
         id(2),
         id(3)
@@ -139,7 +136,7 @@ fn rename_keeps_place_and_comments_and_touches_no_grant() {
 #[test]
 fn rename_to_an_existing_name_or_bad_name_is_refused_and_to_itself_is_a_no_op() {
     let mut m = msg(&format!(
-        "[hosts.a]\nendpoint_id = \"{}\"\n[hosts.b]\nendpoint_id = \"{}\"\n",
+        "[servers.a]\nendpoint_id = \"{}\"\n[servers.b]\nendpoint_id = \"{}\"\n",
         id(1),
         id(2)
     ));

@@ -22,55 +22,6 @@ use irsync_proto::config as pb;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The first irsync release that reads `config_version` 2. If stage 2 of
-/// the server/client split ships in a later release, the release bump
-/// changes this to that release's version.
-pub const READS_CONFIG_V2: &str = "0.1.0-beta.7";
-
-/// Whether a daemon whose lock record says `version` (its long version,
-/// whose first word is its package version) reads layout 2.
-fn reads_config_v2(version: &str) -> bool {
-    let Some(word) = version.split_whitespace().next() else {
-        return false;
-    };
-    if word == env!("CARGO_PKG_VERSION") {
-        return true;
-    }
-    match (
-        semver::Version::parse(word),
-        semver::Version::parse(READS_CONFIG_V2),
-    ) {
-        (Ok(have), Ok(need)) => have >= need,
-        _ => false,
-    }
-}
-
-/// Refuses to write a file of layout 2 over one that does not say so
-/// (a file of layout 1, one without `config_version`, or none at all)
-/// while a daemon holds the lock of the state dir of `config` and cannot
-/// read layout 2: it would find a file it cannot read at its next reload.
-/// `restarting`: the pid of a daemon the caller stops and starts again
-/// with this irsync right after the save; it is let pass.
-fn check_daemon(config: &Config, restarting: Option<u32>) -> Result<(), ManageError> {
-    let state_dir = &config.settings.state_dir;
-    let Some(info) = crate::daemon_lock::probe(state_dir) else {
-        return Ok(());
-    };
-    if info.pid != 0 && (reads_config_v2(&info.version) || restarting == Some(info.pid)) {
-        return Ok(());
-    }
-    let version = if info.version.trim().is_empty() {
-        "unknown".to_string()
-    } else {
-        info.version
-    };
-    Err(ManageError::OldDaemon {
-        state_dir: state_dir.clone(),
-        pid: info.pid,
-        version,
-    })
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum ManageError {
     #[error("no home directory to expand ~")]
@@ -84,15 +35,6 @@ pub enum ManageError {
     Config(#[from] ConfigError),
     #[error("export {0:?} already exists")]
     Exists(String),
-    #[error(
-        "the irsync daemon running for {} (pid {pid}, version {version}) cannot read the file this would write (config_version 2, read from irsync {READS_CONFIG_V2} on); restart the daemon with this irsync, then run the command again",
-        state_dir.display()
-    )]
-    OldDaemon {
-        state_dir: PathBuf,
-        pid: u32,
-        version: String,
-    },
     #[error("no such entry {0:?}")]
     NotFound(String),
     #[error("server {0:?} already exists")]
@@ -128,30 +70,10 @@ pub enum ManageError {
     Locked { path: PathBuf, lock: PathBuf },
     #[error("invalid key {0:?}")]
     BadKey(String),
-    #[error("{}", unknown_key_text(.0))]
+    #[error("unknown key {0:?}")]
     UnknownKey(String),
     #[error("{0}")]
     BadValue(String),
-}
-
-/// The message for a key `config` does not know, with a pointer for the
-/// keys of the old `[hosts]` table.
-fn unknown_key_text(key: &str) -> String {
-    match reader::dotted_key(key) {
-        Some(path) if path.first().is_some_and(|p| p == "hosts") => {
-            format!("unknown key {key:?}; hosts are now servers.NAME and clients.NAME")
-        }
-        Some(path) if path.first().is_some_and(|p| p == "all") => {
-            format!("unknown key {key:?}; a client's right over every export is clients.NAME.all_exports")
-        }
-        Some(path) if path.first().is_some_and(|p| p == "immediate") => {
-            format!("unknown key {key:?}; a client's right over any path is clients.NAME.all_paths")
-        }
-        Some(path) if path == ["daemon", "immediate"] => {
-            format!("unknown key {key:?}; it is now daemon.allow_all_paths")
-        }
-        _ => format!("unknown key {key:?}"),
-    }
 }
 
 /// A comment kept in a config file must be one line of printable text.
@@ -176,21 +98,14 @@ pub fn id_of(bytes: &[u8]) -> Option<EndpointId> {
 /// Load the config file for editing; a missing file is the empty message.
 /// A file open to other users is refused as it is for use (see
 /// [`Config::load`]), and a file the reader refuses is that error, with
-/// its line. A file of an older layout is converted (see [`reader::read`]).
+/// its line.
 pub fn load_message(path: &Path) -> Result<pb::Config, ManageError> {
-    let read = read_file(path)?;
-    let mut config = read.config;
-    // An old file does not say `config_version`: the reader fills in the
-    // new one when it converts. Report the layout the file has.
-    if read.version == 1 {
-        config.config_version = Some(1);
-    }
-    Ok(config)
+    read_file(path)
 }
 
 /// The config file at `path` as [`reader::read`] reads it; see
 /// [`load_message`].
-fn read_file(path: &Path) -> Result<reader::Read, ManageError> {
+fn read_file(path: &Path) -> Result<pb::Config, ManageError> {
     let text = match crate::config::read_optional(path) {
         Ok(t) => t.unwrap_or_default(),
         Err(ConfigError::Io { path, source }) => return Err(ManageError::Io { path, source }),
@@ -202,8 +117,8 @@ fn read_file(path: &Path) -> Result<reader::Read, ManageError> {
 /// Save the config file, refusing a message that would not load; takes
 /// and releases the file's lock (see [`lock_config`]). Like
 /// [`ConfigLock::save`], it first writes peers by their aliases.
-/// The file is read under the lock first, so the save makes the same
-/// check of a running daemon as one after [`ConfigLock::load`].
+/// The file is read under the lock first, so a file that does not load
+/// is not written over.
 pub fn save_config(path: &Path, msg: &mut pb::Config) -> Result<(), ManageError> {
     let mut lock = lock_config(path)?;
     lock.load()?;
@@ -262,17 +177,6 @@ pub struct ConfigLock {
     path: PathBuf,
     lock: PathBuf,
     file: Option<std::fs::File>,
-    /// The layout of the file as [`ConfigLock::load`] read it; `None`
-    /// before a load.
-    version: Option<u32>,
-    /// Whether the file itself says `config_version` 2, so any irsync
-    /// that reads it reads what a save writes. False before a load.
-    says_v2: bool,
-    /// What converting the file left out (see [`reader::Read::dropped`]).
-    dropped: Vec<String>,
-    /// A daemon the caller restarts after the save (see
-    /// [`ConfigLock::restarting`]).
-    restarting: Option<u32>,
 }
 
 /// Takes the lock of `path`, creating its directory if needed.
@@ -297,10 +201,6 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
             path: path.to_path_buf(),
             lock,
             file: Some(file),
-            version: None,
-            says_v2: false,
-            dropped: Vec::new(),
-            restarting: None,
         }),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(ManageError::Locked {
             path: path.to_path_buf(),
@@ -311,28 +211,9 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
 }
 
 impl ConfigLock {
-    /// Lets [`ConfigLock::save`] write a file that the running daemon
-    /// `pid` cannot read: the caller stops that daemon and starts this
-    /// irsync's right after the save, as `ssh-setup` does with an older
-    /// daemon of its own.
-    pub fn restarting(&mut self, pid: Option<u32>) {
-        self.restarting = pid;
-    }
-
     /// The file as it is now (empty when missing); see [`load_message`].
-    /// Records the layout it was in, and what a conversion left out, for
-    /// [`ConfigLock::save`].
     pub fn load(&mut self) -> Result<pb::Config, ManageError> {
-        // An edit must not pass a split file by in silence either.
-        crate::config::file::warn_ignored_split_files(&self.path);
-        let read = read_file(&self.path)?;
-        self.version = Some(read.version);
-        // A file of layout 2 without the key reads as layout 2 too; only
-        // the key keeps an older irsync from reading it.
-        self.says_v2 =
-            read.version == CONFIG_VERSION && read.config.config_version == Some(CONFIG_VERSION);
-        self.dropped = read.dropped;
-        Ok(read.config)
+        read_file(&self.path)
     }
 
     /// Writes `msg` over the file, in the writer's form and the current
@@ -340,18 +221,12 @@ impl ConfigLock {
     /// lock. Peers that the clients have a name for are written by it
     /// first (see [`canonicalize_doc`]), so every save leaves the file in
     /// one form. A message that would not load is refused and the file
-    /// left as it was, and so is one that a running older daemon could
-    /// not read when the file did not say `config_version` 2 (see
-    /// [`check_daemon`]). When the file loaded was of layout 1, each thing
-    /// its conversion left out is noted on stderr once the file is saved.
+    /// left as it was.
     pub fn save(mut self, msg: &mut pb::Config) -> Result<(), ManageError> {
         msg.config_version = Some(CONFIG_VERSION);
         if canonicalize_doc(msg, &self.path)? {
             // The rewrite only renames and drops entries; checked all the same.
             typed(msg, &self.path)?;
-        }
-        if !self.says_v2 {
-            check_daemon(&typed(msg, &self.path)?, self.restarting)?;
         }
         let io = |source| ManageError::Io {
             path: self.lock.clone(),
@@ -367,11 +242,6 @@ impl ConfigLock {
         std::fs::rename(&self.lock, &self.path).map_err(io)?;
         // Renamed away: nothing to remove on drop.
         self.file = None;
-        if self.version == Some(1) {
-            for note in &self.dropped {
-                eprintln!("irsync: note: {note}");
-            }
-        }
         Ok(())
     }
 }
@@ -502,17 +372,5 @@ impl PeerSpec {
             PeerSpec::Alias(a) => a.clone(),
             PeerSpec::Id { id, .. } => id.to_string(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A typo here would make every daemon count as too old.
-    #[test]
-    fn reads_config_v2_is_a_semver_version() {
-        semver::Version::parse(READS_CONFIG_V2).unwrap();
-        assert!(reads_config_v2(&format!("{READS_CONFIG_V2} (abc)")));
     }
 }

@@ -129,7 +129,7 @@ fn as_root_the_config_key_lets_the_daemon_start_from_another_file() {
 /// root": the owner may have set the key in it.
 #[test]
 fn as_root_a_broken_config_is_reported_as_such() {
-    let (_d, home) = home("[daemon]\nallow_root = true\n[hosts\n");
+    let (_d, home) = home("[daemon]\nallow_root = true\n[servers\n");
     let r = daemon(&home, true, &[]);
     assert!(!r.started, "{}", r.err);
     assert_eq!(r.code, Some(1), "{}", r.err);

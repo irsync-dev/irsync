@@ -683,7 +683,7 @@ fn grant_list_by_export_by_peer_and_for_an_unknown_name() {
 }
 
 #[test]
-fn host_list_refuses_an_old_layout_file() {
+fn server_list_refuses_an_unknown_table() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     let cfg = home.join(".config/irsync");
@@ -697,7 +697,7 @@ fn host_list_refuses_an_old_layout_file() {
     let o = irsync(&home, &["server", "list"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        !o.status.success() && err.contains("servers live under [servers.home]"),
+        !o.status.success() && err.contains("unknown key \"home\""),
         "{err}"
     );
 }
@@ -1061,61 +1061,6 @@ fn show_names_the_config_file_once() {
 }
 
 #[test]
-fn split_file_warns_on_stderr_and_is_not_read() {
-    let d = tempfile::tempdir().unwrap();
-    let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
-    std::fs::create_dir_all(&cfg).unwrap();
-    let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
-    irsync::fs::private::write(
-        cfg.join("hosts.toml"),
-        format!("[hosts.box]\nendpoint_id = \"{id}\"\n"),
-    )
-    .unwrap();
-    let o = irsync(&home, &["server", "list"]);
-    let (out, err) = (
-        String::from_utf8_lossy(&o.stdout),
-        String::from_utf8_lossy(&o.stderr),
-    );
-    assert!(o.status.success(), "{err}");
-    assert!(!out.contains("box"), "{out}");
-    let path = cfg.join("hosts.toml").display().to_string();
-    assert!(
-        err.contains(&format!("ignoring {path}")) && err.contains("no longer read"),
-        "{err}"
-    );
-}
-
-#[test]
-fn host_add_works_beside_a_split_hosts_file() {
-    let d = tempfile::tempdir().unwrap();
-    let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
-    std::fs::create_dir_all(&cfg).unwrap();
-    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
-    irsync::fs::private::write(cfg.join("hosts.toml"), "").unwrap();
-    // The editing commands warn too: the new table lands in irsync.toml
-    // while whatever hosts.toml held stays ignored.
-    let warning = format!("ignoring {}", cfg.join("hosts.toml").display());
-    for args in [
-        &["server", "add", "box", &id][..],
-        &["config", "set", "client.parallel", "2"],
-        &["config", "unset", "client.parallel"],
-        &["server", "remove", "box"],
-    ] {
-        let o = irsync(&home, args);
-        let err = String::from_utf8_lossy(&o.stderr);
-        assert!(o.status.success(), "{args:?}: {err}");
-        assert_eq!(err.matches(&warning).count(), 1, "{args:?}: {err}");
-    }
-    ok(&home, &["server", "add", "box", &id]);
-    assert!(std::fs::read_to_string(cfg.join("irsync.toml"))
-        .unwrap()
-        .contains("[servers.box]"));
-    assert_eq!(std::fs::read_to_string(cfg.join("hosts.toml")).unwrap(), "");
-}
-
-#[test]
 fn get_prints_defaults_and_exits_1_for_unset_optional_keys() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
@@ -1153,7 +1098,7 @@ fn get_prints_defaults_and_exits_1_for_unset_optional_keys() {
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&o.stderr),
-        "irsync config get: unknown key \"hosts.laptop\"; hosts are now servers.NAME and clients.NAME\n"
+        "irsync config get: unknown key \"hosts.laptop\"\n"
     );
 }
 
@@ -1173,7 +1118,7 @@ fn set_with_a_bad_value_leaves_the_file_untouched() {
         ),
         (
             &["config", "set", "hosts.home.endpoint_id", &id],
-            "hosts are now servers.NAME and clients.NAME",
+            "hosts.home.endpoint_id",
         ),
         (
             &["config", "set", "exports.p.path", "./x"],
@@ -1233,7 +1178,7 @@ fn set_unset_and_the_nouns_share_one_file() {
     assert_eq!(o.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&o.stderr),
-        "irsync config set: unknown key \"all.rw\"; a client's right over every export is clients.NAME.all_exports\n"
+        "irsync config set: unknown key \"all.rw\"\n"
     );
     ok(
         &home,
@@ -1741,7 +1686,7 @@ fn config_unset_does_not_remove_a_client_that_grants_name() {
 #[test]
 fn server_and_client_remove_on_a_file_that_does_not_load_give_the_plain_error() {
     let d = tempfile::tempdir().unwrap();
-    let (home, file) = home_with(&d, "[hosts.box]\nendpoint_id = 5\n");
+    let (home, file) = home_with(&d, "[servers.box]\nendpoint_id = 5\n");
     let plain = String::from_utf8_lossy(&irsync(&home, &["server", "list"]).stderr)
         .replace("irsync server list: ", "");
     assert!(plain.contains(&file.display().to_string()), "{plain}");
@@ -1814,8 +1759,8 @@ fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
     );
 }
 
-/// An old file's host that grants name became a server and a client.
-/// A new daemon id moves the server only: the grants stay with the client.
+/// A machine that is a server and a client: a new daemon id moves the
+/// server only, and the grants stay with the client.
 #[test]
 fn host_add_moves_the_server_and_not_the_grants() {
     let d = tempfile::tempdir().unwrap();
@@ -1823,7 +1768,8 @@ fn host_add_moves_the_server_and_not_the_grants() {
     let (home, _) = home_with(
         &d,
         &format!(
-            "[hosts.box]\nendpoint_id = \"{old}\"\n[all]\nrw = [\"box\"]\n\
+            "[servers.box]\nendpoint_id = \"{old}\"\n\
+             [clients.box]\nclient_id = \"{old}\"\nall_exports = \"rw\"\n\
              [exports.p]\npath = \"/p\"\nro = [\"{old}\"]\n"
         ),
     );
@@ -2671,40 +2617,6 @@ fn a_key_or_passphrase_file_open_to_other_users_stops_the_command() {
     assert_eq!(ok(&home, &["id", "show", "--passphrase-file", pf_s]), shown);
 }
 
-/// The first save of an old file writes the current layout and says what
-/// the conversion left out, once; the next save has nothing to say.
-#[test]
-fn the_first_save_of_an_old_file_notes_what_it_dropped() {
-    let d = tempfile::tempdir().unwrap();
-    let (home, file) = home_with(
-        &d,
-        &format!(
-            "[hosts.phone]\nclient_id = \"{}\"\naddress = [\"phone.lan:1\"]\n[all]\nro = [\"phone\"]\n",
-            peer_id(5)
-        ),
-    );
-    // Read only: nothing is written, nothing said.
-    let o = irsync(&home, &["config", "get", "client.parallel"]);
-    assert!(o.status.success());
-    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
-    let o = irsync(&home, &["config", "set", "client.parallel", "2"]);
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(
-        String::from_utf8_lossy(&o.stderr),
-        "irsync: note: [hosts.phone] had a client_id and no endpoint_id: dropped address (they only apply to a server)\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(&file).unwrap(),
-        format!(
-            "config_version = 2\n\n[client]\nparallel = 2\n\n[clients.phone]\nclient_id = \"{}\"\nall_exports = \"ro\"\n",
-            peer_id(5)
-        )
-    );
-    let o = irsync(&home, &["config", "set", "client.parallel", "3"]);
-    assert!(o.status.success());
-    assert_eq!(String::from_utf8_lossy(&o.stderr), "");
-}
-
 /// `irsync host` is gone: any use exits 1 with a pointer, and a line that
 /// starts with it is no sync.
 #[test]
@@ -2812,22 +2724,6 @@ fn grant_add_names_a_server_only_name() {
     assert_eq!(o.status.code(), Some(1));
     let e = String::from_utf8_lossy(&o.stderr);
     assert!(e.contains("box") && e.contains("client"), "{e}");
-}
-
-/// An old file reports the layout it has, not the one it is read as.
-#[test]
-fn config_version_of_an_old_file_is_what_the_file_says() {
-    let d = tempfile::tempdir().unwrap();
-    let id = peer_id(5);
-    let (home, file) = home_with(&d, &format!("[hosts.box]\nendpoint_id = \"{id}\"\n"));
-    assert_eq!(ok(&home, &["config", "get", "config_version"]), "1\n");
-    assert!(ok(&home, &["config", "list"]).contains("config_version = 1\n"));
-    // Not rewritten by reading.
-    assert!(std::fs::read_to_string(&file)
-        .unwrap()
-        .contains("[hosts.box]"));
-    ok(&home, &["client", "add", "amy", &peer_id(6)]);
-    assert_eq!(ok(&home, &["config", "get", "config_version"]), "2\n");
 }
 
 /// `server add --pq-key-exchange` sets the server's key, and a later

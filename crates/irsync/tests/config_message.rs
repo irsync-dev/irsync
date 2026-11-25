@@ -10,9 +10,9 @@ use std::path::Path;
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
-/// The message `reader::read` reads, whatever the layout of `text`.
+/// The message `reader::read` reads.
 fn read(text: &str, path: &Path) -> Result<pb::Config, irsync::config::ConfigError> {
-    reader::read(text, path).map(|r| r.config)
+    reader::read(text, path)
 }
 fn values(text: &str) -> pb::Config {
     read_values(text, Path::new("irsync.toml")).unwrap()
@@ -264,11 +264,10 @@ fn from_message_checks_each_edit_again() {
 #[test]
 fn errors_are_those_of_config_parse() {
     // The messages `Config::parse` gave before it read through the message.
-    // A file with `[hosts]` is of layout 1 and fails as it always did.
     for (text, message) in [
         (
-            "[hosts.nas]\nendpoint_id = \"nope\"\n",
-            "f:2: host \"nas\": invalid endpoint id: nope",
+            "[servers.nas]\nendpoint_id = \"nope\"\n",
+            "f:2: server \"nas\": invalid endpoint id: nope",
         ),
         (
             "[exports.p]\npath = \"rel\"\n",
@@ -276,23 +275,19 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[nas]\nendpoint_id = \"x\"\n",
-            "f:1: unknown table \"nas\"; servers live under [servers.nas], clients under [clients.nas]",
+            "f:1: unknown key \"nas\"",
         ),
         (
             "rw = [\"x\"]\n",
-            "f:1: unknown key \"rw\"; a client's right over every export is all_exports under [clients.NAME]",
+            "f:1: unknown key \"rw\"",
         ),
         (
             "[daemon]\nlisten = [\"1.2.3.4:1\", \"1.2.3.5:1\"]\n",
             "f:2: at most one IPv4 and one IPv6 listen address",
         ),
         (
-            "[immediate]\nro = [\"x\"]\n",
-            "f:1: [immediate] is not read any more: give a client all_paths = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME all_paths=rw)",
-        ),
-        (
-            "[hosts.all]\nendpoint_id = \"x\"\n",
-            "f:1: invalid host alias \"all\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId",
+            "[servers.all]\nendpoint_id = \"x\"\n",
+            "f:1: invalid name \"all\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId",
         ),
         (
             "[client]\nbogus = 1\n",
@@ -323,16 +318,16 @@ fn errors_are_those_of_config_parse() {
             "f:2: unknown variant `udp`, expected `grpc` or `http`",
         ),
         (
-            "[hosts.nas]\naddress = [\"nope\"]\n",
+            "[servers.nas]\naddress = [\"nope\"]\n",
             "f:2: invalid address \"nope\": expected ip:port, [ipv6]:port or host:port",
         ),
         (
-            "[hosts.nas]\nssh = \"nas\"\n",
-            "f:1: host \"nas\": needs an endpoint_id (its daemon), a client_id, or both",
+            "[servers.nas]\nssh = \"nas\"\n",
+            "f:1: server \"nas\": needs an endpoint_id",
         ),
         (
-            "[hosts.b]\nendpoint_id = \"x\"\n[hosts.a]\nendpoint_id = \"y\"\n",
-            "f:4: host \"a\": invalid endpoint id: y",
+            "[servers.b]\nendpoint_id = \"x\"\n[servers.a]\nendpoint_id = \"y\"\n",
+            "f:4: server \"a\": invalid endpoint id: y",
         ),
         (
             "[exports.p]\nread_only = true\n",
@@ -352,7 +347,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[all]\nrw = \"x\"\n",
-            "f:1: [all] is not read any more: give a client all_exports = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME all_exports=rw)",
+            "f:1: unknown key \"all\"",
         ),
         (
             "identity = 1\n",
@@ -379,7 +374,7 @@ fn errors_are_those_of_config_parse() {
             "f:2: unknown variant `reno`, expected `bbr` or `cubic`",
         ),
         (
-            "[hosts.h]\npq_key_exchange = \"only\"\n",
+            "[servers.h]\npq_key_exchange = \"only\"\n",
             "f:2: unknown variant `only`, expected `prefer` or `require`",
         ),
         (
@@ -411,7 +406,7 @@ fn errors_are_those_of_config_parse() {
             "f:2: invalid type: integer `1`, expected struct Discovery",
         ),
         (
-            "[hosts.nas]\nreconnect = \"x\"\n",
+            "[servers.nas]\nreconnect = \"x\"\n",
             "f:2: bad duration \"x\": expected <number>[s|m|h|d]",
         ),
         (
@@ -423,27 +418,23 @@ fn errors_are_those_of_config_parse() {
             "f:2: unknown field `bogus`, expected `otlp_endpoint` or `otlp_protocol`",
         ),
         (
-            "[hosts.nas]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `client_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`",
-        ),
-        (
-            "[daemon]\nimmediate = true\n",
-            "f:2: [daemon] immediate is now allow_all_paths",
+            "[servers.nas]\nbogus = 1\n",
+            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`",
         ),
         (
             "[daemon.discovery]\ndht = 1\n",
             "f:2: invalid type: integer `1`, expected a boolean",
         ),
         (
-            "[hosts]\nnas = 1\n",
-            "f:2: invalid type: integer `1`, expected struct RawHost",
+            "[servers]\nnas = 1\n",
+            "f:2: invalid type: integer `1`, expected struct RawServer",
         ),
         (
             "[daemon]\nrelay = 1\n",
             "f:2: invalid type: integer `1`, expected a string representing an URL",
         ),
         (
-            "[hosts.nas]\naddress = 1\n",
+            "[servers.nas]\naddress = 1\n",
             "f:2: invalid type: integer `1`, expected a sequence",
         ),
         (
@@ -451,7 +442,7 @@ fn errors_are_those_of_config_parse() {
             "f:1: [exports.p]: invalid type: integer `1`, expected path string",
         ),
         (
-            "[hosts.nas]\nssh_aliases = [1]\n",
+            "[servers.nas]\nssh_aliases = [1]\n",
             "f:2: invalid type: integer `1`, expected a string",
         ),
         (
@@ -487,7 +478,7 @@ fn errors_are_those_of_config_parse() {
             "f:2: invalid type: map, expected a string",
         ),
         (
-            "[hosts.nas]\nendpoint_id = 1\n",
+            "[servers.nas]\nendpoint_id = 1\n",
             "f:2: invalid type: integer `1`, expected a string",
         ),
         (
@@ -1155,12 +1146,9 @@ fn the_current_reader_checks_servers_and_clients_at_their_line() {
     );
     assert_eq!(
         error(&format!("\n[nas]\nendpoint_id = \"{}\"\n", id(1))),
-        "f:2: unknown table \"nas\"; servers live under [servers.nas], clients under [clients.nas]"
+        "f:2: unknown key \"nas\""
     );
-    assert_eq!(
-        error("[nothing]\nx = 1\n"),
-        "f:1: unknown table \"nothing\"; servers live under [servers.nothing], clients under [clients.nothing], exports under [exports.nothing]"
-    );
+    assert_eq!(error("[nothing]\nx = 1\n"), "f:1: unknown key \"nothing\"");
     // A server and a client may have the same name.
     let both = format!(
         "[servers.nas]\nendpoint_id = \"{}\"\n[clients.nas]\nclient_id = \"{}\"\n",

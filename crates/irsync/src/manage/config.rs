@@ -80,9 +80,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
     })
 }
 
-/// The error for a key the file does not know, `key` as typed. The text
-/// of the error, with its pointer for the keys of the old `[hosts]` table,
-/// comes from [`ManageError`]'s Display.
+/// The error for a key the file does not know, `key` as typed.
 pub fn unknown_key(key: &str) -> ManageError {
     ManageError::UnknownKey(key.to_string())
 }
