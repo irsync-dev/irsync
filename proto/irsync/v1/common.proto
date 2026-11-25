@@ -201,6 +201,9 @@ message ChunkRecord {
   Hash hash = 3;
 }
 
+// A listing entry, and a row of each side's index. The listing sends every
+// field but `dev` and `inode`, which are the listing side's own (its
+// `-H` grouping, its index) and are cleared before an entry is sent.
 message FileEntry {
   bytes path = 1; // relative to root, '/'-separated, raw bytes
   // HARDLINK: a regular file sharing the inode of the earlier listed regular
@@ -224,17 +227,16 @@ message FileEntry {
   uint32 gid = 8;
   bytes link_target = 9;
   uint64 rdev = 10;
-  uint64 dev = 11;
-  uint64 inode = 12;
-  uint32 nlink = 13;
-  optional Hash whole_hash = 14; // lazy: absent until computed
-  bool sparse = 15;
-  reserved 16 to 31; // later metadata (xattrs)
+  uint32 nlink = 11;
+  optional Hash whole_hash = 12; // lazy: absent until computed
+  bool sparse = 13;
   // The owner's and group's names on the sending side, empty when the id has
   // none there. A receiver maps them to its own ids when the names exist
   // locally, else keeps the numbers (rsync's rule; --numeric-ids skips this).
-  string user = 32;
-  string group = 33;
+  string user = 14;
+  string group = 15;
+  uint64 dev = 16; // never sent
+  uint64 inode = 17; // never sent
 }
 
 // A source file's stat, as the sender hashed it: what a chunk list was

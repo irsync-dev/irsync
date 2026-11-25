@@ -290,6 +290,18 @@ async fn push_capture_has_both_sides_of_every_message() {
     assert!(recs
         .iter()
         .any(|r| matches!(r.msg, Some(Msg::HelloReply(_))) && r.side() == Side::Daemon));
+    // A listing entry goes on the wire without the lister's device and inode.
+    let entries: Vec<_> = recs
+        .iter()
+        .filter_map(|r| match &r.msg {
+            Some(Msg::ListingFrame(irsync_proto::v1::ListingFrame {
+                frame: Some(irsync_proto::v1::listing_frame::Frame::Entry(e)),
+            })) => Some(e),
+            _ => None,
+        })
+        .collect();
+    assert!(!entries.is_empty());
+    assert!(entries.iter().all(|e| e.dev == 0 && e.inode == 0));
     let chunks: Vec<_> = recs
         .iter()
         .filter_map(|r| match &r.msg {
@@ -311,6 +323,7 @@ async fn push_capture_has_both_sides_of_every_message() {
                 | Some(Msg::DataStreamHeader(_))
                 | Some(Msg::DataChunk(_))
                 | Some(Msg::ListingStreamHeader(_))
+                | Some(Msg::ListingFrame(_))
         ))
         .all(|r| r.session_id.len() == 16));
     // Both sides know their own endpoint id.

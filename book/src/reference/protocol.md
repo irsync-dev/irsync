@@ -68,7 +68,8 @@ unidirectional ones.
 - **The listing stream** is the second. The client opens it right after
   `HelloAck` and starts it with a `ListingStreamHeader` naming the session.
   Each half then carries one side's listing as `ListingFrame`s: an `entry`
-  (a `FileEntry`) per path, in path order; an `error` (a `PathError`)
+  (a `FileEntry`, without `dev` and `inode`, which are the lister's own) per
+  path, in path order; an `error` (a `PathError`)
   wherever entries are missing (a directory that could not be read, right
   after its own entry; an entry that could not be stat'ed); one `end` (a
   `ListingEnd`, with the count of entries and an `incomplete` flag); and the

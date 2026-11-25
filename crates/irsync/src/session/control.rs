@@ -698,12 +698,12 @@ pub(super) fn spawn_listing(
                         .insert(path, crate::hasher::Freshness::of(&item));
                 }
             }
-            send(Frame::Entry(entry.clone()));
+            send(Frame::Entry(wire_entry(entry.clone())));
             sent += 1;
             #[cfg(feature = "test-hooks")]
             if let Some(inject) = &spec.inject {
                 for e in inject(&entry) {
-                    send(Frame::Entry(e));
+                    send(Frame::Entry(wire_entry(e)));
                     sent += 1;
                 }
             }
@@ -1093,6 +1093,14 @@ pub(super) fn capped_errors(errors: &[(RelPath, String)]) -> Vec<PathError> {
         });
     }
     v
+}
+
+/// `e` as it goes on the wire: without the device and inode, which are
+/// this side's own and which the peer never reads.
+pub(super) fn wire_entry(mut e: FileEntry) -> FileEntry {
+    e.dev = 0;
+    e.inode = 0;
+    e
 }
 
 pub(super) fn msg_name(m: &Msg) -> &'static str {

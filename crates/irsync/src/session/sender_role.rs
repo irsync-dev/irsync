@@ -28,8 +28,8 @@ use tracing::Instrument;
 
 use super::control::msg_name;
 use super::control::{
-    capped_errors, is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out,
-    Persister,
+    capped_errors, is_own_temp, spawn_listing, walk_errors, wire_entry, Ev, ListedFiles,
+    ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
 use super::limits::{
@@ -1799,7 +1799,7 @@ async fn recheck(
                         .insert(path.clone());
                     out.send_paced(Msg::Replan(Replan {
                         path: path.as_bytes().to_vec(),
-                        entry: Some(*entry),
+                        entry: Some(wire_entry(*entry)),
                     }))
                     .await;
                 }
@@ -1904,7 +1904,7 @@ async fn check_links(
             }
             out.send_paced(Msg::Unlinked(Unlinked {
                 path: path.as_bytes().to_vec(),
-                entry,
+                entry: entry.map(wire_entry),
             }))
             .await;
         }
