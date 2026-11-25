@@ -8,6 +8,9 @@ use crate::authz::Access;
 use crate::config::clients::{Right, RIGHTS};
 use crate::config::file::Config;
 use crate::config::names::valid_alias;
+use crate::config::paths::Paths;
+use crate::identity::parse_endpoint_id;
+use anyhow::Context;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
@@ -278,4 +281,48 @@ pub fn client_list(msg: &pb::Config) -> Vec<String> {
             line
         })
         .collect()
+}
+
+// The commands, from the config file's lock to the lines they say.
+
+/// `client add NAME ID`: the line to print, and notes on grants that now
+/// apply to another id (see [`moved_grant_notes`]).
+pub fn add(paths: &Paths, name: &str, id: &str) -> anyhow::Result<(String, Vec<String>)> {
+    let id = parse_endpoint_id(id).with_context(|| format!("ID {id:?}"))?;
+    let ((before, old), msg) = super::edit_as_is(&paths.config, |msg| {
+        let before = client_ids(msg, &paths.config);
+        Ok((before, client_add(msg, name, id)?))
+    })?;
+    let notes = moved_grant_notes("client add", &before, &msg, &paths.config);
+    Ok((added_line(name, old, id), notes))
+}
+
+/// `client remove NAME [--force]`; the line to say.
+pub fn remove(paths: &Paths, name: &str, force: bool) -> anyhow::Result<String> {
+    super::load_first(paths)?;
+    let (grants, _) = super::edit(&paths.config, |msg| {
+        remove_client(msg, &paths.config, name, force)
+    })?;
+    Ok(removed_line(name, grants, &paths.config))
+}
+
+/// `client rename OLD NEW`; the line to say.
+pub fn rename(paths: &Paths, old: &str, new: &str) -> anyhow::Result<String> {
+    super::load_first(paths)?;
+    let (grants, _) = super::edit(&paths.config, |msg| {
+        rename_client(msg, &paths.config, old, new)
+    })?;
+    Ok(renamed_line(old, new, grants, &paths.config))
+}
+
+/// `client set NAME RIGHT=ACCESS...`; the line to say, if any.
+pub fn set(paths: &Paths, name: &str, settings: &[String]) -> anyhow::Result<Option<String>> {
+    // Every pair is read before anything changes.
+    let settings: Vec<_> = settings
+        .iter()
+        .map(|s| parse_setting(s))
+        .collect::<Result<_, _>>()?;
+    super::load_first(paths)?;
+    let ((), msg) = super::edit(&paths.config, |msg| client_set(msg, name, &settings))?;
+    Ok(set_line(&msg, name))
 }

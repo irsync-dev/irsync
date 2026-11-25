@@ -24,7 +24,7 @@ use irsync::fs::paths::{escape_path, escape_text};
 use irsync::identity::{load_or_generate, parse_endpoint_id, KeySource, PassphraseSource};
 use irsync::index::Index;
 use irsync::location::Location;
-use irsync::manage::{self, PeerSpec};
+use irsync::manage;
 use irsync::options::{Direction, SyncOptions};
 use irsync::session::{EventBus, Outcome, Party, HASH_WORKERS};
 use irsync::ssh::onboard::SetupFlags;
@@ -924,87 +924,46 @@ fn run_config(c: &ConfigArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 Ok(())
             })(),
         ),
-        ConfigCmd::Set { key, values } => finish(
-            "config set",
-            (|| {
-                let path = cfg::parse_key(key)?;
-                let kind = cfg::kind_of(&path).ok_or_else(|| cfg::unknown_key(key))?;
-                cfg::writable(&path)?;
-                let value = cfg::parse_value(kind, values).with_context(|| key.to_string())?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let before = peer_ids(&msg, &paths.config);
-                cfg::set(&mut msg, &path, value).with_context(|| key.to_string())?;
-                lock.save(&mut msg).with_context(|| key.to_string())?;
-                note_moved_grants(log, "config set", &before, &msg, &paths.config);
-                Ok(())
-            })(),
-        ),
-        ConfigCmd::Unset { key } => finish(
-            "config unset",
-            (|| {
-                let path = cfg::parse_key(key)?;
-                if cfg::kind_of(&path).is_none() {
-                    return Err(cfg::unknown_key(key).into());
-                }
-                cfg::writable(&path)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let before = peer_ids(&msg, &paths.config);
-                // Unsetting a client's table or its id removes the client:
-                // like `client remove`, not while grants name it. A server
-                // goes whatever the grants say: they name clients only.
-                let clients = if path[0] == "clients" {
-                    // A file that does not load is that error, not a
-                    // refused save.
-                    Config::load(&paths)?;
-                    match path.get(1) {
-                        Some(name) => manage::canonicalize_without(&mut msg, &paths.config, name)?,
-                        None => manage::canonicalize_doc(&mut msg, &paths.config)?,
-                    };
-                    manage::clients::client_names(&msg)
-                } else {
-                    Vec::new()
-                };
-                cfg::unset(&mut msg, &path).with_context(|| key.to_string())?;
-                let left = manage::clients::client_names(&msg);
-                for name in clients.iter().filter(|a| !left.contains(a)) {
-                    let lists = manage::grants::lists_naming(&msg, name);
-                    if !lists.is_empty() {
-                        bail!(
-                            "client {name:?} is named by grants in {}: remove those grants \
-                             first, or use `irsync client remove {name} --force`",
-                            lists.join(", ")
-                        );
-                    }
-                }
-                lock.save(&mut msg).with_context(|| key.to_string())?;
-                note_moved_grants(log, "config unset", &before, &msg, &paths.config);
-                Ok(())
-            })(),
-        ),
+        ConfigCmd::Set { key, values } => {
+            saying("config set", log, cfg::set_in_file(&paths, key, values))
+        }
+        ConfigCmd::Unset { key } => saying("config unset", log, cfg::unset_in_file(&paths, key)),
     }
 }
 
-/// The id of each client of `msg`; see [`manage::clients::client_ids`].
-fn peer_ids(
-    msg: &irsync_proto::config::Config,
-    path: &Path,
-) -> std::collections::BTreeMap<String, iroh::EndpointId> {
-    manage::clients::client_ids(msg, path)
+/// [`finish`] for a command that says what it did: each line `r` gives
+/// goes to stderr (nothing with `-q`).
+fn saying(cmd: &str, log: LogArgs, r: anyhow::Result<impl Said>) -> i32 {
+    finish(
+        cmd,
+        r.map(|said| {
+            for line in said.lines() {
+                say!(log, "{line}");
+            }
+        }),
+    )
 }
 
-/// Says on stderr which grants now apply to another id; see
-/// [`manage::clients::moved_grant_notes`].
-fn note_moved_grants(
-    log: LogArgs,
-    cmd: &str,
-    before: &std::collections::BTreeMap<String, iroh::EndpointId>,
-    msg: &irsync_proto::config::Config,
-    path: &Path,
-) {
-    for note in manage::clients::moved_grant_notes(cmd, before, msg, path) {
-        say!(log, "{note}");
+/// What a management command gives to say: a line, maybe one, or several.
+trait Said {
+    fn lines(self) -> Vec<String>;
+}
+
+impl Said for String {
+    fn lines(self) -> Vec<String> {
+        vec![self]
+    }
+}
+
+impl Said for Option<String> {
+    fn lines(self) -> Vec<String> {
+        self.into_iter().collect()
+    }
+}
+
+impl Said for Vec<String> {
+    fn lines(self) -> Vec<String> {
+        self
     }
 }
 
@@ -1125,6 +1084,7 @@ fn run_ssh_setup(
 }
 
 fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
+    use manage::exports;
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ExportCmd::List;
@@ -1144,18 +1104,18 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 // config lock creates anything.
                 irsync::identity::refuse_to_generate_with_passphrase_file(daemon_key, &pass)
                     .with_context(|| format!("identity {}", daemon_key.display()))?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
                 let flags = manage::exports::ExportFlags {
                     read_only: a.read_only,
                     index_at_start: a.index_at_start,
                     fsync: a.fsync,
                 };
-                let old = manage::exports::add_export(&mut msg, &name, &path, flags)?;
-                // The daemon identity comes first: when it cannot be had, the
-                // export is not added either.
-                let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
-                lock.save(&mut msg)?;
+                let ((old, secret), _) = manage::edit_as_is(&paths.config, |msg| {
+                    let old = manage::exports::add_export(msg, &name, &path, flags)?;
+                    // The daemon identity comes first: when it cannot be had,
+                    // the export is not added either.
+                    let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
+                    Ok((old, secret))
+                })?;
                 say!(
                     log,
                     "{}",
@@ -1165,59 +1125,13 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 Ok(())
             })(),
         ),
-        ExportCmd::Remove { name } => finish(
-            "export remove",
-            (|| {
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::exports::remove_export(&mut msg, name)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::exports::removed_line(name, &paths.config)
-                );
-                Ok(())
-            })(),
-        ),
-        ExportCmd::Set { name, settings } => finish(
-            "export set",
-            (|| {
-                // Every pair is read before anything changes.
-                let settings: Vec<_> = settings
-                    .iter()
-                    .map(|s| manage::exports::parse_setting(s))
-                    .collect::<Result<_, _>>()?;
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::exports::export_set(&mut msg, name, &settings)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                if let Some(line) = manage::exports::set_line(&msg, name) {
-                    say!(log, "{line}");
-                }
-                Ok(())
-            })(),
-        ),
-        ExportCmd::Rename { old, new } => finish(
-            "export rename",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::exports::rename_export(&mut msg, old, new)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::exports::renamed_line(old, new, &paths.config)
-                );
-                Ok(())
-            })(),
-        ),
+        ExportCmd::Remove { name } => saying("export remove", log, exports::remove(&paths, name)),
+        ExportCmd::Set { name, settings } => {
+            saying("export set", log, exports::set(&paths, name, settings))
+        }
+        ExportCmd::Rename { old, new } => {
+            saying("export rename", log, exports::rename(&paths, old, new))
+        }
         ExportCmd::List => finish(
             "export list",
             (|| {
@@ -1236,65 +1150,23 @@ fn run_grant(g: &GrantArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     // A noun alone lists.
     let list = GrantCmd::List { target: None };
     match g.cmd.as_ref().unwrap_or(&list) {
-        GrantCmd::Add { export, who, ro } => finish(
+        GrantCmd::Add { export, who, ro } => saying(
             "grant add",
-            (|| {
-                manage::grants::check_add_export(export, *ro)?;
-                let Config {
-                    servers, clients, ..
-                } = Config::load(&paths)?;
-                let spec = PeerSpec::parse(who, &clients, &servers)?;
-                let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::grants::grant_add(&mut msg, export, &spec, *ro, &resolve)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::grants::added_line(&spec, &clients, export, *ro)
-                );
-                Ok(())
-            })(),
+            log,
+            manage::grants::add(&paths, export, who, *ro),
         ),
-        GrantCmd::Remove { export, who } => finish(
-            "grant remove",
-            (|| {
-                let Config {
-                    servers, clients, ..
-                } = Config::load(&paths)?;
-                let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
-                manage::grants::check_remove(export, who)?;
-                let export = (export != "all").then_some(export.as_str());
-                let who = (who != "all").then_some(who.as_str());
-                let spec = who
-                    .map(|w| PeerSpec::or_literal(w, PeerSpec::parse(w, &clients, &servers)))
-                    .transpose()?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let removed =
-                    manage::grants::grant_remove(&mut msg, export, spec.as_ref(), &resolve);
-                let held =
-                    manage::grants::rights_still_held(&clients, export, spec.as_ref(), &resolve);
-                let n = match removed {
-                    Ok(n) => n,
-                    Err(e) => {
-                        for line in &held {
-                            eprintln!("{line}");
-                        }
-                        return Err(anyhow::Error::from(e)
-                            .context(format!("in {}", paths.config.display())));
+        GrantCmd::Remove { export, who } => {
+            let r = match manage::grants::remove(&paths, export, who) {
+                Ok(lines) => Ok(lines),
+                Err(f) => {
+                    for line in &f.held {
+                        eprintln!("{line}");
                     }
-                };
-                lock.save(&mut msg)?;
-                say!(log, "{}", manage::grants::removed_line(n));
-                for line in &held {
-                    say!(log, "{line}");
+                    Err(f.error)
                 }
-                Ok(())
-            })(),
-        ),
+            };
+            saying("grant remove", log, r)
+        }
         GrantCmd::List { target } => finish(
             "grant list",
             (|| {
@@ -1353,54 +1225,23 @@ fn grant_list_text(
     ))
 }
 
-/// A file that does not load is that error, not a refused save.
-fn load_first(paths: &Paths) -> anyhow::Result<()> {
-    Config::load(paths)?;
-    Ok(())
-}
-
 fn run_server(s: &ServerArgs, log: LogArgs, files: &FilesArgs) -> i32 {
+    use manage::servers;
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ServerCmd::List;
     match s.cmd.as_ref().unwrap_or(&list) {
         ServerCmd::Add(a) => finish("server add", server_add(a, log, &paths)),
-        ServerCmd::Remove { name } => finish(
-            "server remove",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::servers::server_remove(&mut msg, name)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(log, "removed server {name} from {}", paths.config.display());
-                Ok(())
-            })(),
-        ),
-        ServerCmd::Rename { old, new } => finish(
-            "server rename",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::servers::server_rename(&mut msg, old, new)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "renamed server {old} to {new} in {}",
-                    paths.config.display()
-                );
-                Ok(())
-            })(),
-        ),
+        ServerCmd::Remove { name } => saying("server remove", log, servers::remove(&paths, name)),
+        ServerCmd::Rename { old, new } => {
+            saying("server rename", log, servers::rename(&paths, old, new))
+        }
         ServerCmd::List => finish(
             "server list",
             (|| {
                 // Load first: a file that does not load is an error, not an
                 // empty list.
-                load_first(&paths)?;
+                manage::load_first(&paths)?;
                 for line in manage::servers::server_list(&manage::load_message(&paths.config)?) {
                     println!("{line}");
                 }
@@ -1411,83 +1252,34 @@ fn run_server(s: &ServerArgs, log: LogArgs, files: &FilesArgs) -> i32 {
 }
 
 fn run_client(c: &ClientArgs, log: LogArgs, files: &FilesArgs) -> i32 {
+    use manage::clients;
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ClientCmd::List;
     match c.cmd.as_ref().unwrap_or(&list) {
         ClientCmd::Add { name, id } => finish(
             "client add",
-            (|| {
-                let id = parse_endpoint_id(id).with_context(|| format!("ID {id:?}"))?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let before = peer_ids(&msg, &paths.config);
-                let old = manage::clients::client_add(&mut msg, name, id)?;
-                lock.save(&mut msg)?;
-                say_out!(log, "{}", manage::clients::added_line(name, old, id));
+            clients::add(&paths, name, id).map(|(line, notes)| {
+                say_out!(log, "{line}");
                 // The id the grants are for may have changed: say so.
-                note_moved_grants(log, "client add", &before, &msg, &paths.config);
-                Ok(())
-            })(),
-        ),
-        ClientCmd::Remove { name, force } => finish(
-            "client remove",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let grants = manage::clients::remove_client(&mut msg, &paths.config, name, *force)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::clients::removed_line(name, grants, &paths.config)
-                );
-                Ok(())
-            })(),
-        ),
-        ClientCmd::Rename { old, new } => finish(
-            "client rename",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let grants = manage::clients::rename_client(&mut msg, &paths.config, old, new)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::clients::renamed_line(old, new, grants, &paths.config)
-                );
-                Ok(())
-            })(),
-        ),
-        ClientCmd::Set { name, settings } => finish(
-            "client set",
-            (|| {
-                // Every pair is read before anything changes.
-                let settings: Vec<_> = settings
-                    .iter()
-                    .map(|s| manage::clients::parse_setting(s))
-                    .collect::<Result<_, _>>()?;
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::clients::client_set(&mut msg, name, &settings)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                if let Some(line) = manage::clients::set_line(&msg, name) {
-                    say!(log, "{line}");
+                for note in notes {
+                    say!(log, "{note}");
                 }
-                Ok(())
-            })(),
+            }),
         ),
+        ClientCmd::Remove { name, force } => {
+            saying("client remove", log, clients::remove(&paths, name, *force))
+        }
+        ClientCmd::Rename { old, new } => {
+            saying("client rename", log, clients::rename(&paths, old, new))
+        }
+        ClientCmd::Set { name, settings } => {
+            saying("client set", log, clients::set(&paths, name, settings))
+        }
         ClientCmd::List => finish(
             "client list",
             (|| {
-                load_first(&paths)?;
+                manage::load_first(&paths)?;
                 for line in manage::clients::client_list(&manage::load_message(&paths.config)?) {
                     println!("{line}");
                 }
@@ -1797,14 +1589,8 @@ fn server_add(a: &ServerAddArgs, log: LogArgs, paths: &Paths) -> anyhow::Result<
         pq_key_exchange: a.pq_key_exchange,
         ssh: None,
     };
-    let mut lock = manage::lock_config(&paths.config)?;
-    let mut msg = lock.load()?;
-    let old = manage::servers::server_add(&mut msg, &a.name, id, &flags)?;
-    lock.save(&mut msg)?;
-    match old {
-        Some(old) => say_out!(log, "{}: {old} -> {id}", a.name),
-        None => say_out!(log, "{}: {id}", a.name),
-    }
+    let line = manage::servers::add(paths, &a.name, id, &flags)?;
+    say_out!(log, "{line}");
     Ok(())
 }
 

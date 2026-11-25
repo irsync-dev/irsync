@@ -13,6 +13,7 @@ pub mod show;
 
 use crate::config::clients::Clients;
 use crate::config::file::Config;
+use crate::config::paths::Paths;
 use crate::config::reader::{self, CONFIG_VERSION};
 use crate::config::servers::Servers;
 use crate::config::{writer, ConfigError};
@@ -208,6 +209,40 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
         }),
         Err(source) => Err(ManageError::Io { path: lock, source }),
     }
+}
+
+/// Changes the config file `config` under its lock: loads it, runs
+/// `change` on it and saves the result. Returns what `change` returned and
+/// the message as saved (a save writes peers by their names, see
+/// [`ConfigLock::save`]). An error from `change` names the file (`in
+/// PATH: ...`), and nothing is saved then.
+pub fn edit<T, E: Into<anyhow::Error>>(
+    config: &Path,
+    change: impl FnOnce(&mut pb::Config) -> Result<T, E>,
+) -> anyhow::Result<(T, pb::Config)> {
+    edit_as_is(config, |msg| {
+        change(msg).map_err(|e| e.into().context(format!("in {}", config.display())))
+    })
+}
+
+/// [`edit`], with an error from `change` as it is.
+pub fn edit_as_is<T>(
+    config: &Path,
+    change: impl FnOnce(&mut pb::Config) -> anyhow::Result<T>,
+) -> anyhow::Result<(T, pb::Config)> {
+    let mut lock = lock_config(config)?;
+    let mut msg = lock.load()?;
+    let value = change(&mut msg)?;
+    lock.save(&mut msg)?;
+    Ok((value, msg))
+}
+
+/// Loads the config files of `paths` as a whole and drops the result: a
+/// command that would edit a file that does not load gets that error, not
+/// a refused save.
+pub fn load_first(paths: &Paths) -> Result<(), ConfigError> {
+    Config::load(paths)?;
+    Ok(())
 }
 
 impl ConfigLock {

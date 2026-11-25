@@ -5,10 +5,13 @@
 use super::{id_bytes, ManageError};
 use crate::authz::Access;
 use crate::config::clients::RIGHTS;
+use crate::config::file::Config;
 use crate::config::keys;
+use crate::config::paths::Paths;
 use crate::config::settings::{Congestion, OtlpProtocol, PqKeyExchange, Relay, Spelled};
 use crate::config::{duration, reader, writer};
 use crate::net::addr::HostPort;
+use anyhow::Context;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
 
@@ -757,4 +760,72 @@ fn expected(field: &Field) -> &'static str {
         Field::List(..) | Field::Addresses(..) => "a list",
         _ => "a string",
     }
+}
+
+// The commands that change the file, from its lock to the notes they say.
+
+/// `config set KEY VALUE...`; notes on grants that now apply to another
+/// id (see [`super::clients::moved_grant_notes`]).
+pub fn set_in_file(paths: &Paths, key: &str, values: &[String]) -> anyhow::Result<Vec<String>> {
+    let path = parse_key(key)?;
+    let kind = kind_of(&path).ok_or_else(|| unknown_key(key))?;
+    writable(&path)?;
+    let value = parse_value(kind, values).with_context(|| key.to_string())?;
+    let mut lock = super::lock_config(&paths.config)?;
+    let mut msg = lock.load()?;
+    let before = super::clients::client_ids(&msg, &paths.config);
+    set(&mut msg, &path, value).with_context(|| key.to_string())?;
+    lock.save(&mut msg).with_context(|| key.to_string())?;
+    Ok(super::clients::moved_grant_notes(
+        "config set",
+        &before,
+        &msg,
+        &paths.config,
+    ))
+}
+
+/// `config unset KEY`; notes as for [`set_in_file`].
+pub fn unset_in_file(paths: &Paths, key: &str) -> anyhow::Result<Vec<String>> {
+    let path = parse_key(key)?;
+    if kind_of(&path).is_none() {
+        return Err(unknown_key(key).into());
+    }
+    writable(&path)?;
+    let mut lock = super::lock_config(&paths.config)?;
+    let mut msg = lock.load()?;
+    let before = super::clients::client_ids(&msg, &paths.config);
+    // Unsetting a client's table or its id removes the client:
+    // like `client remove`, not while grants name it. A server
+    // goes whatever the grants say: they name clients only.
+    let clients = if path[0] == "clients" {
+        // A file that does not load is that error, not a
+        // refused save.
+        Config::load(paths)?;
+        match path.get(1) {
+            Some(name) => super::canonicalize_without(&mut msg, &paths.config, name)?,
+            None => super::canonicalize_doc(&mut msg, &paths.config)?,
+        };
+        super::clients::client_names(&msg)
+    } else {
+        Vec::new()
+    };
+    unset(&mut msg, &path).with_context(|| key.to_string())?;
+    let left = super::clients::client_names(&msg);
+    for name in clients.iter().filter(|a| !left.contains(a)) {
+        let lists = super::grants::lists_naming(&msg, name);
+        if !lists.is_empty() {
+            anyhow::bail!(
+                "client {name:?} is named by grants in {}: remove those grants \
+                 first, or use `irsync client remove {name} --force`",
+                lists.join(", ")
+            );
+        }
+    }
+    lock.save(&mut msg).with_context(|| key.to_string())?;
+    Ok(super::clients::moved_grant_notes(
+        "config unset",
+        &before,
+        &msg,
+        &paths.config,
+    ))
 }
