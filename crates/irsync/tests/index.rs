@@ -371,8 +371,9 @@ fn an_unresolvable_root_refuses_to_open() {
 
 #[test]
 fn metered_handle_times_only_contended_locks() {
+    use irsync::side::Side;
     use irsync::telemetry::meter::{Activity, Meter};
-    use irsync::telemetry::{Role, Side};
+    use irsync::telemetry::Role;
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("root");
     std::fs::create_dir(&root).unwrap();

@@ -32,7 +32,7 @@ use crate::hasher::Hasher;
 use crate::index::IndexHandle;
 use crate::net::frame::{read_msg_tapped, write_msg_tapped};
 use crate::net::tap::StreamTap;
-use crate::plan::Side;
+use crate::plan::PathView;
 use crate::scan::{walk_below, ScanEvent, ScanItem, ScanSummary, WalkOpts, WALK_THREADS};
 use crate::telemetry::Phase;
 
@@ -298,7 +298,7 @@ pub(super) fn spawn_writer(
 
 /// A listing entry's hash as a hash-only digest (no chunk list), which is all
 /// the planner compares.
-pub(super) fn side_of(entry: irsync_proto::v1::FileEntry) -> Side {
+pub(super) fn view_of(entry: irsync_proto::v1::FileEntry) -> PathView {
     let digest = entry.whole_hash.as_ref().and_then(|h| {
         let hash: [u8; 32] = h.bytes.clone().try_into().ok()?;
         Some(FileDigest {
@@ -307,15 +307,15 @@ pub(super) fn side_of(entry: irsync_proto::v1::FileEntry) -> Side {
             chunks: Vec::new(),
         })
     });
-    Side { entry, digest }
+    PathView { entry, digest }
 }
 
 /// One item of a listing as the receiver's planner consumes it.
-// A `Side` is large (a whole `FileEntry`); boxing it would cost an allocation
+// A `PathView` is large (a whole `FileEntry`); boxing it would cost an allocation
 // per listed entry for a channel that holds items briefly.
 #[allow(clippy::large_enum_variant)]
 pub(super) enum Listed {
-    Side(Side),
+    View(PathView),
     /// Entries at or below this path are missing from the listing (see
     /// `ScanEvent::Gap`); it is at its place in path order.
     Gap(RelPath),
@@ -709,7 +709,7 @@ pub(super) fn spawn_listing(
             }
             stats.count(&entry);
             if let Some(tx) = &local {
-                let _ = tx.blocking_send(Listed::Side(Side { entry, digest }));
+                let _ = tx.blocking_send(Listed::View(PathView { entry, digest }));
             }
             count += 1;
             if let Some(a) = &spec.activity {

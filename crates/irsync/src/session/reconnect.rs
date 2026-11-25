@@ -21,7 +21,8 @@ use super::engine::{
 use super::{control::hex, LocalSide, Outcome, SessionRecord, SyncHello, CLOSE_SUPERSEDED};
 use crate::options::SyncOptions;
 use crate::platform::local_time;
-use crate::telemetry::{phase, Phase, PhaseKind, Side};
+use crate::side::Side;
+use crate::telemetry::{phase, Phase, PhaseKind};
 
 /// How long to keep trying, and how long to wait between attempts.
 #[derive(Debug, Clone, Copy)]

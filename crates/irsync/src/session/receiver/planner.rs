@@ -40,7 +40,7 @@ use crate::fs::meta::{apply_metadata_at, create_special_at};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::Beneath;
 use crate::options::DeleteMode;
-use crate::plan::{decide, itemize, merge_join, meta_differs, Decision, PlanOpts, Side};
+use crate::plan::{decide, itemize, merge_join, meta_differs, Decision, PathView, PlanOpts};
 use crate::platform::{cause, Cause, Dir, Kind as FileKind, LinkKind};
 use crate::session::control::{is_own_temp, Ev, Listed, Out};
 use crate::session::engine::{blocking, Ctx};
@@ -195,7 +195,7 @@ pub(super) fn parent_of(p: &RelPath) -> RelPath {
 
 /// Whether a destination entry is a regular file with other names, which a
 /// change in place would reach too.
-fn shares_inode(d: &Side) -> bool {
+fn shares_inode(d: &PathView) -> bool {
     d.entry.kind() == Kind::Regular && d.entry.nlink > 1
 }
 
@@ -348,16 +348,16 @@ pub(super) fn mkdir_replacing(at: &Beneath) -> io::Result<()> {
 
 /// The entries of a listing; a gap records its path in `gap` (the earliest
 /// of either listing) and is otherwise skipped.
-fn sides(
+fn views(
     rx: mpsc::Receiver<Listed>,
     gap: Arc<Mutex<Option<RelPath>>>,
-) -> impl futures_util::Stream<Item = Side> + Send {
+) -> impl futures_util::Stream<Item = PathView> + Send {
     futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) })
         .filter_map(move |item| {
             let gap = gap.clone();
             async move {
                 match item {
-                    Listed::Side(s) => Some(s),
+                    Listed::View(s) => Some(s),
                     Listed::Gap(path) => {
                         tracing::debug!(?path, "a listing has a gap: no deletions past it");
                         let mut first = gap.lock().unwrap_or_else(|e| e.into_inner());
@@ -446,7 +446,7 @@ impl Planner {
         }
     }
 
-    async fn one(&mut self, path: RelPath, src: Side, dst: Option<Side>) {
+    async fn one(&mut self, path: RelPath, src: PathView, dst: Option<PathView>) {
         #[cfg(feature = "test-hooks")]
         if let Some(d) = self.ctx.hooks.slow_plan {
             tokio::time::sleep(d).await;
@@ -801,7 +801,7 @@ impl Planner {
     /// A hard link in the sender's listing. With `-H`, a destination that
     /// already shares the (unchanged) target's inode is kept. Without `-H`
     /// on this side it is an independent file, compared like one.
-    fn link_decision(&self, target: &RelPath, src: &Side, dst: Option<&Side>) -> Decision {
+    fn link_decision(&self, target: &RelPath, src: &PathView, dst: Option<&PathView>) -> Decision {
         let linked = Decision::Hardlink {
             target: target.clone(),
         };
@@ -812,7 +812,7 @@ impl Planner {
             let same = self.kept_inodes.get(target) == Some(&(d.entry.dev, d.entry.inode));
             return if same { Decision::Skip } else { linked };
         }
-        let as_file = Side {
+        let as_file = PathView {
             entry: FileEntry {
                 kind: Kind::Regular as i32,
                 ..src.entry.clone()
@@ -841,7 +841,7 @@ impl Planner {
 
     /// Deletion bookkeeping for one merged path, in merge order: a
     /// destination-only path becomes a candidate (or is protected).
-    fn consider(&mut self, path: &RelPath, src: Option<&Side>, dst: Option<&Side>) {
+    fn consider(&mut self, path: &RelPath, src: Option<&PathView>, dst: Option<&PathView>) {
         if self.deletes.is_none() {
             return;
         }
@@ -854,7 +854,7 @@ impl Planner {
         }
     }
 
-    fn extraneous(&mut self, path: RelPath, dst: &Side, excluded: bool) {
+    fn extraneous(&mut self, path: RelPath, dst: &PathView, excluded: bool) {
         let Some(pass) = self.deletes.as_mut() else {
             return;
         };
@@ -966,7 +966,7 @@ pub(super) async fn replan(
         },
     )
     .await?;
-    let mut dst = dst.map(|entry| Side {
+    let mut dst = dst.map(|entry| PathView {
         entry,
         digest: None,
     });
@@ -977,7 +977,7 @@ pub(super) async fn replan(
     if shared && ctx.opts.preserve.hard_links && !links_known {
         return Err(io::Error::other(SHARED_UNKNOWN));
     }
-    let src = Side {
+    let src = PathView {
         entry: entry.clone(),
         digest: None,
     };
@@ -1081,7 +1081,7 @@ async fn plan_listings(
     let gap = Arc::new(Mutex::new(None));
     // Both listings are in order: the peer's listing reader refuses one
     // that is not (a protocol error), and this side's comes from its walk.
-    let joined = merge_join(sides(peer, gap.clone()), sides(local, gap.clone()));
+    let joined = merge_join(views(peer, gap.clone()), views(local, gap.clone()));
     futures_util::pin_mut!(joined);
     if mode == Some(DeleteMode::Before) {
         // Every candidate is known only once both listings have ended.

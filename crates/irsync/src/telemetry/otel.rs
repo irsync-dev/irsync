@@ -3,8 +3,8 @@
 
 use super::init::OtlpConfig;
 use super::otel_bridge::OtelRecorder;
-use super::Side;
 use crate::config::settings::OtlpProtocol;
+use crate::side::Side;
 use anyhow::Context as _;
 use opentelemetry::metrics::MeterProvider as _;
 use opentelemetry::propagation::TextMapPropagator;

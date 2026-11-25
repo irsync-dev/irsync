@@ -27,9 +27,10 @@ use irsync::location::Location;
 use irsync::manage;
 use irsync::options::{Direction, SyncOptions};
 use irsync::session::{EventBus, Outcome, Party, HASH_WORKERS};
+use irsync::side::Side;
 use irsync::ssh::onboard::SetupFlags;
 use irsync::telemetry::init::trace_files_from_env;
-use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
+use irsync::telemetry::{self, OtlpConfig, Telemetry, TelemetryConfig};
 use irsync_proto::v1::export_entry;
 
 mod remote;

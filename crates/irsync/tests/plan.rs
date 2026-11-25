@@ -1,7 +1,7 @@
 use futures_util::stream::{self, StreamExt};
 use irsync::options::Append;
 use irsync::options::Preserve;
-use irsync::plan::{decide, merge_join, Decision, PlanOpts, Side};
+use irsync::plan::{decide, merge_join, Decision, PathView, PlanOpts};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
@@ -24,21 +24,21 @@ fn entry(path: &str, kind: Kind, size: u64, mtime: i64, mode: u32) -> FileEntry 
     }
 }
 
-fn side(path: &str, kind: Kind, mode: u32) -> Side {
-    Side {
+fn view(path: &str, kind: Kind, mode: u32) -> PathView {
+    PathView {
         entry: entry(path, kind, 0, 1, mode),
         digest: None,
     }
 }
 
-fn reg(path: &str, size: u64, mtime: i64) -> Side {
-    Side {
+fn reg(path: &str, size: u64, mtime: i64) -> PathView {
+    PathView {
         entry: entry(path, Kind::Regular, size, mtime, 0o644),
         digest: None,
     }
 }
 
-fn with_hash(mut s: Side, h: u8) -> Side {
+fn with_hash(mut s: PathView, h: u8) -> PathView {
     s.digest = Some(FileDigest {
         size: s.entry.size,
         hash: [h; 32],
@@ -112,9 +112,9 @@ fn missing_dst_is_whole() {
 
 #[test]
 fn missing_dst_by_kind() {
-    let d = side("d", Kind::Directory, 0o755);
-    let l = side("l", Kind::Symlink, 0o777);
-    let f = side("f", Kind::Fifo, 0o644);
+    let d = view("d", Kind::Directory, 0o755);
+    let l = view("l", Kind::Symlink, 0o777);
+    let f = view("f", Kind::Fifo, 0o644);
     assert_eq!(decide(Some(&d), None, &opts()), Decision::Mkdir);
     assert_eq!(decide(Some(&l), None, &opts()), Decision::Symlink);
     let mut o = opts();
@@ -125,7 +125,7 @@ fn missing_dst_by_kind() {
     o.preserve.specials = true;
     assert_eq!(decide(Some(&f), None, &o), Decision::Special);
     // And --specials alone leaves a device node out.
-    let c = side("c", Kind::CharDev, 0o600);
+    let c = view("c", Kind::CharDev, 0o600);
     o.preserve.devices = false;
     assert_eq!(decide(Some(&c), None, &o), Decision::Skip);
     o.preserve.devices = true;
@@ -177,14 +177,14 @@ fn checksum_requires_hashes() {
 #[test]
 fn kind_change_is_whole() {
     let s = reg("a", 3, 1);
-    let d = side("a", Kind::Directory, 0o755);
+    let d = view("a", Kind::Directory, 0o755);
     assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Whole);
     assert_eq!(decide(Some(&d), Some(&s), &opts()), Decision::Mkdir);
 }
 
 #[test]
 fn directory_same_kind() {
-    let s = side("d", Kind::Directory, 0o755);
+    let s = view("d", Kind::Directory, 0o755);
     let mut d = s.clone();
     let mut o = opts();
     assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
@@ -196,7 +196,7 @@ fn directory_same_kind() {
 
 #[test]
 fn symlink_same_kind() {
-    let mut s = side("l", Kind::Symlink, 0o777);
+    let mut s = view("l", Kind::Symlink, 0o777);
     s.entry.link_target = b"x".to_vec();
     let mut d = s.clone();
     assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Skip);
@@ -206,7 +206,7 @@ fn symlink_same_kind() {
 
 #[test]
 fn special_same_kind() {
-    let mut s = side("c", Kind::CharDev, 0o600);
+    let mut s = view("c", Kind::CharDev, 0o600);
     s.entry.rdev = 5;
     let mut d = s.clone();
     let mut o = opts();
@@ -262,13 +262,13 @@ fn merge_join_aligns_sorted_streams() {
 #[test]
 fn merge_join_skips_invalid_paths_and_handles_empty() {
     let src = stream::iter(vec![reg("../x", 1, 1), reg("a", 1, 1)]);
-    let dst = stream::iter(Vec::<Side>::new());
+    let dst = stream::iter(Vec::<PathView>::new());
     let out: Vec<_> = block_on(merge_join(src, dst).collect());
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].0.as_bytes(), b"a");
 }
 
-fn with_nsec(mut s: Side, nsec: u32) -> Side {
+fn with_nsec(mut s: PathView, nsec: u32) -> PathView {
     s.entry.mtime_nsec = nsec;
     s
 }
@@ -312,7 +312,7 @@ fn mode_mask_ignores_type_bits() {
 #[test]
 fn times_owner_group_each_trigger_meta_only() {
     // Directory: mtime is metadata only (no quick check involved).
-    let s = side("d", Kind::Directory, 0o755);
+    let s = view("d", Kind::Directory, 0o755);
     let mut d = s.clone();
     d.entry.mtime_sec = 99;
     let mut o = opts();
@@ -338,11 +338,11 @@ fn times_owner_group_each_trigger_meta_only() {
 #[test]
 fn a_file_over_a_directory_is_whole() {
     let s = with_hash(reg("a", 3, 1), 7);
-    let d = side("a", Kind::Directory, 0o755);
+    let d = view("a", Kind::Directory, 0o755);
     assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Whole);
 }
 
-fn collect_keys(src: Vec<Side>, dst: Vec<Side>) -> Vec<(Vec<u8>, bool, bool)> {
+fn collect_keys(src: Vec<PathView>, dst: Vec<PathView>) -> Vec<(Vec<u8>, bool, bool)> {
     block_on(
         merge_join(stream::iter(src), stream::iter(dst))
             .map(|(p, s, d)| (p.as_bytes().to_vec(), s.is_some(), d.is_some()))
@@ -432,9 +432,9 @@ fn merge_join_out_of_order_drops_the_key_that_goes_back() {
 #[test]
 fn special_mode_mask_ignores_type_bits() {
     // A listing carries the full `st_mode`; only the permission bits count.
-    let mut s = side("p", Kind::Fifo, 0o010640);
+    let mut s = view("p", Kind::Fifo, 0o010640);
     s.entry.rdev = 0;
-    let mut d = side("p", Kind::Fifo, 0o640);
+    let mut d = view("p", Kind::Fifo, 0o640);
     let mut o = opts();
     o.preserve.specials = true;
     o.preserve.perms = true;
@@ -442,15 +442,15 @@ fn special_mode_mask_ignores_type_bits() {
     d.entry.mode = 0o010600;
     assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
     // The same for a device node.
-    let s = side("c", Kind::CharDev, 0o020600);
-    let d = side("c", Kind::CharDev, 0o600);
+    let s = view("c", Kind::CharDev, 0o020600);
+    let d = view("c", Kind::CharDev, 0o600);
     o.preserve.devices = true;
     assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
 }
 
 #[test]
 fn special_metadata_only_difference_is_meta_only() {
-    let mut s = side("p", Kind::Fifo, 0o640);
+    let mut s = view("p", Kind::Fifo, 0o640);
     s.entry.mtime_sec = 100;
     let mut d = s.clone();
     let mut o = opts();

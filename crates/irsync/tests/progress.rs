@@ -8,7 +8,7 @@ use std::time::Duration;
 use irsync::cli::progress::{escape_path, human, Reporter};
 use irsync::fs::paths::RelPath;
 use irsync::options::Preserve;
-use irsync::plan::{itemize, Decision, Side};
+use irsync::plan::{itemize, Decision, PathView};
 use irsync::scan::ListStats;
 use irsync::session::reconnect::ConnState;
 use irsync::session::{Event, Outcome, Party};
@@ -81,8 +81,8 @@ fn entry(kind: Kind, size: u64, mtime: i64, mode: u32) -> FileEntry {
     }
 }
 
-fn side(kind: Kind, size: u64, mtime: i64) -> Side {
-    Side {
+fn view(kind: Kind, size: u64, mtime: i64) -> PathView {
+    PathView {
         entry: entry(kind, size, mtime, 0o644),
         digest: None,
     }
@@ -131,7 +131,7 @@ async fn itemize_new_file_code_is_gt_f_plus() {
     let r = reporter(&buf, false, 0, false, true);
     let code = itemize(
         &Decision::Whole,
-        Some(&side(Kind::Regular, 3, 1)),
+        Some(&view(Kind::Regular, 3, 1)),
         None,
         '>',
         &arch(),
@@ -150,8 +150,8 @@ async fn itemize_new_file_code_is_gt_f_plus() {
 
 #[tokio::test]
 async fn itemize_mtime_size_change_code() {
-    let src = side(Kind::Regular, 20, 200);
-    let dst = side(Kind::Regular, 10, 100);
+    let src = view(Kind::Regular, 20, 200);
+    let dst = view(Kind::Regular, 10, 100);
     let code = itemize(&Decision::Delta, Some(&src), Some(&dst), '>', &arch());
     assert_eq!(code, ">f.st......");
     let buf = Buf::default();
@@ -162,17 +162,17 @@ async fn itemize_mtime_size_change_code() {
 
 #[test]
 fn itemize_codes_for_other_kinds() {
-    let d = side(Kind::Directory, 0, 1);
+    let d = view(Kind::Directory, 0, 1);
     assert_eq!(
         itemize(&Decision::Mkdir, Some(&d), None, '>', &arch()),
         "cd+++++++++"
     );
-    let l = side(Kind::Symlink, 0, 1);
+    let l = view(Kind::Symlink, 0, 1);
     assert_eq!(
         itemize(&Decision::Symlink, Some(&l), None, '>', &arch()),
         "cL+++++++++"
     );
-    let h = side(Kind::Hardlink, 0, 1);
+    let h = view(Kind::Hardlink, 0, 1);
     let hl = Decision::Hardlink { target: rp("t") };
     assert_eq!(itemize(&hl, Some(&h), None, '>', &arch()), "hf+++++++++");
     assert_eq!(
@@ -180,8 +180,8 @@ fn itemize_codes_for_other_kinds() {
         "*deleting  "
     );
     // Push: `<`; checksum-only difference: `c`; permissions: `p`.
-    let a = side(Kind::Regular, 5, 1);
-    let mut b = side(Kind::Regular, 5, 1);
+    let a = view(Kind::Regular, 5, 1);
+    let mut b = view(Kind::Regular, 5, 1);
     assert_eq!(
         itemize(&Decision::Delta, Some(&a), Some(&b), '<', &arch()),
         "<fc........"
@@ -247,8 +247,8 @@ async fn lagging_reporter_survives() {
 
 #[test]
 fn itemize_letters_only_for_preserved_attributes() {
-    let mut src = side(Kind::Regular, 5, 200);
-    let mut dst = side(Kind::Regular, 5, 100);
+    let mut src = view(Kind::Regular, 5, 200);
+    let mut dst = view(Kind::Regular, 5, 100);
     src.entry.uid = 1;
     dst.entry.uid = 2;
     // uid differs but -o is off: no `o`; mtime differs and -t is on: `t`.

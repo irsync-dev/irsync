@@ -119,7 +119,8 @@ pub async fn with_netsim<F: std::future::Future>(
 async fn endpoint_for(side: EndpointSide) -> Endpoint {
     #[cfg(feature = "netsim")]
     if let Ok(n) = NETSIM.try_with(Netsim::clone) {
-        use irsync::net::netsim::{Side, Spec, WireChoice};
+        use irsync::net::netsim::{Spec, WireChoice};
+        use irsync::side::Side;
         // Each client endpoint gets its own fault stream.
         static STREAMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let (side, stream) = match side {

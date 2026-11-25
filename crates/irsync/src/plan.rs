@@ -7,9 +7,10 @@ use irsync_proto::v1::{file_entry::Kind, FileEntry};
 use crate::fs::paths::RelPath;
 use crate::options::{Append, Preserve};
 
-/// One path's view on one side: its listing entry and, when known, its digest.
+/// One path as one listing (source or destination) shows it: its listing
+/// entry and, when known, its digest.
 #[derive(Debug, Clone)]
-pub struct Side {
+pub struct PathView {
     pub entry: FileEntry,
     pub digest: Option<FileDigest>,
 }
@@ -86,7 +87,7 @@ fn wants_special(kind: Kind, p: &Preserve) -> bool {
 }
 
 /// Decision for a source entry that has to be created (no usable destination entry).
-fn create(src: &Side, opts: &PlanOpts) -> Decision {
+fn create(src: &PathView, opts: &PlanOpts) -> Decision {
     match kind_of(&src.entry) {
         Some(Kind::Directory) => Decision::Mkdir,
         Some(Kind::Symlink) => Decision::Symlink,
@@ -113,7 +114,7 @@ fn create(src: &Side, opts: &PlanOpts) -> Decision {
     }
 }
 
-pub fn decide(src: Option<&Side>, dst: Option<&Side>, opts: &PlanOpts) -> Decision {
+pub fn decide(src: Option<&PathView>, dst: Option<&PathView>, opts: &PlanOpts) -> Decision {
     let (src, dst) = match (src, dst) {
         (None, None) => return Decision::Skip,
         (None, Some(_)) => {
@@ -183,16 +184,16 @@ pub fn decide(src: Option<&Side>, dst: Option<&Side>, opts: &PlanOpts) -> Decisi
     }
 }
 
-type Item = (RelPath, Side);
+type Item = (RelPath, PathView);
 
-/// Next side whose path validates; invalid ones are skipped with a warning.
-async fn next_valid<S: Stream<Item = Side> + Unpin>(s: &mut S, which: &str) -> Option<Item> {
-    while let Some(side) = s.next().await {
-        match RelPath::new(&side.entry.path) {
-            Ok(p) => return Some((p, side)),
+/// Next entry whose path validates; invalid ones are skipped with a warning.
+async fn next_valid<S: Stream<Item = PathView> + Unpin>(s: &mut S, which: &str) -> Option<Item> {
+    while let Some(view) = s.next().await {
+        match RelPath::new(&view.entry.path) {
+            Ok(p) => return Some((p, view)),
             Err(_) => tracing::warn!(
-                side = which,
-                path = %String::from_utf8_lossy(&side.entry.path),
+                listing = which,
+                path = %String::from_utf8_lossy(&view.entry.path),
                 "skipping entry with invalid path"
             ),
         }
@@ -211,9 +212,9 @@ struct MergeState<A, B> {
 
 /// Merges two listings sorted by `RelPath` into aligned `(path, src, dst)` triples.
 pub fn merge_join(
-    src: impl Stream<Item = Side>,
-    dst: impl Stream<Item = Side>,
-) -> impl Stream<Item = (RelPath, Option<Side>, Option<Side>)> {
+    src: impl Stream<Item = PathView>,
+    dst: impl Stream<Item = PathView>,
+) -> impl Stream<Item = (RelPath, Option<PathView>, Option<PathView>)> {
     let state = MergeState {
         src: Box::pin(src),
         dst: Box::pin(dst),
@@ -290,8 +291,8 @@ pub const DELETING: &str = "*deleting  ";
 /// [`DELETING`].
 pub fn itemize(
     decision: &Decision,
-    src: Option<&Side>,
-    dst: Option<&Side>,
+    src: Option<&PathView>,
+    dst: Option<&PathView>,
     dir: char,
     preserve: &Preserve,
 ) -> String {

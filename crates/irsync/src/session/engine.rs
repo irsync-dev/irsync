@@ -47,8 +47,9 @@ use crate::location::Location;
 use crate::net::frame::{read_body, write_msg_tapped};
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::options::{Append, DeleteMode, Direction, Preserve, SyncOptions};
+use crate::side::Side;
 use crate::telemetry::meter::Meter;
-use crate::telemetry::{self, phase, Phase, PhaseKind, Role, Side};
+use crate::telemetry::{self, phase, Phase, PhaseKind, Role};
 
 /// The daemon refused the request: the `Error` of its reply to `Hello`.
 #[derive(Debug, Clone)]

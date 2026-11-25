@@ -124,8 +124,9 @@ async fn out_of_order_chunks_assemble_byte_exact() {
 
 #[tokio::test]
 async fn received_chunks_are_timed_and_counted_as_hashing() {
+    use irsync::side::Side;
     use irsync::telemetry::meter::{Activity, Counter, Meter};
-    use irsync::telemetry::{Role, Side};
+    use irsync::telemetry::Role;
     let e = env();
     let data = content(3);
     let cl = chunk_list(&data);
@@ -1152,8 +1153,9 @@ async fn a_late_first_chunk_does_not_persist_a_record() {
 /// nothing, with it the flush is timed.
 #[tokio::test]
 async fn finalize_flushes_only_when_asked() {
+    use irsync::side::Side;
     use irsync::telemetry::meter::{Counter, Meter};
-    use irsync::telemetry::{Role, Side};
+    use irsync::telemetry::Role;
     for sync in [false, true] {
         let e = env();
         let data = content(5);

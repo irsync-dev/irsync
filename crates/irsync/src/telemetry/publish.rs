@@ -1,7 +1,8 @@
 //! Publishes the global meters and the process's usage as `metrics` values, once a second.
 
 use super::meter::{global, Activity, Counter};
-use super::{process, Role, Side};
+use super::{process, Role};
+use crate::side::Side;
 use metrics::{describe_counter, describe_gauge, describe_histogram, Label, Unit};
 use std::time::Duration;
 use tokio::task::JoinHandle;

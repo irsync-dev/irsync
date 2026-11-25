@@ -162,9 +162,10 @@ impl ConnTap {
             return ConnTap(Some(e.tap.clone()));
         }
         let side = match conn.side() {
-            iroh::endpoint::Side::Client => Side::Client,
-            iroh::endpoint::Side::Server => Side::Daemon,
-        };
+            iroh::endpoint::Side::Client => crate::side::Side::Client,
+            iroh::endpoint::Side::Server => crate::side::Side::Daemon,
+        }
+        .into();
         let tap = Arc::new(ConnInner {
             side,
             connection: NEXT_CONNECTION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
