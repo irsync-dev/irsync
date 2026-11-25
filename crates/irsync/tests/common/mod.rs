@@ -242,7 +242,7 @@ pub struct DaemonHandle {
     pub slow_finalize: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
     /// Hooks for the daemon's side of every session (slow planner, in-flight
     /// cap, listing counters).
-    pub hooks: std::sync::Arc<std::sync::Mutex<irsync::session::DaemonHooks>>,
+    pub hooks: std::sync::Arc<std::sync::Mutex<irsync::session::SideHooks>>,
     sender_parallel: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// The limit on one key's dormant sessions per export; zero is none.
     pub max_dormant: std::sync::Arc<std::sync::atomic::AtomicU32>,

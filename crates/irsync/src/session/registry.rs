@@ -9,7 +9,7 @@ use iroh::endpoint::Connection;
 
 use super::control;
 #[cfg(feature = "test-hooks")]
-use super::{DaemonHooks, EventLog, FaultInjector};
+use super::{EventLog, FaultInjector, SideHooks};
 
 /// Close code for a connection whose session was taken over by a newer
 /// connection resuming it.
@@ -128,8 +128,9 @@ pub struct DaemonSessions {
     /// some files complete and others still to come.
     #[cfg(feature = "test-hooks")]
     pub sender_parallel: Arc<std::sync::atomic::AtomicUsize>,
-    /// Hooks for every daemon session (test hook, settable after the daemon
-    /// is built).
+    /// The hooks every daemon session starts with: each session clones
+    /// them, then takes `events` and `slow_finalize` from the fields above
+    /// (test hook, settable after the daemon is built).
     #[cfg(feature = "test-hooks")]
-    pub daemon_hooks: Arc<std::sync::Mutex<DaemonHooks>>,
+    pub daemon_hooks: Arc<std::sync::Mutex<SideHooks>>,
 }

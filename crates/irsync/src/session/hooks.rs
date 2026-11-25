@@ -4,7 +4,6 @@
 #[cfg(feature = "test-hooks")]
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 #[cfg(feature = "test-hooks")]
 use iroh::endpoint::Connection;
@@ -79,40 +78,6 @@ impl FaultInjector {
             conn.close(99u32.into(), b"fault");
         }
     }
-}
-
-/// The hooks a test sets on a daemon's side of a session (see [`SideHooks`]
-/// for each).
-#[cfg(feature = "test-hooks")]
-#[derive(Clone, Default)]
-pub struct DaemonHooks {
-    pub slow_plan: Option<Duration>,
-    pub slow_place: Option<Duration>,
-    pub max_inflight: Option<usize>,
-    pub listing_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
-    pub listing_waits: Option<Arc<std::sync::atomic::AtomicU64>>,
-    pub peer_events_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
-    pub slow_peer_events: Option<Duration>,
-    pub out_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
-    pub basis_budget: Option<usize>,
-    pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
-    pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
-    pub tamper_frames: Option<FrameHook>,
-    pub tamper_listing: Option<ListingFrameHook>,
-    pub close_quiet: Option<Duration>,
-    pub close_timeout: Option<Duration>,
-    pub stop_reading_after_done: bool,
-    pub list_budget: Option<u64>,
-    pub list_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
-    pub lists_ahead_peak: Option<Arc<std::sync::atomic::AtomicU64>>,
-    pub cut_listing_after: Option<usize>,
-    pub inject_listing: Option<ListingHook>,
-    pub during_hash: Option<crate::hasher::HashHook>,
-    pub on_first_chunk_sent: Option<FirstChunkHook>,
-    pub file_report: Option<PathBuf>,
-    pub skip_place_stat: bool,
-    pub clones_within: Option<PathBuf>,
-    pub no_change_checks: bool,
 }
 
 /// What a receiver did, in order: `delete:<path>` per deletion and

@@ -323,7 +323,7 @@ impl Daemon {
 
     /// Hooks for the daemon's side of every session.
     #[cfg(feature = "test-hooks")]
-    pub fn daemon_hooks(&self) -> Arc<std::sync::Mutex<crate::session::DaemonHooks>> {
+    pub fn daemon_hooks(&self) -> Arc<std::sync::Mutex<crate::session::SideHooks>> {
         self.shared.hosting().daemon_hooks
     }
 

@@ -1358,41 +1358,15 @@ async fn serve_daemon_inner(
         single,
         privs: Privs::current(),
         hooks: {
-            #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
-            let mut h = SideHooks::default();
             #[cfg(feature = "test-hooks")]
-            {
-                let p = shared.daemon_hooks.lock().unwrap().clone();
+            let h = {
+                let mut h = shared.daemon_hooks.lock().unwrap().clone();
                 h.events = Some(shared.events.clone());
                 h.slow_finalize = *shared.slow_finalize.lock().unwrap();
-                h.slow_plan = p.slow_plan;
-                h.slow_place = p.slow_place;
-                h.max_inflight = p.max_inflight;
-                h.listing_peak = p.listing_peak;
-                h.listing_waits = p.listing_waits;
-                h.peer_events_peak = p.peer_events_peak;
-                h.out_peak = p.out_peak;
-                h.basis_budget = p.basis_budget;
-                h.basis_peak = p.basis_peak;
-                h.send_tasks_peak = p.send_tasks_peak;
-                h.tamper_frames = p.tamper_frames;
-                h.tamper_listing = p.tamper_listing;
-                h.close_quiet = p.close_quiet;
-                h.close_timeout = p.close_timeout;
-                h.stop_reading_after_done = p.stop_reading_after_done;
-                h.list_budget = p.list_budget;
-                h.list_peak = p.list_peak;
-                h.lists_ahead_peak = p.lists_ahead_peak;
-                h.slow_peer_events = p.slow_peer_events;
-                h.cut_listing_after = p.cut_listing_after;
-                h.inject_listing = p.inject_listing;
-                h.during_hash = p.during_hash;
-                h.on_first_chunk_sent = p.on_first_chunk_sent;
-                h.file_report = p.file_report;
-                h.skip_place_stat = p.skip_place_stat;
-                h.clones_within = p.clones_within;
-                h.no_change_checks = p.no_change_checks;
-            }
+                h
+            };
+            #[cfg(not(feature = "test-hooks"))]
+            let h = SideHooks::default();
             h
         },
         bus: super::EventBus::default(),
