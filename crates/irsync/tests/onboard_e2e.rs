@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use irsync::authz::Access;
 use irsync::daemon_lock::probe;
 
 fn fake_ssh() -> PathBuf {
@@ -1467,11 +1466,14 @@ fn pair_through_a_root_account_is_refused() {
 
 /// A copy of irsync that is not the one `pair` installs, relative to the
 /// server HOME: its daemon is not `ssh-setup`'s own.
+#[cfg(target_os = "linux")]
 const OTHER_BIN: &str = "other/bin/irsync";
 
 /// A daemon started from [`OTHER_BIN`]; killed when dropped.
+#[cfg(target_os = "linux")]
 struct OtherDaemon(std::process::Child);
 
+#[cfg(target_os = "linux")]
 impl Drop for OtherDaemon {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -1479,6 +1481,7 @@ impl Drop for OtherDaemon {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl World {
     /// Starts `daemon -vv` from a copy of this build at [`OTHER_BIN`], and
     /// waits until it holds the lock. A copy, not a link: the daemon
@@ -1530,7 +1533,11 @@ impl World {
         let out = common::irsync_bin(self.client.path(), &["id", "generate"]);
         assert!(out.status.success(), "{out:?}");
         let id = client_id(self.client.path());
-        common::set_all_paths(self.server.path(), &id, Some(Access::ReadWrite));
+        common::set_all_paths(
+            self.server.path(),
+            &id,
+            Some(irsync::authz::Access::ReadWrite),
+        );
     }
 }
 
