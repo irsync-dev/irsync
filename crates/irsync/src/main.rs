@@ -781,7 +781,10 @@ fn client_state_dir(opts: &SyncOptions) -> PathBuf {
 /// HOST:PATH` lists a directory: a dry-run pull into a temporary directory
 /// that also holds the run's index, so nothing is written or kept.
 fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
-    let operand = args.sync_args().paths[0].clone();
+    let Some(Command::List(list)) = &args.cmd else {
+        unreachable!("run_list takes a list command")
+    };
+    let operand = list.operand.clone();
     let dir_listing = match Location::parse(&operand) {
         Ok(Location::Remote { path, .. }) => !path.is_empty(),
         _ => false,
@@ -798,11 +801,10 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
         // With the slash a listed file keeps its own name.
         let dest = format!("{}/", tmp.path().join("list").display());
         // The listing is a dry-run pull into the temporary directory.
-        let Some(Command::List(mut s)) = args.cmd.take() else {
+        let Some(Command::List(list)) = args.cmd.take() else {
             unreachable!("run_list takes a list command")
         };
-        s.paths = vec![operand, dest];
-        args.cmd = Some(Command::Sync(s));
+        args.cmd = Some(Command::Sync(list.as_sync(vec![operand, dest])));
         let mut opts = opts.clone();
         opts.dry_run = true;
         opts.verbose = opts.verbose.max(1);

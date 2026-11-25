@@ -2331,7 +2331,7 @@ fn server_and_client_rename_take_their_grants_in_the_file() {
 }
 
 /// `irsync --help` names `sync` and `list` and keeps the transfer options;
-/// each has its own help, `list` with its one operand.
+/// each has its own help, `list` with its one operand and its own flags.
 #[test]
 fn help_names_sync_and_list_and_each_has_its_own() {
     let d = tempfile::tempdir().unwrap();
@@ -2347,16 +2347,19 @@ fn help_names_sync_and_list_and_each_has_its_own() {
         top.contains("--archive"),
         "transfer options stay at the top: {top}"
     );
-    for (cmd, want) in [("sync", "SRC... DEST"), ("list", "HOST[:PATH]")] {
-        let o = irsync(&home, &[cmd, "--help"]);
-        assert!(o.status.success(), "{cmd}");
-        let h = String::from_utf8_lossy(&o.stdout);
-        assert!(h.contains(want) && h.contains("--archive"), "{cmd}: {h}");
-    }
+    let o = irsync(&home, &["sync", "--help"]);
+    assert!(o.status.success());
+    let h = String::from_utf8_lossy(&o.stdout);
+    assert!(h.contains("SRC... DEST") && h.contains("--archive"), "{h}");
     let o = irsync(&home, &["list", "--help"]);
+    assert!(o.status.success());
     let h = String::from_utf8_lossy(&o.stdout);
     assert!(h.contains("irsync list [OPTIONS] <HOST[:PATH]>\n"), "{h}");
-    assert!(!h.contains("several sources"), "{h}");
+    assert!(h.contains("--no-recursive") && h.contains("--relay"), "{h}");
+    assert!(
+        !h.contains("several sources") && !h.contains("--archive"),
+        "{h}"
+    );
 }
 
 /// A `list` usage error shows the usage of `list`.

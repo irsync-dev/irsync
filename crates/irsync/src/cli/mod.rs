@@ -63,10 +63,6 @@ pub struct Args {
     pub sync: SyncArgs,
 }
 
-/// The operand of `list`, in place of the sync's `SRC... DEST` text.
-const LIST_OPERAND_HELP: &str = "A server name or an EndpointId, with or without `:`, lists the \
-     exports this client may use; HOST:PATH lists the files a pull of it would fetch";
-
 /// clap's default template with the build info on top; subcommands get it
 /// in [`Args::command_tree`] since the template is not inherited.
 const HELP_TEMPLATE: &str = "{name} {version}\n{about-with-newline}\n\
@@ -112,17 +108,7 @@ impl Args {
         fn apply(c: clap::Command) -> clap::Command {
             c.help_template(HELP_TEMPLATE).mut_subcommands(apply)
         }
-        Args::command()
-            .mut_subcommands(apply)
-            .mut_subcommand("list", |c| {
-                c.mut_arg("paths", |a| {
-                    a.value_name("HOST[:PATH]")
-                        .num_args(1)
-                        .action(ArgAction::Set)
-                        .required(true)
-                        .help(LIST_OPERAND_HELP)
-                })
-            })
+        Args::command().mut_subcommands(apply)
     }
 
     /// Like `Parser::try_parse_from`, but also records the command-line order
@@ -153,27 +139,28 @@ impl Args {
             None => {
                 let mut s = std::mem::take(&mut args.sync);
                 s.filters = ordered_filters(&m);
-                Some(sync_or_list(s)?)
+                Some(sync_or_list(s, &m)?)
             }
             Some(Command::Sync(mut s)) => {
-                s.filters = ordered_filters(sub_matches(&m, "sync"));
-                Some(sync_or_list(s)?)
+                let sub = sub_matches(&m, "sync");
+                s.filters = ordered_filters(sub);
+                Some(sync_or_list(s, sub)?)
             }
-            Some(Command::List(mut s)) => {
-                s.filters = ordered_filters(sub_matches(&m, "list"));
-                Some(Command::List(list_operand(s)?))
+            Some(Command::List(mut l)) => {
+                l.filters = ordered_filters(sub_matches(&m, "list"));
+                Some(Command::List(list_operand(l)?))
             }
             other => other,
         };
         Ok(args)
     }
 
-    /// The options of a `sync` or `list`, which every sync and listing
-    /// is by the time [`Args::try_parse_from`] returns.
+    /// The options of a `sync`, which every sync is by the time
+    /// [`Args::try_parse_from`] returns.
     pub fn sync_args(&self) -> &SyncArgs {
         match &self.cmd {
-            Some(Command::Sync(s) | Command::List(s)) => s,
-            _ => panic!("sync_args: not a sync or list command"),
+            Some(Command::Sync(s)) => s,
+            _ => panic!("sync_args: not a sync command"),
         }
     }
 
@@ -239,9 +226,10 @@ fn sub_matches<'a>(m: &'a clap::ArgMatches, name: &str) -> &'a clap::ArgMatches 
 }
 
 /// A sync with one remote operand is a listing (`irsync HOST:`, `irsync
-/// HOST:PATH`); a lone local path is a usage error. The operands of a
-/// sync are checked here, so that every usage error exits 2.
-fn sync_or_list(s: SyncArgs) -> Result<Command, clap::Error> {
+/// HOST:PATH`), which takes the flags of `list` only; a lone local path
+/// is a usage error. The operands of a sync are checked here, so that
+/// every usage error exits 2.
+fn sync_or_list(s: SyncArgs, m: &clap::ArgMatches) -> Result<Command, clap::Error> {
     let locations = s
         .paths
         .iter()
@@ -250,7 +238,15 @@ fn sync_or_list(s: SyncArgs) -> Result<Command, clap::Error> {
         .map_err(|e| usage_error(&e))?;
     if let [one] = locations.as_slice() {
         if one.is_remote() {
-            return Ok(Command::List(s));
+            reject_sync_only_args(m)?;
+            let mut paths = s.paths;
+            return Ok(Command::List(ListArgs {
+                operand: paths.remove(0),
+                no_recursive: s.no_recursive,
+                conn: s.conn,
+                filter_args: s.filter_args,
+                filters: s.filters,
+            }));
         }
     }
     let Some((dest, srcs)) = locations.split_last().filter(|(_, s)| !s.is_empty()) else {
@@ -263,15 +259,39 @@ fn sync_or_list(s: SyncArgs) -> Result<Command, clap::Error> {
     Ok(Command::Sync(s))
 }
 
+/// A flag of a sync that a listing does not take, set on the command
+/// line of `irsync HOST:[PATH]`, is an error, as it is for `irsync list`.
+fn reject_sync_only_args(m: &clap::ArgMatches) -> Result<(), clap::Error> {
+    let list = ListArgs::augment_args(clap::Command::new("list"));
+    let sync = SyncArgs::augment_args(clap::Command::new("sync"));
+    for arg in sync.get_arguments() {
+        let id = arg.get_id();
+        if list.get_arguments().any(|a| a.get_id() == id)
+            || m.value_source(id.as_str()) != Some(clap::parser::ValueSource::CommandLine)
+        {
+            continue;
+        }
+        let flag = match (arg.get_short(), arg.get_long()) {
+            (Some(c), _) => format!("-{c}"),
+            (None, Some(l)) => format!("--{l}"),
+            (None, None) => continue,
+        };
+        return Err(list_error(
+            clap::error::ErrorKind::ArgumentConflict,
+            &format!("{flag} is a sync option and cannot be used with a listing"),
+        ));
+    }
+    Ok(())
+}
+
 /// A usage error of the operands, as clap reports its own: exit code 2.
 fn usage_error(e: &UsageError) -> clap::Error {
     Args::command().error(clap::error::ErrorKind::ValueValidation, &e.0)
 }
 
-/// `list` takes one remote operand (clap checks there is exactly one); a
-/// bare `HOST` means `HOST:`.
-fn list_operand(mut s: SyncArgs) -> Result<SyncArgs, clap::Error> {
-    let op = &mut s.paths[0];
+/// `list` takes one remote operand; a bare `HOST` means `HOST:`.
+fn list_operand(mut l: ListArgs) -> Result<ListArgs, clap::Error> {
+    let op = &mut l.operand;
     // `.` and `..` are paths, not hosts: no `:` for them.
     if !op.contains(':') && !op.contains('/') && op != "." && op != ".." {
         op.push(':');
@@ -285,7 +305,7 @@ fn list_operand(mut s: SyncArgs) -> Result<SyncArgs, clap::Error> {
             "list takes one operand: HOST or HOST:PATH",
         ));
     }
-    Ok(s)
+    Ok(l)
 }
 
 /// A usage error that prints the usage of `list`, not of the top level.
@@ -317,7 +337,7 @@ pub enum Command {
     /// Copy files to or from a server (the rsync-style form, named).
     Sync(SyncArgs),
     /// List a server's exports, or the files a pull of HOST:PATH would fetch.
-    List(SyncArgs),
+    List(ListArgs),
     /// Run the daemon.
     ///
     /// Serves the exports in the config file to the clients they are granted to
@@ -922,6 +942,11 @@ pub struct SyncArgs {
     #[arg(value_name = "SRC... DEST")]
     pub paths: Vec<String>,
 
+    #[command(flatten)]
+    pub conn: ConnArgs,
+    #[command(flatten)]
+    pub filter_args: FilterArgs,
+
     /// Archive mode: -rlptgoD (symlinks, permissions, times, group, owner,
     /// devices and specials).
     #[arg(short, long)]
@@ -1001,23 +1026,6 @@ pub struct SyncArgs {
     /// Stop deleting after N files; exit code 25 when the cap stops a run.
     #[arg(long, value_name = "N")]
     pub max_delete: Option<u64>,
-    /// Exclude paths matching this rsync pattern (`*`, `**`, `?`, `[..]`; a
-    /// leading `/` anchors it to the root, a trailing `/` matches
-    /// directories only). Rules apply in command-line order; the first
-    /// match wins.
-    #[arg(long, value_name = "PATTERN", action = ArgAction::Append)]
-    pub exclude: Vec<String>,
-    /// Include paths matching this pattern even if a later --exclude would
-    /// hide them.
-    #[arg(long, value_name = "PATTERN", action = ArgAction::Append)]
-    pub include: Vec<String>,
-    /// Read exclude patterns from FILE, one per line (blank lines and lines
-    /// starting with `#` or `;` are skipped).
-    #[arg(long, value_name = "FILE", action = ArgAction::Append)]
-    pub exclude_from: Vec<String>,
-    /// Read include patterns from FILE, one per line, as --exclude-from.
-    #[arg(long, value_name = "FILE", action = ArgAction::Append)]
-    pub include_from: Vec<String>,
     /// Rate limit on file data, push or pull: KiB/s by default; suffixes
     /// K, M, G are 1024-based (also KiB), KB, MB, GB 1000-based, `b` bytes;
     /// decimals allowed (1.5M); 0 = unlimited.
@@ -1050,11 +1058,6 @@ pub struct SyncArgs {
     /// Print rsync's per-file change summary (the itemize codes).
     #[arg(short = 'i', long)]
     pub itemize_changes: bool,
-    /// Drop a connection that moves no data and no control message for
-    /// this long, and reconnect: `<N>[s|m|h|d]`, a bare number is seconds;
-    /// 0 = never (default: `idle_timeout` from `[defaults]`, else 0).
-    #[arg(long, value_name = "DUR", value_parser = duration::parse)]
-    pub idle_timeout: Option<Duration>,
     /// Data streams a push keeps open at once (default: `parallel` from the
     /// server entry or `[defaults]`, else 128).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
@@ -1065,41 +1068,6 @@ pub struct SyncArgs {
     /// has never answered gets only `--dial-retries` retries.
     #[arg(long, value_name = "DUR", value_parser = duration::parse)]
     pub reconnect: Option<Duration>,
-    /// How often to retry a server that has not answered yet, with growing
-    /// waits (1s, 2s, 4s, ...), before giving up; 0 gives up on the first
-    /// failure (default: `dial_retries` from the server entry or
-    /// `[defaults]`, else 4; 0 for a server `irsync pair` saved).
-    #[arg(long, value_name = "N")]
-    pub dial_retries: Option<u32>,
-    /// The relay for this sync: `default` (n0's relays), `disabled` (direct
-    /// connections only; the lookups stay on) or the URL of a relay of your
-    /// own. Default: `relay` from the server entry, else `[defaults]`, else
-    /// n0's.
-    #[arg(long, value_name = "default|disabled|URL")]
-    pub relay: Option<crate::config::settings::Relay>,
-    /// `require`: refuse a daemon that does not offer the post-quantum
-    /// hybrid key exchange (X25519MLKEM768), such as an irsync built without it.
-    /// `prefer`: use it when offered. Default: `pq_key_exchange` from the
-    /// server entry or `[defaults]`, else prefer.
-    #[arg(long, value_name = "prefer|require")]
-    pub pq_key_exchange: Option<PqKeyExchange>,
-    /// Do not look the daemon up in the mainline DHT for this run (the
-    /// key `dht`).
-    #[arg(long)]
-    pub no_dht: bool,
-    /// Do not look the daemon up through n0's DNS service for this run
-    /// (the key `dns`).
-    #[arg(long)]
-    pub no_dns: bool,
-    /// Do not look the daemon up with mDNS on the local network for this
-    /// run (the key `mdns`).
-    #[arg(long)]
-    pub no_mdns: bool,
-    /// Dial the daemon at this `ip:port`, `[ipv6]:port` or `host:port`
-    /// directly (repeatable). Turns relay, DNS, DHT, mDNS and the port
-    /// mapper off; the daemon's EndpointId is still required.
-    #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
-    pub address: Vec<HostPort>,
     /// Start a fresh plan instead of resuming a dormant session (partial
     /// files are still picked up).
     #[arg(long)]
@@ -1149,6 +1117,111 @@ pub struct SyncArgs {
     /// Include/exclude rules in command-line order (filled after parsing).
     #[arg(skip)]
     pub filters: Vec<FilterRule>,
+}
+
+/// How to reach the server: the flags a sync and a listing share.
+#[derive(Debug, Default, Clone, clap::Args)]
+pub struct ConnArgs {
+    /// Drop a connection that moves no data and no control message for
+    /// this long, and reconnect: `<N>[s|m|h|d]`, a bare number is seconds;
+    /// 0 = never (default: `idle_timeout` from `[defaults]`, else 0).
+    #[arg(long, value_name = "DUR", value_parser = duration::parse)]
+    pub idle_timeout: Option<Duration>,
+    /// How often to retry a server that has not answered yet, with growing
+    /// waits (1s, 2s, 4s, ...), before giving up; 0 gives up on the first
+    /// failure (default: `dial_retries` from the server entry or
+    /// `[defaults]`, else 4; 0 for a server `irsync pair` saved).
+    #[arg(long, value_name = "N")]
+    pub dial_retries: Option<u32>,
+    /// The relay for this run: `default` (n0's relays), `disabled` (direct
+    /// connections only; the lookups stay on) or the URL of a relay of your
+    /// own. Default: `relay` from the server entry, else `[defaults]`, else
+    /// n0's.
+    #[arg(long, value_name = "default|disabled|URL")]
+    pub relay: Option<crate::config::settings::Relay>,
+    /// `require`: refuse a daemon that does not offer the post-quantum
+    /// hybrid key exchange (X25519MLKEM768), such as an irsync built without it.
+    /// `prefer`: use it when offered. Default: `pq_key_exchange` from the
+    /// server entry or `[defaults]`, else prefer.
+    #[arg(long, value_name = "prefer|require")]
+    pub pq_key_exchange: Option<PqKeyExchange>,
+    /// Do not look the daemon up in the mainline DHT for this run (the
+    /// key `dht`).
+    #[arg(long)]
+    pub no_dht: bool,
+    /// Do not look the daemon up through n0's DNS service for this run
+    /// (the key `dns`).
+    #[arg(long)]
+    pub no_dns: bool,
+    /// Do not look the daemon up with mDNS on the local network for this
+    /// run (the key `mdns`).
+    #[arg(long)]
+    pub no_mdns: bool,
+    /// Dial the daemon at this `ip:port`, `[ipv6]:port` or `host:port`
+    /// directly (repeatable). Turns relay, DNS, DHT, mDNS and the port
+    /// mapper off; the daemon's EndpointId is still required.
+    #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
+    pub address: Vec<HostPort>,
+}
+
+/// The include and exclude rules: the flags a sync and a listing share.
+/// [`Args::try_parse_from`] puts them in command-line order in
+/// `filters` of the sync or the listing.
+#[derive(Debug, Default, Clone, clap::Args)]
+pub struct FilterArgs {
+    /// Exclude paths matching this rsync pattern (`*`, `**`, `?`, `[..]`; a
+    /// leading `/` anchors it to the root, a trailing `/` matches
+    /// directories only). Rules apply in command-line order; the first
+    /// match wins.
+    #[arg(long, value_name = "PATTERN", action = ArgAction::Append)]
+    pub exclude: Vec<String>,
+    /// Include paths matching this pattern even if a later --exclude would
+    /// hide them.
+    #[arg(long, value_name = "PATTERN", action = ArgAction::Append)]
+    pub include: Vec<String>,
+    /// Read exclude patterns from FILE, one per line (blank lines and lines
+    /// starting with `#` or `;` are skipped).
+    #[arg(long, value_name = "FILE", action = ArgAction::Append)]
+    pub exclude_from: Vec<String>,
+    /// Read include patterns from FILE, one per line, as --exclude-from.
+    #[arg(long, value_name = "FILE", action = ArgAction::Append)]
+    pub include_from: Vec<String>,
+}
+
+/// `irsync list`, and `irsync HOST:[PATH]`.
+#[derive(Debug, Default, Clone, clap::Args)]
+pub struct ListArgs {
+    /// A server name or an EndpointId, with or without `:`, lists the
+    /// exports this client may use; HOST:PATH lists the files a pull of it
+    /// would fetch.
+    #[arg(value_name = "HOST[:PATH]")]
+    pub operand: String,
+    /// List only the top level of HOST:PATH (a listing recurses by
+    /// default).
+    #[arg(long = "no-recursive", alias = "no-r")]
+    pub no_recursive: bool,
+    #[command(flatten)]
+    pub conn: ConnArgs,
+    #[command(flatten)]
+    pub filter_args: FilterArgs,
+    /// Include/exclude rules in command-line order (filled after parsing).
+    #[arg(skip)]
+    pub filters: Vec<FilterRule>,
+}
+
+impl ListArgs {
+    /// The listing as a sync's arguments with `paths`: what a file
+    /// listing, a dry-run pull, runs with.
+    pub fn as_sync(&self, paths: Vec<String>) -> SyncArgs {
+        SyncArgs {
+            paths,
+            conn: self.conn.clone(),
+            filter_args: self.filter_args.clone(),
+            no_recursive: self.no_recursive,
+            filters: self.filters.clone(),
+            ..SyncArgs::default()
+        }
+    }
 }
 
 /// The operands of a sync, read: [`Args::try_parse_from`] has checked them.
@@ -1283,8 +1356,12 @@ pub struct SyncOptions {
 }
 
 impl SyncOptions {
+    /// The options of a sync, or of a listing as the dry-run pull it is.
     pub fn from_args(args: &Args) -> SyncOptions {
-        Self::with(args, args.sync_args())
+        match &args.cmd {
+            Some(Command::List(l)) => Self::with(args, &l.as_sync(vec![l.operand.clone()])),
+            _ => Self::with(args, args.sync_args()),
+        }
     }
 
     /// The options of a command that dials a server but syncs nothing
@@ -1332,16 +1409,16 @@ impl SyncOptions {
             stats: a.stats,
             progress: a.progress || a.info.as_deref().is_some_and(info_asks_progress),
             itemize: a.itemize_changes,
-            idle_timeout: a.idle_timeout,
+            idle_timeout: a.conn.idle_timeout,
             parallel: a.parallel,
             reconnect: a.reconnect,
-            dial_retries: a.dial_retries,
-            relay: a.relay.clone(),
-            pq_key_exchange: a.pq_key_exchange,
-            no_dht: a.no_dht,
-            no_dns: a.no_dns,
-            no_mdns: a.no_mdns,
-            addresses: a.address.clone(),
+            dial_retries: a.conn.dial_retries,
+            relay: a.conn.relay.clone(),
+            pq_key_exchange: a.conn.pq_key_exchange,
+            no_dht: a.conn.no_dht,
+            no_dns: a.conn.no_dns,
+            no_mdns: a.conn.no_mdns,
+            addresses: a.conn.address.clone(),
             config: args.files.config.clone(),
             state_dir: None,
             identity: args.files.identity.clone(),

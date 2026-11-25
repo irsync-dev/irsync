@@ -29,7 +29,7 @@ fn sync_paths(a: &Args) -> Vec<String> {
 
 fn list_paths(a: &Args) -> Vec<String> {
     match &a.cmd {
-        Some(Command::List(s)) => s.paths.clone(),
+        Some(Command::List(l)) => vec![l.operand.clone()],
         c => panic!("not List: {c:?}"),
     }
 }
@@ -138,6 +138,59 @@ fn filters_keep_order_under_the_sync_command() {
             FilterRule::ExcludeFrom(PathBuf::from("exc")),
         ]
     );
+}
+
+#[test]
+fn a_listing_takes_the_list_flags_only() {
+    use irsync::cli::FilterRule;
+    // Connection flags, filters and --no-recursive go with a listing.
+    for args in [
+        vec![
+            "--no-dht",
+            "--relay",
+            "disabled",
+            "--idle-timeout",
+            "5",
+            "h:p/",
+        ],
+        vec!["--no-recursive", "--exclude", "*.tmp", "h:p/"],
+        vec!["list", "--no-mdns", "--address", "127.0.0.1:9", "h"],
+    ] {
+        let a = parse(&args);
+        assert!(matches!(a.cmd, Some(Command::List(_))), "{args:?}");
+    }
+    let a = parse(&["--exclude", "a", "--include", "b", "h:p/"]);
+    let Some(Command::List(l)) = &a.cmd else {
+        panic!("not List")
+    };
+    assert_eq!(
+        l.filters,
+        [
+            FilterRule::Exclude("a".into()),
+            FilterRule::Include("b".into())
+        ]
+    );
+    assert!(SyncOptions::from_args(&a).relay.is_none());
+    // A sync's own flags are refused, in either form.
+    for flag in ["-a", "--delete", "--inplace", "-n", "--parallel=4"] {
+        for form in [
+            vec![flag, "h:p/"],
+            vec!["list", flag, "h:p/"],
+            vec!["sync", flag, "h:p/"],
+        ] {
+            let mut full = vec!["irsync"];
+            full.extend(form.iter());
+            let e = Args::try_parse_from(&full).unwrap_err();
+            assert_eq!(e.exit_code(), 2, "{form:?}");
+        }
+        let flag_name = flag.split('=').next().unwrap();
+        assert!(
+            parse_err(&[flag, "h:p/"]).contains(&format!(
+                "{flag_name} is a sync option and cannot be used with a listing"
+            )),
+            "{flag}"
+        );
+    }
 }
 
 #[test]
@@ -1012,10 +1065,11 @@ fn id_and_show_parse() {
 
 #[test]
 fn one_remote_operand_is_a_listing() {
-    let a = parse(&["home:"]);
-    assert!(a.sync_args().paths == ["home:"]);
-    let a = parse(&["-v", "home:photos/"]);
-    assert!(a.sync_args().paths == ["home:photos/"]);
+    assert_eq!(list_paths(&parse(&["home:"])), ["home:"]);
+    assert_eq!(
+        list_paths(&parse(&["-v", "home:photos/"])),
+        ["home:photos/"]
+    );
     // A single local path is still a usage error.
     assert!(Args::try_parse_from(["irsync", "./x"]).is_err());
     assert!(Args::try_parse_from(["irsync"]).is_err());
@@ -1150,7 +1204,7 @@ fn a_sync_still_reads_verbose_and_quiet() {
     assert_eq!((o.verbose, o.quiet), (2, false));
     assert!(opts(&["-q", "src", "h:m/"]).quiet);
     let a = parse(&["-v", "home:photos/"]);
-    assert!(a.sync_args().paths == ["home:photos/"] && a.log.verbose == 1);
+    assert!(list_paths(&a) == ["home:photos/"] && a.log.verbose == 1);
 }
 
 #[test]
