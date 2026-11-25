@@ -111,7 +111,9 @@ names `irsync pair`; see [irsync pair](#irsync-pair).
   `irsync HOST:PATH` prints the files a pull would fetch (just that file, if
   `PATH` is a file) and writes nothing; it
   recurses unless `--no-recursive` is given. A listing does not redial: if the
-  connection fails, it exits instead of waiting out the reconnect window. It
+  connection fails, it exits instead of waiting out the reconnect window.
+  `irsync HOST:` retries a server that has not answered yet as a pull does
+  (`--dial-retries`). It
   takes the flags that say how to reach the server (`--relay`,
   `--pq-key-exchange`, `--no-dht`, `--no-dns`, `--no-mdns`, `--address`,
   `--dial-retries`, `--idle-timeout`), the filters and `--no-recursive`. A

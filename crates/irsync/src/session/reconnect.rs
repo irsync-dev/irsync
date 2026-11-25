@@ -374,22 +374,23 @@ pub fn check_pq_key_exchange(
     ))
 }
 
-/// What `path` is on the daemon ([`super::single::probe`]), asked before a
-/// pull picks its local root. Dials the way a session's first connection
-/// does: each dial bounded by `opts.first_dial_timeout`, up to
-/// `opts.dial_retries` retries with backoff within `opts.max`. A connection
-/// lost before the reply, or no reply within `timeout` (`--idle-timeout`),
-/// counts as a failed try too; a daemon that never answered gives
-/// [`NeverReached`]. A refusal or a final close is explained as for a
-/// session and not retried.
-pub async fn probe_path(
+/// Runs `ask`, one request and its reply, on a connection to `target`,
+/// dialled the way a session's first connection is: each dial bounded by
+/// `opts.first_dial_timeout`, up to `opts.dial_retries` retries with backoff
+/// within `opts.max`. A connection lost before the reply counts as a failed
+/// try too; a daemon that never answered gives [`NeverReached`]. A refusal
+/// or a final close is explained as for a session and not retried.
+pub async fn ask_with_retries<T, F, Fut>(
     endpoint: &Endpoint,
     target: EndpointAddr,
-    path: &[u8],
     remote: &str,
     opts: ReconnectOpts,
-    timeout: Option<Duration>,
-) -> anyhow::Result<irsync_proto::v1::path_info::Kind> {
+    ask: F,
+) -> anyhow::Result<T>
+where
+    F: Fn(Connection) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
     let start = Instant::now();
     let mut attempt = 0u32;
     // Set once a dial has gone through.
@@ -400,15 +401,21 @@ pub async fn probe_path(
             Ok(conn) => {
                 reached = true;
                 let res = match check_pq_key_exchange(&conn, opts.require_pq, &target.id) {
-                    Ok(()) => super::single::probe(&conn, path, timeout).await,
+                    Ok(()) => ask(conn.clone()).await,
                     Err(e) => Err(e),
                 };
+                // Read while the connection is as the daemon left it: once
+                // closed here, it no longer says why the daemon closed it.
+                let res = res.map_err(|e| match classify(&e, Some(&conn)) {
+                    // Lost underneath the request: try again, as for a dial.
+                    Next::Retry => Ok(e),
+                    _ => Err(explain(e, Some(&conn), remote, &endpoint.id())),
+                });
                 conn.close(0u32.into(), b"done");
                 match res {
-                    Ok(kind) => return Ok(kind),
-                    // Lost underneath the probe: try again, as for a dial.
-                    Err(e) if matches!(classify(&e, Some(&conn)), Next::Retry) => e,
-                    Err(e) => return Err(explain(e, Some(&conn), remote, &endpoint.id())),
+                    Ok(answer) => return Ok(answer),
+                    Err(Ok(retry)) => retry,
+                    Err(Err(fatal)) => return Err(fatal),
                 }
             }
             Err(msg) => anyhow::Error::new(TransportError(msg)),
@@ -435,6 +442,23 @@ pub async fn probe_path(
         );
         tokio::time::sleep(wait).await;
     }
+}
+
+/// What `path` is on the daemon ([`super::single::probe`]), asked before a
+/// pull picks its local root, through [`ask_with_retries`]. No reply within
+/// `timeout` (`--idle-timeout`) counts as a failed try.
+pub async fn probe_path(
+    endpoint: &Endpoint,
+    target: EndpointAddr,
+    path: &[u8],
+    remote: &str,
+    opts: ReconnectOpts,
+    timeout: Option<Duration>,
+) -> anyhow::Result<irsync_proto::v1::path_info::Kind> {
+    ask_with_retries(endpoint, target, remote, opts, |conn| async move {
+        super::single::probe(&conn, path, timeout).await
+    })
+    .await
 }
 
 /// The hint for a `Hello` the daemon refused as unauthorized (a key with

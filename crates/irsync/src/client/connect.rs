@@ -15,7 +15,7 @@ use crate::config::settings::{PqKeyExchange, Settings};
 use crate::identity::{load_client_identity, parse_endpoint_id, KeySource, PassphraseSource};
 use crate::net::{build_endpoint, client_endpoint_opts};
 use crate::options::SyncOptions;
-use crate::session::reconnect::{dial_once, never_reached, PAIRED_FIRST_DIAL};
+use crate::session::reconnect::{dial_once, never_reached, ReconnectOpts, PAIRED_FIRST_DIAL};
 
 /// The daemon's EndpointId: a server's name, else the host string itself
 /// must be an EndpointId. `clients` is only for the message about a name
@@ -75,6 +75,18 @@ impl Connected {
     /// [`PAIRED_FIRST_DIAL`] for a paired server, else iroh's own.
     pub fn first_dial(&self) -> Option<std::time::Duration> {
         first_dial_limit(self.paired().map(|_| PAIRED_FIRST_DIAL))
+    }
+
+    /// How a session or a one-request exchange with this server dials and
+    /// redials, from the dial's settings.
+    pub fn reconnect_opts(&self) -> ReconnectOpts {
+        ReconnectOpts {
+            max: self.dial.reconnect,
+            dial_retries: self.dial.dial_retries,
+            first_dial_timeout: self.first_dial(),
+            require_pq: self.dial.pq_key_exchange == PqKeyExchange::Require,
+            ..ReconnectOpts::default()
+        }
     }
 }
 

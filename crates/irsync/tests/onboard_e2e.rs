@@ -821,6 +821,20 @@ fn dead_daemon_stops_the_sync_with_the_pair_hint() {
     );
 }
 
+/// `irsync list` dials a dead daemon the way a pull does: bounded, with
+/// the same give-up line and the hint that names `irsync pair`.
+#[test]
+fn dead_daemon_stops_a_listing_with_the_pair_hint() {
+    let w = World::new();
+    w.pair("myserver");
+    w.kill_daemon();
+    let o = w.irsync(&["list", "myserver:"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "{err}");
+    assert!(err.contains("gave up after 1 attempt"), "{err}");
+    assert!(err.contains("irsync pair myserver"), "{err}");
+}
+
 /// A server saved under two names (`mike@myserver` and `myserver`) and
 /// rebuilt: the check through one name gives both the new id. A host
 /// reached another way keeps what it has.

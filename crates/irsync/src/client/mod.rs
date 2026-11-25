@@ -13,14 +13,14 @@ use anyhow::{bail, Context};
 use iroh::EndpointAddr;
 use irsync_proto::v1::{hello, ExportEntry, ListExports, SyncRequest};
 
-use crate::config::settings::PqKeyExchange;
 use crate::filter::FilterSet;
 use crate::fs::paths::escape_text;
 use crate::index::Index;
 use crate::location::Location;
 use crate::options::{Direction, SyncOptions};
 use crate::session::reconnect::{
-    explain, never_reached, probe_path, run_with_reconnect, ConnState, NeverReached, ReconnectOpts,
+    ask_with_retries, never_reached, probe_path, run_with_reconnect, ConnState, NeverReached,
+    ReconnectOpts,
 };
 use crate::session::{
     resolve_roots, Event, EventBus, LocalSide, Outcome, SessionSummary, SyncHello,
@@ -143,12 +143,8 @@ pub async fn sync(
         };
         let several = of > 1;
         let ropts = ReconnectOpts {
-            max: conn.dial.reconnect,
-            dial_retries: conn.dial.dial_retries,
             source_index: index,
-            first_dial_timeout: conn.first_dial(),
-            require_pq: conn.dial.pq_key_exchange == PqKeyExchange::Require,
-            ..ReconnectOpts::default()
+            ..conn.reconnect_opts()
         };
         sessions += 1;
         let started = Instant::now();
@@ -354,11 +350,14 @@ pub async fn list_exports(
 
 async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<Vec<ExportEntry>> {
     let hello = crate::session::hello(hello::Request::ListExports(ListExports {}));
-    let client = c.endpoint.id();
-    let conn = dial(c).await?;
-    let entries = crate::session::engine::list_exports(&conn, hello)
-        .await
-        .map_err(|e| explain(e, Some(&conn), operand, &client))?;
-    conn.close(0u32.into(), b"done");
-    Ok(entries)
+    // Dialled and retried as a pull's probe is.
+    let ask = |conn: iroh::endpoint::Connection| {
+        let hello = hello.clone();
+        async move { crate::session::engine::list_exports(&conn, hello).await }
+    };
+    let target = c.target.clone();
+    match ask_with_retries(&c.endpoint, target, operand, c.reconnect_opts(), ask).await {
+        Err(e) if e.downcast_ref::<NeverReached>().is_some() => Err(never_reached(e, c.paired())),
+        res => res,
+    }
 }
