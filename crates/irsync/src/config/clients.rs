@@ -45,12 +45,13 @@ impl Right {
         }
     }
 
-    /// The right of the entry; none when unset (or not a known value).
+    /// The access this right of the entry gives; none when unset (or not
+    /// a known value).
     pub fn get(self, c: &pb::ClientEntry) -> Option<Access> {
         self.field(c).and_then(Access::from_message)
     }
 
-    /// The right of a typed entry; none when unset.
+    /// The access this right of a typed entry gives; none when unset.
     pub fn of(self, c: &ClientEntry) -> Option<Access> {
         match self {
             Right::AllExports => c.all_exports,
@@ -59,7 +60,8 @@ impl Right {
         }
     }
 
-    /// Sets or, with `None`, removes the right of the entry.
+    /// Sets the access this right of the entry gives or, with `None`,
+    /// removes the right.
     pub fn set(self, c: &mut pb::ClientEntry, a: Option<Access>) {
         *self.field_mut(c).0 = a.map(|a| pb::Access::from(a) as i32);
     }

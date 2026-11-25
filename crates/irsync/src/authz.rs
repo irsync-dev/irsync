@@ -1,4 +1,8 @@
 //! Authorisation: which endpoint may access which exports.
+//!
+//! A client's [`Permissions`] are its grants (an `rw` or `ro` entry in an
+//! export's own lists) and its rights (`all_exports`, `all_paths` and
+//! `admin` on its `[clients]` entry); each gives an [`Access`].
 
 use crate::config::clients::Clients;
 use crate::config::exports::{Export, Exports};
@@ -13,8 +17,10 @@ use std::sync::{Mutex, PoisonError};
 
 pub use crate::config::access::Access;
 
+/// What one client may do: its grants and its rights.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Grants {
+pub struct Permissions {
+    /// The access each export's own grants give it.
     pub exports: BTreeMap<String, Access>,
     /// The client's right over every export that is not automatic
     /// (`all_exports`).
@@ -27,8 +33,8 @@ pub struct Grants {
     pub admin: Option<Access>,
 }
 
-impl Grants {
-    /// True when the grants cover nothing at all (no entries, no
+impl Permissions {
+    /// True when they cover nothing at all (no grants, no
     /// `all_exports`, no `all_paths`, no `admin`).
     pub fn is_empty(&self) -> bool {
         self.exports.is_empty()
@@ -73,10 +79,10 @@ impl From<ManageError> for AuthzError {
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     pub exports: BTreeMap<String, Export>,
-    grants: HashMap<EndpointId, Grants>,
+    permissions: HashMap<EndpointId, Permissions>,
 }
 
-/// The stronger of two rights: `rw` beats `ro`.
+/// The stronger of two accesses: `rw` beats `ro`.
 fn stronger(a: Access, b: Access) -> Access {
     if a == Access::ReadWrite {
         a
@@ -99,13 +105,13 @@ impl Snapshot {
     /// sources give one id a right, `rw` beats `ro`. An entry that
     /// resolves to nobody is skipped with a warning.
     pub fn from_files(clients: &Clients, exports: &Exports, allow_all_paths: bool) -> Snapshot {
-        let mut grants: HashMap<EndpointId, Grants> = HashMap::new();
+        let mut permissions: HashMap<EndpointId, Permissions> = HashMap::new();
         for c in clients.entries.values() {
             let all_paths = c.all_paths.filter(|_| allow_all_paths);
             if c.all_exports.is_none() && all_paths.is_none() && c.admin.is_none() {
                 continue;
             }
-            let g = grants.entry(c.client_id).or_default();
+            let g = permissions.entry(c.client_id).or_default();
             raise(&mut g.all_exports, c.all_exports);
             raise(&mut g.all_paths, all_paths);
             raise(&mut g.admin, c.admin);
@@ -118,7 +124,7 @@ impl Snapshot {
                         tracing::warn!(entry = %entry, export = %name, "grant entry matches nobody");
                         continue;
                     };
-                    let g = grants.entry(id).or_default();
+                    let g = permissions.entry(id).or_default();
                     g.exports
                         .entry(name.clone())
                         .and_modify(|a| *a = stronger(*a, access))
@@ -131,7 +137,7 @@ impl Snapshot {
         // the client gets its `all_paths` level now, so lowering or raising
         // it takes effect at once, and removing it (or turning
         // `allow_all_paths` off) ends access through the export.
-        for g in grants.values_mut() {
+        for g in permissions.values_mut() {
             let level = g.all_paths;
             g.exports.retain(|name, access| {
                 if exports.exports.get(name).is_none_or(|e| !e.auto) {
@@ -148,24 +154,25 @@ impl Snapshot {
         }
         Snapshot {
             exports: exports.exports.clone(),
-            grants,
+            permissions,
         }
     }
 
     /// The admin right of `id`; none when it has none.
     pub fn admin(&self, id: &EndpointId) -> Option<Access> {
-        self.grants.get(id).and_then(|g| g.admin)
+        self.permissions.get(id).and_then(|g| g.admin)
     }
 
-    /// The grants of `id`; empty when it is granted nothing.
-    pub fn grants(&self, id: &EndpointId) -> Grants {
-        self.grants.get(id).cloned().unwrap_or_default()
+    /// The permissions of `id`; empty when it may do nothing.
+    pub fn permissions(&self, id: &EndpointId) -> Permissions {
+        self.permissions.get(id).cloned().unwrap_or_default()
     }
 
     /// The access `id` has to the export `name`; none when there is no
     /// such export. An automatic export never comes from `all_exports`.
     pub fn access(&self, id: &EndpointId, name: &str) -> Option<Access> {
-        self.grants(id).access_to(name, self.exports.get(name)?)
+        self.permissions(id)
+            .access_to(name, self.exports.get(name)?)
     }
 
     /// True when `id` may read (or, with `write`, write) the export `name`.
@@ -219,7 +226,7 @@ pub(crate) fn lock_config_waiting(path: &Path) -> Result<crate::manage::ConfigLo
 
 /// True when an export `client` may use in `snap` already contains `root`.
 fn covered(snap: &Snapshot, root: &Path, client: &EndpointId) -> bool {
-    crate::resolve::containing(root, &snap.exports, &snap.grants(client), None).is_some()
+    crate::resolve::containing(root, &snap.exports, &snap.permissions(client), None).is_some()
 }
 
 /// Reads the config afresh on every
@@ -284,10 +291,10 @@ pub struct MemoryAuthorizer {
 }
 
 impl MemoryAuthorizer {
-    pub fn single(id: EndpointId, grants: Grants) -> Self {
+    pub fn single(id: EndpointId, permissions: Permissions) -> Self {
         Self {
             snapshot: Mutex::new(Snapshot {
-                grants: HashMap::from([(id, grants)]),
+                permissions: HashMap::from([(id, permissions)]),
                 ..Snapshot::default()
             }),
         }
@@ -299,9 +306,9 @@ impl MemoryAuthorizer {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Adds (or replaces) the grants of one more key.
-    pub fn with(mut self, id: EndpointId, grants: Grants) -> Self {
-        self.inner().grants.insert(id, grants);
+    /// Adds (or replaces) the permissions of one more key.
+    pub fn with(mut self, id: EndpointId, permissions: Permissions) -> Self {
+        self.inner().permissions.insert(id, permissions);
         self
     }
 
@@ -348,8 +355,8 @@ impl Authorizer for MemoryAuthorizer {
             ro,
         };
         snap.exports.insert(name.clone(), export);
-        let grants = snap.grants.entry(client).or_default();
-        grants.exports.insert(name, access);
+        let permissions = snap.permissions.entry(client).or_default();
+        permissions.exports.insert(name, access);
         Ok(())
     }
 }

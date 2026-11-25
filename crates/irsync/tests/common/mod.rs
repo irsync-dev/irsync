@@ -525,14 +525,14 @@ impl Harness {
             Some(b) => tempfile::tempdir_in(b).unwrap(),
             None => tempfile::tempdir().unwrap(),
         };
-        use irsync::authz::{Access, Grants, MemoryAuthorizer};
+        use irsync::authz::{Access, MemoryAuthorizer, Permissions};
         let client = client_endpoint().await;
         let guest = client_endpoint().await;
         let export = tmp();
         seed(export.path());
-        let grants = Grants {
+        let grants = Permissions {
             all_exports: Some(Access::ReadWrite),
-            ..Grants::default()
+            ..Permissions::default()
         };
         let authz = MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants);
         let mut m = irsync::config::exports::Export {

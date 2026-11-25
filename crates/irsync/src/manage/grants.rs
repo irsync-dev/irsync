@@ -458,7 +458,7 @@ pub fn list_client(
     label: &str,
     id: &EndpointId,
 ) -> String {
-    let grants = Snapshot::from_files(clients, exports, allow_all_paths).grants(id);
+    let grants = Snapshot::from_files(clients, exports, allow_all_paths).permissions(id);
     let mut out = format!("{label}:\n");
     if let Some(a) = grants.all_paths {
         let _ = writeln!(out, "    all_paths: {}", a.as_str());

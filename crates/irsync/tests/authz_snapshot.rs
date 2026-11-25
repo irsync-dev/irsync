@@ -23,7 +23,7 @@ fn name_and_raw_id_entries_both_grant() {
     );
     assert!(s.allows(&id(1), "photos", true));
     assert!(s.allows(&id(2), "photos", false) && !s.allows(&id(2), "photos", true));
-    assert!(s.grants(&id(3)).is_empty());
+    assert!(s.permissions(&id(3)).is_empty());
 }
 
 /// A grant that names a machine is for its client id, not its daemon's.
@@ -38,7 +38,7 @@ fn a_named_machine_is_granted_as_a_client() {
         "[exports.photos]\npath = \"/p\"\nrw = [\"laptop\"]\n",
     );
     assert!(s.allows(&id(2), "photos", true));
-    assert!(s.grants(&id(1)).is_empty());
+    assert!(s.permissions(&id(1)).is_empty());
 }
 
 #[test]
@@ -52,7 +52,10 @@ fn per_export_entry_wins_over_all_exports_and_rw_wins_over_ro() {
     assert!(!s.allows(&id(1), "x", true) && s.allows(&id(1), "other", true));
     assert!(s.allows(&id(2), "x", true) && !s.allows(&id(2), "other", true));
     assert!(s.allows(&id(1), "y", true));
-    assert_eq!(s.grants(&id(1)).exports.get("x"), Some(&Access::ReadOnly));
+    assert_eq!(
+        s.permissions(&id(1)).exports.get("x"),
+        Some(&Access::ReadOnly)
+    );
 }
 
 #[test]
@@ -62,7 +65,7 @@ fn unresolvable_entry_matches_nobody() {
         "[exports.x]\npath = \"/x\"\nrw = [\"ghost\", \"not-an-id\"]\n",
     );
     assert_eq!(s.exports.len(), 1);
-    assert!(s.grants(&id(1)).is_empty());
+    assert!(s.permissions(&id(1)).is_empty());
 }
 
 #[test]
@@ -93,8 +96,8 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
 #[test]
 fn all_paths_reaches() {
     let s = snap(&laptop("all_paths = \"rw\"\n"), "");
-    assert_eq!(s.grants(&id(1)).all_paths, Some(Access::ReadWrite));
-    assert!(!s.grants(&id(1)).is_empty());
+    assert_eq!(s.permissions(&id(1)).all_paths, Some(Access::ReadWrite));
+    assert!(!s.permissions(&id(1)).is_empty());
 }
 
 #[test]
@@ -104,8 +107,8 @@ fn all_paths_not_allowed_is_ignored() {
         &parse_exports("", Path::new("e")).unwrap(),
         false,
     );
-    assert_eq!(s.grants(&id(1)).all_paths, None);
-    assert!(s.grants(&id(1)).is_empty());
+    assert_eq!(s.permissions(&id(1)).all_paths, None);
+    assert!(s.permissions(&id(1)).is_empty());
 }
 
 /// An automatic export carries its peer's own `rw` entry; it counts only
@@ -137,7 +140,7 @@ fn auto_export_grant_needs_all_paths() {
             "allow_all_paths off",
         ),
     ] {
-        let g = s.grants(&id(1));
+        let g = s.permissions(&id(1));
         assert_eq!(g.exports.get("home-auto"), None, "{why}");
         assert!(s.allows(&id(1), "x", true), "{why}");
         assert_eq!(g.all_paths, None, "{why}");
@@ -160,7 +163,7 @@ fn all_exports_reaches_every_hand_made_export() {
             id(2)
         ),
     );
-    let g = s.grants(&id(1));
+    let g = s.permissions(&id(1));
     assert_eq!(g.all_exports, Some(Access::ReadOnly));
     assert_eq!(s.access(&id(1), "docs"), Some(Access::ReadOnly));
     assert_eq!(
@@ -192,7 +195,7 @@ fn an_automatic_export_gives_the_current_all_paths_level() {
             &laptop(&format!("all_paths = \"{all_paths}\"\n")),
             &format!("[exports.auto-h]\npath = \"/h\"\nauto = true\n{list} = [\"laptop\"]\n"),
         );
-        let g = s.grants(&id(1));
+        let g = s.permissions(&id(1));
         assert_eq!(
             g.access_to("auto-h", &s.exports["auto-h"]),
             Some(want),
@@ -213,7 +216,7 @@ fn an_automatic_export_counts_only_with_all_paths_allowed() {
         .unwrap(),
         false,
     );
-    let g = s.grants(&id(1));
+    let g = s.permissions(&id(1));
     assert_eq!(g.all_paths, None);
     assert_eq!(g.access_to("auto-h", &s.exports["auto-h"]), None);
     assert_eq!(g.access_to("x", &s.exports["x"]), Some(Access::ReadWrite));
@@ -231,7 +234,7 @@ fn two_names_for_one_id_take_the_higher_level() {
             ),
             "[exports.auto-h]\npath = \"/h\"\nauto = true\nro = [\"a\"]\n",
         );
-        let g = s.grants(&id(1));
+        let g = s.permissions(&id(1));
         assert_eq!(g.all_paths, Some(Access::ReadWrite), "a = {a}, b = {b}");
         assert_eq!(g.all_exports, Some(Access::ReadWrite), "a = {a}, b = {b}");
         assert_eq!(
@@ -259,7 +262,7 @@ fn parse_exports(
 #[test]
 fn admin_alone_is_not_empty() {
     let s = snap(&laptop("admin = \"ro\"\n"), "[exports.x]\npath = \"/x\"\n");
-    let g = s.grants(&id(1));
+    let g = s.permissions(&id(1));
     assert!(!g.is_empty());
     assert_eq!(g.admin, Some(Access::ReadOnly));
     assert_eq!(s.admin(&id(1)), Some(Access::ReadOnly));

@@ -21,7 +21,7 @@ use irsync_proto::PROTOCOL_VERSION;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::authz::{Access, Authorizer, AuthzError, FileAuthorizer, Grants, Snapshot};
+use crate::authz::{Access, Authorizer, AuthzError, FileAuthorizer, Permissions, Snapshot};
 use crate::autoexport::{auto_root, check_root, AutoRootError};
 use crate::config::exports::Export;
 use crate::config::file::Config;
@@ -548,7 +548,7 @@ async fn handle(
             return Ok(());
         }
     };
-    let grants = snap.grants(&id);
+    let grants = snap.permissions(&id);
     if grants.is_empty() {
         tracing::info!(peer = %id.fmt_short(), "rejecting unauthorized key");
         conn.close(1u32.into(), b"unauthorized");
@@ -738,7 +738,7 @@ async fn admit_target<'a>(
     shared: &Arc<Shared>,
     snap: &'a Snapshot,
     fresh: &'a mut Option<Snapshot>,
-    grants: &Grants,
+    grants: &Permissions,
     id: iroh::EndpointId,
     t: &Target<'_>,
 ) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
@@ -747,7 +747,7 @@ async fn admit_target<'a>(
         None if grants.all_paths.is_some() => {
             let (s, abs) = serve_all_paths(shared, snap, id, t).await?;
             let fresh: &'a Snapshot = fresh.insert(s);
-            let grants = fresh.grants(&id);
+            let grants = fresh.permissions(&id);
             match containing(&abs, &fresh.exports, &grants, None) {
                 Some(resolved) => admit(resolved, t),
                 None => Err(no_access(t.path)),
@@ -776,7 +776,7 @@ async fn answer(
 
 /// The exports `grants` cover, by name, with the real path and the
 /// effective access (`read_only` caps a read-write grant).
-fn list_exports_for(snap: &Snapshot, grants: &Grants) -> ExportList {
+fn list_exports_for(snap: &Snapshot, grants: &Permissions) -> ExportList {
     let exports = snap
         .exports
         .iter()
@@ -844,7 +844,7 @@ fn no_access(path: &[u8]) -> (Code, String) {
 /// automatic export ([`serve_all_paths`]).
 fn validate<'a>(
     snap: &'a Snapshot,
-    grants: &Grants,
+    grants: &Permissions,
     home: Option<&Path>,
     t: &Target<'_>,
 ) -> Result<Option<(Resolved<'a>, RelPath)>, (Code, String)> {
@@ -877,7 +877,7 @@ async fn serve_all_paths(
     // An export's short name stands for its path only when this peer may
     // use that export; any other name is a directory under the home, so
     // the peer cannot reach (and auto-export) another client's export.
-    let grants = snap.grants(&id);
+    let grants = snap.permissions(&id);
     let Some(level) = grants.all_paths else {
         return Err(no_access(t.path));
     };

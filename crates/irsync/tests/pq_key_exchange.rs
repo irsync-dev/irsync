@@ -8,7 +8,7 @@ use std::sync::Arc;
 use common::{classical_endpoint, client_endpoint, spawn_daemon_settings, within, DaemonHandle};
 use iroh::endpoint::{Connection, ConnectionError, ZeroRttStatus};
 use iroh::Endpoint;
-use irsync::authz::{Access, Grants, MemoryAuthorizer};
+use irsync::authz::{Access, MemoryAuthorizer, Permissions};
 use irsync::config::settings::{DaemonSettings, PqKeyExchange};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{check_pq_key_exchange, probe_path, ReconnectOpts};
@@ -17,9 +17,9 @@ use irsync_proto::{ALPN, PROTOCOL_VERSION};
 
 /// A daemon that grants `client` everything, with `pq_key_exchange` as given.
 async fn daemon(client: iroh::EndpointId, pq_key_exchange: PqKeyExchange) -> DaemonHandle {
-    let grants = Grants {
+    let grants = Permissions {
         all_exports: Some(Access::ReadWrite),
-        ..Grants::default()
+        ..Permissions::default()
     };
     spawn_daemon_settings(
         Arc::new(MemoryAuthorizer::single(client, grants)),

@@ -2,7 +2,7 @@
 //! the daemon's home, or an absolute path, in that order, then the export
 //! that contains it.
 
-use crate::authz::{Access, Grants};
+use crate::authz::{Access, Permissions};
 use crate::config::exports::Export;
 use crate::fs::paths::RelPath;
 use crate::platform::{bytes_to_os, os_to_bytes};
@@ -117,7 +117,7 @@ pub(crate) fn parts_of(p: &Path) -> Vec<Vec<u8>> {
 pub fn containing<'a>(
     abs: &Path,
     exports: &'a BTreeMap<String, Export>,
-    grants: &Grants,
+    grants: &Permissions,
     prefer: Option<&str>,
 ) -> Option<Resolved<'a>> {
     let target = parts_of(abs);
@@ -167,7 +167,7 @@ pub fn resolve<'a>(
     path: &[u8],
     home: Option<&Path>,
     exports: &'a BTreeMap<String, Export>,
-    grants: &Grants,
+    grants: &Permissions,
 ) -> Result<Option<Resolved<'a>>, ResolveError> {
     let usable = |name: &str, e: &Export| grants.access_to(name, e).is_some();
     Ok(resolve_path_where(path, home, exports, usable)?
