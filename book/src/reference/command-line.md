@@ -30,20 +30,24 @@ The terms used on this page:
   packets that it cannot read. n0 runs public relays, which are the default.
 - An **export** is a directory the daemon shares under a name.
 - A **grant** lets a client use an export, read-write or read-only. The daemon
-  refuses every client that no grant names.
+  refuses every key that has no grant and none of the rights below.
 - The **`all_paths` right** lets a client reach any path the daemon's account
   can, read-write or read-only. The daemon then makes an export for each new
-  path the client uses. `all_exports` reaches every export you made by hand.
-  Both are set with `irsync client set`.
+  path the client uses. `all_exports` reaches every export you made by hand,
+  and `admin` lets the client manage the server from afar. All three are set
+  with `irsync client set`.
 
-The last two lines of the synopsis above are the rsync-compatible shorthand:
-a command written for rsync works with `irsync` in its place. The named forms
+The last two lines of the synopsis above are the rsync-style shorthand: the
+flags irsync shares with rsync are spelled the same, so a common rsync
+command often works with `irsync` in its place. Not every rsync flag is
+there: `-z`, `--partial` and `-e` are among those missing, and both ends
+must run irsync. See [Known limitations](limitations.md). The named forms
 `irsync sync` and `irsync list` do the same and cannot be mistaken for a
 command that a later irsync adds, which makes them the safer choice in
 scripts.
 
-`irsync --help` lists irsync's flags, one line each; `irsync COMMAND --help`
-lists a subcommand's.
+`irsync --help` (or `-h`) lists irsync's flags, each with what it does;
+`irsync COMMAND --help` lists a subcommand's.
 
 ## Examples
 
@@ -300,7 +304,7 @@ These have no rsync counterpart.
 | `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[client]`, else 4. For a server `irsync pair` saved (one with `ssh`), the default is 0 and only this flag changes it; each try there waits at most 15 seconds. |
 | `--relay URL` | Use this relay server instead of the server entry's, `[client]`'s or n0's default. Cannot be combined with `--no-relay` or `--address`. |
 | `--no-relay` | Direct connections only: never fall back to a relay. The address lookups stay on. Default: `relay_mode` from the server entry, else from `[client]`. |
-| `--pq-key-exchange prefer\|require` | `require`: refuse a daemon that does not offer the post-quantum key exchange, such as an older irsync; nothing is sent to it. `prefer`: use that key exchange when the daemon offers it. Default: `pq_key_exchange` from the server entry, else from `[client]`, else `prefer`. See [Post-quantum key exchange](configuration.md#post-quantum-key-exchange). |
+| `--pq-key-exchange prefer\|require` | `require`: refuse a daemon that does not offer the post-quantum key exchange, such as an irsync built without it; nothing is sent to it. `prefer`: use that key exchange when the daemon offers it. Default: `pq_key_exchange` from the server entry, else from `[client]`, else `prefer`. See [Post-quantum key exchange](configuration.md#post-quantum-key-exchange). |
 | `--no-dht` | Do not look the daemon up in the mainline DHT. |
 | `--address ADDR` | Dial the daemon at `ip:port`, `[ipv6]:port` or `host:port` directly; repeatable. Turns the relay, DNS, DHT, mDNS and the port mapper off, and binds the client to the local address it dials from (see [Keep to one path](../how-to/direct-and-relay.md#keep-to-one-path)). The daemon's `EndpointId` is still required and still checked. |
 | `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. |
@@ -325,7 +329,7 @@ table, then `[client]`, then the built-in default. See
 | `irsync remote` | Manage a server's exports, clients and grants from this client. See [irsync remote](#irsync-remote). |
 | `irsync daemon` | Run the daemon. Its flags are under [irsync daemon](#irsync-daemon). |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
-| `irsync gc` | Remove abandoned partial files, dormant sessions and stale index entries. See [Clean up state](../how-to/clean-up.md). |
+| `irsync gc` | Remove abandoned partial files, dormant sessions, stale index entries and the index files of older irsync builds. See [Clean up state](../how-to/clean-up.md). |
 | `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync client set NAME all_paths=rw` lets a client reach any path, read-write; it is what `irsync pair` sets. |
 
 ### irsync remote

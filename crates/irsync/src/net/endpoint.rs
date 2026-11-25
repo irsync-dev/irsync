@@ -249,7 +249,7 @@ pub fn client_endpoint_opts(
         // same contradiction as `--address` with `--relay`.
         if cli_relay.is_some() {
             anyhow::bail!(
-                "--relay cannot be used with direct addresses (the host entry has `address`)"
+                "--relay cannot be used with direct addresses (the server's entry has `address`)"
             );
         }
         if host_relay.is_some()

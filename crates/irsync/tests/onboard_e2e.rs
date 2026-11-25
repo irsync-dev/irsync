@@ -810,7 +810,7 @@ fn dead_daemon_stops_the_sync_with_the_pair_hint() {
     ] {
         assert!(err.contains(want), "missing {want:?} in:\n{err}");
     }
-    assert!(!err.contains("copied this host's ID by hand"), "{err}");
+    assert!(!err.contains("added this server's ID by hand"), "{err}");
     assert_eq!(w.ssh_calls(), calls);
     let err = w.pair("myserver");
     assert!(err.contains("started the daemon"), "{err}");
@@ -1220,7 +1220,7 @@ fn hand_added_host_that_never_answers_gets_the_id_hint() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(!err.contains("checking it over ssh"), "{err}");
-    assert!(err.contains("copied this host's ID by hand"), "{err}");
+    assert!(err.contains("added this server's ID by hand"), "{err}");
     assert_eq!(err.matches("irsync id show --daemon").count(), 1, "{err}");
 }
 
@@ -1234,7 +1234,7 @@ fn hand_added_host_listing_gets_the_id_hint() {
     let o = w.irsync(&["myserver:"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
-    assert!(err.contains("copied this host's ID by hand"), "{err}");
+    assert!(err.contains("added this server's ID by hand"), "{err}");
     assert_eq!(err.matches("irsync id show --daemon").count(), 1, "{err}");
 }
 

@@ -735,11 +735,9 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
                      up over ssh failed",
                     paths.config.display()
                 ),
-                irsync::ssh::pair::PairKind::First => format!(
-                    "{host:?} is not a server in {} and not an EndpointId; \
-                     setting it up over ssh failed",
-                    paths.config.display()
-                ),
+                irsync::ssh::pair::PairKind::First => {
+                    format!("pairing with {host} over ssh failed")
+                }
                 irsync::ssh::pair::PairKind::Saved => {
                     format!("checking {host} over ssh failed")
                 }
@@ -2381,7 +2379,13 @@ fn run_show(f: &FilesArgs) -> i32 {
                 eprintln!("generated identity {}", p.display());
             }
             let client_line = irsync::identity::public_key_line(&client, "irsync");
-            let daemon = identity_of(&settings.daemon.identity, "irsync-daemon", &pass)?;
+            // Read-only, like `id show`: the daemon's key is never made here.
+            let daemon = if has_daemon_identity(settings) {
+                let comment = IdRole::Daemon.comment();
+                Some(identity_of(&settings.daemon.identity, comment, &pass)?.public())
+            } else {
+                None
+            };
             print!(
                 "{}",
                 manage::show::report(
@@ -2390,7 +2394,7 @@ fn run_show(f: &FilesArgs) -> i32 {
                     &server_lines,
                     &client_lines,
                     (&client.public(), &client_line),
-                    &daemon.public(),
+                    daemon.as_ref(),
                 )
             );
             Ok(())

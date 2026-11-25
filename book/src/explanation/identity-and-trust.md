@@ -41,10 +41,11 @@ connection; it is not a warning to confirm.
 
 There is no trust on first use. The client never learns a daemon's key from
 the network, has no `known_hosts` file to add to, and never asks whether to
-trust a key it has not seen. Both ids are copied by hand once, each in its own
-direction, as in [Your first sync](../tutorial/first-sync.md): the client's id
-to the daemon's machine, for the grant, and the daemon's id to the client, for
-the server entry. In exchange, nothing on the way can redirect a client: a DNS or DHT
+trust a key it has not seen. Each id travels once, in its own direction: the
+client's id to the daemon's machine, for the client entry, and the daemon's id
+to the client, for the server entry. `irsync pair` carries both over ssh, a
+login you already trust; set up by hand, you copy them yourself, as in
+[Your first sync](../tutorial/first-sync.md). In exchange, nothing on the way can redirect a client: a DNS or DHT
 record, a relay or an address given by hand only says where to knock, and a
 wrong one leads to a failed connection, never to the wrong daemon (see
 [Connections](connections.md#finding-the-daemon)).
@@ -64,8 +65,9 @@ The daemon reads its configuration afresh for every connection, once the
 handshake has proved the client's key, and checks the key against it before it
 accepts any stream:
 
-- A key that no grant names is closed on at once, with no message. There is no
-  open access: `all` and `*` are refused as a grantee.
+- A key that has no grant and no right (`all_exports`, `all_paths` or
+  `admin`) is closed on at once, with no message. There is no open access:
+  `all` and `*` are refused as a grantee.
 - A configuration that cannot be read rejects the connection; the daemon does
   not fall back to an earlier copy.
 - A change to the grants applies from the next connection; a session in

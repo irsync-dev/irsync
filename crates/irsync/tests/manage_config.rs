@@ -158,6 +158,167 @@ fn get_prints_scalars_arrays_and_tables() {
     ));
 }
 
+/// Every key `kind_of` knows, with `NAME` for an entry's name. A key
+/// added to `kind_of` belongs here too.
+const EVERY_KEY: &[&str] = &[
+    "config_version",
+    "unsafe_config_allowed",
+    "identity",
+    "state_dir",
+    "client",
+    "client.parallel",
+    "client.reconnect",
+    "client.dial_retries",
+    "client.dht",
+    "client.mdns",
+    "client.ssh_install",
+    "client.relay",
+    "client.relay_mode",
+    "client.congestion",
+    "client.pq_key_exchange",
+    "daemon",
+    "daemon.identity",
+    "daemon.idle_timeout",
+    "daemon.dormant_session_timeout",
+    "daemon.max_dormant_sessions_per_key",
+    "daemon.listen",
+    "daemon.portmap",
+    "daemon.allow_all_paths",
+    "daemon.allow_root",
+    "daemon.relay",
+    "daemon.relay_mode",
+    "daemon.congestion",
+    "daemon.pq_key_exchange",
+    "daemon.debug_addr",
+    "daemon.discovery",
+    "daemon.discovery.dht",
+    "daemon.discovery.dns",
+    "daemon.discovery.mdns",
+    "telemetry",
+    "telemetry.otlp_endpoint",
+    "telemetry.otlp_protocol",
+    "servers",
+    "servers.NAME",
+    "servers.NAME.endpoint_id",
+    "servers.NAME.relay",
+    "servers.NAME.relay_mode",
+    "servers.NAME.congestion",
+    "servers.NAME.pq_key_exchange",
+    "servers.NAME.ssh",
+    "servers.NAME.address",
+    "servers.NAME.ssh_aliases",
+    "servers.NAME.parallel",
+    "servers.NAME.reconnect",
+    "servers.NAME.dial_retries",
+    "servers.NAME.dht",
+    "servers.NAME.mdns",
+    "clients",
+    "clients.NAME",
+    "clients.NAME.client_id",
+    "clients.NAME.all_exports",
+    "clients.NAME.all_paths",
+    "clients.NAME.admin",
+    "exports",
+    "exports.NAME",
+    "exports.NAME.path",
+    "exports.NAME.read_only",
+    "exports.NAME.warm_index",
+    "exports.NAME.fsync",
+    "exports.NAME.auto",
+    "exports.NAME.rw",
+    "exports.NAME.ro",
+];
+
+/// The keys of `EVERY_KEY` that have no default, on purpose: tables, the
+/// keys an entry must have or that name someone, relays (n0's are used),
+/// `debug_addr` (off), the OTLP endpoint (no export), and a server's keys,
+/// which fall back to `[client]`'s.
+const NO_DEFAULT: &[&str] = &[
+    "client",
+    "client.relay",
+    "daemon",
+    "daemon.relay",
+    "daemon.debug_addr",
+    "daemon.discovery",
+    "telemetry",
+    "telemetry.otlp_endpoint",
+    "servers",
+    "servers.NAME",
+    "servers.NAME.endpoint_id",
+    "servers.NAME.relay",
+    "servers.NAME.relay_mode",
+    "servers.NAME.congestion",
+    "servers.NAME.pq_key_exchange",
+    "servers.NAME.ssh",
+    "servers.NAME.address",
+    "servers.NAME.ssh_aliases",
+    "servers.NAME.parallel",
+    "servers.NAME.reconnect",
+    "servers.NAME.dial_retries",
+    "servers.NAME.dht",
+    "servers.NAME.mdns",
+    "clients",
+    "clients.NAME",
+    "clients.NAME.client_id",
+    "clients.NAME.all_exports",
+    "clients.NAME.all_paths",
+    "clients.NAME.admin",
+    "exports",
+    "exports.NAME",
+    "exports.NAME.path",
+    "exports.NAME.rw",
+    "exports.NAME.ro",
+];
+
+/// `config get` of an unset key prints its default: every key has one,
+/// or is listed as having none, and those listed really have none.
+#[test]
+fn every_key_has_a_default_or_says_it_has_none() {
+    for key in EVERY_KEY {
+        let path = p(key);
+        assert!(kind_of(&path).is_some(), "{key}: not a key");
+        let listed = NO_DEFAULT.contains(key);
+        match default_of(&path) {
+            Some(_) => assert!(!listed, "{key}: listed as without default, but has one"),
+            None => assert!(listed, "{key}: no default and not listed as having none"),
+        }
+    }
+    for key in NO_DEFAULT {
+        assert!(EVERY_KEY.contains(key), "{key}: not in EVERY_KEY");
+    }
+}
+
+/// An export's flags default to off, but only for an export that is there.
+#[test]
+fn export_flags_default_to_off_for_an_export_that_exists() {
+    use irsync::manage::config::get_or_default;
+    let m = msg("[exports.p]\npath = \"/srv/p\"\n");
+    for flag in ["read_only", "warm_index", "fsync", "auto"] {
+        assert_eq!(
+            get_or_default(&m, &p(&format!("exports.p.{flag}"))).unwrap(),
+            Some(strings(&["false"])),
+            "{flag}"
+        );
+        assert_eq!(
+            get_or_default(&m, &p(&format!("exports.q.{flag}"))).unwrap(),
+            None,
+            "{flag}"
+        );
+    }
+    assert_eq!(
+        get_or_default(&m, &p("telemetry.otlp_protocol")).unwrap(),
+        Some(strings(&["http"]))
+    );
+    assert_eq!(
+        get_or_default(&m, &p("daemon.allow_all_paths")).unwrap(),
+        Some(strings(&["true"]))
+    );
+    assert_eq!(
+        get_or_default(&m, &p("daemon.allow_root")).unwrap(),
+        Some(strings(&["false"]))
+    );
+}
+
 #[test]
 fn defaults_for_settings_keys() {
     assert_eq!(

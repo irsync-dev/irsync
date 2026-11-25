@@ -12,7 +12,7 @@ know stops and tells you to run `irsync pair`.
 
 ## The names pair saves
 
-On the client, the server name depends on what you typed before the `:`:
+On the client, the server name depends on the host you gave `irsync pair`:
 
 | You typed | Saved server name |
 |-----------|-------------|
@@ -56,7 +56,7 @@ under its own name. Do not pair again before that: it would point the old
 name at the new machine.
 
 On the server, `pair` saves the client under the client's short host name
-as a client, and grants that name:
+as a client, and gives it the `all_paths` and `admin` rights:
 
 ```toml
 [clients.myclient]

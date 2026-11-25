@@ -1,4 +1,4 @@
-//! SSH onboarding.
+//! `irsync pair`: setting a server up over ssh.
 
 pub mod client;
 pub mod installer;

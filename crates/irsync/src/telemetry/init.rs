@@ -61,7 +61,7 @@ impl OtlpConfig {
         let protocol = match set("OTEL_EXPORTER_OTLP_PROTOCOL").as_deref() {
             Some("grpc") => OtlpProtocol::Grpc,
             Some("http/protobuf") => OtlpProtocol::Http,
-            _ => t.otlp_protocol.unwrap_or(OtlpProtocol::Http),
+            _ => t.otlp_protocol.unwrap_or(OtlpProtocol::DEFAULT),
         };
         Some(OtlpConfig { endpoint, protocol })
     }

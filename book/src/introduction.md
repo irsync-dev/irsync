@@ -74,8 +74,9 @@ commands are on [dist.irsync.org](https://dist.irsync.org).
 You can also download a tarball from the
 [GitHub Releases page](https://github.com/irsync-dev/irsync/releases).
 
-For anything else, build from source with Rust's `cargo`. If you have no
-Rust yet, or an older one, get it from [rustup.rs](https://rustup.rs) first. The build takes a few minutes.
+For anything else, build from source with Rust's `cargo`. You need Rust 1.96
+or newer. If you have no Rust yet, or an older one, get it from
+[rustup.rs](https://rustup.rs) first. The build takes a few minutes.
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # only if you have no Rust
@@ -142,8 +143,8 @@ The pages come in four kinds, and each kind answers a different question.
   sessions and resume, identity and trust, connections, and the transfer
   algorithm.
 
-A separate part, **fileset**, covers a companion tool that shares no code with
-irsync. It checks a copy against a recorded manifest, whichever tool made the
+A separate part, **fileset**, covers a companion tool that checks with code of
+its own, not irsync's. It checks a copy against a recorded manifest, whichever tool made the
 copy, and finds bitrot. Start at [Introduction to fileset](fileset/introduction.md).
 
 A last part, **Contributing**, is for people who work on irsync itself:

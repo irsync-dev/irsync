@@ -40,81 +40,18 @@ mostly unchanged tree cheap.
 
 ## Install
 
-Pick one way. Every package contains both `irsync` and `fileset`.
-
-The install script puts both in `~/.local/bin` and the man pages in
-`~/.local/share/man`:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh
-```
-
-It installs the newest stable release. To try a beta, add `--beta` straight
-after `sh -s --`. `--alpha` takes the newest release of any kind:
+The install script puts `irsync` and `fileset` in `~/.local/bin` and the
+man pages in `~/.local/share/man`. Until the first stable release, v0.1.0,
+is out, add `--beta`:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta
 ```
 
-The first stable release will be v0.1.0. Until it is out, add `--beta`.
-
-Then `man irsync`, `man fileset` and `man irsync.toml` work. The script
-never edits your shell startup files. If `~/.local/bin` is not on your
-`PATH`, it says how to add it; on Linux, logging out and in again is
-usually enough. To remove what it installed (your config
-and state stay), run it with `--uninstall`. Drop `--beta` here too once
-v0.1.0 is out:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://irsync.org/install.sh | sh -s -- --beta --uninstall
-```
-
-The Homebrew, apt and dnf packages install the man pages too. `cargo
-install` installs none.
-
-Homebrew (Linux and macOS), from v0.1.0 on:
-
-```sh
-brew install irsync-dev/tap/irsync
-```
-
-Debian, Ubuntu, Fedora and RHEL, from v0.1.0 on: the apt and dnf setup
-commands are on [dist.irsync.org](https://dist.irsync.org).
-
-You can also download a tarball from the
-[GitHub Releases page](https://github.com/irsync-dev/irsync/releases).
-
-For anything else, build from source with Rust's `cargo`. You need Rust 1.96
-or newer. If you have no Rust yet, or an older one, get it from
-[rustup.rs](https://rustup.rs) first. The build takes a few minutes.
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # only if you have no Rust
-cargo install --git https://github.com/irsync-dev/irsync irsync
-```
-
 Release binaries cover Linux on x86_64 and arm64, and macOS on Apple Silicon.
-Other Linux and macOS machines can build from source. All of these are
-supported, as client and as daemon.
-
-With ssh, the client is enough: `irsync pair` installs irsync, fileset and
-the manual pages on the server. A released irsync downloads the release files
-for the server's platform on this machine, also when it differs from this one.
-If the download fails and the server has the same OS and CPU, it sends this
-machine's own files instead. The server needs no internet access. A build from
-source sends only its own files, so it can set up only a server with the same
-OS and CPU. Some platforms have no release files (an Intel Mac, for example).
-For those, and for a source build with a server of another OS or CPU, install
-irsync on both machines and set the server up by hand.
-
-The workspace also holds `fileset`, an independent tool that records the
-checksums and metadata of a directory tree and later verifies the tree against
-them, for example after a transfer or to find bitrot. The packages above
-already include it. To build only `fileset` from source:
-
-```sh
-cargo install --git https://github.com/irsync-dev/irsync fileset
-```
+Homebrew, apt and dnf packages come from v0.1.0 on. Building from source,
+removing irsync again, and which servers `irsync pair` can set up are in
+[Install](https://irsync.org/book/introduction#install), in the book.
 
 ## Example
 
@@ -126,7 +63,7 @@ irsync pair myserver
 irsync -av ~/Photos/ myserver:/srv/photos/
 ```
 
-This is rsync's command line, with `irsync` in place of `rsync`. `irsync list myserver` lists the exports the server shares with this client.
+The flags are rsync's, with `irsync` in place of `rsync`. `irsync list myserver` lists the exports the server shares with this client.
 
 `irsync pair` sets the server up over SSH: it installs irsync there
 (with fileset and the manual pages), gives this client's key access, starts the daemon as a user service and saves `myserver` as a server. It prints what it did.
@@ -173,7 +110,8 @@ Before relying on it, read the
 Windows is not supported, extended attributes and ACLs are not copied, and
 relayed connections are much slower than direct ones.
 
-`fileset` is a separate tool that shares no code with irsync. Use it to verify
+`fileset` is a separate tool. It records and checks with code of its own, not
+irsync's; only the wildcard matcher of `fileset list` is shared. Use it to verify
 copies made by any tool and to find bitrot; see the
 [introduction to fileset](https://irsync.org/book/fileset/introduction).
 

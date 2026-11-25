@@ -55,8 +55,8 @@ gets `--config` explicitly.
 
    ```sh
    sudo -u irsync irsync export add photos:/srv/photos --config /etc/irsync/irsync.toml
-   sudo -u irsync irsync grant add photos myclient --config /etc/irsync/irsync.toml
    sudo -u irsync irsync client add myclient <id> --config /etc/irsync/irsync.toml
+   sudo -u irsync irsync grant add photos myclient --config /etc/irsync/irsync.toml
    sudo -u irsync irsync config set daemon.listen 0.0.0.0:4433 --config /etc/irsync/irsync.toml
    sudo -u irsync irsync id show --daemon --config /etc/irsync/irsync.toml
    sudo -u irsync irsync show --config /etc/irsync/irsync.toml
@@ -111,14 +111,15 @@ The file runs `irsync daemon -vv --config` with the full paths of the
 binary and of the server's config file, so the service finds the same
 config as `pair` did.
 
-A service file that irsync did not write is left alone, unless it starts
-`~/.local/bin/irsync daemon` (as the one in the steps below does): `pair`
-then uses it as it is. `pair` then starts the
-daemon in the background, and prints the steps below. So does a server with no
-systemd or launchd user session, and so does `irsync pair --no-service`, which
-you pass for a daemon you run your own way. A background daemon runs under your
-account until the server reboots. Nothing starts it again: run
-`irsync pair myserver` from the client when it has stopped.
+irsync never changes a service file it did not write. If such a file starts
+`daemon` with the same `irsync` binary that `pair` installed (as the one in
+the steps below does), `pair` uses it as it is. If it starts anything else,
+`pair` leaves it alone, starts the daemon in the background instead, and
+prints the steps below. It does the same on a server with no systemd or
+launchd user session. `irsync pair --no-service`, which you pass for a
+daemon you run your own way, also starts it in the background. A background
+daemon runs under your account until the server reboots. Nothing starts it
+again: run `irsync pair myserver` from the client when it has stopped.
 
 Where the daemon writes its log depends on how it runs. As a systemd service,
 its output goes to the service manager: `journalctl --user -u irsync`. The
@@ -195,7 +196,6 @@ syntax; from fish or tcsh, run them under `sh`.
    Type=simple
    ExecStart=/usr/local/bin/irsync daemon -vv --config /etc/irsync/irsync.toml
    ExecReload=/bin/kill -HUP $MAINPID
-   KillSignal=SIGINT
    Restart=on-failure
    RestartSec=5
    User=irsync
@@ -204,8 +204,7 @@ syntax; from fish or tcsh, run them under `sh`.
    WantedBy=multi-user.target
    ```
 
-   `KillSignal=SIGINT` makes `systemctl stop` send the signal the daemon
-   shuts down cleanly on (see [Stop it](#stop-it)). The `User=` account needs
+   The `User=` account needs
    read access to the export paths, write access to the read-write ones, read
    access to the key and to `irsync.toml`, and write access to `state_dir`.
 
@@ -226,7 +225,7 @@ restart.
 
 ## Under launchd
 
-1. Write `~/Library/LaunchAgents/net.irsync.daemon.plist`:
+1. Write `~/Library/LaunchAgents/org.irsync.daemon.plist`:
 
    ```xml
    <?xml version="1.0" encoding="UTF-8"?>
@@ -234,7 +233,7 @@ restart.
    <plist version="1.0">
    <dict>
      <key>Label</key>
-     <string>net.irsync.daemon</string>
+     <string>org.irsync.daemon</string>
      <key>ProgramArguments</key>
      <array>
        <string>/usr/local/bin/irsync</string>
@@ -262,7 +261,7 @@ restart.
 2. Load it:
 
    ```sh
-   launchctl load ~/Library/LaunchAgents/net.irsync.daemon.plist
+   launchctl load ~/Library/LaunchAgents/org.irsync.daemon.plist
    ```
 
 launchd has no reload verb. To apply changed `[daemon]` settings without a
@@ -299,11 +298,9 @@ sessions apart.
 
 ## Stop it
 
-SIGINT (Ctrl-C) stops the daemon cleanly: it closes its endpoint and flushes
-its telemetry. `systemctl stop` sends SIGINT with the unit above. The daemon
-installs no handler for SIGTERM, which launchd sends to stop a job and which
-is systemd's default, so SIGTERM ends the process at once, without that
-flush. A session cut off either way resumes like any dropped
+SIGTERM or SIGINT (Ctrl-C) stops the daemon cleanly: it closes its endpoint
+and flushes its telemetry. SIGTERM is what `systemctl stop` and launchd send
+to stop a job. A session cut off this way resumes like any dropped
 connection. SIGHUP does not stop the daemon; it
 [reloads the settings](change-exports.md#reload-the-daemon-settings).
 

@@ -1,4 +1,6 @@
-//! Wire protocol types for irsync, generated from `proto/irsync/v1`.
+//! irsync's protocol crate: the wire messages (`v1`), the capture messages
+//! and the config file's message (`config`), all generated from `proto/`,
+//! and the content-defined chunking both sides must agree on (`chunk`).
 
 #![forbid(unsafe_code)]
 

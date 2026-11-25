@@ -1322,6 +1322,29 @@ fn verify_signature_hidden_from_help() {
     assert!(!String::from_utf8_lossy(&o.stdout).contains("verify-signature"));
 }
 
+/// The help of `--parallel` names the default the code applies.
+#[test]
+fn parallel_help_names_the_default() {
+    let home = tempfile::tempdir().unwrap();
+    let want = format!("else {})", irsync::send::DEFAULT_PARALLEL);
+    for args in [&["--help"][..], &["server", "add", "--help"]] {
+        let o = bin::irsync_command(home.path())
+            .args(args)
+            .output()
+            .unwrap();
+        let help = String::from_utf8_lossy(&o.stdout);
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        let line = help
+            .split("--parallel <N>")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{args:?}: no --parallel in {help}"));
+        assert!(
+            line[..200.min(line.len())].contains(&want),
+            "{args:?}: {line}"
+        );
+    }
+}
+
 #[test]
 fn verify_signature_help_mentions_minisign() {
     let home = tempfile::tempdir().unwrap();

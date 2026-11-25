@@ -356,7 +356,7 @@ class BuildManTests(unittest.TestCase):
     def test_help_sentence_stands_alone(self):
         text = " ".join(section(render(self.irsync), "DESCRIPTION").split())
         self.assertNotIn("the same flags", text)
-        self.assertIn("irsync --help lists irsync's flags, one line each", text)
+        self.assertIn("irsync --help (or -h) lists irsync's flags, each with what it does", text)
 
     def test_fileset_commands_do_not_repeat_the_synopsis(self):
         text = render(self.fileset)

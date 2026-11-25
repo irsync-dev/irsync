@@ -5,13 +5,15 @@
 //! - it runs only when a delete mode was asked for (the planner collects no
 //!   candidates otherwise);
 //! - it refuses when either listing was incomplete, unless `ignore_errors`;
-//! - it never follows symlinks: each path is removed with `unlinkat`
-//!   relative to its parent directory, opened from the root without
-//!   following any symlink and held across the check and the removal; a
-//!   candidate whose parent is no longer a real directory is an error;
-//! - directories are removed with `AT_REMOVEDIR` only, after their contents
-//!   (deepest first); a directory that still holds something is an error for
-//!   that path, never a recursive removal, except irsync's own leftover
+//! - it never follows symlinks: each path is removed by name through its
+//!   parent directory, a [`Dir`](crate::platform::Dir) opened from the root
+//!   without following any symlink and held across the check and the
+//!   removal; a candidate whose parent is no longer a real directory is an
+//!   error;
+//! - directories are removed with `Dir::remove_dir` only, which fails
+//!   unless the directory is empty, after their contents (deepest first); a
+//!   directory that still holds something is an error for that path, never
+//!   a recursive removal, except irsync's own leftover
 //!   temporaries when they are all it holds (see `clear_temporaries`);
 //! - it stops at `max_delete` (rsync exit code 25);
 //! - on a dry run it only lists what it would delete.
@@ -399,11 +401,11 @@ fn below(prefix: &RelPath, path: &RelPath) -> RelPath {
 }
 
 /// Removes one path relative to its parent directory, which is opened from
-/// `root` component by component with `O_NOFOLLOW` (see
+/// `root` component by component without following a symlink (see
 /// [`open_dir_beneath`]) and held while the path is checked and removed: a
 /// parent swapped for a symlink cannot redirect the removal outside the
-/// tree. `unlinkat(AT_REMOVEDIR)` for a directory (fails unless empty),
-/// plain `unlinkat` for anything else, symlinks included (never followed).
+/// tree. `Dir::remove_dir` for a directory (fails unless empty),
+/// `Dir::remove_file` for anything else, symlinks included (never followed).
 /// `Ok(false)` when it is already gone; a parent that is no longer a real
 /// directory is an error.
 fn remove_one(root: &Path, path: &RelPath, parent: &mut ParentCache) -> io::Result<bool> {
