@@ -4,6 +4,7 @@
 
 use super::{id_bytes, id_of, ManageError};
 use crate::config::names::valid_alias;
+use crate::config::servers::beside_address;
 use crate::config::settings::{PqKeyExchange, Relay, Spelled};
 use crate::config::writer;
 use crate::net::addr::HostPort;
@@ -94,6 +95,17 @@ pub fn server_add(
     }
     if let Some(s) = &flags.ssh {
         h.ssh = Some(s.clone());
+    }
+    if !h.address.is_empty() {
+        let keys = [
+            ("relay", h.relay.is_some()),
+            ("dht", h.dht.is_some()),
+            ("dns", h.dns.is_some()),
+            ("mdns", h.mdns.is_some()),
+        ];
+        if let Some(problem) = beside_address(name, keys) {
+            return Err(ManageError::BadValue(problem));
+        }
     }
     Ok(old)
 }

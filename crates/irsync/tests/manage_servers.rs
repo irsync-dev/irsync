@@ -232,3 +232,35 @@ fn list_marks_a_missing_or_invalid_id() {
     };
     assert_eq!(server_list(&m), ["none: (missing)", "bad: (invalid)"]);
 }
+
+/// `server add` refuses `--address` beside `--relay` or a lookup flag,
+/// also when one of them is in the file already.
+#[test]
+fn add_refuses_address_beside_relay_or_lookups() {
+    let mut m = pb::Config::default();
+    let both = ServerFlags {
+        address: Some(vec!["10.0.0.2:4433".parse().unwrap()]),
+        relay: Some(irsync::config::settings::Relay::Disabled),
+        ..Default::default()
+    };
+    let e = server_add(&mut m, "home", id(1), &both).unwrap_err();
+    assert!(
+        e.to_string().contains("relay cannot be set beside address"),
+        "{e}"
+    );
+    let mut m = pb::Config::default();
+    let dht = ServerFlags {
+        dht: Some(false),
+        ..Default::default()
+    };
+    server_add(&mut m, "home", id(1), &dht).unwrap();
+    let address = ServerFlags {
+        address: Some(vec!["10.0.0.2:4433".parse().unwrap()]),
+        ..Default::default()
+    };
+    let e = server_add(&mut m, "home", id(1), &address).unwrap_err();
+    assert!(
+        e.to_string().contains("dht cannot be set beside address"),
+        "{e}"
+    );
+}

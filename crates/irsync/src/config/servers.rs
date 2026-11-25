@@ -40,6 +40,22 @@ pub struct Servers {
     pub entries: BTreeMap<String, ServerEntry>,
 }
 
+/// The keys of a server that do not go with `address`, which dials it
+/// directly with the relay and the lookups off: the message for the ones
+/// set (`(key, set)`), or `None`.
+pub(crate) fn beside_address(name: &str, keys: [(&str, bool); 4]) -> Option<String> {
+    let set: Vec<&str> = keys.iter().filter(|(_, s)| *s).map(|(k, _)| *k).collect();
+    let (last, rest) = set.split_last()?;
+    let keys = match rest {
+        [] => format!("{last} cannot"),
+        _ => format!("{} and {last} cannot", rest.join(", ")),
+    };
+    Some(format!(
+        "server {name:?}: {keys} be set beside address, which dials the server directly \
+         with the relay and the lookups off"
+    ))
+}
+
 impl ServerEntry {
     fn from_message(s: &pb::ServerEntry) -> Result<ServerEntry, String> {
         let name = &s.name;
@@ -47,6 +63,17 @@ impl ServerEntry {
             return Err(format!("server {name:?}: needs an endpoint_id"));
         }
         let field = |e: String| format!("server {name:?}: {e}");
+        if !s.address.is_empty() {
+            let keys = [
+                ("relay", s.relay.is_some()),
+                ("dht", s.dht.is_some()),
+                ("dns", s.dns.is_some()),
+                ("mdns", s.mdns.is_some()),
+            ];
+            if let Some(problem) = beside_address(name, keys) {
+                return Err(problem);
+            }
+        }
         Ok(ServerEntry {
             endpoint_id: endpoint_id_from(&s.endpoint_id).map_err(|e| field(e.to_string()))?,
             relay: relay_from(s.relay.as_deref()).map_err(field)?,

@@ -265,8 +265,9 @@ pub fn client_only(host: &str) -> String {
 
 /// How long the first dial to a server `irsync pair` saved (one with an
 /// `ssh` value) waits for an answer. Such a server is not retried before
-/// it has answered unless `--dial-retries` is given: its daemon is either
-/// up, or stopped and to be started again with `irsync pair`.
+/// it has answered unless a `dial_retries` is set (the flag, its table or
+/// `[defaults]`): its daemon is either up, or stopped and to be started
+/// again with `irsync pair`.
 pub const PAIRED_FIRST_DIAL: Duration = Duration::from_secs(15);
 
 /// A saved server with an `ssh` value that never answered.

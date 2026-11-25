@@ -117,24 +117,6 @@ fn ssh_install_comes_from_the_defaults() {
     assert!(!resolve(&DialFlags::default(), None, &off).ssh_install);
 }
 
-#[test]
-fn a_paired_server_is_dialled_once_unless_the_flag_says_otherwise() {
-    let paired = ServerEntry {
-        ssh: Some("me@nas".into()),
-        ..server()
-    };
-    let d = resolve(&DialFlags::default(), Some(&paired), &Defaults::default());
-    assert_eq!(d.dial_retries, 0);
-    let flags = DialFlags {
-        dial_retries: Some(5),
-        ..DialFlags::default()
-    };
-    assert_eq!(
-        resolve(&flags, Some(&paired), &Defaults::default()).dial_retries,
-        5
-    );
-}
-
 /// One `relay` key: the flag, then the server's, then `[defaults]`'s,
 /// whatever each says.
 #[test]
@@ -232,4 +214,35 @@ fn without_addresses_the_endpoint_follows_the_dial() {
     assert_eq!(o.relay, d.relay);
     assert!(!o.dht && o.dns && o.mdns && o.portmap && !o.publish);
     assert_eq!(o.congestion, Congestion::Bbr);
+}
+
+/// A server `irsync pair` saved is dialled once, unless a dial_retries is
+/// set: the flag, the server's or `[defaults]`'s.
+#[test]
+fn a_paired_server_is_dialled_once_unless_dial_retries_is_set() {
+    let mut paired = ServerEntry {
+        ssh: Some("me@nas".into()),
+        ..server()
+    };
+    let none = Defaults::default();
+    let d = resolve(&DialFlags::default(), Some(&paired), &none);
+    assert_eq!(d.dial_retries, 0);
+    let flags = DialFlags {
+        dial_retries: Some(5),
+        ..DialFlags::default()
+    };
+    assert_eq!(resolve(&flags, Some(&paired), &none).dial_retries, 5);
+    let two = Defaults {
+        dial_retries: Some(2),
+        ..Defaults::default()
+    };
+    assert_eq!(
+        resolve(&DialFlags::default(), Some(&paired), &two).dial_retries,
+        2
+    );
+    paired.dial_retries = Some(3);
+    assert_eq!(
+        resolve(&DialFlags::default(), Some(&paired), &two).dial_retries,
+        3
+    );
 }

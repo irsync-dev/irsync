@@ -77,8 +77,9 @@ fn first<T, const N: usize>(choices: [Option<T>; N], builtin: T) -> T {
 impl Dial {
     /// The settings for dialling `server` (`None`: a bare EndpointId)
     /// with `flags` and `defaults`. A server that `irsync pair` saved (one
-    /// with `ssh`) is dialled once unless the command line asks for
-    /// retries. An error for `--relay` with the server's `address`.
+    /// with `ssh`) is dialled once unless `dial_retries` is set: by the
+    /// flag, the server or `[defaults]`. An error for `--relay` with the
+    /// server's `address`.
     pub fn resolve(
         flags: &DialFlags,
         server: Option<&ServerEntry>,
@@ -96,19 +97,17 @@ impl Dial {
                     .into(),
             );
         }
+        // A server `irsync pair` saved (one with `ssh`) is dialled once
+        // unless a dial_retries is set somewhere.
         let paired = server.is_some_and(|s| s.ssh.is_some());
-        let dial_retries = if paired {
-            flags.dial_retries.unwrap_or(0)
-        } else {
-            first(
-                [
-                    flags.dial_retries,
-                    of(server, |s| s.dial_retries),
-                    defaults.dial_retries,
-                ],
-                builtin.dial_retries,
-            )
-        };
+        let dial_retries = first(
+            [
+                flags.dial_retries,
+                of(server, |s| s.dial_retries),
+                defaults.dial_retries,
+            ],
+            if paired { 0 } else { builtin.dial_retries },
+        );
         Ok(Dial {
             parallel: first(
                 [

@@ -9,6 +9,7 @@
 use super::clients::{Right, RIGHTS};
 use super::exports::{name_problem, not_absolute};
 use super::names::{invalid_name, valid_alias};
+use super::servers::beside_address;
 use super::settings::{
     listen_problem, parse_debug_addr, Congestion, OtlpProtocol, PqKeyExchange, Relay, Spelled,
 };
@@ -96,7 +97,7 @@ struct RawTelemetry {
 #[serde(deny_unknown_fields)]
 struct RawServer {
     endpoint_id: Option<Spanned<String>>,
-    address: Option<Vec<HostPort>>,
+    address: Option<Spanned<Vec<HostPort>>>,
     relay: Option<RelayText>,
     dht: Option<bool>,
     dns: Option<bool>,
@@ -418,7 +419,18 @@ fn servers(
         let Some(endpoint_id) = id_bytes(r.endpoint_id, &what, at)? else {
             return Err(at(start, format!("{what}: needs an endpoint_id")));
         };
-        let (address, address_set) = addresses(r.address);
+        if let Some(a) = r.address.as_ref().filter(|a| !a.get_ref().is_empty()) {
+            let keys = [
+                ("relay", r.relay.is_some()),
+                ("dht", r.dht.is_some()),
+                ("dns", r.dns.is_some()),
+                ("mdns", r.mdns.is_some()),
+            ];
+            if let Some(problem) = beside_address(&name, keys) {
+                return Err(at(a.span().start, problem));
+            }
+        }
+        let (address, address_set) = addresses(r.address.map(Spanned::into_inner));
         let (ssh_aliases, ssh_aliases_set) = entries(r.ssh_aliases);
         let server = pb::ServerEntry {
             name,

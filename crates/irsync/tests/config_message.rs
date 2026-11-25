@@ -756,6 +756,37 @@ fn the_typed_config_is_the_same_after_a_rewrite() {
     }
 }
 
+/// A server's `address` dials it directly: `relay` and the lookups
+/// beside it are refused, at the line of `address`.
+#[test]
+fn address_refuses_relay_and_lookups_beside_it() {
+    let text = format!(
+        "[servers.nas]\nendpoint_id = \"{}\"\ndht = false\naddress = [\"10.0.0.2:4433\"]\nrelay = \"disabled\"\n",
+        id(1)
+    );
+    let e = read(&text, Path::new("f")).unwrap_err().to_string();
+    assert_eq!(
+        e,
+        "f:4: server \"nas\": relay and dht cannot be set beside address, which dials the server directly with the relay and the lookups off"
+    );
+    // An empty list dials nothing directly.
+    let text = format!(
+        "[servers.nas]\nendpoint_id = \"{}\"\naddress = []\nmdns = false\n",
+        id(1)
+    );
+    assert!(read(&text, Path::new("f")).is_ok());
+    // The typed view checks an edited message again.
+    let mut m = values(&format!(
+        "[servers.nas]\nendpoint_id = \"{}\"\naddress = [\"10.0.0.2:4433\"]\n",
+        id(1)
+    ));
+    m.servers[0].mdns = Some(true);
+    let e = Config::from_message(&m, Path::new("f"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("mdns cannot be set beside address"), "{e}");
+}
+
 #[test]
 fn every_key_is_written() {
     // full.toml sets every key; the rewrite holds each of them again.

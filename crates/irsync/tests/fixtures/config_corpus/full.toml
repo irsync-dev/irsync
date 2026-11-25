@@ -36,13 +36,16 @@ allow_root = true
 otlp_endpoint = "http://collector.lan:4317/"
 otlp_protocol = "http"
 
-[servers.nas]
+[servers.far]
 endpoint_id = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"
-address = ["10.0.0.2:4433", "nas.lan:4433"]
-relay = "https://relay.example.com/"
+relay = "disabled"
 dht = false
 dns = false
 mdns = false
+
+[servers.nas]
+endpoint_id = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"
+address = ["10.0.0.2:4433", "nas.lan:4433"]
 congestion = "cubic"
 pq_key_exchange = "require"
 parallel = 3

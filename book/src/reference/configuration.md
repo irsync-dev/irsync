@@ -65,8 +65,7 @@ otlp_protocol = "http"       # or "grpc"
 # One [servers.NAME] table per machine this one connects to.
 [servers.myserver]
 endpoint_id = "4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff"
-address = ["192.168.1.10:4000"]       # the rest is optional
-relay = "https://relay.example.net"
+relay = "https://relay.example.net"   # the rest is optional
 dht = false
 dns = false
 mdns = false
@@ -76,6 +75,11 @@ parallel = 64
 reconnect = "1h"
 dial_retries = 2
 ssh = "myserver"             # set by irsync pair
+
+# A server dialled at its address: no relay, no lookups.
+[servers.mynas]
+endpoint_id = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"
+address = ["192.168.1.10:4000"]
 
 # One [clients.NAME] table per machine this one's daemon lets in.
 [clients.myclient]
@@ -168,7 +172,7 @@ built-in default.
 | `identity` | `~/.config/irsync/id_ed25519` | The client's private key, an OpenSSH Ed25519 key file. See [Identity and state](#identity-and-state). Flag: `--identity`. |
 | `parallel` | `128` | Data streams a push keeps open at once. Flag: `--parallel`. |
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
-| `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. Not used for a server `irsync pair` saved: that is dialled once, unless `--dial-retries` is given. Flag: `--dial-retries`. |
+| `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. A server `irsync pair` saved is dialled once when no `dial_retries` is set: not here, not in its table and not by the flag. Flag: `--dial-retries`. |
 | `ssh_install` | `true` | Copy irsync to the server when `irsync pair` sets it up. `false` copies nothing: `pair` uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
 | `relay` | `default` | Which relay to use when no direct path works: `default` for n0's public relays, `disabled` for direct connections only (the lookups stay on), or the URL of a relay of your own. Flag: `--relay`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
@@ -213,7 +217,7 @@ an `EndpointId`.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `endpoint_id` | required | The `EndpointId` of the server's daemon: the one dialled for `NAME:PATH`. The client pins it. |
-| `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. Cannot be combined with `--relay`. |
+| `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. `relay`, `dht`, `dns` and `mdns` cannot be set beside it, and `[defaults]`'s do not apply to this server. Cannot be combined with `--relay`. |
 | `relay` | `[defaults]`'s | This server's relay: `default`, `disabled` or a URL, as in `[defaults]`. It wins over `[defaults]`'s, whatever each says. |
 | `dht` | `[defaults]`'s | Look this server up in the mainline DHT. |
 | `dns` | `[defaults]`'s | Look this server up through n0's DNS service. |
@@ -222,7 +226,7 @@ an `EndpointId`.
 | `pq_key_exchange` | `[defaults]`'s | `require`: refuse this server when it does not offer the post-quantum key exchange. |
 | `parallel` | `[defaults]`'s | Data streams a push to this server keeps open at once. |
 | `reconnect` | `[defaults]`'s | How long to keep redialling. |
-| `dial_retries` | `[defaults]`'s | How often to retry this server before it has answered. Not used when the server has `ssh`: see `--dial-retries`. |
+| `dial_retries` | `[defaults]`'s | How often to retry this server before it has answered. A server with `ssh` is dialled once when neither this nor `[defaults]` sets it. |
 | `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. It is what `irsync pair` logs in to. A sync never uses it, except to find the server when you type that address. `irsync pair` for a saved server checks it again, and never adds back `all_paths` that was removed on the server. |
 | `ssh_aliases` | none | Other ssh destinations that were typed for this server, such as its address: `["192.168.1.5"]`. Typing one of them finds this server, as typing its `ssh` value does. `irsync pair` adds to it; nothing is ever dialled through it. These are not server names: they do not work with `irsync server`. |
 
