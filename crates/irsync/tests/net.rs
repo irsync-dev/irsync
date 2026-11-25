@@ -153,7 +153,7 @@ async fn binds_each_requested_socket_and_reports_real_ports() {
 async fn isolated_opts_have_no_relay_and_no_lookup() {
     let opts = EndpointOpts::isolated(SecretKey::generate());
     assert!(!opts.dht && !opts.dns && !opts.mdns && !opts.publish && !opts.portmap);
-    assert_eq!(opts.relay, irsync::net::RelayChoice::Disabled);
+    assert_eq!(opts.relay, irsync::config::settings::Relay::Disabled);
     let ep = irsync::net::build_endpoint(opts).await.unwrap();
     assert_eq!(ep.addr().relay_urls().count(), 0, "{:?}", ep.addr());
     assert!(ep.address_lookup().unwrap().is_empty());
@@ -162,30 +162,28 @@ async fn isolated_opts_have_no_relay_and_no_lookup() {
 
 #[test]
 fn daemon_opts_follow_the_isolated_config() {
+    use irsync::config::settings::Relay;
     use irsync::config::settings::Settings;
-    use irsync::net::{daemon_endpoint_opts, RelayChoice};
+    use irsync::net::daemon_endpoint_opts;
     let parse = |t: &str| Settings::parse(t, std::path::Path::new("irsync.toml")).unwrap();
     let cfg = parse(
-        "[daemon]\nlisten = [\"127.0.0.1:0\"]\nrelay_mode = \"disabled\"\nportmap = false\n\
+        "[daemon]\nlisten = [\"127.0.0.1:0\"]\nrelay = \"disabled\"\nportmap = false\n\
          dht = false\ndns = false\nmdns = false\n",
     );
     let bind = vec!["127.0.0.1:0".parse().unwrap()];
     let o = daemon_endpoint_opts(&cfg.daemon, SecretKey::generate(), bind.clone());
-    assert_eq!(o.relay, RelayChoice::Disabled);
+    assert_eq!(o.relay, Relay::Disabled);
     assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && o.publish);
     assert_eq!(o.bind_addrs, bind);
     let o = daemon_endpoint_opts(&parse("").daemon, SecretKey::generate(), vec![]);
-    assert_eq!(o.relay, RelayChoice::N0Default);
+    assert_eq!(o.relay, Relay::Default);
     assert!(o.dht && o.dns && o.mdns && o.portmap && o.publish && o.bind_addrs.is_empty());
     let o = daemon_endpoint_opts(
         &parse("[daemon]\nrelay = \"https://r.example\"\n").daemon,
         SecretKey::generate(),
         vec![],
     );
-    assert_eq!(
-        o.relay,
-        RelayChoice::Custom("https://r.example".parse().unwrap())
-    );
+    assert_eq!(o.relay, Relay::Url("https://r.example".parse().unwrap()));
 }
 
 /// The daemon's congestion controller is its own.

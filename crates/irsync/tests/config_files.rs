@@ -4,7 +4,7 @@ use irsync::config::file::Config;
 use irsync::config::names::{short_host_name, valid_alias};
 use irsync::config::paths::Paths;
 use irsync::config::servers::Servers;
-use irsync::config::settings::{RelayMode, Settings};
+use irsync::config::settings::{Relay, Settings};
 use irsync::config::ConfigError;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -46,17 +46,18 @@ fn settings_defaults_when_empty() {
 
 #[test]
 fn settings_tables_parse_and_expand_tilde() {
-    let t = "[defaults]\nidentity = \"~/k\"\nparallel = 8\nreconnect = \"1h\"\ndial_retries = 2\nrelay_mode = \"disabled\"\n[daemon]\nidentity = \"~/d\"\nrelay_mode = \"disabled\"\nlisten = [\"127.0.0.1:0\"]\ndht = false\n";
+    let t = "[defaults]\nidentity = \"~/k\"\nparallel = 8\nreconnect = \"1h\"\ndial_retries = 2\nrelay = \"disabled\"\n[daemon]\nidentity = \"~/d\"\nrelay = \"disabled\"\nlisten = [\"127.0.0.1:0\"]\ndht = false\n";
     let s = Settings::parse(t, p()).unwrap();
     assert_eq!(s.identity, dirs::home_dir().unwrap().join("k"));
     assert_eq!(s.daemon.identity, dirs::home_dir().unwrap().join("d"));
     assert_eq!(s.defaults.parallel, Some(8));
-    assert_eq!(s.defaults.relay_mode, Some(RelayMode::Disabled));
-    assert_eq!(Settings::default().defaults.relay_mode, None);
+    assert_eq!(s.defaults.relay, Some(Relay::Disabled));
+    assert_eq!(Settings::default().defaults.relay, None);
     assert_eq!(s.defaults.reconnect, Some(Duration::from_secs(3600)));
     assert_eq!(s.defaults.dial_retries, Some(2));
     assert_eq!(Settings::default().defaults.dial_retries, None);
-    assert_eq!(s.daemon.relay_mode, RelayMode::Disabled);
+    assert_eq!(s.daemon.relay, Relay::Disabled);
+    assert_eq!(Settings::default().daemon.relay, Relay::Default);
     assert_eq!(s.daemon.listen.len(), 1);
     assert!(!s.daemon.discovery.dht && s.daemon.discovery.dns);
 }

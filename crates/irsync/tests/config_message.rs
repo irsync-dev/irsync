@@ -31,7 +31,7 @@ fn unset_and_set_to_the_default_differ() {
 #[test]
 fn values_not_spellings() {
     let c = values(&format!(
-        "[defaults]\nidentity = \"~/k\"\nreconnect = \"90\"\n[servers.nas]\nendpoint_id = \"{}\"\nrelay_mode = \"disabled\"\nreconnect = 3600\n",
+        "[defaults]\nidentity = \"~/k\"\nreconnect = \"90\"\n[servers.nas]\nendpoint_id = \"{}\"\nrelay = \"disabled\"\nreconnect = 3600\n",
         id(1)
     ));
     assert_eq!(
@@ -50,7 +50,7 @@ fn values_not_spellings() {
     );
     let h = &c.servers[0];
     assert_eq!(h.endpoint_id, id(1).as_bytes());
-    assert_eq!(h.relay_mode, Some(pb::RelayMode::Disabled as i32));
+    assert_eq!(h.relay.as_deref(), Some("disabled"));
     assert_eq!(h.reconnect.as_ref().unwrap().seconds, 3600);
 }
 
@@ -263,7 +263,7 @@ fn from_message_checks_each_edit_again() {
                 ..Default::default()
             })
         }),
-        "f: [defaults]: relative URL without a base: \"not a url\""
+        "f: [defaults]: \"not a url\": expected default, disabled or a URL (relative URL without a base)"
     );
 }
 
@@ -296,7 +296,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[defaults]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `identity`, `parallel`, `reconnect`, `dial_retries`, `ssh_install`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`",
+            "f:2: unknown field `bogus`, expected one of `identity`, `parallel`, `reconnect`, `dial_retries`, `ssh_install`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`",
         ),
         (
             "[daemon]\nidentity = 1\n",
@@ -312,11 +312,11 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[daemon]\ndiscovery = true\n",
-            "f:2: unknown field `discovery`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `debug_addr`, `allow_all_paths`, `allow_root`",
+            "f:2: unknown field `discovery`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `debug_addr`, `allow_all_paths`, `allow_root`",
         ),
         (
             "[defaults]\nrelay = \"not a url\"\n",
-            "f:2: relative URL without a base: \"not a url\"",
+            "f:2: \"not a url\": expected default, disabled or a URL (relative URL without a base)",
         ),
         (
             "[telemetry]\notlp_protocol = \"udp\"\n",
@@ -367,12 +367,12 @@ fn errors_are_those_of_config_parse() {
             "f:2: invalid type: integer `1`, expected a string",
         ),
         (
-            "[defaults]\nrelay_mode = 1\n",
+            "[defaults]\nrelay = 1\n",
             "f:2: invalid type: integer `1`, expected a string",
         ),
         (
-            "[defaults]\nrelay_mode = \"x\"\n",
-            "f:2: \"x\": expected default or disabled",
+            "[defaults]\nrelay = \"x\"\n",
+            "f:2: \"x\": expected default, disabled or a URL (relative URL without a base)",
         ),
         (
             "[daemon]\ncongestion = \"reno\"\n",
@@ -412,7 +412,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[daemon]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `debug_addr`, `allow_all_paths`, `allow_root`",
+            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `debug_addr`, `allow_all_paths`, `allow_root`",
         ),
         (
             "[telemetry]\nbogus = 1\n",
@@ -420,7 +420,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[servers.nas]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `address`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `parallel`, `reconnect`, `dial_retries`, `ssh`, `ssh_aliases`",
+            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `address`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `parallel`, `reconnect`, `dial_retries`, `ssh`, `ssh_aliases`",
         ),
         (
             "[daemon]\ndht = 1\n",
@@ -432,7 +432,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[daemon]\nrelay = 1\n",
-            "f:2: invalid type: integer `1`, expected a string representing an URL",
+            "f:2: invalid type: integer `1`, expected a string",
         ),
         (
             "[servers.nas]\naddress = 1\n",
@@ -455,11 +455,11 @@ fn errors_are_those_of_config_parse() {
             "f:1: unsafe_config_allowed: expected a boolean, found integer",
         ),
         (
-            "[defaults]\nrelay_mode = {}\n",
+            "[defaults]\nrelay = {}\n",
             "f:2: invalid type: map, expected a string",
         ),
         (
-            "[defaults]\nrelay_mode = { default = 1 }\n",
+            "[defaults]\nrelay = { default = 1 }\n",
             "f:2: invalid type: map, expected a string",
         ),
         (
@@ -1138,7 +1138,7 @@ fn the_current_reader_checks_servers_and_clients_at_their_line() {
     );
     assert_eq!(
         error(&format!("[servers.nas]\nendpoint_id = \"{}\"\nclient_id = \"x\"\n", id(1))),
-        "f:3: unknown field `client_id`, expected one of `endpoint_id`, `address`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `parallel`, `reconnect`, `dial_retries`, `ssh`, `ssh_aliases`"
+        "f:3: unknown field `client_id`, expected one of `endpoint_id`, `address`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `parallel`, `reconnect`, `dial_retries`, `ssh`, `ssh_aliases`"
     );
     assert_eq!(
         error(&format!("[servers.all]\nendpoint_id = \"{}\"\n", id(1))),

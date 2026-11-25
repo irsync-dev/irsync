@@ -10,7 +10,7 @@ use super::clients::{Right, RIGHTS};
 use super::exports::{name_problem, not_absolute};
 use super::names::{invalid_name, valid_alias};
 use super::settings::{
-    listen_problem, parse_debug_addr, Congestion, OtlpProtocol, PqKeyExchange, RelayMode, Spelled,
+    listen_problem, parse_debug_addr, Congestion, OtlpProtocol, PqKeyExchange, Relay, Spelled,
 };
 use super::{duration, expand_tilde, line_of, ConfigError};
 use crate::authz::Access;
@@ -53,8 +53,7 @@ struct RawDefaults {
     reconnect: Option<Duration>,
     dial_retries: Option<u32>,
     ssh_install: Option<bool>,
-    relay: Option<UrlText>,
-    relay_mode: Option<Text<RelayMode>>,
+    relay: Option<RelayText>,
     dht: Option<bool>,
     dns: Option<bool>,
     mdns: Option<bool>,
@@ -74,8 +73,7 @@ struct RawDaemon {
     #[serde(default, deserialize_with = "de_opt_listen")]
     listen: Option<Vec<HostPort>>,
     portmap: Option<bool>,
-    relay: Option<UrlText>,
-    relay_mode: Option<Text<RelayMode>>,
+    relay: Option<RelayText>,
     dht: Option<bool>,
     dns: Option<bool>,
     mdns: Option<bool>,
@@ -99,8 +97,7 @@ struct RawTelemetry {
 struct RawServer {
     endpoint_id: Option<Spanned<String>>,
     address: Option<Vec<HostPort>>,
-    relay: Option<UrlText>,
-    relay_mode: Option<Text<RelayMode>>,
+    relay: Option<RelayText>,
     dht: Option<bool>,
     dns: Option<bool>,
     mdns: Option<bool>,
@@ -159,6 +156,17 @@ impl<'de, T: Spelled> Deserialize<'de> for Text<T> {
 /// The message's number for an enum key's value.
 fn number<T: Spelled>(t: Text<T>) -> i32 {
     t.0.to_message()
+}
+
+/// A relay as written, once it parses as one ([`Relay`]).
+struct RelayText(String);
+
+impl<'de> Deserialize<'de> for RelayText {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<RelayText, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse::<Relay>().map_err(serde::de::Error::custom)?;
+        Ok(RelayText(s))
+    }
 }
 
 /// A URL as written, once it parses.
@@ -336,8 +344,7 @@ fn defaults(r: RawDefaults) -> pb::Defaults {
         reconnect: r.reconnect.map(duration::to_proto),
         dial_retries: r.dial_retries,
         ssh_install: r.ssh_install,
-        relay: r.relay.map(|u| u.0),
-        relay_mode: r.relay_mode.map(number),
+        relay: r.relay.map(|r| r.0),
         dht: r.dht,
         dns: r.dns,
         mdns: r.mdns,
@@ -357,8 +364,7 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
         listen,
         listen_set,
         portmap: r.portmap,
-        relay: r.relay.map(|u| u.0),
-        relay_mode: r.relay_mode.map(number),
+        relay: r.relay.map(|r| r.0),
         dht: r.dht,
         dns: r.dns,
         mdns: r.mdns,
@@ -417,8 +423,7 @@ fn servers(
         let server = pb::ServerEntry {
             name,
             endpoint_id,
-            relay: r.relay.map(|u| u.0),
-            relay_mode: r.relay_mode.map(number),
+            relay: r.relay.map(|r| r.0),
             congestion: r.congestion.map(number),
             pq_key_exchange: r.pq_key_exchange.map(number),
             address,

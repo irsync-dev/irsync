@@ -1,24 +1,21 @@
 //! The `[servers]` table of `irsync.toml`: aliases for daemons to dial.
 
 use super::names::{invalid_name, valid_alias};
-use super::settings::{addresses_from, duration_from, url_from};
+use super::settings::{addresses_from, duration_from};
 use super::{endpoint_id_from, file_error, ConfigError};
-use crate::config::settings::{Congestion, PqKeyExchange, RelayMode, Spelled};
+use crate::config::settings::{relay_from, Congestion, PqKeyExchange, Relay, Spelled};
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerEntry {
     /// The daemon's id: the id to dial.
     pub endpoint_id: EndpointId,
-    pub relay: Option<Url>,
-    /// `"disabled"`: reach this server directly only, never through a relay.
-    pub relay_mode: Option<RelayMode>,
+    pub relay: Option<Relay>,
     /// For pushes to this server; unset: `[defaults]`'s.
     pub congestion: Option<Congestion>,
     /// For connections to this server; unset: `[defaults]`'s.
@@ -52,8 +49,7 @@ impl ServerEntry {
         let field = |e: String| format!("server {name:?}: {e}");
         Ok(ServerEntry {
             endpoint_id: endpoint_id_from(&s.endpoint_id).map_err(|e| field(e.to_string()))?,
-            relay: url_from(s.relay.as_deref()).map_err(field)?,
-            relay_mode: RelayMode::from_optional(s.relay_mode).map_err(field)?,
+            relay: relay_from(s.relay.as_deref()).map_err(field)?,
             congestion: Congestion::from_optional(s.congestion).map_err(field)?,
             pq_key_exchange: PqKeyExchange::from_optional(s.pq_key_exchange).map_err(field)?,
             address: addresses_from(&s.address).map_err(field)?,

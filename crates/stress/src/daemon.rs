@@ -67,7 +67,7 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
          [daemon]\n\
          {congestion}\
          identity = {}\n\
-         relay_mode = \"disabled\"\n\
+         relay = \"disabled\"\n\
          portmap = false\n\
          dht = false\n\
          dns = false\n\
@@ -558,7 +558,7 @@ mod tests {
         assert_eq!(parsed["state_dir"], s(cfg.join("state")));
         let d = &parsed["daemon"];
         assert_eq!(d["identity"], s(cfg.join("daemon_ed25519")));
-        assert_eq!(d["relay_mode"].as_str(), Some("disabled"));
+        assert_eq!(d["relay"].as_str(), Some("disabled"));
         assert_eq!(d["portmap"].as_bool(), Some(false));
         assert!(
             d.get("congestion").is_none(),

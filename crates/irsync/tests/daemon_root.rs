@@ -17,7 +17,7 @@ use irsync::daemon_lock::probe;
 /// loopback port the OS picks, with `extra` under `[daemon]`.
 fn config(extra: &str) -> String {
     format!(
-        "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
+        "[daemon]\nrelay = \"disabled\"\nportmap = false\n\
          listen = [\"127.0.0.1:0\"]\n{extra}\
          dht = false\ndns = false\nmdns = false\n"
     )

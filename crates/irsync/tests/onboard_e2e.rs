@@ -101,7 +101,7 @@ impl World {
         let cfg = self.server.path().join(".config/irsync");
         std::fs::create_dir_all(&cfg).unwrap();
         let text = format!(
-            "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
+            "[daemon]\nrelay = \"disabled\"\nportmap = false\n\
              listen = [\"127.0.0.1:{}\"]\n{daemon_extra}\
              dht = false\ndns = false\nmdns = false\n{extra}",
             self.port
@@ -205,7 +205,7 @@ impl World {
         let cfg = self.client.path().join(".config/irsync");
         std::fs::create_dir_all(&cfg).unwrap();
         let text = format!(
-            "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
+            "[daemon]\nrelay = \"disabled\"\nportmap = false\n\
              listen = [\"127.0.0.1:{}\"]\n\
              dht = false\ndns = false\nmdns = false\n",
             self.client_port

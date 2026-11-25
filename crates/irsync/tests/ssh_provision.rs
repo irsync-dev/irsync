@@ -37,7 +37,7 @@ impl Home {
         let cfg = dir.path().join(".config/irsync");
         std::fs::create_dir_all(&cfg).unwrap();
         let text = format!(
-            "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
+            "[daemon]\nrelay = \"disabled\"\nportmap = false\n\
              listen = [\"127.0.0.1:0\"]\n{extra_daemon}\
              dht = false\ndns = false\nmdns = false\n"
         );

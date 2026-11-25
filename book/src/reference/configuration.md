@@ -33,8 +33,7 @@ parallel = 128
 reconnect = "1d"
 dial_retries = 4
 ssh_install = true           # false: copy nothing to the server
-relay = "https://relay.example.net"   # no default: n0's relays
-relay_mode = "default"       # or "disabled": no relay
+relay = "default"             # n0's relays; "disabled" or a URL
 dht = true                   # the lookups
 dns = true
 mdns = true
@@ -49,8 +48,7 @@ max_dormant_sessions_per_key = 25        # 0: no limit
 # No default: any address, on a port picked at start.
 listen = ["0.0.0.0:4000", "[::]:4000"]
 portmap = true               # UPnP, PCP and NAT-PMP
-relay = "https://relay.example.net"      # no default: n0's relays
-relay_mode = "default"       # or "disabled"
+relay = "default"             # n0's relays; "disabled" or a URL
 dht = true                   # where clients may find the daemon
 dns = true
 mdns = true
@@ -69,7 +67,6 @@ otlp_protocol = "http"       # or "grpc"
 endpoint_id = "4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff"
 address = ["192.168.1.10:4000"]       # the rest is optional
 relay = "https://relay.example.net"
-relay_mode = "disabled"
 dht = false
 dns = false
 mdns = false
@@ -173,8 +170,7 @@ built-in default.
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
 | `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. Not used for a server `irsync pair` saved: that is dialled once, unless `--dial-retries` is given. Flag: `--dial-retries`. |
 | `ssh_install` | `true` | Copy irsync to the server when `irsync pair` sets it up. `false` copies nothing: `pair` uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
-| `relay` | n0's relays | The relay server to use, for a self-hosted relay. Flag: `--relay`. |
-| `relay_mode` | `default` | `disabled`: direct connections only, never through a relay; the lookups stay on. Flag: `--no-relay`. |
+| `relay` | `default` | Which relay to use when no direct path works: `default` for n0's public relays, `disabled` for direct connections only (the lookups stay on), or the URL of a relay of your own. Flag: `--relay`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
 | `dns` | `true` | Look daemons up through n0's DNS service. |
 | `mdns` | `true` | Look daemons up with mDNS on the local network. |
@@ -218,8 +214,7 @@ an `EndpointId`.
 | --- | --- | --- |
 | `endpoint_id` | required | The `EndpointId` of the server's daemon: the one dialled for `NAME:PATH`. The client pins it. |
 | `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. Cannot be combined with `--relay`. |
-| `relay` | `[defaults]`'s | This server's relay server. |
-| `relay_mode` | `[defaults]`'s | `disabled`: reach this server directly only. |
+| `relay` | `[defaults]`'s | This server's relay: `default`, `disabled` or a URL, as in `[defaults]`. It wins over `[defaults]`'s, whatever each says. |
 | `dht` | `[defaults]`'s | Look this server up in the mainline DHT. |
 | `dns` | `[defaults]`'s | Look this server up through n0's DNS service. |
 | `mdns` | `[defaults]`'s | Look this server up with mDNS. |
@@ -274,8 +269,7 @@ take effect at the next start.
 | `max_dormant_sessions_per_key` | `25` | How many interrupted sessions one client key may leave waiting in an export. When a key has more, the daemon drops the one that went longest without progress; the sync it belonged to plans afresh on its next run. A session that a connection is using does not count. `0` removes the limit. |
 | `listen` | none | The sockets to bind, at most one IPv4 and one IPv6; port `0` lets the system pick. Without it the daemon binds any address on a port picked at start. The daemon offers clients the addresses it binds for extra paths: a specific address offers only that one, any address offers every interface. Flag: `--listen`. |
 | `portmap` | `true` | Ask the router for a port mapping with UPnP, PCP or NAT-PMP. Set `false` in isolated setups. |
-| `relay` | n0's relays | The relay server to use, for a self-hosted relay. |
-| `relay_mode` | `default` | `disabled`: no relay, direct connections only. |
+| `relay` | `default` | `default` for n0's public relays, `disabled` for no relay (direct connections only), or the URL of a relay of your own. |
 | `dht` | `true` | Publish the daemon's addresses in the mainline DHT. With relays disabled the records carry no addresses, and the daemon warns. |
 | `dns` | `true` | Publish them through n0's DNS service. |
 | `mdns` | `true` | Announce the daemon with mDNS on the local network. |

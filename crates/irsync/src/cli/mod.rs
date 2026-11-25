@@ -683,14 +683,11 @@ pub struct ServerAddArgs {
     pub name: String,
     /// The server's EndpointId: its daemon, the id dialled.
     pub id: String,
-    /// The server's home relay, used instead of `[defaults]`'s or n0's
-    /// default.
-    #[arg(long, value_name = "URL")]
-    pub relay: Option<String>,
-    /// `disabled`: reach this server directly only, never through a relay;
-    /// `default`: relays as usual (default: `[defaults]`'s).
-    #[arg(long, value_name = "default|disabled")]
-    pub relay_mode: Option<crate::config::settings::RelayMode>,
+    /// This server's relay: `default` (n0's relays), `disabled` (direct
+    /// connections only; the lookups stay on) or the URL of a relay of your
+    /// own (default: `[defaults]`'s, else n0's).
+    #[arg(long, value_name = "default|disabled|URL")]
+    pub relay: Option<crate::config::settings::Relay>,
     /// Dial the server at this `ip:port`, `[ipv6]:port` or `host:port`
     /// directly, with relay and lookups off (repeatable; replaces the
     /// stored list).
@@ -1050,14 +1047,12 @@ pub struct SyncArgs {
     /// `[defaults]`, else 4; 0 for a server `irsync pair` saved).
     #[arg(long, value_name = "N")]
     pub dial_retries: Option<u32>,
-    /// Use this relay server instead of the server entry's,
-    /// `[defaults]`'s or n0's default.
-    #[arg(long, value_name = "URL")]
-    pub relay: Option<String>,
-    /// Direct connections only: never fall back to a relay (the lookups stay
-    /// on). Default: `relay_mode` from the server entry or `[defaults]`.
-    #[arg(long, conflicts_with = "relay")]
-    pub no_relay: bool,
+    /// The relay for this sync: `default` (n0's relays), `disabled` (direct
+    /// connections only; the lookups stay on) or the URL of a relay of your
+    /// own. Default: `relay` from the server entry, else `[defaults]`, else
+    /// n0's.
+    #[arg(long, value_name = "default|disabled|URL")]
+    pub relay: Option<crate::config::settings::Relay>,
     /// `require`: refuse a daemon that does not offer the post-quantum
     /// hybrid key exchange (X25519MLKEM768), such as an irsync built without it.
     /// `prefer`: use it when offered. Default: `pq_key_exchange` from the
@@ -1205,8 +1200,7 @@ pub struct SyncOptions {
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
     pub dial_retries: Option<u32>,
-    pub relay: Option<String>,
-    pub no_relay: bool,
+    pub relay: Option<crate::config::settings::Relay>,
     pub pq_key_exchange: Option<PqKeyExchange>,
     pub no_dht: bool,
     pub addresses: Vec<HostPort>,
@@ -1285,7 +1279,6 @@ impl SyncOptions {
             reconnect: a.reconnect,
             dial_retries: a.dial_retries,
             relay: a.relay.clone(),
-            no_relay: a.no_relay,
             pq_key_exchange: a.pq_key_exchange,
             no_dht: a.no_dht,
             addresses: a.address.clone(),

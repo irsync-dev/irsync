@@ -31,20 +31,20 @@ relay.
 - For one sync, on the client:
 
   ```sh
-  irsync -a --no-relay ~/Photos/ myserver:photos/
+  irsync -a --relay disabled ~/Photos/ myserver:photos/
   ```
 
 - For every sync to one server, or to every server:
 
   ```sh
-  irsync server add myserver <id> --relay-mode disabled
-  irsync config set defaults.relay_mode disabled
+  irsync server add myserver <id> --relay disabled
+  irsync config set defaults.relay disabled
   ```
 
 - On the daemon, which then neither uses a relay nor is reachable through one:
 
   ```sh
-  irsync config set daemon.relay_mode disabled
+  irsync config set daemon.relay disabled
   ```
 
 The lookups stay on. A daemon's DNS and DHT records carry only its relay
@@ -110,7 +110,7 @@ sockets; it does not isolate the daemon. Turn everything off explicitly.
    ```toml
    [daemon]
    listen = ["127.0.0.1:0"]   # at most one IPv4 and one IPv6 entry; port 0 = daemon picks
-   relay_mode = "disabled"
+   relay = "disabled"
    portmap = false            # no UPnP/PCP/NAT-PMP gateway probing
    dht = false
    dns = false
@@ -172,6 +172,6 @@ With both, the connection keeps to the path you dialled.
 ## See also
 
 - [Configuration](../reference/configuration.md#servers): the `relay`,
-  `relay_mode`, `address`, `dht`, `dns` and `mdns` keys.
+  `address`, `dht`, `dns` and `mdns` keys.
 - [Command line](../reference/command-line.md#irsync-flags): `--relay`,
-  `--no-relay`, `--no-dht`, `--address`.
+  `--no-dht`, `--address`.

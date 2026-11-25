@@ -6,9 +6,7 @@ use super::{id_bytes, ManageError};
 use crate::authz::Access;
 use crate::config::clients::RIGHTS;
 use crate::config::dial::Dial;
-use crate::config::settings::{
-    Congestion, OtlpProtocol, PqKeyExchange, RelayMode, Settings, Spelled,
-};
+use crate::config::settings::{Congestion, OtlpProtocol, PqKeyExchange, Relay, Settings, Spelled};
 use crate::config::{duration, reader, writer};
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
@@ -24,6 +22,8 @@ pub enum Kind {
     Str,
     Path,
     Url,
+    /// `default`, `disabled` or a URL.
+    Relay,
     Id,
     StrArray,
     AddrArray,
@@ -53,21 +53,21 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["defaults", "reconnect"] => Duration,
         ["defaults", "dial_retries"] => Int,
         ["defaults", "dht" | "dns" | "mdns" | "ssh_install"] => Bool,
-        ["defaults", "relay"] => Url,
-        ["defaults", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
+        ["defaults", "relay"] => Relay,
+        ["defaults", "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "identity"] => Path,
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
         ["daemon", "max_dormant_sessions_per_key"] => Int,
         ["daemon", "listen"] => AddrArray,
         ["daemon", "portmap" | "dht" | "dns" | "mdns" | "allow_all_paths" | "allow_root"] => Bool,
-        ["daemon", "relay"] => Url,
-        ["daemon", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
+        ["daemon", "relay"] => Relay,
+        ["daemon", "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "debug_addr"] => Str,
         ["telemetry", "otlp_endpoint"] => Url,
         ["telemetry", "otlp_protocol"] => Str,
         ["servers", _, "endpoint_id"] | ["clients", _, "client_id"] => Id,
-        ["servers", _, "relay"] => Url,
-        ["servers", _, "relay_mode" | "congestion" | "pq_key_exchange" | "ssh"] => Str,
+        ["servers", _, "relay"] => Relay,
+        ["servers", _, "congestion" | "pq_key_exchange" | "ssh"] => Str,
         ["servers", _, "address"] => AddrArray,
         ["servers", _, "ssh_aliases"] => StrArray,
         ["servers", _, "parallel"] => Int,
@@ -166,7 +166,7 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["defaults", "reconnect"] => one(duration::format(dial.reconnect)),
         ["defaults", "dial_retries"] => one(dial.dial_retries.to_string()),
         ["defaults", "ssh_install"] => one(dial.ssh_install.to_string()),
-        ["defaults", "relay_mode"] => one(RelayMode::default().as_str().to_string()),
+        ["defaults", "relay"] => one(dial.relay.to_string()),
         ["defaults", "dht"] => one(dial.dht.to_string()),
         ["defaults", "dns"] => one(dial.dns.to_string()),
         ["defaults", "mdns"] => one(dial.mdns.to_string()),
@@ -183,7 +183,7 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         }
         ["daemon", "listen"] => Some(s.daemon.listen.iter().map(|a| a.to_string()).collect()),
         ["daemon", "portmap"] => one(s.daemon.portmap.to_string()),
-        ["daemon", "relay_mode"] => one(s.daemon.relay_mode.as_str().to_string()),
+        ["daemon", "relay"] => one(s.daemon.relay.to_string()),
         ["daemon", "congestion"] => one(s.daemon.congestion.as_str().to_string()),
         ["daemon", "pq_key_exchange"] => one(s.daemon.pq_key_exchange.as_str().to_string()),
         ["daemon", "dht"] => one(s.daemon.discovery.dht.to_string()),
@@ -261,6 +261,11 @@ pub fn parse_value(kind: Kind, values: &[String]) -> Result<Value, ManageError> 
             }
         }
         Kind::Str | Kind::Path => Value::Text(one()?.to_string()),
+        Kind::Relay => {
+            let v = one()?;
+            v.parse::<Relay>().map_err(bad)?;
+            Value::Text(v.to_string())
+        }
         Kind::Url => {
             let v = one()?;
             url::Url::parse(v).map_err(|e| bad(format!("expected a URL: {e}")))?;
@@ -366,6 +371,8 @@ enum Field<'a> {
     /// A string, a path or a debug address, as written.
     Text(&'a mut Option<String>),
     Url(&'a mut Option<String>),
+    /// A relay as written: `default`, `disabled` or a URL.
+    Relay(&'a mut Option<String>),
     /// An id's 32 bytes; empty is unset.
     Id(&'a mut Vec<u8>),
     /// An enum key, with its spellings.
@@ -496,8 +503,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "dns" => Bool(&mut c.dns),
                 "ssh_install" => Bool(&mut c.ssh_install),
                 "mdns" => Bool(&mut c.mdns),
-                "relay" => Url(&mut c.relay),
-                "relay_mode" => Spelled(&mut c.relay_mode, spelling::<RelayMode>()),
+                "relay" => Relay(&mut c.relay),
                 "congestion" => Spelled(&mut c.congestion, spelling::<Congestion>()),
                 "pq_key_exchange" => Spelled(&mut c.pq_key_exchange, spelling::<PqKeyExchange>()),
                 _ => return None,
@@ -513,8 +519,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "max_dormant_sessions_per_key" => Int(&mut d.max_dormant_sessions_per_key),
                 "listen" => Addresses(&mut d.listen, &mut d.listen_set),
                 "portmap" => Bool(&mut d.portmap),
-                "relay" => Url(&mut d.relay),
-                "relay_mode" => Spelled(&mut d.relay_mode, spelling::<RelayMode>()),
+                "relay" => Relay(&mut d.relay),
                 "dht" => Bool(&mut d.dht),
                 "dns" => Bool(&mut d.dns),
                 "mdns" => Bool(&mut d.mdns),
@@ -540,8 +545,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let h = server(msg, name, create)?;
             let f = match *key {
                 "endpoint_id" => Id(&mut h.endpoint_id),
-                "relay" => Url(&mut h.relay),
-                "relay_mode" => Spelled(&mut h.relay_mode, spelling::<RelayMode>()),
+                "relay" => Relay(&mut h.relay),
                 "congestion" => Spelled(&mut h.congestion, spelling::<Congestion>()),
                 "pq_key_exchange" => Spelled(&mut h.pq_key_exchange, spelling::<PqKeyExchange>()),
                 "address" => Addresses(&mut h.address, &mut h.address_set),
@@ -595,7 +599,6 @@ const DEFAULTS: &[&str] = &[
     "dial_retries",
     "ssh_install",
     "relay",
-    "relay_mode",
     "dht",
     "dns",
     "mdns",
@@ -610,7 +613,6 @@ const DAEMON: &[&str] = &[
     "listen",
     "portmap",
     "relay",
-    "relay_mode",
     "dht",
     "dns",
     "mdns",
@@ -625,7 +627,6 @@ const SERVER: &[&str] = &[
     "endpoint_id",
     "address",
     "relay",
-    "relay_mode",
     "dht",
     "dns",
     "mdns",
@@ -812,7 +813,7 @@ fn shown(field: &Field) -> Option<Shown> {
         Field::Bool(v) => v.map(|b| plain(b.to_string())),
         Field::Int(v) => v.map(|n| plain(n.to_string())),
         Field::Duration(v) => v.as_ref().map(|d| text(&writer::duration_text(d))),
-        Field::Text(v) | Field::Url(v) => v.as_deref().map(text),
+        Field::Text(v) | Field::Url(v) | Field::Relay(v) => v.as_deref().map(text),
         Field::Id(v) => (!v.is_empty()).then(|| text(&writer::id(v))),
         Field::Spelled(v, s) => v.and_then(s.show).map(text),
         Field::Right(v) => v.and_then(Access::from_message).map(|a| text(a.as_str())),
@@ -827,7 +828,7 @@ fn clear(field: Field) -> bool {
         Field::Bool(v) => v.take().is_some(),
         Field::Int(v) => v.take().is_some(),
         Field::Duration(v) => v.take().is_some(),
-        Field::Text(v) | Field::Url(v) => v.take().is_some(),
+        Field::Text(v) | Field::Url(v) | Field::Relay(v) => v.take().is_some(),
         Field::Id(v) => !std::mem::take(v).is_empty(),
         Field::Spelled(v, _) | Field::Right(v) => v.take().is_some(),
         Field::List(v, set) | Field::Addresses(v, set) => {
@@ -871,6 +872,10 @@ fn assign(field: Field, value: Value) -> Result<(), String> {
             *f = Some(duration::to_proto(d));
         }
         (Field::Text(f), Value::Text(s)) => *f = Some(s),
+        (Field::Relay(f), Value::Text(s)) => {
+            s.parse::<Relay>()?;
+            *f = Some(s);
+        }
         (Field::Url(f), Value::Text(s)) => {
             url::Url::parse(&s).map_err(|e| format!("expected a URL: {e}"))?;
             *f = Some(s);

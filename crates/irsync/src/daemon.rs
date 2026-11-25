@@ -27,6 +27,7 @@ use crate::cli::Direction;
 use crate::config::exports::Export;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
+use crate::config::settings::Relay;
 use crate::config::settings::{listen_sockets, DaemonSettings, PqKeyExchange, Settings};
 use crate::filter::FilterSet;
 use crate::fs::paths::{escape_path, RelPath};
@@ -35,7 +36,7 @@ use crate::index::{Index, IndexHandle};
 use crate::net::addr::HostPort;
 use crate::net::frame::{read_msg_tapped, write_msg_tapped};
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
-use crate::net::{build_endpoint, daemon_endpoint_opts, RelayChoice};
+use crate::net::{build_endpoint, daemon_endpoint_opts};
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
 use crate::session::engine::{prepare_root, serve_daemon, Missing, Place};
@@ -1212,7 +1213,7 @@ async fn endpoint_from_settings(settings: &Settings, pass: &PassphraseSource) ->
     let secret = load_or_generate_identity(&settings.daemon.identity, pass)?;
     let bind_addrs = listen_sockets(&settings.daemon.listen).await?;
     let opts = daemon_endpoint_opts(&settings.daemon, secret, bind_addrs);
-    if settings.daemon.discovery.dht && opts.relay == RelayChoice::Disabled {
+    if settings.daemon.discovery.dht && opts.relay == Relay::Disabled {
         tracing::warn!(
             "dht is enabled but relays are disabled: DHT records will carry no addresses"
         );
@@ -1306,10 +1307,9 @@ pub async fn run_from_settings(
 /// which network services it uses.
 pub fn startup_banner(version: &str, settings: &Settings) -> String {
     let d = &settings.daemon;
-    let relay = match (&d.relay_mode, &d.relay) {
-        (crate::config::settings::RelayMode::Disabled, _) => "disabled".to_string(),
-        (_, Some(url)) => url.to_string(),
-        _ => "default (n0)".to_string(),
+    let relay = match &d.relay {
+        Relay::Default => "default (n0)".to_string(),
+        r => r.to_string(),
     };
     let on: Vec<&str> = [
         ("dns", d.discovery.dns),
@@ -1742,12 +1742,11 @@ pub async fn gc_if_due_skipping(
 #[cfg(test)]
 mod banner_tests {
     use super::*;
-    use crate::config::settings::RelayMode;
 
     #[test]
     fn banner_names_version_and_network() {
         let mut settings = Settings::default();
-        settings.daemon.relay_mode = RelayMode::Disabled;
+        settings.daemon.relay = Relay::Disabled;
         settings.daemon.discovery.dht = false;
         let b = startup_banner("9.9.9", &settings);
         assert!(b.starts_with("irsync daemon 9.9.9 started\n"));

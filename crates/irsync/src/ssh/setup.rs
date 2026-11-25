@@ -22,7 +22,7 @@ use crate::config::clients::Right;
 use crate::config::file::Config;
 use crate::config::names::short_host_name;
 use crate::config::paths::Paths;
-use crate::config::settings::RelayMode;
+use crate::config::settings::Relay;
 use crate::daemon_lock::{probe, LockInfo};
 use crate::identity::{load_or_generate, parse_endpoint_id, IdentityError, PassphraseSource};
 use crate::manage;
@@ -496,7 +496,7 @@ pub fn run(
 
     // 5. Where the daemon can be reached: a daemon that just started has
     // published nothing yet, so the client dials this first.
-    let want_relay = settings.daemon.relay_mode != RelayMode::Disabled;
+    let want_relay = settings.daemon.relay != Relay::Disabled;
     let reached = probe(state)
         .filter(|i| i.pid != 0)
         .and_then(|i| crate::daemon_addr::wait_for(state, i.pid, want_relay, ADDR_WAIT))

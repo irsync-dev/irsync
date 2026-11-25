@@ -79,7 +79,7 @@ exports inside it, is in
    `systemctl reload irsync` does the same.
 
 The daemon re-reads the config file and applies `listen`, `relay`,
-`relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `portmap`,
+`dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `portmap`,
 `identity`, `idle_timeout`, `dormant_session_timeout` and
 `max_dormant_sessions_per_key`:
 

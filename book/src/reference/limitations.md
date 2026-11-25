@@ -13,7 +13,7 @@
   end sits behind a symmetric NAT and the other behind a symmetric or
   port-restricted NAT, hole punching fails and the connection stays on the
   relay; then run a self-hosted relay and point `relay` in `[defaults]` and
-  `[daemon]` at it. [Configuration](configuration.md#client) has the keys,
+  `[daemon]` at it. [Configuration](configuration.md#defaults) has the keys,
   and [Connections](../explanation/connections.md#relays) explains relays.
 - **No compression.** `irsync` has no counterpart to rsync's `-z`; data
   crosses the link as it is stored.

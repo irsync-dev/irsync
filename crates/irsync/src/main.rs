@@ -633,12 +633,7 @@ fn dial_flags(opts: &SyncOptions) -> anyhow::Result<DialFlags> {
         parallel: opts.parallel,
         reconnect: opts.reconnect,
         dial_retries: opts.dial_retries,
-        relay: opts
-            .relay
-            .as_deref()
-            .map(|r| r.parse().context("bad --relay URL"))
-            .transpose()?,
-        no_relay: opts.no_relay,
+        relay: opts.relay.clone(),
         no_dht: opts.no_dht,
         pq_key_exchange: opts.pq_key_exchange,
         address: opts.addresses.clone(),
@@ -2369,12 +2364,7 @@ fn run_show(f: &FilesArgs) -> i32 {
 fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let id = parse_endpoint_id(&a.id).with_context(|| format!("ID {:?}", a.id))?;
     let flags = manage::servers::ServerFlags {
-        relay: a
-            .relay
-            .as_deref()
-            .map(|r| r.parse().with_context(|| format!("--relay {r:?}")))
-            .transpose()?,
-        relay_mode: a.relay_mode,
+        relay: a.relay.clone(),
         address: (!a.address.is_empty()).then(|| a.address.clone()),
         parallel: a.parallel,
         reconnect: a

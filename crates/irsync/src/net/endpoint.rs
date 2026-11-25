@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::dial::Dial;
-use crate::config::settings::{Congestion, DaemonSettings, RelayMode as DaemonRelayMode};
+use crate::config::settings::{Congestion, DaemonSettings, Relay};
 
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
 use iroh::endpoint::{
@@ -20,22 +20,11 @@ use noq_proto::congestion::{Bbr3Config, ControllerFactory, CubicConfig};
 
 const MIB: u32 = 1024 * 1024;
 
-/// Which relay servers the endpoint uses.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RelayChoice {
-    /// Number 0's public relays.
-    N0Default,
-    /// A single self-hosted relay.
-    Custom(url::Url),
-    /// No relay: direct connections only.
-    Disabled,
-}
-
 /// Everything needed to build an endpoint.
 #[derive(Debug, Clone)]
 pub struct EndpointOpts {
     pub secret: SecretKey,
-    pub relay: RelayChoice,
+    pub relay: Relay,
     /// Mainline DHT address lookup.
     pub dht: bool,
     /// n0 DNS / pkarr address lookup.
@@ -60,7 +49,7 @@ impl EndpointOpts {
     pub fn isolated(secret: SecretKey) -> EndpointOpts {
         EndpointOpts {
             secret,
-            relay: RelayChoice::Disabled,
+            relay: Relay::Disabled,
             dht: false,
             dns: false,
             mdns: false,
@@ -238,14 +227,9 @@ pub fn daemon_endpoint_opts(
     secret: SecretKey,
     bind_addrs: Vec<SocketAddr>,
 ) -> EndpointOpts {
-    let relay = match (&cfg.relay_mode, &cfg.relay) {
-        (DaemonRelayMode::Disabled, _) => RelayChoice::Disabled,
-        (_, Some(url)) => RelayChoice::Custom(url.clone()),
-        _ => RelayChoice::N0Default,
-    };
     EndpointOpts {
         secret,
-        relay,
+        relay: cfg.relay.clone(),
         dht: cfg.discovery.dht,
         dns: cfg.discovery.dns,
         mdns: cfg.discovery.mdns,
@@ -337,13 +321,11 @@ async fn build(
         );
     }
     let builder = match &opts.relay {
-        RelayChoice::N0Default => Endpoint::builder(presets::N0),
-        RelayChoice::Custom(url) => Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(
+        Relay::Default => Endpoint::builder(presets::N0),
+        Relay::Url(url) => Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(
             RelayMap::from(RelayUrl::from(url.clone())),
         )),
-        RelayChoice::Disabled => {
-            Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled)
-        }
+        Relay::Disabled => Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled),
     };
 
     // Start from no lookups and add exactly what was asked for, so the N0

@@ -16,7 +16,6 @@ message Entry {                // one element of a string array
   Comment comment = 2;
 }
 
-enum RelayMode { RELAY_MODE_UNSPECIFIED = 0; RELAY_MODE_DEFAULT = 1; RELAY_MODE_DISABLED = 2; }
 enum Congestion { CONGESTION_UNSPECIFIED = 0; CONGESTION_BBR = 1; CONGESTION_CUBIC = 2; }
 enum PqKeyExchange { PQ_KEY_EXCHANGE_UNSPECIFIED = 0; PQ_KEY_EXCHANGE_PREFER = 1; PQ_KEY_EXCHANGE_REQUIRE = 2; }
 // A right a client can hold over every export or every path; unset: none.
@@ -50,13 +49,12 @@ message Defaults {
   google.protobuf.Duration reconnect = 6;
   optional uint32 dial_retries = 7;
   optional bool ssh_install = 8;
-  optional string relay = 9;
-  optional RelayMode relay_mode = 10;
-  optional bool dht = 11;
-  optional bool dns = 12;
-  optional bool mdns = 13;
-  optional Congestion congestion = 14;
-  optional PqKeyExchange pq_key_exchange = 15;
+  optional string relay = 9;   // "default", "disabled" or a URL, as written
+  optional bool dht = 10;
+  optional bool dns = 11;
+  optional bool mdns = 12;
+  optional Congestion congestion = 13;
+  optional PqKeyExchange pq_key_exchange = 14;
 }
 
 message Daemon {
@@ -68,16 +66,15 @@ message Daemon {
   repeated Entry listen = 8;
   bool listen_set = 9;         // the key is in the file, even when empty
   optional bool portmap = 10;
-  optional string relay = 11;
-  optional RelayMode relay_mode = 12;
-  optional bool dht = 13;
-  optional bool dns = 14;
-  optional bool mdns = 15;
-  optional Congestion congestion = 16;
-  optional PqKeyExchange pq_key_exchange = 17;
-  optional string debug_addr = 18;
-  optional bool allow_all_paths = 19;
-  optional bool allow_root = 20;
+  optional string relay = 11;  // as in Defaults
+  optional bool dht = 12;
+  optional bool dns = 13;
+  optional bool mdns = 14;
+  optional Congestion congestion = 15;
+  optional PqKeyExchange pq_key_exchange = 16;
+  optional string debug_addr = 17;
+  optional bool allow_all_paths = 18;
+  optional bool allow_root = 19;
 }
 
 message Telemetry {
@@ -93,19 +90,18 @@ message ServerEntry {
   bytes endpoint_id = 5;       // empty: missing
   repeated Entry address = 6;
   bool address_set = 7;
-  optional string relay = 8;
-  optional RelayMode relay_mode = 9;
-  optional bool dht = 10;
-  optional bool dns = 11;
-  optional bool mdns = 12;
-  optional Congestion congestion = 13;
-  optional PqKeyExchange pq_key_exchange = 14;
-  optional uint32 parallel = 15;
-  google.protobuf.Duration reconnect = 16;
-  optional uint32 dial_retries = 17;
-  optional string ssh = 18;
-  repeated Entry ssh_aliases = 19;
-  bool ssh_aliases_set = 20;
+  optional string relay = 8;   // as in Defaults
+  optional bool dht = 9;
+  optional bool dns = 10;
+  optional bool mdns = 11;
+  optional Congestion congestion = 12;
+  optional PqKeyExchange pq_key_exchange = 13;
+  optional uint32 parallel = 14;
+  google.protobuf.Duration reconnect = 15;
+  optional uint32 dial_retries = 16;
+  optional string ssh = 17;
+  repeated Entry ssh_aliases = 18;
+  bool ssh_aliases_set = 19;
 }
 
 // A peer that grants name.

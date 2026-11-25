@@ -27,7 +27,7 @@ fn config_text(identity: &Path, state: &Path, data: &Path, clients: &[EndpointId
     format!(
         "state_dir = {state:?}\n\
          [daemon]\nidentity = {identity:?}\nlisten = [\"127.0.0.1:0\"]\n\
-         relay_mode = \"disabled\"\nportmap = false\nidle_timeout = \"5m\"\n\
+         relay = \"disabled\"\nportmap = false\nidle_timeout = \"5m\"\n\
          dht = false\ndns = false\nmdns = false\n\
          [exports.data]\npath = {data:?}\nro = [{ro}]\n",
         state = state.display().to_string(),

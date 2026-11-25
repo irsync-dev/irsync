@@ -8,7 +8,7 @@
 
 use super::clients::RIGHTS;
 use super::duration;
-use super::settings::{Congestion, OtlpProtocol, PqKeyExchange, RelayMode, Spelled};
+use super::settings::{Congestion, OtlpProtocol, PqKeyExchange, Spelled};
 use crate::authz::Access;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
@@ -96,7 +96,6 @@ fn defaults(c: &pb::Defaults) -> Keys<'_> {
     k.int("dial_retries", c.dial_retries);
     k.bool("ssh_install", c.ssh_install);
     k.string("relay", c.relay.as_deref());
-    k.string("relay_mode", c.relay_mode.and_then(spelled::<RelayMode>));
     k.bool("dht", c.dht);
     k.bool("dns", c.dns);
     k.bool("mdns", c.mdns);
@@ -123,7 +122,6 @@ fn daemon(d: &pb::Daemon) -> Keys<'_> {
     k.array("listen", &d.listen, d.listen_set);
     k.bool("portmap", d.portmap);
     k.string("relay", d.relay.as_deref());
-    k.string("relay_mode", d.relay_mode.and_then(spelled::<RelayMode>));
     k.bool("dht", d.dht);
     k.bool("dns", d.dns);
     k.bool("mdns", d.mdns);
@@ -153,7 +151,6 @@ fn server(s: &pb::ServerEntry) -> Keys<'_> {
     k.string("endpoint_id", non_empty(&s.endpoint_id).map(id).as_deref());
     k.array("address", &s.address, s.address_set);
     k.string("relay", s.relay.as_deref());
-    k.string("relay_mode", s.relay_mode.and_then(spelled::<RelayMode>));
     k.bool("dht", s.dht);
     k.bool("dns", s.dns);
     k.bool("mdns", s.mdns);

@@ -22,7 +22,7 @@ client keys it has granted; see
 [Identity and trust](https://irsync.org/book/explanation/identity-and-trust).
 When no direct path can be found, traffic goes through a relay, by default one
 of the public relays run by n0, the developers of iroh. A relay cannot read
-the data. You can run your own, or refuse relays with `--no-relay`; see
+the data. You can run your own, or refuse relays with `--relay disabled`; see
 [Connect directly or through a relay](https://irsync.org/book/how-to/direct-and-relay).
 
 > **Beta.** irsync is beta software. The command line and the network

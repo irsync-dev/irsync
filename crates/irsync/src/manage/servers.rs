@@ -4,19 +4,17 @@
 
 use super::{id_bytes, id_of, ManageError};
 use crate::config::names::valid_alias;
-use crate::config::settings::{PqKeyExchange, RelayMode, Spelled};
+use crate::config::settings::{PqKeyExchange, Relay, Spelled};
 use crate::config::writer;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::time::Duration;
-use url::Url;
 
 /// The optional keys `server add` writes; `None` leaves a key untouched.
 #[derive(Default)]
 pub struct ServerFlags {
-    pub relay: Option<Url>,
-    pub relay_mode: Option<RelayMode>,
+    pub relay: Option<Relay>,
     /// Replaces the whole `address` array.
     pub address: Option<Vec<HostPort>>,
     pub parallel: Option<u32>,
@@ -67,10 +65,7 @@ pub fn server_add(
     let old = id_of(&h.endpoint_id).filter(|old| *old != id);
     h.endpoint_id = id_bytes(id);
     if let Some(r) = &flags.relay {
-        h.relay = Some(r.as_str().to_string());
-    }
-    if let Some(m) = flags.relay_mode {
-        h.relay_mode = Some(m.to_message());
+        h.relay = Some(r.to_string());
     }
     if let Some(a) = &flags.address {
         h.address = a.iter().map(|a| entry(&a.to_string())).collect();

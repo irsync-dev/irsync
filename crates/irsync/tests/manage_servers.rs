@@ -189,12 +189,12 @@ fn list_shows_the_keys_and_not_config_version() {
 }
 
 #[test]
-fn add_writes_relay_relay_mode_dht_and_mdns() {
+fn add_writes_relay_dht_dns_and_mdns() {
     let mut m = pb::Config::default();
     let f = ServerFlags {
         relay: Some("https://relay.example.net".parse().unwrap()),
-        relay_mode: Some(irsync::config::settings::RelayMode::Disabled),
         dht: Some(false),
+        dns: Some(false),
         mdns: Some(true),
         ..Default::default()
     };
@@ -202,10 +202,16 @@ fn add_writes_relay_relay_mode_dht_and_mdns() {
     assert_eq!(
         write(&m),
         format!(
-            "[servers.home]\nendpoint_id = \"{}\"\nrelay = \"https://relay.example.net/\"\nrelay_mode = \"disabled\"\ndht = false\nmdns = true\n",
+            "[servers.home]\nendpoint_id = \"{}\"\nrelay = \"https://relay.example.net/\"\ndht = false\ndns = false\nmdns = true\n",
             id(1)
         )
     );
+    let f = ServerFlags {
+        relay: Some(irsync::config::settings::Relay::Disabled),
+        ..Default::default()
+    };
+    server_add(&mut m, "home", id(1), &f).unwrap();
+    assert!(write(&m).contains("relay = \"disabled\"\n"));
 }
 
 #[test]

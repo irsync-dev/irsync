@@ -41,7 +41,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use iroh::{Endpoint, EndpointAddr, SecretKey};
-use irsync::net::{build_endpoint, EndpointOpts, RelayChoice};
+use irsync::config::settings::Relay;
+use irsync::net::{build_endpoint, EndpointOpts};
 
 /// Awaits `fut`, panicking after 10 s so a regression fails instead of hanging.
 pub async fn within<F: Future>(fut: F) -> F::Output {
@@ -54,7 +55,7 @@ pub async fn within<F: Future>(fut: F) -> F::Output {
 pub fn offline_opts() -> EndpointOpts {
     EndpointOpts {
         secret: SecretKey::generate(),
-        relay: RelayChoice::Disabled,
+        relay: Relay::Disabled,
         dht: false,
         dns: false,
         mdns: false,
@@ -1004,7 +1005,7 @@ pub fn spawn_daemon_binary_env(
     std::fs::create_dir_all(&cfg).unwrap();
     irsync::fs::private::write(
         cfg.join("irsync.toml"),
-        "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
+        "[daemon]\nrelay = \"disabled\"\nportmap = false\n\
          dht = false\ndns = false\nmdns = false\n",
     )
     .unwrap();

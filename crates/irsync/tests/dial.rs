@@ -4,8 +4,8 @@
 use iroh::SecretKey;
 use irsync::config::dial::{Dial, DialFlags};
 use irsync::config::servers::ServerEntry;
-use irsync::config::settings::{Congestion, Defaults, PqKeyExchange, RelayMode};
-use irsync::net::{client_endpoint_opts, RelayChoice};
+use irsync::config::settings::{Congestion, Defaults, PqKeyExchange, Relay};
+use irsync::net::client_endpoint_opts;
 use std::time::Duration;
 
 /// A server entry that sets nothing but its id.
@@ -13,7 +13,6 @@ fn server() -> ServerEntry {
     ServerEntry {
         endpoint_id: SecretKey::from_bytes(&[1; 32]).public(),
         relay: None,
-        relay_mode: None,
         congestion: None,
         pq_key_exchange: None,
         address: Vec::new(),
@@ -44,7 +43,7 @@ fn nothing_set_is_the_built_in_default() {
     assert_eq!(d.reconnect, Duration::from_secs(86400));
     assert_eq!(d.dial_retries, 4);
     assert!(d.ssh_install && d.dht && d.dns && d.mdns);
-    assert_eq!(d.relay, RelayChoice::N0Default);
+    assert_eq!(d.relay, Relay::Default);
     assert_eq!(d.congestion, Congestion::Bbr);
     assert_eq!(d.pq_key_exchange, PqKeyExchange::Prefer);
 }
@@ -136,47 +135,58 @@ fn a_paired_server_is_dialled_once_unless_the_flag_says_otherwise() {
     );
 }
 
+/// One `relay` key: the flag, then the server's, then `[defaults]`'s,
+/// whatever each says.
 #[test]
-fn the_relay_the_flags_and_the_file_choose() {
-    let none = Defaults::default();
-    let flags = |relay: Option<&str>, no_relay| DialFlags {
-        relay: relay.map(url),
-        no_relay,
+fn the_first_relay_that_is_set_decides() {
+    let r = |s: &str| s.parse::<Relay>().unwrap();
+    let relay = |flag: Option<&str>, entry: Option<&str>, defaults: Option<&str>| {
+        let flags = DialFlags {
+            relay: flag.map(r),
+            ..DialFlags::default()
+        };
+        let s = ServerEntry {
+            relay: entry.map(r),
+            ..server()
+        };
+        let d = Defaults {
+            relay: defaults.map(r),
+            ..Defaults::default()
+        };
+        resolve(&flags, Some(&s), &d).relay
+    };
+    assert_eq!(relay(None, None, None), Relay::Default);
+    assert_eq!(relay(None, None, Some("disabled")), Relay::Disabled);
+    // A server's URL wins over [defaults]' "disabled", and its "disabled"
+    // over [defaults]' URL.
+    assert_eq!(
+        relay(None, Some("https://s.example"), Some("disabled")),
+        r("https://s.example")
+    );
+    assert_eq!(
+        relay(None, Some("disabled"), Some("https://d.example")),
+        Relay::Disabled
+    );
+    assert_eq!(
+        relay(None, Some("default"), Some("disabled")),
+        Relay::Default
+    );
+    // The flag wins over both, either way round.
+    assert_eq!(
+        relay(Some("https://c.example"), Some("disabled"), None),
+        r("https://c.example")
+    );
+    assert_eq!(
+        relay(Some("disabled"), Some("https://s.example"), None),
+        Relay::Disabled
+    );
+    // Relays off: the lookups stay.
+    let flags = DialFlags {
+        relay: Some(Relay::Disabled),
         ..DialFlags::default()
     };
-    // --no-relay: no relay, the lookups stay.
-    let d = resolve(&flags(None, true), None, &none);
-    assert_eq!(d.relay, RelayChoice::Disabled);
+    let d = resolve(&flags, None, &Defaults::default());
     assert!(d.dht && d.dns && d.mdns);
-    // [defaults] relay_mode = "disabled", even with a relay URL beside it.
-    let off = Defaults {
-        relay: Some(url("https://c.example")),
-        relay_mode: Some(RelayMode::Disabled),
-        ..Defaults::default()
-    };
-    assert_eq!(
-        resolve(&flags(None, false), None, &off).relay,
-        RelayChoice::Disabled
-    );
-    // The server's mode decides over [defaults]'s, either way round.
-    let mut s = ServerEntry {
-        relay_mode: Some(RelayMode::Default),
-        ..server()
-    };
-    assert_eq!(
-        resolve(&flags(None, false), Some(&s), &off).relay,
-        RelayChoice::Custom(url("https://c.example"))
-    );
-    s.relay_mode = Some(RelayMode::Disabled);
-    assert_eq!(
-        resolve(&flags(None, false), Some(&s), &none).relay,
-        RelayChoice::Disabled
-    );
-    // --relay on the command line beats a file's "disabled".
-    assert_eq!(
-        resolve(&flags(Some("https://cli.example"), false), Some(&s), &none).relay,
-        RelayChoice::Custom(url("https://cli.example"))
-    );
 }
 
 #[test]
@@ -193,7 +203,7 @@ fn addresses_make_the_endpoint_isolated() {
     let d = resolve(&DialFlags::default(), Some(&s), &cubic);
     assert_eq!(d.address, s.address);
     let o = client_endpoint_opts(SecretKey::generate(), &d);
-    assert_eq!(o.relay, RelayChoice::Disabled);
+    assert_eq!(o.relay, Relay::Disabled);
     assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && !o.publish);
     assert_eq!(o.congestion, Congestion::Cubic);
     // --address replaces the server's list.
@@ -204,7 +214,7 @@ fn addresses_make_the_endpoint_isolated() {
     assert_eq!(resolve(&flags, Some(&s), &cubic).address, flags.address);
     // --relay with the server's addresses is refused.
     let flags = DialFlags {
-        relay: Some(url("https://c.example")),
+        relay: Some(Relay::Url(url("https://c.example"))),
         ..DialFlags::default()
     };
     let e = Dial::resolve(&flags, Some(&s), &cubic).unwrap_err();
@@ -215,7 +225,7 @@ fn addresses_make_the_endpoint_isolated() {
 fn without_addresses_the_endpoint_follows_the_dial() {
     let d = Dial {
         dht: false,
-        relay: RelayChoice::Custom(url("https://c.example")),
+        relay: Relay::Url(url("https://c.example")),
         ..Dial::default()
     };
     let o = client_endpoint_opts(SecretKey::generate(), &d);

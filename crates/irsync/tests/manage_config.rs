@@ -172,7 +172,6 @@ const EVERY_KEY: &[&str] = &[
     "defaults.mdns",
     "defaults.ssh_install",
     "defaults.relay",
-    "defaults.relay_mode",
     "defaults.congestion",
     "defaults.pq_key_exchange",
     "daemon",
@@ -185,7 +184,6 @@ const EVERY_KEY: &[&str] = &[
     "daemon.allow_all_paths",
     "daemon.allow_root",
     "daemon.relay",
-    "daemon.relay_mode",
     "daemon.congestion",
     "daemon.pq_key_exchange",
     "daemon.debug_addr",
@@ -199,7 +197,6 @@ const EVERY_KEY: &[&str] = &[
     "servers.NAME",
     "servers.NAME.endpoint_id",
     "servers.NAME.relay",
-    "servers.NAME.relay_mode",
     "servers.NAME.congestion",
     "servers.NAME.pq_key_exchange",
     "servers.NAME.ssh",
@@ -229,14 +226,11 @@ const EVERY_KEY: &[&str] = &[
 ];
 
 /// The keys of `EVERY_KEY` that have no default, on purpose: tables, the
-/// keys an entry must have or that name someone, relays (n0's are used),
-/// `debug_addr` (off), the OTLP endpoint (no export), and a server's keys,
+/// keys an entry must have or that name someone, `debug_addr` (off), the OTLP endpoint (no export), and a server's keys,
 /// which fall back to `[defaults]`'s.
 const NO_DEFAULT: &[&str] = &[
     "defaults",
-    "defaults.relay",
     "daemon",
-    "daemon.relay",
     "daemon.debug_addr",
     "telemetry",
     "telemetry.otlp_endpoint",
@@ -244,7 +238,6 @@ const NO_DEFAULT: &[&str] = &[
     "servers.NAME",
     "servers.NAME.endpoint_id",
     "servers.NAME.relay",
-    "servers.NAME.relay_mode",
     "servers.NAME.congestion",
     "servers.NAME.pq_key_exchange",
     "servers.NAME.ssh",
@@ -334,10 +327,7 @@ fn defaults_for_settings_keys() {
     );
     assert_eq!(default_of(&p("daemon.portmap")), Some(vec!["true".into()]));
     assert_eq!(default_of(&p("daemon.listen")), Some(vec![]));
-    assert_eq!(
-        default_of(&p("daemon.relay_mode")),
-        Some(vec!["default".into()])
-    );
+    assert_eq!(default_of(&p("daemon.relay")), Some(vec!["default".into()]));
     assert_eq!(default_of(&p("daemon.dht")), Some(vec!["true".into()]));
     // Path defaults print as the file would hold them: home as `~`.
     assert_eq!(
@@ -367,12 +357,11 @@ fn defaults_for_settings_keys() {
         default_of(&p("defaults.ssh_install")),
         Some(vec!["true".into()])
     );
-    assert_eq!(default_of(&p("defaults.relay")), None);
     assert_eq!(
-        default_of(&p("defaults.relay_mode")),
+        default_of(&p("defaults.relay")),
         Some(vec!["default".to_string()])
     );
-    assert!(kind_of(&p("servers.home.relay_mode")).is_some());
+    assert!(kind_of(&p("servers.home.relay_mode")).is_none());
     assert_eq!(
         default_of(&p("defaults.congestion")),
         Some(vec!["bbr".into()])
@@ -391,7 +380,6 @@ fn defaults_for_settings_keys() {
         Some(vec!["prefer".into()])
     );
     assert!(kind_of(&p("servers.home.pq_key_exchange")).is_some());
-    assert_eq!(default_of(&p("daemon.relay")), None);
     assert_eq!(default_of(&p("servers.home.relay")), None);
 }
 
@@ -636,7 +624,6 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("defaults.ssh_install", &["false"]),
     ("defaults.mdns", &["false"]),
     ("defaults.relay", &["https://r/"]),
-    ("defaults.relay_mode", &["disabled"]),
     ("defaults.congestion", &["cubic"]),
     ("defaults.pq_key_exchange", &["require"]),
     ("daemon.identity", &["/d"]),
@@ -645,8 +632,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("daemon.max_dormant_sessions_per_key", &["3"]),
     ("daemon.listen", &["0.0.0.0:0", "[::]:0"]),
     ("daemon.portmap", &["false"]),
-    ("daemon.relay", &["https://r/"]),
-    ("daemon.relay_mode", &["disabled"]),
+    ("daemon.relay", &["disabled"]),
     ("daemon.congestion", &["cubic"]),
     ("daemon.pq_key_exchange", &["require"]),
     ("daemon.debug_addr", &["127.0.0.1:9000"]),
@@ -658,8 +644,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("telemetry.otlp_endpoint", &["http://c:4318/"]),
     ("telemetry.otlp_protocol", &["http"]),
     ("servers.nas.endpoint_id", &[ID5]),
-    ("servers.nas.relay", &["https://r/"]),
-    ("servers.nas.relay_mode", &["disabled"]),
+    ("servers.nas.relay", &["default"]),
     ("servers.nas.congestion", &["cubic"]),
     ("servers.nas.pq_key_exchange", &["require"]),
     ("servers.nas.address", &["10.0.0.1:4000"]),
@@ -854,7 +839,7 @@ fn unset_of_a_table_takes_its_comments() {
 fn set_refuses_what_the_message_cannot_hold_and_changes_nothing() {
     let mut m = pb::Config::default();
     for (key, value) in [
-        ("servers.nas.relay_mode", Value::Text("bogus".into())),
+        ("servers.nas.relay", Value::Text("bogus".into())),
         ("defaults.congestion", Value::Text("reno".into())),
         ("telemetry.otlp_protocol", Value::Text("udp".into())),
         ("defaults.parallel", Value::Int(-1)),
@@ -867,13 +852,11 @@ fn set_refuses_what_the_message_cannot_hold_and_changes_nothing() {
         );
     }
     assert_eq!(m, pb::Config::default());
-    let e = set(
-        &mut m,
-        &p("defaults.relay_mode"),
-        Value::Text("bogus".into()),
-    )
-    .unwrap_err();
-    assert_eq!(e.to_string(), "\"bogus\": expected default or disabled");
+    let e = set(&mut m, &p("defaults.relay"), Value::Text("bogus".into())).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "\"bogus\": expected default, disabled or a URL (relative URL without a base)"
+    );
 }
 
 #[test]

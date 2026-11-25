@@ -2,11 +2,9 @@
 //! server's table, then `[defaults]`, then the built-in default.
 
 use super::servers::ServerEntry;
-use super::settings::{Congestion, Defaults, PqKeyExchange, RelayMode};
+use super::settings::{Congestion, Defaults, PqKeyExchange, Relay};
 use crate::net::addr::HostPort;
-use crate::net::RelayChoice;
 use std::time::Duration;
-use url::Url;
 
 /// What the command line says about a dial; what it leaves unset, the
 /// config decides.
@@ -15,10 +13,8 @@ pub struct DialFlags {
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
     pub dial_retries: Option<u32>,
-    /// `--relay URL`.
-    pub relay: Option<Url>,
-    /// `--no-relay`.
-    pub no_relay: bool,
+    /// `--relay`.
+    pub relay: Option<Relay>,
     /// `--no-dht`.
     pub no_dht: bool,
     pub pq_key_exchange: Option<PqKeyExchange>,
@@ -40,7 +36,7 @@ pub struct Dial {
     pub ssh_install: bool,
     /// Direct addresses: with any, the relay and the lookups are off.
     pub address: Vec<HostPort>,
-    pub relay: RelayChoice,
+    pub relay: Relay,
     pub dht: bool,
     pub dns: bool,
     pub mdns: bool,
@@ -58,7 +54,7 @@ impl Default for Dial {
             dial_retries: reconnect.dial_retries,
             ssh_install: true,
             address: Vec::new(),
-            relay: RelayChoice::N0Default,
+            relay: Relay::Default,
             dht: true,
             dns: true,
             mdns: true,
@@ -100,21 +96,6 @@ impl Dial {
                     .into(),
             );
         }
-        let relay_off = flags.no_relay
-            || first(
-                [of(server, |s| s.relay_mode), defaults.relay_mode],
-                RelayMode::Default,
-            ) == RelayMode::Disabled;
-        // `--relay` on the command line beats a config file's "disabled".
-        let relay = match (
-            &flags.relay,
-            of(server, |s| s.relay.clone()).or(defaults.relay.clone()),
-        ) {
-            (Some(url), _) => RelayChoice::Custom(url.clone()),
-            _ if relay_off => RelayChoice::Disabled,
-            (None, Some(url)) => RelayChoice::Custom(url),
-            (None, None) => builtin.relay,
-        };
         let paired = server.is_some_and(|s| s.ssh.is_some());
         let dial_retries = if paired {
             flags.dial_retries.unwrap_or(0)
@@ -148,7 +129,14 @@ impl Dial {
             dial_retries,
             ssh_install: defaults.ssh_install.unwrap_or(builtin.ssh_install),
             address,
-            relay,
+            relay: first(
+                [
+                    flags.relay.clone(),
+                    of(server, |s| s.relay.clone()),
+                    defaults.relay.clone(),
+                ],
+                builtin.relay,
+            ),
             dht: !flags.no_dht && first([of(server, |s| s.dht), defaults.dht], builtin.dht),
             dns: first([of(server, |s| s.dns), defaults.dns], builtin.dns),
             mdns: first([of(server, |s| s.mdns), defaults.mdns], builtin.mdns),

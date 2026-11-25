@@ -1096,7 +1096,8 @@ fn get_prints_defaults_and_exits_1_for_unset_optional_keys() {
     let o = irsync(&home, &["config", "get", "daemon.listen"]);
     assert!(o.status.success() && o.stdout.is_empty(), "{o:?}");
     assert_eq!(ok(&home, &["config", "get", "defaults.parallel"]), "128\n");
-    let o = irsync(&home, &["config", "get", "defaults.relay"]);
+    assert_eq!(ok(&home, &["config", "get", "defaults.relay"]), "default\n");
+    let o = irsync(&home, &["config", "get", "daemon.debug_addr"]);
     assert_eq!(o.status.code(), Some(1));
     assert!(o.stdout.is_empty() && o.stderr.is_empty(), "{o:?}");
     let o = irsync(&home, &["config", "get", "daemon.nope"]);

@@ -72,14 +72,47 @@ macro_rules! spelled {
     };
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RelayMode {
+/// Which relay servers an endpoint uses: `relay` in `[daemon]`,
+/// `[defaults]` and a server's table, and `--relay`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Relay {
+    /// n0's public relays.
     #[default]
     Default,
+    /// No relay: direct connections only. The lookups stay on.
     Disabled,
+    /// A self-hosted relay.
+    Url(Url),
 }
 
-spelled!(RelayMode, RelayMode, "relay_mode", Default => "default", Disabled => "disabled");
+impl std::fmt::Display for Relay {
+    /// As the file spells it.
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Relay::Default => f.write_str("default"),
+            Relay::Disabled => f.write_str("disabled"),
+            Relay::Url(u) => f.write_str(u.as_str()),
+        }
+    }
+}
+
+impl std::str::FromStr for Relay {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Relay, String> {
+        match s {
+            "default" => Ok(Relay::Default),
+            "disabled" => Ok(Relay::Disabled),
+            _ => Url::parse(s)
+                .map(Relay::Url)
+                .map_err(|e| format!("{s:?}: expected default, disabled or a URL ({e})")),
+        }
+    }
+}
+
+/// A relay of the message, if set.
+pub(crate) fn relay_from(s: Option<&str>) -> Result<Option<Relay>, String> {
+    s.map(str::parse).transpose()
+}
 
 /// The congestion controller of the side that sends: the client's for a
 /// push, the daemon's for a pull. BBR keeps the bottleneck's queue short
@@ -199,10 +232,7 @@ pub struct Defaults {
     /// Set the server up over ssh by copying irsync there. `false` is
     /// `--no-install` for every run.
     pub ssh_install: Option<bool>,
-    pub relay: Option<Url>,
-    /// `"disabled"`: direct connections only, no relay fallback; the lookups
-    /// stay on.
-    pub relay_mode: Option<RelayMode>,
+    pub relay: Option<Relay>,
     pub dht: Option<bool>,
     pub dns: Option<bool>,
     pub mdns: Option<bool>,
@@ -221,8 +251,7 @@ pub struct DaemonSettings {
     pub max_dormant_sessions_per_key: u32,
     pub listen: Vec<HostPort>,
     pub portmap: bool,
-    pub relay: Option<Url>,
-    pub relay_mode: RelayMode,
+    pub relay: Relay,
     /// For pulls.
     pub congestion: Congestion,
     /// `require`: close a connection that did not get the hybrid key
@@ -270,8 +299,7 @@ impl Default for DaemonSettings {
             max_dormant_sessions_per_key: 25,
             listen: Vec::new(),
             portmap: true,
-            relay: None,
-            relay_mode: RelayMode::Default,
+            relay: Relay::Default,
             congestion: Congestion::Bbr,
             pq_key_exchange: PqKeyExchange::Prefer,
             discovery: Discovery::default(),
@@ -345,8 +373,7 @@ impl Defaults {
             dns: c.dns,
             ssh_install: c.ssh_install,
             mdns: c.mdns,
-            relay: url_from(c.relay.as_deref())?,
-            relay_mode: RelayMode::from_optional(c.relay_mode)?,
+            relay: relay_from(c.relay.as_deref())?,
             congestion: Congestion::from_optional(c.congestion)?,
             pq_key_exchange: PqKeyExchange::from_optional(c.pq_key_exchange)?,
         })
@@ -375,8 +402,7 @@ impl DaemonSettings {
                 .unwrap_or(defaults.max_dormant_sessions_per_key),
             listen,
             portmap: d.portmap.unwrap_or(defaults.portmap),
-            relay: url_from(d.relay.as_deref())?,
-            relay_mode: RelayMode::from_optional(d.relay_mode)?.unwrap_or(defaults.relay_mode),
+            relay: relay_from(d.relay.as_deref())?.unwrap_or(defaults.relay),
             congestion: Congestion::from_optional(d.congestion)?.unwrap_or(defaults.congestion),
             pq_key_exchange: PqKeyExchange::from_optional(d.pq_key_exchange)?
                 .unwrap_or(defaults.pq_key_exchange),
