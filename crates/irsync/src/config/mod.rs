@@ -6,6 +6,7 @@ pub mod dial;
 pub mod duration;
 pub mod exports;
 pub mod file;
+pub mod keys;
 pub mod names;
 pub mod paths;
 pub mod reader;

@@ -1,4 +1,5 @@
 use irsync::config::file::Config;
+use irsync::config::keys::KEYS;
 use irsync::config::reader::read;
 use irsync::config::writer::write;
 use irsync::manage::config::{default_of, kind_of, parse_key, Got, Kind};
@@ -156,76 +157,7 @@ fn get_prints_scalars_arrays_and_tables() {
     ));
 }
 
-/// Every key `kind_of` knows, with `NAME` for an entry's name. A key
-/// added to `kind_of` belongs here too.
-const EVERY_KEY: &[&str] = &[
-    "config_version",
-    "unsafe_config_allowed",
-    "state_dir",
-    "defaults",
-    "defaults.identity",
-    "defaults.parallel",
-    "defaults.reconnect",
-    "defaults.dial_retries",
-    "defaults.dht",
-    "defaults.dns",
-    "defaults.mdns",
-    "defaults.ssh_install",
-    "defaults.relay",
-    "defaults.congestion",
-    "defaults.pq_key_exchange",
-    "daemon",
-    "daemon.identity",
-    "daemon.idle_timeout",
-    "daemon.dormant_session_timeout",
-    "daemon.max_dormant_sessions_per_key",
-    "daemon.listen",
-    "daemon.portmap",
-    "daemon.allow_all_paths",
-    "daemon.allow_root",
-    "daemon.relay",
-    "daemon.congestion",
-    "daemon.pq_key_exchange",
-    "daemon.debug_addr",
-    "daemon.dht",
-    "daemon.dns",
-    "daemon.mdns",
-    "telemetry",
-    "telemetry.otlp_endpoint",
-    "telemetry.otlp_protocol",
-    "servers",
-    "servers.NAME",
-    "servers.NAME.endpoint_id",
-    "servers.NAME.relay",
-    "servers.NAME.congestion",
-    "servers.NAME.pq_key_exchange",
-    "servers.NAME.ssh",
-    "servers.NAME.address",
-    "servers.NAME.ssh_aliases",
-    "servers.NAME.parallel",
-    "servers.NAME.reconnect",
-    "servers.NAME.dial_retries",
-    "servers.NAME.dht",
-    "servers.NAME.dns",
-    "servers.NAME.mdns",
-    "clients",
-    "clients.NAME",
-    "clients.NAME.client_id",
-    "clients.NAME.all_exports",
-    "clients.NAME.all_paths",
-    "clients.NAME.admin",
-    "exports",
-    "exports.NAME",
-    "exports.NAME.path",
-    "exports.NAME.read_only",
-    "exports.NAME.warm_index",
-    "exports.NAME.fsync",
-    "exports.NAME.auto",
-    "exports.NAME.rw",
-    "exports.NAME.ro",
-];
-
-/// The keys of `EVERY_KEY` that have no default, on purpose: tables, the
+/// The keys of [`KEYS`] that have no default, on purpose: tables, the
 /// keys an entry must have or that name someone, `debug_addr` (off), the OTLP endpoint (no export), and a server's keys,
 /// which fall back to `[defaults]`'s.
 const NO_DEFAULT: &[&str] = &[
@@ -235,48 +167,56 @@ const NO_DEFAULT: &[&str] = &[
     "telemetry",
     "telemetry.otlp_endpoint",
     "servers",
-    "servers.NAME",
-    "servers.NAME.endpoint_id",
-    "servers.NAME.relay",
-    "servers.NAME.congestion",
-    "servers.NAME.pq_key_exchange",
-    "servers.NAME.ssh",
-    "servers.NAME.address",
-    "servers.NAME.ssh_aliases",
-    "servers.NAME.parallel",
-    "servers.NAME.reconnect",
-    "servers.NAME.dial_retries",
-    "servers.NAME.dht",
-    "servers.NAME.dns",
-    "servers.NAME.mdns",
+    "servers.*",
+    "servers.*.endpoint_id",
+    "servers.*.relay",
+    "servers.*.congestion",
+    "servers.*.pq_key_exchange",
+    "servers.*.ssh",
+    "servers.*.address",
+    "servers.*.ssh_aliases",
+    "servers.*.parallel",
+    "servers.*.reconnect",
+    "servers.*.dial_retries",
+    "servers.*.dht",
+    "servers.*.dns",
+    "servers.*.mdns",
     "clients",
-    "clients.NAME",
-    "clients.NAME.client_id",
-    "clients.NAME.all_exports",
-    "clients.NAME.all_paths",
-    "clients.NAME.admin",
+    "clients.*",
+    "clients.*.client_id",
+    "clients.*.all_exports",
+    "clients.*.all_paths",
+    "clients.*.admin",
     "exports",
-    "exports.NAME",
-    "exports.NAME.path",
-    "exports.NAME.rw",
-    "exports.NAME.ro",
+    "exports.*",
+    "exports.*.path",
+    "exports.*.rw",
+    "exports.*.ro",
 ];
 
 /// `config get` of an unset key prints its default: every key has one,
 /// or is listed as having none, and those listed really have none.
 #[test]
 fn every_key_has_a_default_or_says_it_has_none() {
-    for key in EVERY_KEY {
-        let path = p(key);
-        assert!(kind_of(&path).is_some(), "{key}: not a key");
-        let listed = NO_DEFAULT.contains(key);
+    for key in KEYS {
+        let path: Vec<String> = key.path.split('.').map(|s| s.replace('*', "x")).collect();
+        assert_eq!(kind_of(&path), Some(key.kind), "{}", key.path);
+        let listed = NO_DEFAULT.contains(&key.path);
         match default_of(&path) {
-            Some(_) => assert!(!listed, "{key}: listed as without default, but has one"),
-            None => assert!(listed, "{key}: no default and not listed as having none"),
+            Some(_) => assert!(
+                !listed,
+                "{}: listed as without default, but has one",
+                key.path
+            ),
+            None => assert!(
+                listed,
+                "{}: no default and not listed as having none",
+                key.path
+            ),
         }
     }
     for key in NO_DEFAULT {
-        assert!(EVERY_KEY.contains(key), "{key}: not in EVERY_KEY");
+        assert!(KEYS.iter().any(|k| k.path == *key), "{key}: not in KEYS");
     }
 }
 
@@ -736,6 +676,16 @@ fn file_keys(t: &toml::Table, path: &[String], out: &mut Vec<String>) {
 fn every_key_of_the_message_is_in_full_toml_and_all_keys() {
     let keys = message_keys();
     assert!(keys.len() > 40, "{keys:?}");
+    // The message and the key table have the same keys.
+    let mut table: Vec<String> = KEYS
+        .iter()
+        .filter(|k| k.kind != Kind::Table)
+        .map(|k| k.path.to_string())
+        .collect();
+    let mut sorted = keys.clone();
+    table.sort();
+    sorted.sort();
+    assert_eq!(sorted, table);
     let full: toml::Table = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config_corpus/full.toml"),
     )

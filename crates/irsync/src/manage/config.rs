@@ -5,81 +5,18 @@
 use super::{id_bytes, ManageError};
 use crate::authz::Access;
 use crate::config::clients::RIGHTS;
-use crate::config::dial::Dial;
-use crate::config::settings::{Congestion, OtlpProtocol, PqKeyExchange, Relay, Settings, Spelled};
+use crate::config::keys;
+use crate::config::settings::{Congestion, OtlpProtocol, PqKeyExchange, Relay, Spelled};
 use crate::config::{duration, reader, writer};
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
 
-/// What a key holds, which decides how `set` reads a value and how `get`
-/// prints one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Bool,
-    Int,
-    Duration,
-    Str,
-    Path,
-    Url,
-    /// `default`, `disabled` or a URL.
-    Relay,
-    Id,
-    StrArray,
-    AddrArray,
-    Table,
-}
+pub use crate::config::keys::Kind;
 
 /// The kind of a key path, or `None` for a key the file does not know.
 pub fn kind_of(path: &[String]) -> Option<Kind> {
-    let parts: Vec<&str> = path.iter().map(String::as_str).collect();
-    use Kind::*;
-    Some(match parts.as_slice() {
-        // Read-only: see [`writable`].
-        ["config_version"] => Int,
-        ["unsafe_config_allowed"] => Bool,
-        ["state_dir"] => Path,
-        ["defaults"]
-        | ["daemon"]
-        | ["telemetry"]
-        | ["servers"]
-        | ["servers", _]
-        | ["clients"]
-        | ["clients", _]
-        | ["exports"]
-        | ["exports", _] => Table,
-        ["defaults", "identity"] => Path,
-        ["defaults", "parallel"] => Int,
-        ["defaults", "reconnect"] => Duration,
-        ["defaults", "dial_retries"] => Int,
-        ["defaults", "dht" | "dns" | "mdns" | "ssh_install"] => Bool,
-        ["defaults", "relay"] => Relay,
-        ["defaults", "congestion" | "pq_key_exchange"] => Str,
-        ["daemon", "identity"] => Path,
-        ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
-        ["daemon", "max_dormant_sessions_per_key"] => Int,
-        ["daemon", "listen"] => AddrArray,
-        ["daemon", "portmap" | "dht" | "dns" | "mdns" | "allow_all_paths" | "allow_root"] => Bool,
-        ["daemon", "relay"] => Relay,
-        ["daemon", "congestion" | "pq_key_exchange"] => Str,
-        ["daemon", "debug_addr"] => Str,
-        ["telemetry", "otlp_endpoint"] => Url,
-        ["telemetry", "otlp_protocol"] => Str,
-        ["servers", _, "endpoint_id"] | ["clients", _, "client_id"] => Id,
-        ["servers", _, "relay"] => Relay,
-        ["servers", _, "congestion" | "pq_key_exchange" | "ssh"] => Str,
-        ["servers", _, "address"] => AddrArray,
-        ["servers", _, "ssh_aliases"] => StrArray,
-        ["servers", _, "parallel"] => Int,
-        ["servers", _, "reconnect"] => Duration,
-        ["servers", _, "dial_retries"] => Int,
-        ["servers", _, "dht" | "dns" | "mdns"] => Bool,
-        ["clients", _, key] if RIGHTS.iter().any(|r| r.key() == *key) => Str,
-        ["exports", _, "path"] => Path,
-        ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => Bool,
-        ["exports", _, "rw" | "ro"] => StrArray,
-        _ => return None,
-    })
+    keys::find(path).map(|k| k.kind)
 }
 
 /// The error for a key the file does not know, `key` as typed.
@@ -141,61 +78,11 @@ pub fn get_or_default(
     })
 }
 
-/// A default path as the file would hold it: the home directory as `~`.
-fn as_written(p: &std::path::Path) -> String {
-    match crate::config::paths::home_dir().and_then(|h| p.strip_prefix(h).ok()) {
-        Some(rest) => format!("~/{}", rest.display()),
-        None => p.display().to_string(),
-    }
-}
-
 /// The default of a key, as `get` prints it (one element per line);
 /// `None` when the key has no default or is not a key. A server's keys
 /// have none of their own: they fall back to `[defaults]`'s.
 pub fn default_of(path: &[String]) -> Option<Vec<String>> {
-    let parts: Vec<&str> = path.iter().map(String::as_str).collect();
-    let s = Settings::default();
-    let dial = Dial::default();
-    let one = |v: String| Some(vec![v]);
-    match parts.as_slice() {
-        ["config_version"] => one(reader::CONFIG_VERSION.to_string()),
-        ["unsafe_config_allowed"] => one(s.unsafe_config_allowed.to_string()),
-        ["defaults", "identity"] => one(as_written(&s.identity)),
-        // A dial's built-in defaults, which [defaults] overrides.
-        ["defaults", "parallel"] => one(dial.parallel.to_string()),
-        ["defaults", "reconnect"] => one(duration::format(dial.reconnect)),
-        ["defaults", "dial_retries"] => one(dial.dial_retries.to_string()),
-        ["defaults", "ssh_install"] => one(dial.ssh_install.to_string()),
-        ["defaults", "relay"] => one(dial.relay.to_string()),
-        ["defaults", "dht"] => one(dial.dht.to_string()),
-        ["defaults", "dns"] => one(dial.dns.to_string()),
-        ["defaults", "mdns"] => one(dial.mdns.to_string()),
-        ["defaults", "congestion"] => one(dial.congestion.as_str().into()),
-        ["defaults", "pq_key_exchange"] => one(dial.pq_key_exchange.as_str().into()),
-        ["state_dir"] => one(as_written(&s.state_dir)),
-        ["daemon", "identity"] => one(as_written(&s.daemon.identity)),
-        ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),
-        ["daemon", "dormant_session_timeout"] => {
-            one(duration::format(s.daemon.dormant_session_timeout))
-        }
-        ["daemon", "max_dormant_sessions_per_key"] => {
-            one(s.daemon.max_dormant_sessions_per_key.to_string())
-        }
-        ["daemon", "listen"] => Some(s.daemon.listen.iter().map(|a| a.to_string()).collect()),
-        ["daemon", "portmap"] => one(s.daemon.portmap.to_string()),
-        ["daemon", "relay"] => one(s.daemon.relay.to_string()),
-        ["daemon", "congestion"] => one(s.daemon.congestion.as_str().to_string()),
-        ["daemon", "pq_key_exchange"] => one(s.daemon.pq_key_exchange.as_str().to_string()),
-        ["daemon", "dht"] => one(s.daemon.discovery.dht.to_string()),
-        ["daemon", "dns"] => one(s.daemon.discovery.dns.to_string()),
-        ["daemon", "mdns"] => one(s.daemon.discovery.mdns.to_string()),
-        ["daemon", "allow_all_paths"] => one(s.daemon.allow_all_paths.to_string()),
-        ["daemon", "allow_root"] => one(s.daemon.allow_root.to_string()),
-        ["telemetry", "otlp_protocol"] => one(OtlpProtocol::DEFAULT.as_str().into()),
-        // A flag left out of an export is off, as config/exports.rs reads it.
-        ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => one("false".into()),
-        _ => None,
-    }
+    keys::find(path)?.default.map(|default| default())
 }
 
 /// What `get` found.
@@ -590,90 +477,37 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
     Some(Slot { field, comments })
 }
 
-/// The keys of each table, in the order the writer writes them.
-const TOP: &[&str] = &["config_version", "unsafe_config_allowed", "state_dir"];
-const DEFAULTS: &[&str] = &[
-    "identity",
-    "parallel",
-    "reconnect",
-    "dial_retries",
-    "ssh_install",
-    "relay",
-    "dht",
-    "dns",
-    "mdns",
-    "congestion",
-    "pq_key_exchange",
-];
-const DAEMON: &[&str] = &[
-    "identity",
-    "idle_timeout",
-    "dormant_session_timeout",
-    "max_dormant_sessions_per_key",
-    "listen",
-    "portmap",
-    "relay",
-    "dht",
-    "dns",
-    "mdns",
-    "congestion",
-    "pq_key_exchange",
-    "debug_addr",
-    "allow_all_paths",
-    "allow_root",
-];
-const TELEMETRY: &[&str] = &["otlp_endpoint", "otlp_protocol"];
-const SERVER: &[&str] = &[
-    "endpoint_id",
-    "address",
-    "relay",
-    "dht",
-    "dns",
-    "mdns",
-    "congestion",
-    "pq_key_exchange",
-    "parallel",
-    "reconnect",
-    "dial_retries",
-    "ssh",
-    "ssh_aliases",
-];
-const CLIENT_ENTRY: &[&str] = &["client_id"];
-const EXPORT: &[&str] = &[
-    "path",
-    "read_only",
-    "warm_index",
-    "fsync",
-    "auto",
-    "rw",
-    "ro",
-];
-
-/// The path of every key the message could hold, in the writer's order.
+/// The path of every key the message could hold, in the writer's order:
+/// [`keys::KEYS`], with each `*` table once for every entry of its group.
 fn key_paths(msg: &pb::Config) -> Vec<Vec<String>> {
-    let mut out = Vec::new();
-    let mut add = |table: &[&str], keys: &[&str]| {
-        for k in keys {
-            out.push(table.iter().chain([k]).map(|s| s.to_string()).collect());
+    let names = |group: &str| -> Vec<String> {
+        match group {
+            "servers" => msg.servers.iter().map(|s| s.name.clone()).collect(),
+            "clients" => msg.clients.iter().map(|c| c.name.clone()).collect(),
+            "exports" => msg.exports.iter().map(|e| e.name.clone()).collect(),
+            _ => Vec::new(),
         }
     };
-    add(&[], TOP);
-    add(&["defaults"], DEFAULTS);
-    add(&["daemon"], DAEMON);
-    add(&["telemetry"], TELEMETRY);
-    for s in &msg.servers {
-        add(&["servers", &s.name], SERVER);
-    }
-    for c in &msg.clients {
-        let keys: Vec<&str> = CLIENT_ENTRY
-            .iter()
-            .copied()
-            .chain(RIGHTS.iter().map(|r| r.key()))
-            .collect();
-        add(&["clients", &c.name], &keys);
-    }
-    for e in &msg.exports {
-        add(&["exports", &e.name], EXPORT);
+    let leaves: Vec<&keys::Key> = keys::KEYS
+        .iter()
+        .filter(|k| k.kind != Kind::Table)
+        .collect();
+    let mut out = Vec::new();
+    // The keys of one table are next to each other in KEYS.
+    for run in leaves.chunk_by(|a, b| a.table() == b.table()) {
+        match run[0].table().strip_suffix(".*") {
+            Some(group) => {
+                for name in names(group) {
+                    for k in run {
+                        out.push(vec![group.to_string(), name.clone(), k.name().to_string()]);
+                    }
+                }
+            }
+            None => out.extend(
+                run.iter()
+                    .map(|k| k.path.split('.').map(String::from).collect()),
+            ),
+        }
     }
     out
 }

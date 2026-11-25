@@ -14,7 +14,7 @@ use super::settings::{
     listen_problem, parallel_problem, parse_debug_addr, Congestion, OtlpProtocol, PqKeyExchange,
     Relay, Spelled,
 };
-use super::{duration, expand_tilde, line_of, ConfigError};
+use super::{duration, expand_tilde, keys, line_of, ConfigError};
 use crate::authz::Access;
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
@@ -23,6 +23,7 @@ use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use toml::de::{DeTable, DeValue};
 use toml::Spanned;
 use url::Url;
 
@@ -309,43 +310,51 @@ pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
     Ok(config)
 }
 
-/// The shape pass over the top-level keys.
+/// The shape pass: every key of the file is one of [`keys::KEYS`], and
+/// every table there is a table here; `config_version` is one this
+/// irsync reads. The keys are checked in the order of the file.
 fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
-    let shape: BTreeMap<String, Spanned<toml::Value>> =
-        toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-    let mut keys: Vec<_> = shape.iter().collect();
-    keys.sort_by_key(|(_, v)| v.span().start);
-    for (name, value) in keys {
-        let start = value.span().start;
-        let value = value.get_ref();
-        let message = match name.as_str() {
-            "config_version" => match version_problem(value) {
-                None => continue,
-                Some(m) => m,
+    let at = |start, message| ConfigError::File {
+        path: path.to_path_buf(),
+        line: Some(line_of(text, start)),
+        message,
+    };
+    // First, so that a newer irsync's file says so rather than naming a
+    // key this irsync does not know.
+    #[derive(Deserialize)]
+    struct Version {
+        config_version: Option<Spanned<toml::Value>>,
+    }
+    let version: Version = toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
+    if let Some(v) = version.config_version {
+        if let Some(problem) = version_problem(v.get_ref()) {
+            return Err(at(v.span().start, problem));
+        }
+    }
+    let doc = DeTable::parse(text).map_err(|e| toml_err(text, path, e))?;
+    check_table(doc.get_ref(), &mut Vec::new()).map_err(|(start, message)| at(start, message))
+}
+
+/// [`check_shape`] below `at`: the first problem, with its offset.
+fn check_table(table: &DeTable, at: &mut Vec<String>) -> Result<(), (usize, String)> {
+    let mut entries: Vec<_> = table.iter().collect();
+    entries.sort_by_key(|(k, _)| k.span().start);
+    for (name, value) in entries {
+        at.push(name.get_ref().to_string());
+        let dotted = at.join(".");
+        let start = name.span().start;
+        match keys::find(at) {
+            None => return Err((start, format!("unknown key {dotted:?}"))),
+            Some(key) if key.kind == keys::Kind::Table => match value.get_ref() {
+                DeValue::Table(t) => check_table(t, at)?,
+                v => {
+                    let found = v.type_str();
+                    return Err((start, format!("{dotted}: expected a table, found {found}")));
+                }
             },
-            "servers" | "clients" | "exports" | "defaults" | "daemon" | "telemetry"
-                if value.is_table() =>
-            {
-                continue
-            }
-            "servers" | "clients" | "exports" | "defaults" | "daemon" | "telemetry" => {
-                format!("{name}: expected a table, found {}", value.type_str())
-            }
-            "unsafe_config_allowed" if value.is_bool() => continue,
-            "unsafe_config_allowed" => {
-                format!("{name}: expected a boolean, found {}", value.type_str())
-            }
-            "state_dir" if value.is_str() => continue,
-            "state_dir" => {
-                format!("{name}: expected a string, found {}", value.type_str())
-            }
-            _ => format!("unknown key {name:?}"),
-        };
-        return Err(ConfigError::File {
-            path: path.to_path_buf(),
-            line: Some(line_of(text, start)),
-            message,
-        });
+            Some(_) => {}
+        }
+        at.pop();
     }
     Ok(())
 }

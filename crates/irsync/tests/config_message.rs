@@ -296,7 +296,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[defaults]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `identity`, `parallel`, `reconnect`, `dial_retries`, `ssh_install`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`",
+            "f:2: unknown key \"defaults.bogus\"",
         ),
         (
             "[daemon]\nidentity = 1\n",
@@ -312,7 +312,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[daemon]\ndiscovery = true\n",
-            "f:2: unknown field `discovery`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `debug_addr`, `allow_all_paths`, `allow_root`",
+            "f:2: unknown key \"daemon.discovery\"",
         ),
         (
             "[defaults]\nrelay = \"not a url\"\n",
@@ -340,7 +340,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[exports.p]\npath = \"/p\"\nbogus = 1\n",
-            "f:1: [exports.p]: unknown field `bogus`, expected one of `path`, `read_only`, `warm_index`, `fsync`, `auto`, `rw`, `ro`",
+            "f:3: unknown key \"exports.p.bogus\"",
         ),
         (
             "[exports.b]\npath = \"b\"\n[exports.a]\npath = \"a\"\n",
@@ -348,7 +348,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[exports]\np = 1\n",
-            "f:2: exports.p: expected a table (an export), found integer",
+            "f:2: exports.p: expected a table, found integer",
         ),
         (
             "[all]\nrw = \"x\"\n",
@@ -356,7 +356,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "state_dir = 1\n",
-            "f:1: state_dir: expected a string, found integer",
+            "f:1: invalid type: integer `1`, expected a string",
         ),
         (
             "[daemon]\nidle_timeout = true\n",
@@ -412,15 +412,15 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[daemon]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `debug_addr`, `allow_all_paths`, `allow_root`",
+            "f:2: unknown key \"daemon.bogus\"",
         ),
         (
             "[telemetry]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected `otlp_endpoint` or `otlp_protocol`",
+            "f:2: unknown key \"telemetry.bogus\"",
         ),
         (
             "[servers.nas]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `address`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `parallel`, `reconnect`, `dial_retries`, `ssh`, `ssh_aliases`",
+            "f:2: unknown key \"servers.nas.bogus\"",
         ),
         (
             "[daemon]\ndht = 1\n",
@@ -428,7 +428,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[servers]\nnas = 1\n",
-            "f:2: invalid type: integer `1`, expected struct RawServer",
+            "f:2: servers.nas: expected a table, found integer",
         ),
         (
             "[daemon]\nrelay = 1\n",
@@ -452,7 +452,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "unsafe_config_allowed = 1\n",
-            "f:1: unsafe_config_allowed: expected a boolean, found integer",
+            "f:1: invalid type: integer `1`, expected a boolean",
         ),
         (
             "[defaults]\nrelay = {}\n",
@@ -808,6 +808,57 @@ fn address_refuses_relay_and_lookups_beside_it() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("mdns cannot be set beside address"), "{e}");
+}
+
+/// full.toml sets every key of the key table, and only those: the
+/// reader reads each of them, the writer writes each, and `config list`
+/// (which goes through `config get`'s fields) shows each.
+#[test]
+fn full_toml_sets_every_key_of_the_table() {
+    use irsync::config::keys::{Kind, KEYS};
+    use std::collections::BTreeSet;
+    let m = read(&fixture("full.toml"), Path::new("f")).unwrap();
+    let listed: BTreeSet<String> = irsync::manage::config::list(&m)
+        .iter()
+        .map(|line| {
+            let key = line.split(" = ").next().unwrap();
+            let mut parts: Vec<&str> = key.split('.').collect();
+            if parts.len() == 3 {
+                parts[1] = "*";
+            }
+            parts.join(".")
+        })
+        .collect();
+    let table: BTreeSet<String> = KEYS
+        .iter()
+        .filter(|k| k.kind != Kind::Table)
+        .map(|k| k.path.to_string())
+        .collect();
+    assert_eq!(listed, table);
+}
+
+/// A key the table does not know is refused at its line, in every table.
+#[test]
+fn a_key_the_table_does_not_know_is_refused() {
+    for (text, message) in [
+        ("bogus = 1\n", "f:1: unknown key \"bogus\""),
+        (
+            "[defaults]\nparallel = 2\nbogus = 1\n",
+            "f:3: unknown key \"defaults.bogus\"",
+        ),
+        ("daemon.bogus.x = 1\n", "f:1: unknown key \"daemon.bogus\""),
+        (
+            "[exports.p]\npath = \"/p\"\nrw = []\nx = 1\n",
+            "f:4: unknown key \"exports.p.x\"",
+        ),
+        (
+            "[[servers]]\nx = 1\n",
+            "f:1: servers: expected a table, found array",
+        ),
+    ] {
+        let e = read(text, Path::new("f")).unwrap_err().to_string();
+        assert_eq!(e, message, "{text}");
+    }
 }
 
 #[test]
@@ -1188,11 +1239,14 @@ fn the_current_reader_checks_servers_and_clients_at_their_line() {
             "[clients.lap]\nclient_id = \"{}\"\nendpoint_id = \"x\"\n",
             id(1)
         )),
-        "f:3: unknown field `endpoint_id`, expected one of `client_id`, `all_exports`, `all_paths`, `admin`"
+        "f:3: unknown key \"clients.lap.endpoint_id\""
     );
     assert_eq!(
-        error(&format!("[servers.nas]\nendpoint_id = \"{}\"\nclient_id = \"x\"\n", id(1))),
-        "f:3: unknown field `client_id`, expected one of `endpoint_id`, `address`, `relay`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `parallel`, `reconnect`, `dial_retries`, `ssh`, `ssh_aliases`"
+        error(&format!(
+            "[servers.nas]\nendpoint_id = \"{}\"\nclient_id = \"x\"\n",
+            id(1)
+        )),
+        "f:3: unknown key \"servers.nas.client_id\""
     );
     assert_eq!(
         error(&format!("[servers.all]\nendpoint_id = \"{}\"\n", id(1))),
