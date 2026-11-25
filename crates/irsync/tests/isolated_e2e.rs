@@ -253,7 +253,7 @@ fn client_and_daemon_sync_over_localhost_with_no_relay_or_lookup() {
         String::from_utf8_lossy(&o.stderr)
     );
     // Both ends announce their own build at startup, at info (-vv on the client).
-    let build = irsync::build::BuildInfo::current();
+    let build = irsync::build_info::BuildInfo::current();
     let own = format!(
         "version={} commit={} dirty={}",
         build.version,

@@ -17,7 +17,7 @@ use iroh::{EndpointId, RelayUrl};
 use std::net::SocketAddr;
 
 use crate::authz::Access;
-use crate::build::LONG_VERSION;
+use crate::build_info::LONG_VERSION;
 use crate::config::clients::Right;
 use crate::config::file::Config;
 use crate::config::names::short_host_name;

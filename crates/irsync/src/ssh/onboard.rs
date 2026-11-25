@@ -9,7 +9,7 @@ use super::client::{client_host_name, ensure_installed, probe, run_setup, Instal
 use super::payload::Contents;
 use super::service::ServiceOutcome;
 use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
-use crate::build::LONG_VERSION;
+use crate::build_info::LONG_VERSION;
 use crate::config::names::valid_alias;
 use crate::config::paths::Paths;
 use crate::manage::{self, servers::ServerFlags};

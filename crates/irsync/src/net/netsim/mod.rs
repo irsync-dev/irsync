@@ -333,6 +333,6 @@ mod tests {
 
     #[test]
     fn version_marks_a_netsim_build() {
-        assert!(crate::build::LONG_VERSION.ends_with(" [netsim]"));
+        assert!(crate::build_info::LONG_VERSION.ends_with(" [netsim]"));
     }
 }

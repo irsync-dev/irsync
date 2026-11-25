@@ -37,7 +37,7 @@ pub fn validate(src: &[Location], dest: &Location) -> Result<Direction, UsageErr
 #[derive(Debug, Parser)]
 #[command(
     name = "irsync",
-    version = crate::build::LONG_VERSION.as_str(),
+    version = crate::build_info::LONG_VERSION.as_str(),
     about = "rsync-like directory sync over iroh",
     help_template = HELP_TEMPLATE,
     after_help = AFTER_HELP,

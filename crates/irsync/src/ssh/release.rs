@@ -9,7 +9,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::build::BuildInfo;
+use crate::build_info::BuildInfo;
 use crate::signature::{release_keys, verify_file};
 
 /// Where GitHub serves a release's files, without the tag.

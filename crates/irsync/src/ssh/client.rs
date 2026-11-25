@@ -11,7 +11,7 @@ use super::onboard::SetupFlags;
 use super::payload::{Contents, Packed, Staged};
 use super::release;
 use super::setup::SetupReport;
-use crate::build::{BuildInfo, LONG_VERSION};
+use crate::build_info::{BuildInfo, LONG_VERSION};
 use crate::config::names::short_host_name;
 
 /// irsync on the server, relative to the remote home: where the release

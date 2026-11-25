@@ -31,7 +31,7 @@ impl SyncHello {
                 chunk_max: p.max,
                 ..req
             },
-            build: Some(crate::build::BuildInfo::current().to_wire()),
+            build: Some(crate::build_info::BuildInfo::current().to_wire()),
             traceparent: String::new(),
             tracestate: String::new(),
         }
@@ -80,7 +80,7 @@ impl From<SyncHello> for Hello {
 pub fn hello(request: hello::Request) -> Hello {
     Hello {
         protocol_version: PROTOCOL_VERSION,
-        build: Some(crate::build::BuildInfo::current().to_wire()),
+        build: Some(crate::build_info::BuildInfo::current().to_wire()),
         request: Some(request),
         ..Hello::default()
     }

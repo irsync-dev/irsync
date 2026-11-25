@@ -83,7 +83,7 @@ none of this code and never reads the variable.
 - **The feature** (`crates/irsync/Cargo.toml`) turns on iroh's
   `unstable-custom-transports` and a few small dependencies the transport
   needs (`iroh-base`, `n0-watcher`, `noq-udp`, `rand`, `rand_chacha`).
-- **The version** (`crates/irsync/src/build.rs`): a fault build's
+- **The version** (`crates/irsync/src/build_info.rs`): a fault build's
   `irsync --version` ends with ` [netsim]`. The rig and the sweep script
   check this before doing anything.
 - **Reading the variable** (`netsim::active()` in
@@ -478,7 +478,7 @@ Things the model does not do, on purpose or for now:
 | `crates/irsync/src/net/netsim/link.rs` | The link model: queue, speed, video, loss, delay. |
 | `crates/irsync/src/net/netsim/outage.rs` | Handovers and the dead zone. |
 | `crates/irsync/src/net/netsim/transport.rs` | The iroh custom transport: sending, delivering, receiving, counts. |
-| `crates/irsync/src/net/endpoint.rs`, `daemon.rs`, `main.rs`, `build.rs` | The hooks into irsync. |
+| `crates/irsync/src/net/endpoint.rs`, `daemon.rs`, `main.rs`, `build_info.rs` | The hooks into irsync. |
 | `crates/netstress/src/run.rs` | The rig's run: tools check, daemon, ping, iterations, partial files. |
 | `crates/netstress/src/netlog.rs` | Reading a client log for the network story. |
 | `crates/netstress/src/report.rs` | Header, iteration lines, footer, exit codes. |

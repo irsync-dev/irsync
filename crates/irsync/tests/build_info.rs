@@ -6,7 +6,7 @@ mod bin;
 
 use std::process::{Command, Stdio};
 
-use irsync::build::{BuildInfo, LONG_VERSION};
+use irsync::build_info::{BuildInfo, LONG_VERSION};
 
 fn irsync(args: &[&str]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();

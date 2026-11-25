@@ -1076,7 +1076,7 @@ pub async fn run_from_settings(
     if std::io::stdout().is_terminal() {
         print!(
             "{}",
-            startup_banner(crate::build::LONG_VERSION.as_str(), &settings)
+            startup_banner(crate::build_info::LONG_VERSION.as_str(), &settings)
         );
     }
     let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(move |ep: &Endpoint| {

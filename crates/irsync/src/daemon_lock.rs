@@ -7,7 +7,7 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::build::LONG_VERSION;
+use crate::build_info::LONG_VERSION;
 
 const LOCK_NAME: &str = "daemon.lock";
 

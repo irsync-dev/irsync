@@ -4,7 +4,7 @@
 
 pub mod authz;
 pub mod autoexport;
-pub mod build;
+pub mod build_info;
 pub mod cli;
 pub mod client;
 pub mod config;
