@@ -81,7 +81,11 @@ pub fn plan(server: &str, cmd: &RemoteCmd) -> anyhow::Result<Plan> {
     Ok(match cmd {
         RemoteCmd::Export(e) => match e.cmd.as_ref().unwrap_or(&RemoteExportCmd::List) {
             RemoteExportCmd::Add(a) => {
-                refuse_expanded_home(server, &a.target, dirs::home_dir().as_deref())?;
+                refuse_expanded_home(
+                    server,
+                    &a.target,
+                    irsync::config::paths::home_dir().as_deref(),
+                )?;
                 change(Op::ExportAdd(ExportAdd {
                     target: a.target.clone(),
                     read_only: a.ro,
