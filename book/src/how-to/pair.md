@@ -62,7 +62,11 @@ as a client, and grants that name:
 [clients.myclient]
 client_id = "a3e4753e5ea74e64e745e9c4d10b0fd751dbe03049d742eb0ea545c89703dfba"
 all_paths = "rw"
+admin = "rw"
 ```
+
+The `admin` right lets this client change the server later with
+[`irsync remote`](remote-admin.md).
 
 The name is a label. The daemon decides access by the `EndpointId` the name
 stands for, never by what a client calls itself. A client the server already

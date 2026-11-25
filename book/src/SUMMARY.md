@@ -12,6 +12,7 @@
 - [Run the daemon](how-to/run-the-daemon.md)
 - [Pair with a server over ssh](how-to/pair.md)
 - [Change exports and settings](how-to/change-exports.md)
+- [Manage a server from your client](how-to/remote-admin.md)
 - [Connect directly or through a relay](how-to/direct-and-relay.md)
 - [Seed the index](how-to/seed-the-index.md)
 - [Clean up state](how-to/clean-up.md)

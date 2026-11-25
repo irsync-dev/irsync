@@ -37,6 +37,25 @@ noun the flag may stand before the noun, or before or after the verb:
 - An export name may not be empty, contain `/`, or be `all`. A server or client name may not
   be empty, contain `:` or `/`, be `all` or `*`, or be an `EndpointId`.
 
+## Remote use
+
+Most of these commands also work on a server from afar, with
+`irsync remote SERVER` in front: `irsync remote myserver export list`. See
+[irsync remote](command-line.md#irsync-remote) and
+the how-to "Manage a server from your client". It needs
+`admin` on the server.
+
+| Remote | Not remote |
+| --- | --- |
+| `export list`, `add`, `remove` | `export update` |
+| `grant list`, `add`, `remove` | `config set`, `config unset` |
+| `client list`, `add`, `remove`, `rename`, `set` | `id` |
+| `show`, `config get`, `config list` | `server` |
+
+A remote `export add` takes an absolute path or one that starts with `~`,
+quoted so that your shell leaves it alone. A client cannot remove or lower its
+own `admin` right this way.
+
 A running daemon picks up `client`, `export` and `grant` changes on its next
 connection; nothing needs a restart.
 

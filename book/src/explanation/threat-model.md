@@ -147,6 +147,17 @@ client's session, or exhaust the daemon.
   for any directory and grant itself read-write access to it, so it can do
   what `all_paths = "rw"` can. Give it with the same care. `admin = "ro"`
   only reads the exports, clients and grants: names, paths and ids.
+- **Who can reach the admin service.** Only a named client with `admin` set.
+  A key without it gets the plain answer `not allowed`, which says nothing
+  about the server. A change is checked on the server, against the config as
+  it is when the change lands, and applied all or nothing. A client cannot
+  remove or lower its own `admin` right through it, so a slip does not lock
+  it out. At most 100 changes go in one call, and a session idle for 10
+  minutes is closed.
+- **The audit log.** The server logs every applied change at `info` with the
+  client's name, and every refused attempt at `warn` with the name, or the
+  first digits of the key when it has none. Reads are not logged. The log
+  holds no secrets, but it is the record of who changed what.
 - **`all_paths = "rw"` is the whole account.** Such a key can reach any
   path the daemon's account can. Give it only to machines you would give
   ssh access to. `all_paths = "ro"` is smaller, but it still reads the whole
@@ -283,7 +294,7 @@ symlink while a sync runs in a tree they can write.
 - [`irsync pair`](../how-to/pair.md) trusts ssh: the server you
   log in to is the one irsync installs on and grants access to. Only `pair`
   uses ssh; a sync never does. It gives
-  this client `all_paths = "rw"` on that server.
+  this client `all_paths = "rw"` and `admin = "rw"` on that server.
 - Releases are signed. [Verify a download](../how-to/verify-a-download.md)
   shows how to check one, and
   [Supply chain security](../contributing/supply-chain.md) how they are
