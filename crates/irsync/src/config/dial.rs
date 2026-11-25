@@ -17,6 +17,10 @@ pub struct DialFlags {
     pub relay: Option<Relay>,
     /// `--no-dht`.
     pub no_dht: bool,
+    /// `--no-dns`.
+    pub no_dns: bool,
+    /// `--no-mdns`.
+    pub no_mdns: bool,
     pub pq_key_exchange: Option<PqKeyExchange>,
     /// `--address`: replaces the server's `address`.
     pub address: Vec<HostPort>,
@@ -137,8 +141,8 @@ impl Dial {
                 builtin.relay,
             ),
             dht: !flags.no_dht && first([of(server, |s| s.dht), defaults.dht], builtin.dht),
-            dns: first([of(server, |s| s.dns), defaults.dns], builtin.dns),
-            mdns: first([of(server, |s| s.mdns), defaults.mdns], builtin.mdns),
+            dns: !flags.no_dns && first([of(server, |s| s.dns), defaults.dns], builtin.dns),
+            mdns: !flags.no_mdns && first([of(server, |s| s.mdns), defaults.mdns], builtin.mdns),
             congestion: first(
                 [of(server, |s| s.congestion), defaults.congestion],
                 builtin.congestion,

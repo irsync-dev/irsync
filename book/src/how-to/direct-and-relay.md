@@ -78,7 +78,8 @@ than the shared public relays. iroh ships one as `iroh-relay`.
 
 ## Turn the lookups off
 
-- On the client, `--no-dht` skips the mainline DHT for one sync. A server's
+- On the client, `--no-dht`, `--no-dns` and `--no-mdns` skip a lookup for
+  one sync. A server's
   `dht`, `dns` and `mdns` keys, or `[defaults]`'s, turn a lookup off for
   good:
 
@@ -95,7 +96,7 @@ than the shared public relays. iroh ships one as `iroh-relay`.
   irsync config set daemon.mdns false
   ```
 
-- For a server paired over ssh, `irsync pair --no-dht` sets the
+- For a server paired over ssh, `irsync pair --server-no-dht` sets the
   daemon's `dht = false` for you (see
   [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh)).
 
@@ -174,4 +175,4 @@ With both, the connection keeps to the path you dialled.
 - [Configuration](../reference/configuration.md#servers): the `relay`,
   `address`, `dht`, `dns` and `mdns` keys.
 - [Command line](../reference/command-line.md#irsync-flags): `--relay`,
-  `--no-dht`, `--address`.
+  `--no-dht`, `--no-dns`, `--no-mdns`, `--address`.

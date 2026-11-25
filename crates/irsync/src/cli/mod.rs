@@ -806,7 +806,7 @@ pub struct PairArgs {
     /// Turn the server's DHT publishing off (`[daemon] dht =
     /// false`). Without it the server's setting is left alone.
     #[arg(long)]
-    pub no_dht: bool,
+    pub server_no_dht: bool,
     /// Do not make the daemon a systemd or launchd user service: start it
     /// in the background, until the server reboots. For a daemon you run
     /// your own way.
@@ -1078,9 +1078,18 @@ pub struct SyncArgs {
     /// server entry or `[defaults]`, else prefer.
     #[arg(long, value_name = "prefer|require")]
     pub pq_key_exchange: Option<PqKeyExchange>,
-    /// Do not look the daemon up in the mainline DHT.
+    /// Do not look the daemon up in the mainline DHT for this run (the
+    /// key `dht`).
     #[arg(long)]
     pub no_dht: bool,
+    /// Do not look the daemon up through n0's DNS service for this run
+    /// (the key `dns`).
+    #[arg(long)]
+    pub no_dns: bool,
+    /// Do not look the daemon up with mDNS on the local network for this
+    /// run (the key `mdns`).
+    #[arg(long)]
+    pub no_mdns: bool,
     /// Dial the daemon at this `ip:port`, `[ipv6]:port` or `host:port`
     /// directly (repeatable). Turns relay, DNS, DHT, mDNS and the port
     /// mapper off; the daemon's EndpointId is still required.
@@ -1247,6 +1256,8 @@ pub struct SyncOptions {
     pub relay: Option<crate::config::settings::Relay>,
     pub pq_key_exchange: Option<PqKeyExchange>,
     pub no_dht: bool,
+    pub no_dns: bool,
+    pub no_mdns: bool,
     pub addresses: Vec<HostPort>,
     pub config: Option<PathBuf>,
     /// `state_dir` from the config file, once a sync has read it; `None`:
@@ -1325,6 +1336,8 @@ impl SyncOptions {
             relay: a.relay.clone(),
             pq_key_exchange: a.pq_key_exchange,
             no_dht: a.no_dht,
+            no_dns: a.no_dns,
+            no_mdns: a.no_mdns,
             addresses: a.address.clone(),
             config: args.files.config.clone(),
             state_dir: None,

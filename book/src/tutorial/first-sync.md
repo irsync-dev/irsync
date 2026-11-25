@@ -97,7 +97,7 @@ know stops too, and tells you to run `irsync pair`.
 
 [Pair with a server over ssh](../how-to/pair.md) covers the options: pairing
 again after you update irsync, keeping the daemon out of the public DHT with
-`--no-dht`, another ssh command with `--rsh`, and limiting the client to
+`--server-no-dht`, another ssh command with `--rsh`, and limiting the client to
 named exports.
 
 ### Run it again

@@ -163,7 +163,7 @@ See [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
 | --- | --- |
 | `--rsh CMD` | The remote shell, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
 | `--no-install` | Copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
-| `--no-dht` | Turn the server's DHT publishing off (`[daemon] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
+| `--server-no-dht` | Turn the server's DHT publishing off (`[daemon] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
 | `--no-service` | Do not make the daemon a user service: start it in the background, until the server reboots. For a daemon you run your own way. |
 | `--identity FILE` | The private key to pair with. Default as for a sync. |
 
@@ -305,7 +305,9 @@ These have no rsync counterpart.
 | `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[defaults]`, else 4. For a server `irsync pair` saved (one with `ssh`), the default is 0 instead of 4; each try there waits at most 15 seconds. |
 | `--relay default\|disabled\|URL` | The relay for this sync: `default` for n0's public relays, `disabled` for direct connections only (the address lookups stay on), or the URL of a relay of your own. Default: `relay` from the server entry, else from `[defaults]`, else `default`. Cannot be combined with `--address`. |
 | `--pq-key-exchange prefer\|require` | `require`: refuse a daemon that does not offer the post-quantum key exchange, such as an irsync built without it; nothing is sent to it. `prefer`: use that key exchange when the daemon offers it. Default: `pq_key_exchange` from the server entry, else from `[defaults]`, else `prefer`. See [Post-quantum key exchange](configuration.md#post-quantum-key-exchange). |
-| `--no-dht` | Do not look the daemon up in the mainline DHT. |
+| `--no-dht` | Do not look the daemon up in the mainline DHT for this run. |
+| `--no-dns` | Do not look the daemon up through n0's DNS service for this run. |
+| `--no-mdns` | Do not look the daemon up with mDNS on the local network for this run. |
 | `--address ADDR` | Dial the daemon at `ip:port`, `[ipv6]:port` or `host:port` directly; repeatable. Turns the relay, DNS, DHT, mDNS and the port mapper off, and binds the client to the local address it dials from (see [Keep to one path](../how-to/direct-and-relay.md#keep-to-one-path)). The daemon's `EndpointId` is still required and still checked. |
 | `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. |
 | `--identity FILE` | The private key to connect with. Default: `[defaults] identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
@@ -318,6 +320,11 @@ These have no rsync counterpart.
 The connection settings resolve in this order: the flag, then the server's
 table, then `[defaults]`, then the built-in default. See
 [Configuration](configuration.md#defaults).
+
+An on/off setting has a `--no-` flag here, which turns it off for this run
+only: `--no-dht`, `--no-dns`, `--no-mdns`. `irsync server add` stores
+such a setting instead, so its flags take a value, `--dht yes` or `--dht no`;
+the value can be changed back later the same way.
 
 ## Subcommands
 

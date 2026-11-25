@@ -616,6 +616,8 @@ fn dial_flags(opts: &SyncOptions) -> anyhow::Result<DialFlags> {
         dial_retries: opts.dial_retries,
         relay: opts.relay.clone(),
         no_dht: opts.no_dht,
+        no_dns: opts.no_dns,
+        no_mdns: opts.no_mdns,
         pq_key_exchange: opts.pq_key_exchange,
         address: opts.addresses.clone(),
     })
@@ -673,7 +675,7 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
             log.eprintln(&format!("irsync: pairing with {} over ssh", t.host));
             let flags = SetupFlags {
                 recheck: t.kind == irsync::ssh::pair::PairKind::Saved,
-                no_dht: a.no_dht,
+                no_dht: a.server_no_dht,
                 no_install: a.no_install
                     || !Dial::resolve(&DialFlags::default(), None, &config.settings.defaults)
                         .map_err(anyhow::Error::msg)?

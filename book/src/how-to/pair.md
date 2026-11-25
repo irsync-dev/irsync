@@ -123,10 +123,10 @@ to check on the server and the command to start the daemon again:
 
 The daemon publishes its addresses in the mainline DHT, so syncs find it
 even when its IP address changes. To keep it out of that public
-table, pass `--no-dht`:
+table, pass `--server-no-dht`:
 
 ```sh
-irsync pair --no-dht myserver
+irsync pair --server-no-dht myserver
 ```
 
 `pair` then writes `dht = false` under `[daemon]` on the server.

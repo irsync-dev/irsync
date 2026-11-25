@@ -177,8 +177,8 @@ built-in default.
 | `ssh_install` | `true` | Copy irsync to the server when `irsync pair` sets it up. `false` copies nothing: `pair` uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
 | `relay` | `default` | Which relay to use when no direct path works: `default` for n0's public relays, `disabled` for direct connections only (the lookups stay on), or the URL of a relay of your own. Flag: `--relay`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
-| `dns` | `true` | Look daemons up through n0's DNS service. |
-| `mdns` | `true` | Look daemons up with mDNS on the local network. |
+| `dns` | `true` | Look daemons up through n0's DNS service. Flag: `--no-dns`. |
+| `mdns` | `true` | Look daemons up with mDNS on the local network. Flag: `--no-mdns`. |
 | `congestion` | `bbr` | QUIC's congestion controller when the client sends, that is for a push: `bbr` or `cubic`. |
 | `pq_key_exchange` | `prefer` | `require`: refuse a daemon that does not offer the post-quantum key exchange. See [Post-quantum key exchange](#post-quantum-key-exchange). Flag: `--pq-key-exchange`. |
 

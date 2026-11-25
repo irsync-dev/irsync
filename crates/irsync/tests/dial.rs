@@ -106,6 +106,14 @@ fn the_flag_then_the_server_then_the_defaults_decide() {
     );
     assert!(!d.dht && d.dns && d.mdns);
     assert_eq!(d.pq_key_exchange, PqKeyExchange::Require);
+
+    let flags = DialFlags {
+        no_dns: true,
+        no_mdns: true,
+        ..DialFlags::default()
+    };
+    let d = resolve(&flags, Some(&s), &defaults);
+    assert!(d.dht && !d.dns && !d.mdns);
 }
 
 #[test]

@@ -19,8 +19,8 @@ on or off by a key of the same name in [`[daemon]`](../reference/configuration.m
 - `mdns`: the local network.
 
 A client looks the `EndpointId` up in the same places. Each can be turned off
-per server or in `[defaults]`, with the same three keys, and `--no-dht` turns
-the DHT off for one sync.
+per server or in `[defaults]`, with the same three keys, and `--no-dht`,
+`--no-dns` and `--no-mdns` turn one off for one sync.
 
 The DNS and DHT records carry only the daemon's relay address, never its IP
 addresses: that is iroh's default, so that publishing an id does not publish

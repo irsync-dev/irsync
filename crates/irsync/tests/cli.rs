@@ -44,7 +44,7 @@ fn parse_err(a: &[&str]) -> String {
 fn pair_parses_host_and_flags() {
     let a = parse(&[
         "pair",
-        "--no-dht",
+        "--server-no-dht",
         "--no-install",
         "--rsh",
         "ssh -p 2222",
@@ -54,7 +54,7 @@ fn pair_parses_host_and_flags() {
         Some(Command::Pair(p)) => {
             assert_eq!(p.host, "mike@myserver");
             assert_eq!(p.rsh.as_deref(), Some("ssh -p 2222"));
-            assert!(p.no_dht && p.no_install);
+            assert!(p.server_no_dht && p.no_install);
             assert_eq!(p.identity, None);
         }
         c => panic!("not Pair: {c:?}"),
@@ -384,6 +384,8 @@ fn irsync_flags_and_misc() {
         "--config",
         "cfg",
         "--no-dht",
+        "--no-dns",
+        "--no-mdns",
         "--max-delete=5",
         "--partial-dir=.p",
         "a",
@@ -395,10 +397,12 @@ fn irsync_flags_and_misc() {
     assert_eq!(o.parallel, Some(4));
     assert_eq!(o.timeout, Some(Duration::from_secs(9)));
     assert_eq!(o.config, Some(PathBuf::from("cfg")));
-    assert!(
-        o.no_dht && !o.numeric_ids,
-        "names are mapped unless asked not to"
-    );
+    assert!(o.no_dht && o.no_dns && o.no_mdns);
+    assert!(!o.numeric_ids, "names are mapped unless asked not to");
+    let plain = opts(&["a", "h:m"]);
+    assert!(!plain.no_dht && !plain.no_dns && !plain.no_mdns);
+    // pair's flag is for the server's publishing: no lookup flag there.
+    assert!(Args::try_parse_from(["irsync", "pair", "--no-dht", "h"]).is_err());
     assert!(opts(&["--numeric-ids", "a", "h:m"]).numeric_ids);
     assert!(!o.fsync, "no flush unless asked, as in rsync");
     assert!(opts(&["--fsync", "a", "h:m"]).fsync);

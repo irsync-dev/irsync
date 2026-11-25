@@ -72,7 +72,8 @@ connection; nothing needs a restart.
 The flags of `server add` set the keys of the server's table; see
 [Configuration](configuration.md#servers) for what each does. `--address`
 replaces the stored list and may be repeated. `--dht`, `--dns` and `--mdns` take
-`yes` or `no` (also `true` or `false`). `--pq-key-exchange require` refuses this
+`yes` or `no` (also `true` or `false`): they store the setting, where a sync's
+`--no-dht`, `--no-dns` and `--no-mdns` turn a lookup off for one run. `--pq-key-exchange require` refuses this
 server when it does not offer post-quantum key exchange.
 
 ## client
