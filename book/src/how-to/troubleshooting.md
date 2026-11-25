@@ -97,7 +97,7 @@ platform", comes for a server no release is built for, such as an Intel Mac.
 yourself and
 [set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
 Installing it on the server does not make `pair` work, unless you run
-with `--no-install`: `pair` otherwise uses its own copy of the client's
+with `--no-ssh-install`: `pair` otherwise uses its own copy of the client's
 exact build.
 
 Other messages from this step:
@@ -155,19 +155,19 @@ These stop `pair` after the files reached the server:
   before, says why, for example a `~/.local/bin` you cannot write to. Fix
   that and run again.
 
-## pair stops: --no-install
+## pair stops: --no-ssh-install
 
 ```text
-irsync: pairing with myserver over ssh failed: --no-install: myserver has no irsync 0.1.0-beta.1 (ae5ebe5) at ~/.local/bin/irsync (found none). Install that version there, or run without --no-install (or set ssh_install = true in the config). Nothing was changed.
+irsync: pairing with myserver over ssh failed: --no-ssh-install: myserver has no irsync 0.1.0-beta.1 (ae5ebe5) at ~/.local/bin/irsync (found none). Install that version there, or run without --no-ssh-install (or set ssh_install = true in the config). Nothing was changed.
 ```
 
-**Cause.** With `--no-install`, or `ssh_install = false` in the config file,
+**Cause.** With `--no-ssh-install`, or `ssh_install = false` in the config file,
 `pair` copies nothing. It needs the client's exact build at
 `~/.local/bin/irsync` on the server, and found another version there
 (`found irsync …`) or none.
 
 **Fix.** Install the same version as the client on the server, in
-`~/.local/bin`. Or let `pair` install it: run without `--no-install`, and
+`~/.local/bin`. Or let `pair` install it: run without `--no-ssh-install`, and
 remove `ssh_install = false` from the config file if it is there.
 
 ## The daemon rejected this client's key

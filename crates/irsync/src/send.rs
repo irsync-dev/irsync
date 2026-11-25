@@ -655,7 +655,7 @@ impl Inner {
         // byte, and the stream shares the link with up to `parallel` others,
         // so on a slow link it can take minutes while the link is busy. A
         // peer that answers anything acknowledges this data too; a dead one
-        // ends the connection (QUIC idle timeout, `--timeout`), which ends
+        // ends the connection (QUIC idle timeout, `--idle-timeout`), which ends
         // this wait with an error.
         let acking = Counted::new(&self.acking);
         let stopped = send.stopped().await;

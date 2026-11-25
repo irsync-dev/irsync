@@ -104,6 +104,7 @@ fn defaults(c: &pb::Defaults) -> Keys<'_> {
         "pq_key_exchange",
         c.pq_key_exchange.and_then(spelled::<PqKeyExchange>),
     );
+    k.duration("idle_timeout", c.idle_timeout.as_ref());
     k
 }
 

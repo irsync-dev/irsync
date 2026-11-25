@@ -92,7 +92,7 @@ using the values from the failed run's `run.toml`. Some hints:
 - Try a few seeds. A failure that shows up on one seed in ten is still a
   real failure.
 - Extra client options go after `--`, for example
-  `-- --timeout 30` to test whether a longer timeout makes a failure go
+  `-- --idle-timeout 30` to test whether a longer timeout makes a failure go
   away.
 
 ### Sweeps
@@ -176,7 +176,7 @@ under `dsl-video` means irsync kept overfilling the 64 KiB uplink queue.
 The daemon's last counts line is usually its last 10-second report: the
 rig stops the daemon without letting it write a final one.
 
-What a normal dead zone looks like in the client log (4G, `--timeout 10`),
+What a normal dead zone looks like in the client log (4G, `--idle-timeout 10`),
 in order:
 
 1. `netsim: dead zone open secs=41`
@@ -267,7 +267,7 @@ changes the ACKs this side asks of the other; see `--acks` under
 - The fault layer only works over IPv4 on this machine. Point the client at
   the address the daemon prints with `--address 127.0.0.1:<port>`.
 - Give the client a `--reconnect` window longer than the dead zones (the
-  rig uses `5m`) and the profile's `--timeout`. Without a reconnect window
+  rig uses `5m`) and the profile's `--idle-timeout`. Without a reconnect window
   a dead zone simply fails the sync.
 - Look for `netsim active` in each side's log to be sure it is on.
 
@@ -280,7 +280,7 @@ The profiles live in two places:
   documented in the file and explained in
   [How netstress works](netstress-internals.md).
 - `crates/netstress/src/profile.rs`: the run defaults (iterations, steps,
-  sizes), the client `--timeout`, and whether the profile has dead zones.
+  sizes), the client `--idle-timeout`, and whether the profile has dead zones.
 
 To change numbers, edit those tables and rebuild the fault build. The unit
 tests in `crates/irsync/src/net/netsim/link.rs` and `outage.rs` check some
@@ -303,13 +303,13 @@ To add a profile:
 
 Rules that keep a profile useful:
 
-- The client `--timeout` must be **longer** than the longest handover and
+- The client `--idle-timeout` must be **longer** than the longest handover and
   **shorter** than the shortest dead zone. Then a dead zone always forces a
   reconnect and a handover never does. For `4g-vehicle` that is 2 s < 10 s
   < 20 s.
 - A profile without dead zones fails on any reconnect, so its worst stall
   (queueing delay plus loss bursts) must stay well under the client
-  `--timeout`.
+  `--idle-timeout`.
 - Video-style cross traffic must hold the queue **below** its size
   (`hold_bytes < queue_bytes`), or irsync's packets have no room at all and
   the link blacks out. Nothing checks this yet.
@@ -373,9 +373,9 @@ What the rig adds to the client command line by itself:
 - `--reconnect 5m`: the client may spend up to five minutes reconnecting
   after the link drops. That is far longer than the longest dead zone (60
   s). irsync-stress passes `--reconnect 0` instead.
-- `--timeout <N>`, the profile's value: after N seconds without hearing
+- `--idle-timeout <N>`, the profile's value: after N seconds without hearing
   from the daemon, the client drops the connection and reconnects. It comes
-  before your `-- <ARGS>`, so `-- --timeout 20` overrides it.
+  before your `-- <ARGS>`, so `-- --idle-timeout 20` overrides it.
 
 Examples:
 
@@ -418,7 +418,7 @@ Outages, in both directions at once:
   up on the connection, reconnect and resume.
 
 Run defaults: 10 iterations, 100 filegen steps, trees up to 256M, files up
-to 32M, client `--timeout 10`.
+to 32M, client `--idle-timeout 10`.
 
 What it is meant to catch: resume bugs, files left half-written, state that
 does not survive a reconnect, the client or daemon getting stuck or giving
@@ -439,7 +439,7 @@ fails the iteration**: under this profile the client should never decide
 the connection is dead.
 
 Run defaults: 10 iterations, 100 filegen steps, trees up to 32M, files up
-to 4M, client `--timeout 10`.
+to 4M, client `--idle-timeout 10`.
 
 What it is meant to catch: timeouts that are too short for a slow or
 overloaded line, stalls when packets wait a long time in a queue, and
@@ -456,7 +456,7 @@ irsync giving up on a peer that is merely slow.
 
 No reordering, no cross traffic, no outages, so any reconnect fails the
 iteration. Run defaults: 5 iterations, 2000 filegen steps, trees up to 64M,
-files up to 64K, client `--timeout 10`. The many small files mean many
+files up to 64K, client `--idle-timeout 10`. The many small files mean many
 round trips.
 
 What it is meant to show: how irsync behaves when every round trip takes a
@@ -465,7 +465,7 @@ long time, and settings that only matter then, such as `--acks`.
 #### `test-blackout`: for the rig's own tests
 
 No speed limit, no delay, no loss. One 6 s dead zone per sync, after 256
-KiB of traffic. Client `--timeout 2`. Defaults: 3 iterations, 50 steps,
+KiB of traffic. Client `--idle-timeout 2`. Defaults: 3 iterations, 50 steps,
 trees up to 8M, files up to 1M.
 
 It exists so the automated tests can check the reconnect path in seconds.

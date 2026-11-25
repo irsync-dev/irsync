@@ -351,7 +351,7 @@ pub fn check_pq_key_exchange(
 /// pull picks its local root. Dials the way a session's first connection
 /// does: each dial bounded by `opts.first_dial_timeout`, up to
 /// `opts.dial_retries` retries with backoff within `opts.max`. A connection
-/// lost before the reply, or no reply within `timeout` (`--timeout`),
+/// lost before the reply, or no reply within `timeout` (`--idle-timeout`),
 /// counts as a failed try too; a daemon that never answered gives
 /// [`NeverReached`]. A refusal or a final close is explained as for a
 /// session and not retried.

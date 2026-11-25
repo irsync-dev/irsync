@@ -344,8 +344,9 @@ fn combine_exit_codes(outcomes: &[Outcome], failed: usize, total: usize) -> i32 
     }
 }
 
-/// Partial files and sessions untouched for this long are collected.
-const CLIENT_GC_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
+/// Partial files and sessions untouched for this long are collected: as
+/// long as a daemon keeps them by default.
+const CLIENT_GC_AGE: std::time::Duration = irsync::config::settings::DORMANT_SESSION_TIMEOUT;
 /// A partial record untouched this long makes the next run's GC walk due.
 const CLIENT_GC_STALE: std::time::Duration = std::time::Duration::from_secs(3600);
 
@@ -560,6 +561,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
     let dial = Dial::resolve(&dial_flags(&opts)?, host_entry.as_ref(), &settings.defaults)
         .map_err(anyhow::Error::msg)?;
     opts.parallel = Some(dial.parallel);
+    opts.idle_timeout = Some(dial.idle_timeout).filter(|t| !t.is_zero());
     // Any direct address means isolated mode: dial those and nothing else.
     // Resolved before the identity is loaded so a bad address never prompts
     // for a passphrase.
@@ -619,6 +621,7 @@ fn dial_flags(opts: &SyncOptions) -> anyhow::Result<DialFlags> {
         no_dns: opts.no_dns,
         no_mdns: opts.no_mdns,
         pq_key_exchange: opts.pq_key_exchange,
+        idle_timeout: opts.idle_timeout,
         address: opts.addresses.clone(),
     })
 }
@@ -676,7 +679,7 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
             let flags = SetupFlags {
                 recheck: t.kind == irsync::ssh::pair::PairKind::Saved,
                 no_dht: a.server_no_dht,
-                no_install: a.no_install
+                no_install: a.no_ssh_install
                     || !Dial::resolve(&DialFlags::default(), None, &config.settings.defaults)
                         .map_err(anyhow::Error::msg)?
                         .ssh_install,
@@ -1028,7 +1031,7 @@ async fn sync(
                     // With a trailing slash the remote path must be a directory.
                     Direction::DaemonSends if !*remote_co => {
                         let (endpoint, target) = (&conn.endpoint, conn.target.clone());
-                        let timeout = conn.opts.timeout;
+                        let timeout = conn.opts.idle_timeout;
                         let kind =
                             probe_path(endpoint, target, rpath, &remote_text, ropts, timeout)
                                 .await?;

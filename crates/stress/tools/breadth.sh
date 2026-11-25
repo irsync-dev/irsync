@@ -11,7 +11,7 @@
 #   SEEDS seeds to run, a seq(1) expression              [1 50]
 #   JOBS  runs at a time                                 [8]
 #   ITER, STEPS, TOTAL, FILE  size of each run           [20, 200, 4G, 256M]
-#   CLIENT arguments for the irsync client (after `--`)   [--timeout 300]
+#   CLIENT arguments for the irsync client (after `--`)   [--idle-timeout 300]
 #   CHECK a command run as `$CHECK <root>` after each passing run; if it
 #         fails the run counts as failed (exit=3) and its root is kept.
 #         tools/paranoid-check.sh compares the final trees with every field
@@ -30,7 +30,7 @@ OUT=${OUT:-$HOME/work/irsync-breadth}
 SEEDS=${SEEDS:-1 50}
 JOBS=${JOBS:-8}
 ITER=${ITER:-20}; STEPS=${STEPS:-200}; TOTAL=${TOTAL:-4G}; FILE=${FILE:-256M}
-CLIENT=${CLIENT:---timeout 300}
+CLIENT=${CLIENT:---idle-timeout 300}
 for t in irsync-stress irsync filegen fileset; do
   [ -x "$BIN/$t" ] || { echo "missing $BIN/$t (cargo build --workspace --release)" >&2; exit 2; }
 done

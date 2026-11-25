@@ -55,6 +55,7 @@ message Defaults {
   optional bool mdns = 12;
   optional Congestion congestion = 13;
   optional PqKeyExchange pq_key_exchange = 14;
+  google.protobuf.Duration idle_timeout = 15;
 }
 
 message Daemon {

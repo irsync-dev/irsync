@@ -46,6 +46,26 @@ fn nothing_set_is_the_built_in_default() {
     assert_eq!(d.relay, Relay::Default);
     assert_eq!(d.congestion, Congestion::Bbr);
     assert_eq!(d.pq_key_exchange, PqKeyExchange::Prefer);
+    assert_eq!(d.idle_timeout, Duration::ZERO);
+}
+
+/// `--idle-timeout` over `[defaults]`; a server table has no such key.
+#[test]
+fn idle_timeout_is_the_flag_then_the_defaults() {
+    let defaults = Defaults {
+        idle_timeout: Some(Duration::from_secs(30)),
+        ..Defaults::default()
+    };
+    let d = resolve(&DialFlags::default(), Some(&server()), &defaults);
+    assert_eq!(d.idle_timeout, Duration::from_secs(30));
+    let flags = DialFlags {
+        idle_timeout: Some(Duration::ZERO),
+        ..DialFlags::default()
+    };
+    assert_eq!(
+        resolve(&flags, None, &defaults).idle_timeout,
+        Duration::ZERO
+    );
 }
 
 /// Each key: the flag over the server over `[defaults]`.

@@ -51,24 +51,24 @@ row() {
   case $1 in
     hardlink)    echo "|$(col hardlink 10) $(col rename 8) $(col rename_over 8)" ;;
     rename)      echo "|$(col rename 15) $(col rename_over 10) $(col overwrite_range 5)" ;;
-    rename-off)  echo "CLIENT='--timeout 300 --no-rename-detection'|$(col rename 15) $(col rename_over 10) $(col overwrite_range 5)" ;;
-    sparse)      echo "CLIENT='--timeout 300 -S'|$(col punch_hole 10) --filegen-set content.pattern_fraction=0.5" ;;
+    rename-off)  echo "CLIENT='--idle-timeout 300 --no-rename-detection'|$(col rename 15) $(col rename_over 10) $(col overwrite_range 5)" ;;
+    sparse)      echo "CLIENT='--idle-timeout 300 -S'|$(col punch_hole 10) --filegen-set content.pattern_fraction=0.5" ;;
     metadata)    echo "|$(col chmod 10) --filegen-set chmod.special_weight=0.5" ;;
     timestamps)  echo "|--filegen-set mtime.recent=0.3 --filegen-set mtime.distant=0.2 --filegen-set mtime.future=0.5 --filegen-set mtime.future_years=50 --filegen-set mtime.distant_years=70" ;;
     symlinks)    echo "|$(col repoint_symlink 10) --filegen-set symlink.dangling=0.5 --filegen-set symlink.absolute=0.5" ;;
-    deletion)    echo "CLIENT='--timeout 300 --delete-before'|$(col remove_tree 5) --filegen-set remove_tree_max_entries=5000" ;;
+    deletion)    echo "CLIENT='--idle-timeout 300 --delete-before'|$(col remove_tree 5) --filegen-set remove_tree_max_entries=5000" ;;
     listing)     echo "ITER=10 STEPS=5000 FILE=8M|--filegen-set size_distribution.small.weight=0.95 --filegen-set max_depth=64 --filegen-set names.classes.unicode=30 --filegen-set names.classes.awkward=30" ;;
     longnames)   echo "|--filegen-set names.classes.long=30 --filegen-set max_depth=64" ;;
-    parallel1)   echo "CLIENT='--timeout 300 --parallel 1'|" ;;
-    parallel512) echo "CLIENT='--timeout 300 --parallel 512' ITER=10 STEPS=5000 FILE=8M|--filegen-set size_distribution.small.weight=0.95" ;;
-    checksum)    echo "CLIENT='--timeout 300 -c' SEEDS='1 20'|" ;;
-    paranoid)    echo "CLIENT='--timeout 300 --paranoid'|" ;;
-    concurrent)  echo "CLIENT='--timeout 300' DURATION=3600 SEEDS='1 1000' ITER=10 TOTAL=1G FILE=64M|--concurrent" ;;
-    concurrent-paranoid) echo "CLIENT='--timeout 300 --paranoid' DURATION=3600 SEEDS='1 1000' ITER=10 TOTAL=1G FILE=64M|--concurrent" ;;
+    parallel1)   echo "CLIENT='--idle-timeout 300 --parallel 1'|" ;;
+    parallel512) echo "CLIENT='--idle-timeout 300 --parallel 512' ITER=10 STEPS=5000 FILE=8M|--filegen-set size_distribution.small.weight=0.95" ;;
+    checksum)    echo "CLIENT='--idle-timeout 300 -c' SEEDS='1 20'|" ;;
+    paranoid)    echo "CLIENT='--idle-timeout 300 --paranoid'|" ;;
+    concurrent)  echo "CLIENT='--idle-timeout 300' DURATION=3600 SEEDS='1 1000' ITER=10 TOTAL=1G FILE=64M|--concurrent" ;;
+    concurrent-paranoid) echo "CLIENT='--idle-timeout 300 --paranoid' DURATION=3600 SEEDS='1 1000' ITER=10 TOTAL=1G FILE=64M|--concurrent" ;;
     net-concurrent) echo "NET=1 DURATION=3600 SEEDS='1 1000'|--concurrent" ;;
     net-concurrent-paranoid) echo "NET=1 CLIENT='--paranoid' DURATION=3600 SEEDS='1 1000'|--concurrent" ;;
     minimal)     echo "ITER=200 STEPS=1 SEEDS='101 108'|" ;;
-    bigfile)     echo "CLIENT='-c --timeout 10' ITER=5 STEPS=20 TOTAL=16G FILE=8G SEEDS='101 104' JOBS=4|--filegen-set size_distribution.large_weight=1" ;;
+    bigfile)     echo "CLIENT='-c --idle-timeout 10' ITER=5 STEPS=20 TOTAL=16G FILE=8G SEEDS='101 104' JOBS=4|--filegen-set size_distribution.large_weight=1" ;;
     *) echo "unknown row: $1" >&2; return 1 ;;
   esac
 }

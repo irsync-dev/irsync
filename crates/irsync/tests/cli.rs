@@ -45,7 +45,7 @@ fn pair_parses_host_and_flags() {
     let a = parse(&[
         "pair",
         "--server-no-dht",
-        "--no-install",
+        "--no-ssh-install",
         "--rsh",
         "ssh -p 2222",
         "mike@myserver",
@@ -54,7 +54,7 @@ fn pair_parses_host_and_flags() {
         Some(Command::Pair(p)) => {
             assert_eq!(p.host, "mike@myserver");
             assert_eq!(p.rsh.as_deref(), Some("ssh -p 2222"));
-            assert!(p.server_no_dht && p.no_install);
+            assert!(p.server_no_dht && p.no_ssh_install);
             assert_eq!(p.identity, None);
         }
         c => panic!("not Pair: {c:?}"),
@@ -66,7 +66,7 @@ fn sync_has_no_ssh_flags() {
     for flag in [
         &["--ssh"][..],
         &["--rsh", "x"],
-        &["--no-install"],
+        &["--no-ssh-install"],
         &["--no-remote-dht"],
     ] {
         let mut a = flag.to_vec();
@@ -362,12 +362,24 @@ fn bwlimit_forms() {
 }
 
 #[test]
-fn timeout_zero_is_none_and_parallel_zero_is_rejected() {
-    assert_eq!(opts(&["--timeout=0", "a", "h:m"]).timeout, None);
+fn idle_timeout_takes_a_duration_and_parallel_zero_is_rejected() {
+    let secs = std::time::Duration::from_secs;
+    assert_eq!(opts(&["a", "h:m"]).idle_timeout, None);
+    // 0 is kept: it overrides [defaults] idle_timeout, and means none.
     assert_eq!(
-        opts(&["--timeout=5", "a", "h:m"]).timeout,
-        Some(std::time::Duration::from_secs(5))
+        opts(&["--idle-timeout=0", "a", "h:m"]).idle_timeout,
+        Some(secs(0))
     );
+    assert_eq!(
+        opts(&["--idle-timeout=5", "a", "h:m"]).idle_timeout,
+        Some(secs(5))
+    );
+    assert_eq!(
+        opts(&["--idle-timeout", "2m", "a", "h:m"]).idle_timeout,
+        Some(secs(120))
+    );
+    assert!(Args::try_parse_from(["irsync", "--idle-timeout=x", "a", "h:m"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "--timeout=5", "a", "h:m"]).is_err());
     assert!(Args::try_parse_from(["irsync", "--parallel=0", "a", "h:m"]).is_err());
     assert_eq!(opts(&["--parallel=3", "a", "h:m"]).parallel, Some(3));
 }
@@ -380,7 +392,7 @@ fn irsync_flags_and_misc() {
         "--dial-retries=2",
         "--parallel",
         "4",
-        "--timeout=9",
+        "--idle-timeout=9s",
         "--config",
         "cfg",
         "--no-dht",
@@ -395,7 +407,7 @@ fn irsync_flags_and_misc() {
     assert_eq!(o.reconnect, Some(Duration::from_secs(30)));
     assert_eq!(o.dial_retries, Some(2));
     assert_eq!(o.parallel, Some(4));
-    assert_eq!(o.timeout, Some(Duration::from_secs(9)));
+    assert_eq!(o.idle_timeout, Some(Duration::from_secs(9)));
     assert_eq!(o.config, Some(PathBuf::from("cfg")));
     assert!(o.no_dht && o.no_dns && o.no_mdns);
     assert!(!o.numeric_ids, "names are mapped unless asked not to");
@@ -973,8 +985,12 @@ fn id_and_show_parse() {
     assert_eq!(a.files.passphrase_file, Some(PathBuf::from("/p")));
     // `list` has no roles to pick from: it prints what there is.
     assert!(Args::try_parse_from(["irsync", "id", "list", "--daemon"]).is_err());
-    // `--out` names the file; `--daemon` picks the configured one.
-    assert!(Args::try_parse_from(["irsync", "id", "generate", "--daemon", "--out", "/k"]).is_err());
+    // `--out` names the file, also for a daemon key.
+    assert!(matches!(
+        parse(&["id", "generate", "--daemon", "--out", "/k"]).cmd,
+        Some(Command::Id(ref i))
+            if matches!(i.cmd, Some(IdCmd::Generate { daemon: true, out: Some(ref p), .. }) if p == &PathBuf::from("/k"))
+    ));
     // A noun alone parses: it runs `list`.
     for noun in ["id", "server", "client", "export", "grant", "config"] {
         assert!(Args::try_parse_from(["irsync", noun]).is_ok(), "{noun}");

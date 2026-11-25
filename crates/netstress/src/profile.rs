@@ -22,7 +22,7 @@ pub struct Defaults {
     pub steps: u64,
     pub max_total_size: &'static str,
     pub max_file_size: &'static str,
-    /// Passed to the client as `--timeout`.
+    /// Passed to the client as `--idle-timeout`, in seconds.
     pub client_timeout_secs: u64,
     /// Whether the profile has dead zones.
     pub has_outages: bool,

@@ -195,12 +195,12 @@ server has another OS or CPU, `pair` stops and changes nothing. Then
 install irsync on the server yourself and
 [set the server up by hand](../tutorial/first-sync.md#set-the-server-up-by-hand).
 Installing it on the server does not make `pair` work, unless you run
-with `--no-install`: `pair` otherwise uses its own copy of the client's
+with `--no-ssh-install`: `pair` otherwise uses its own copy of the client's
 exact build. See
 [Troubleshooting](troubleshooting.md#pair-stops-the-server-runs-another-os-or-cpu)
 for the messages.
 
-To copy nothing to the server, use `--no-install` (or `ssh_install = false`
+To copy nothing to the server, use `--no-ssh-install` (or `ssh_install = false`
 in the config file). `pair` then uses the irsync at `~/.local/bin/irsync`
 there, and stops if it is missing or another version.
 

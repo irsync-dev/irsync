@@ -108,6 +108,9 @@ pub static KEYS: &[Key] = &[
     with("defaults.pq_key_exchange", Str, || {
         one(Dial::default().pq_key_exchange.as_str())
     }),
+    with("defaults.idle_timeout", Duration, || {
+        one(super::duration::format(Dial::default().idle_timeout))
+    }),
     key("daemon", Table),
     with("daemon.identity", Path, || {
         as_written(&Settings::default().daemon.identity)

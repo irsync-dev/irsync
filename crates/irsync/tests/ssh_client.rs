@@ -189,7 +189,7 @@ fn no_install_with_nothing_there_fails() {
     let msg = ensure_installed(&f.rsh, "myserver", &p, true)
         .unwrap_err()
         .to_string();
-    assert!(msg.contains("--no-install"), "{msg}");
+    assert!(msg.contains("--no-ssh-install"), "{msg}");
     assert!(msg.contains("~/.local/bin/irsync"), "{msg}");
     assert!(msg.contains("found none"), "{msg}");
     assert!(msg.contains("ssh_install = true"), "{msg}");

@@ -63,6 +63,8 @@ struct RawDefaults {
     mdns: Option<bool>,
     congestion: Option<Text<Congestion>>,
     pq_key_exchange: Option<Text<PqKeyExchange>>,
+    #[serde(default, deserialize_with = "de_opt_duration")]
+    idle_timeout: Option<Duration>,
 }
 
 #[derive(Deserialize)]
@@ -372,6 +374,7 @@ fn defaults(r: RawDefaults) -> pb::Defaults {
         mdns: r.mdns,
         congestion: r.congestion.map(number),
         pq_key_exchange: r.pq_key_exchange.map(number),
+        idle_timeout: r.idle_timeout.map(duration::to_proto),
         ..Default::default()
     }
 }

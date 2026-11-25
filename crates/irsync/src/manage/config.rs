@@ -393,6 +393,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "relay" => Relay(&mut c.relay),
                 "congestion" => Spelled(&mut c.congestion, spelling::<Congestion>()),
                 "pq_key_exchange" => Spelled(&mut c.pq_key_exchange, spelling::<PqKeyExchange>()),
+                "idle_timeout" => Duration(&mut c.idle_timeout),
                 _ => return None,
             };
             (f, &mut c.key_comments)

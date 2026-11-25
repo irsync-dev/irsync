@@ -538,9 +538,9 @@ pub enum IdCmd {
     /// EndpointId. Refuses to overwrite an existing key or .pub file
     /// unless --force is given.
     Generate {
-        /// The daemon's identity (its configured path) instead of the
-        /// client's.
-        #[arg(long, conflicts_with = "out")]
+        /// The daemon's identity instead of the client's: at its
+        /// configured path, or at --out.
+        #[arg(long)]
         daemon: bool,
         /// Write the private key here instead of the configured path; the
         /// .pub file goes beside it.
@@ -800,9 +800,10 @@ pub struct PairArgs {
     pub rsh: Option<String>,
     /// Copy nothing to the server: use the irsync already at
     /// `~/.local/bin/irsync` there, and stop if it is missing or another
-    /// version. Default: `ssh_install` in the config file, else install.
+    /// version. Default: `[defaults] ssh_install` in the config file,
+    /// else install.
     #[arg(long)]
-    pub no_install: bool,
+    pub no_ssh_install: bool,
     /// Turn the server's DHT publishing off (`[daemon] dht =
     /// false`). Without it the server's setting is left alone.
     #[arg(long)]
@@ -1046,10 +1047,11 @@ pub struct SyncArgs {
     /// Print rsync's per-file change summary (the itemize codes).
     #[arg(short = 'i', long)]
     pub itemize_changes: bool,
-    /// Inactivity timeout: a connection that moves no data and no control
-    /// message for this long is dropped and the session reconnects. 0 = none.
-    #[arg(long, value_name = "SECS")]
-    pub timeout: Option<u64>,
+    /// Drop a connection that moves no data and no control message for
+    /// this long, and reconnect: `<N>[s|m|h|d]`, a bare number is seconds;
+    /// 0 = never (default: `idle_timeout` from `[defaults]`, else 0).
+    #[arg(long, value_name = "DUR", value_parser = duration::parse)]
+    pub idle_timeout: Option<Duration>,
     /// Data streams a push keeps open at once (default: `parallel` from the
     /// server entry or `[defaults]`, else 128).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
@@ -1249,7 +1251,9 @@ pub struct SyncOptions {
     /// `--progress`, `-P` or `--info=progress1|2`.
     pub progress: bool,
     pub itemize: bool,
-    pub timeout: Option<Duration>,
+    /// `--idle-timeout`; after the dial is resolved, the timeout in force
+    /// (`None`: none).
+    pub idle_timeout: Option<Duration>,
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
     pub dial_retries: Option<u32>,
@@ -1329,7 +1333,7 @@ impl SyncOptions {
             stats: a.stats,
             progress: a.progress || a.info.as_deref().is_some_and(info_asks_progress),
             itemize: a.itemize_changes,
-            timeout: a.timeout.filter(|&t| t != 0).map(Duration::from_secs),
+            idle_timeout: a.idle_timeout,
             parallel: a.parallel,
             reconnect: a.reconnect,
             dial_retries: a.dial_retries,

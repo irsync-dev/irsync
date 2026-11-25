@@ -281,7 +281,7 @@ the client sends or receives, and answers "up", "handover" or "dead zone".
 **Handovers** run on a timetable: the first starts 30 to 90 s after the
 transport starts, each lasts 0.2 to 2 s, and the next one starts 30 to
 90 s after the previous one started. They are short on purpose: shorter
-than the client's 10 s `--timeout`, so QUIC simply resends what was lost
+than the client's 10 s `--idle-timeout`, so QUIC simply resends what was lost
 and the sync carries on. A handover that would start during the dead zone
 is skipped.
 
@@ -353,7 +353,7 @@ Simpler mixing makes many schedules come out the same; see call 5 in
 
 ## What irsync does during a dead zone
 
-The rig gives the client `--timeout 10` (under the real profiles) and
+The rig gives the client `--idle-timeout 10` (under the real profiles) and
 `--reconnect 5m`. A typical 4G dead zone of, say, 40 s then goes like this:
 
 ```text
@@ -374,7 +374,7 @@ one. Its QUIC idle timeout is 60 s.
 
 Why the numbers fit together:
 
-- `--timeout 10` is longer than the longest handover (2 s), so a handover
+- `--idle-timeout 10` is longer than the longest handover (2 s), so a handover
   never forces a reconnect, and shorter than the shortest dead zone
   (20 s), so a dead zone always does.
 - `--reconnect 5m` is far longer than the longest dead zone (60 s), so the

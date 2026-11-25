@@ -566,6 +566,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("defaults.relay", &["https://r/"]),
     ("defaults.congestion", &["cubic"]),
     ("defaults.pq_key_exchange", &["require"]),
+    ("defaults.idle_timeout", &["45s"]),
     ("daemon.identity", &["/d"]),
     ("daemon.idle_timeout", &["10m"]),
     ("daemon.dormant_session_timeout", &["1d"]),

@@ -104,7 +104,7 @@ async fn stalled_connection_is_dropped_after_timeout() {
             // The daemon acknowledges Hello, then goes silent.
             h.daemon.fault.stall_after_ack_once();
             let mut opts = archive_opts();
-            opts.timeout = Some(Duration::from_secs(2));
+            opts.idle_timeout = Some(Duration::from_secs(2));
             let start = std::time::Instant::now();
             let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
             let elapsed = start.elapsed();
@@ -457,7 +457,7 @@ async fn local_progress_resets_idle_watchdog() {
         let h = Harness::new().await;
         fs::write(h.src(flow).join("f"), data(FILE_SIZE, 7)).unwrap();
         let mut opts = archive_opts();
-        opts.timeout = Some(Duration::from_secs(2));
+        opts.idle_timeout = Some(Duration::from_secs(2));
         let mut local = h.local_side();
         local.hooks.slow_finalize = Some(Duration::from_secs(3));
         let start = std::time::Instant::now();
@@ -483,7 +483,7 @@ async fn peer_local_progress_resets_idle_watchdog() {
         *h.daemon.slow_finalize.lock().unwrap() = Some(Duration::from_secs(3));
         fs::write(h.src(flow).join("f"), data(FILE_SIZE, 7)).unwrap();
         let mut opts = archive_opts();
-        opts.timeout = Some(Duration::from_secs(1));
+        opts.idle_timeout = Some(Duration::from_secs(1));
         let start = std::time::Instant::now();
         let (out, reconnects) = h.run_reconnect(&opts, flow, fast(), h.local_side()).await;
         let out = out.unwrap_or_else(|e| panic!("{e:#}"));

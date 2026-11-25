@@ -162,7 +162,7 @@ See [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
 | Flag | Meaning |
 | --- | --- |
 | `--rsh CMD` | The remote shell, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
-| `--no-install` | Copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
+| `--no-ssh-install` | Copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
 | `--server-no-dht` | Turn the server's DHT publishing off (`[daemon] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
 | `--no-service` | Do not make the daemon a user service: start it in the background, until the server reboots. For a daemon you run your own way. |
 | `--identity FILE` | The private key to pair with. Default as for a sync. |
@@ -224,7 +224,6 @@ wins.
 | `--delete` | Delete destination files that are gone from the source, after the transfer, the same as `--delete-after`. Nothing is deleted without one of the `--delete` flags. | The same as `--delete-during`. |
 | `--delete-excluded` | Also delete destination files that the filters exclude. Implies `--delete`, so the deletions run after the transfer. | Implies `--delete`, so the deletions run during the transfer. |
 | `-S`, `--sparse` | Leave chunks that are all zeros as holes. Without it, only files that are sparse in the source are written sparse. | Finds runs of zeros at write granularity, not only whole chunks. |
-| `--timeout SECS` | Drop a connection that moves no data and no control message for `SECS` seconds; the session then reconnects. `0`, the default, means no timeout. | A connection idle for `SECS` seconds ends the run with code 30. |
 | `--progress` | Draws the live progress block (see [Output](#output)) when stdout is a terminal. | Prints the progress of each file. |
 | `-P` | The same as `--progress`. irsync always keeps partial files. | The same as `--partial --progress`. |
 | `--info SPEC` | Only `progress1` and `progress2` are read, as `--progress`; the rest is ignored. | Selects informational output, such as the progress of the whole transfer with `--info=progress2`. |
@@ -302,6 +301,7 @@ These have no rsync counterpart.
 | --- | --- |
 | `--parallel N` | Data streams a push keeps open at once, across all files. Default: `parallel` from the server entry, else from `[defaults]`, else 128. A pull uses the daemon's 128. See [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams). |
 | `--reconnect DUR` | How long to keep redialling after a dropped connection, as `N[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the server entry, else from `[defaults]`, else 24h. This window applies only once the server has answered; before that, `--dial-retries` applies. |
+| `--idle-timeout DUR` | Drop a connection that moves no data and no control message for this long; the session then reconnects. `DUR` is written as for `--reconnect`; a bare number is seconds. `0` never drops one. Default: `idle_timeout` from `[defaults]`, else `0`. rsync's `--timeout SECS`, which ends the run instead, is not accepted. |
 | `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[defaults]`, else 4. For a server `irsync pair` saved (one with `ssh`), the default is 0 instead of 4; each try there waits at most 15 seconds. |
 | `--relay default\|disabled\|URL` | The relay for this sync: `default` for n0's public relays, `disabled` for direct connections only (the address lookups stay on), or the URL of a relay of your own. Default: `relay` from the server entry, else from `[defaults]`, else `default`. Cannot be combined with `--address`. |
 | `--pq-key-exchange prefer\|require` | `require`: refuse a daemon that does not offer the post-quantum key exchange, such as an irsync built without it; nothing is sent to it. `prefer`: use that key exchange when the daemon offers it. Default: `pq_key_exchange` from the server entry, else from `[defaults]`, else `prefer`. See [Post-quantum key exchange](configuration.md#post-quantum-key-exchange). |
@@ -413,7 +413,7 @@ first prints a banner with its version, relay and discovery settings.
 | `--config PATH` | The config file. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted daemon key from the first line of this file. |
 | `--listen ADDR` | Bind this socket (`ip:port`, `[ipv6]:port` or `host:port`; port 0 lets the system pick) instead of the config's `listen` list. Repeatable, at most one IPv4 and one IPv6. |
-| `--run-as-root-i-know-what-i-am-doing` | Start even as root. Without it, or `allow_root = true` under `[daemon]`, the daemon refuses to run as root: it has not had a security audit, and as root any client with write access can create setuid files and device nodes. |
+| `--run-as-root-i-know-what-i-am-doing` | Start even as root. Without it, or [`allow_root = true`](configuration.md#daemon) under `[daemon]`, the daemon refuses to run as root: it has not had a security audit, and as root any client with write access can create setuid files and device nodes. |
 | `-v`, `--verbose` | Nothing extra; `-vv` and up log more. See [Flags every command takes](#flags-every-command-takes). |
 | `-q`, `--quiet` | Log errors only. |
 

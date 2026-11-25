@@ -2025,6 +2025,21 @@ fn id_generate_encrypts_with_daemon_out_and_force() {
     assert!(ssh_key::PrivateKey::read_openssh_file(&out)
         .unwrap()
         .is_encrypted());
+    // A daemon key at a path of your own: its comment says whose it is.
+    let dkey = home.join("elsewhere/daemon_key");
+    let o = irsync(
+        &home,
+        &[
+            "id",
+            "generate",
+            "--daemon",
+            "--out",
+            dkey.to_str().unwrap(),
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let line = std::fs::read_to_string(home.join("elsewhere/daemon_key.pub")).unwrap();
+    assert!(line.trim_end().ends_with(" irsync-daemon"), "{line}");
 }
 
 #[test]
