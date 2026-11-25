@@ -53,7 +53,9 @@ gc` does the same for indexes whose roots lie inside one another.
 directory this account has synced or indexed, and the exports of a daemon that
 runs in this account with the same config. For each root it removes partial
 files and dormant sessions older than 7 days, and the index entries of regular
-files that are gone or were replaced by another file. Use `--config PATH` when
+files that are gone or were replaced by another file. It also removes the
+index files an older irsync left behind, unless a process still has one
+open. Use `--config PATH` when
 the `state_dir` you mean is set in another config file.
 
 An entry under a directory that could not be read is kept, since the file may

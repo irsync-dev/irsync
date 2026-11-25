@@ -42,7 +42,8 @@ The daemon reads `PATH` in this order:
 1. **An export name**, then a path inside it. When the first component of a
    relative `PATH` names an export, the rest is resolved under that export's
    directory: `myserver:photos/2024` is `2024` inside the `photos` export.
-   A name counts only if the client has a grant for that export. Any other
+   A name counts only if the client may use that export: a grant on it, or
+   `all_exports` (see [Rights on a client](configuration.md#rights-on-a-client)). Any other
    export's name is read as in step 2, as if the export were not there, also
    when the client may use that export's directory through another export.
 2. **A path relative to the home directory** of the account the daemon runs
@@ -57,9 +58,16 @@ refused.
 ## Exports decide access
 
 Whatever the spelling, the resolved path must lie inside an exported directory
-that the client has a grant for, and that export's grants apply. A path
-outside every export the client may use is refused as "no access", whether or
-not it exists, so the answer reveals nothing about the daemon's file system.
+that the client may use, and that export's grants apply. A client may use an
+export it has a grant on, and with `all_exports` every export made by hand.
+A path outside every export the client may use is refused as "no access",
+whether or not it exists, so the answer reveals nothing about the daemon's
+file system.
+
+A client with `all_paths` is the exception: it may reach any path the
+daemon's account can. When it uses a path that no export covers, the daemon
+adds an automatic export for that path, for that client only, and the rules
+below then apply to it. See [Rights on a client](configuration.md#rights-on-a-client).
 
 Exports may be nested. A grant reaches everything below its export's
 directory, exports nested inside it included. When the path lies inside
@@ -69,15 +77,24 @@ several exports the client may use:
 - between exports with the same path, the one the operand named wins, then the
   one with the better access (read-write over read-only, `read_only` applied).
 
-Exports the client has no grant for take no part. A grant on an outer export
+Exports the client may not use take no part. A grant on an outer export
 is therefore not stopped by an inner export, not even by a `read_only` inner
 one, and the answer for a path never depends on where ungranted exports sit.
 
-To open everything the daemon's account can reach, export the root, and grant
-it:
+To let a client reach everything the daemon's account can, give it
+`all_paths` on the server:
+
+```sh
+irsync client set myclient all_paths=rw
+```
+
+`irsync pair` does this for the client it pairs. `/` itself is never
+exported automatically. To sync the whole root as one tree, export it by hand
+and grant it:
 
 ```sh
 irsync export add root:/
+irsync grant add root myclient
 ```
 
 `irsync export add home:~` exports the home directory.

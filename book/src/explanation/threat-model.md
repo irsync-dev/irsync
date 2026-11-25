@@ -64,14 +64,13 @@ daemon, or send the client to another machine.
 - Anyone on the path can block or slow the connection.
 - **A recording of a connection could be decrypted later** by someone with a
   large quantum computer, when one side does not offer the hybrid key
-  exchange. No such machine exists today. Two irsync versions with the
-  hybrid (`X25519MLKEM768`) use it, and a recording of their connection
-  stays safe as long as X25519 or ML-KEM holds. An older irsync on either
-  side gets X25519 alone, without a warning: `-vv` shows which one a
-  connection got. Set `pq_key_exchange = "require"` to refuse such a
-  connection instead; see
+  exchange. No such machine exists today. irsync offers the hybrid
+  (`X25519MLKEM768`), so two irsyncs use it, and a recording of their
+  connection stays safe as long as X25519 or ML-KEM holds. A peer that does
+  not offer it, such as an irsync built without it, gets X25519 alone,
+  without a warning: `-vv` shows which one a connection got. Set
+  `pq_key_exchange = "require"` to refuse such a connection instead; see
   [Post-quantum key exchange](../reference/configuration.md#post-quantum-key-exchange).
-  It is not the default, so that older versions can still connect.
 - **The keys are Ed25519,** which such a machine could forge too. That would
   let it pretend to be a daemon or a client from then on. It does not open
   up connections recorded before.

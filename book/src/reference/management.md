@@ -34,8 +34,9 @@ noun the flag may stand before the noun, or before or after the verb:
   running.
 - The edited file is checked before it is written. An edit that would leave a
   file `irsync` cannot load is refused, and the file stays as it was.
-- An export name may not be empty, contain `/`, or be `all`. A server or client name may not
-  be empty, contain `:` or `/`, be `all` or `*`, or be an `EndpointId`.
+- An export name may not be empty, contain `/`, or be one of the
+  [reserved words](#reserved-words). A server or client name may not be
+  empty, contain `:` or `/`, be `all` or `*`, or be an `EndpointId`.
 
 ## Remote use
 
@@ -78,7 +79,7 @@ server when it does not offer post-quantum key exchange.
 
 | Command | Effect |
 | --- | --- |
-| `irsync client add NAME ID` | Add a client: a name for the `EndpointId` a machine has as a client (what `irsync id show` prints on that machine). For an existing name, change the id; grants that name it then apply to the new id, and a note on stderr says so. Prints `NAME: ID`. |
+| `irsync client add NAME ID` | Add a client: a name for the `EndpointId` a machine has as a client (what `irsync id show` prints on that machine). For an existing name, change the id; grants that name it then apply to the new id, and a note on stderr says so. Prints `NAME: ID`, or `NAME: OLD -> NEW` when the id changed. |
 | `irsync client remove NAME [-f]` | Remove a client. Refused while a grant names it, and the error lists where: without the client those grants would match nobody. A grant written as the `EndpointId` counts as naming the client, unless another client has the same id. `-f`/`--force` removes those grants, then the client. |
 | `irsync client rename OLD NEW` | Rename a client, and every grant that names it: in every export. Its `all_exports`, `all_paths` and `admin` stay with it. A grant written as the `EndpointId` counts as naming the client. The client keeps its place and comments. Refused, with nothing changed, when `OLD` is no client, `NEW` is not a valid name or `NEW` is a client already. Only the config file changes. |
 | `irsync client set NAME KEY=VALUE...` | Set the server-wide rights of a client. `KEY` is `all_exports`, `all_paths` or `admin`, and `VALUE` is `rw`, `ro` or `none` (`none` removes the right). Give several pairs to change them together: if one is wrong, nothing changes. `irsync client set myclient all_paths=rw` lets `myclient` reach any path this account can. Prints the client's rights afterwards. See [Rights on a client](configuration.md#rights-on-a-client). |
@@ -121,7 +122,12 @@ line, or the path of a `.pub` file holding one. A key's comment is kept as a
 TOML comment at the end of the entry's line. Removing the grant removes that
 comment; comment lines above it stay. A peer that `[clients]` has a name for is stored
 by that name, however it was named. A server name is not a `WHO`. There is no open access: `all` and `*` are
-refused as `WHO` in `grant add`. The words `all`, `all_exports`, `all_paths` and `admin` are reserved: no export has one of them as its name.
+refused as `WHO` in `grant add`.
+
+### Reserved words
+
+The words `all`, `all_exports`, `all_paths` and `admin` are reserved: no
+export has one of them as its name.
 
 ## id
 
@@ -150,12 +156,19 @@ for the old key stops working.
 
 | Command | Effect |
 | --- | --- |
-| `irsync config get KEY` | Print a key: a bare scalar, one array element per line, or a table's keys as `key = value` lines, all as the file holds them (a path's `~` is not expanded). An unset setting prints its default; a key with no value and no default exits 1. |
+| `irsync config get KEY` | Print a key: a bare scalar, one array element per line, or a table's keys as `key = value` lines, all as the file holds them (a path's `~` is not expanded). An unset key prints its default; a key with no value and no default prints nothing and exits 1. |
 | `irsync config set KEY VALUE...` | Set a key in its type: `true` or `false`, an integer, a duration such as `30m`, a path, a URL, an `EndpointId`. An array key takes one `VALUE` per element, and none for an empty array. Tables are created as needed. |
 | `irsync config unset KEY` | Remove a key, or a whole table (`irsync config unset servers.myserver`). A table left empty goes with it. Removing a client this way is refused while a grant names it, as with `client remove`. |
-| `irsync config list` | Every key the files set, as `dotted.key = value`, in the order the file is written in: the tables in a fixed order, and each table's keys in a fixed order. |
+| `irsync config list` | Every key the file sets, as `dotted.key = value`, in the order the file is written in: the tables in a fixed order, and each table's keys in a fixed order. |
 
-`KEY` is a dotted path such as `daemon.listen` or `servers.myserver.relay`. A client has one key, `clients.NAME.client_id`. `config_version` can be read but not set.
+These keys have no default: the tables themselves, `client.relay` and
+`daemon.relay` (n0's relays are used), `daemon.debug_addr` (off),
+`telemetry.otlp_endpoint`, every key of a server (each falls back to
+`[client]`'s), every key of a client, and an export's `path`, `rw` and
+`ro`. An export's flags, such as `read_only`, default to `false` for an
+export that exists.
+
+`KEY` is a dotted path such as `daemon.listen` or `servers.myserver.relay`. A client has the keys `clients.NAME.client_id`, `all_exports`, `all_paths` and `admin`. `config_version` can be read but not set.
 Quote a segment that holds a dot: `exports."www.example.com".path`. An unknown
 key is an error.
 
@@ -175,4 +188,5 @@ irsync show [--passphrase-file PATH]
 Prints the config file's path, the client's `EndpointId` and public key line,
 the servers as `server list` prints them under `servers:`, the clients (with their rights) as `client list` prints them under `clients:`, and under `exports:` the
 daemon's `EndpointId` and the exports as `export list` prints them. `show` generates
-either key if it does not exist yet.
+the client's key if it does not exist yet, but never the daemon's: without
+one it prints `daemon identity: none`.
