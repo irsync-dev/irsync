@@ -141,7 +141,7 @@ message ConfigText { repeated string lines = 1; }
   - `pub struct Committer { pub id: EndpointId }`
   - `pub fn admin_of(msg: &pb::Config, path: &Path, id: &EndpointId) -> Option<Access>` — the highest `admin` over client entries with that id.
   - `pub fn apply(msg: &mut pb::Config, path: &Path, home: Option<&Path>, who: &Committer, changes: &[v1::Change]) -> Result<Vec<String>, v1::Nack>` — checks `admin_of == Some(ReadWrite)` first (else NACK 0 `not allowed`), applies the changes in order on `msg`, then checks the end result (else NACK 0 `this would take away your own admin right`); on any NACK the caller drops `msg`. Returns one result line per change.
-  - `pub fn view(msg: &pb::Config, path: &Path, daemon_id: EndpointId, allow_all_paths: bool) -> v1::View`
+  - `pub fn view(msg: &pb::Config, daemon_id: EndpointId, allow_all_paths: bool) -> v1::View`
   - `pub fn config_text(msg: &pb::Config, key: &str) -> Result<v1::ConfigText, String>` (empty key: `config list`)
   - `pub fn summary(change: &v1::Change) -> String` — the audit text, such as `added export photos at ~/Photos`, `set laptop admin=ro`.
 
