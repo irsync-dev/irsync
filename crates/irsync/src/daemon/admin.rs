@@ -71,7 +71,7 @@ pub(super) async fn serve_admin(
             Ok(Ok(None)) => break b"done",
             Ok(Ok(Some(AdminRequest { msg: Some(m) }))) => m,
             Ok(Ok(Some(AdminRequest { msg: None }))) => {
-                return bad_request(&conn, &mut send, &tap).await;
+                return bad_request(&conn, &mut send, &tap, &path, &id).await;
             }
             Ok(Err(e)) => {
                 conn.close(2u32.into(), b"bad request");
@@ -98,7 +98,7 @@ pub(super) async fn serve_admin(
                 commit(&shared, &path, id, changes).await
             }
             admin_request::Msg::Read(r) => match r.what {
-                None => return bad_request(&conn, &mut send, &tap).await,
+                None => return bad_request(&conn, &mut send, &tap, &path, &id).await,
                 Some(what) => match answer(&path, local, &id, what) {
                     Some(reply) => reply,
                     None => {
@@ -118,7 +118,8 @@ pub(super) async fn serve_admin(
 }
 
 /// Applies `changes` to the config file `path` for `id`, all or nothing,
-/// and writes the audit lines. No changes: ACK at once, nothing written.
+/// and writes the audit lines. No changes: ACK, with nothing written or
+/// locked, to a client that has `admin = "rw"` in the saved file.
 async fn commit(
     shared: &Arc<Shared>,
     path: &Path,
@@ -126,7 +127,16 @@ async fn commit(
     changes: Vec<Change>,
 ) -> admin_reply::Msg {
     if changes.is_empty() {
-        return admin_reply::Msg::Ack(irsync_proto::v1::Ack::default());
+        let rw = read_config(path)
+            .is_some_and(|msg| engine::admin_of(&msg, path, &id) == Some(Access::ReadWrite));
+        if rw {
+            return admin_reply::Msg::Ack(irsync_proto::v1::Ack::default());
+        }
+        tracing::warn!("admin: {}: transaction refused", label_in(Some(path), &id));
+        return admin_reply::Msg::Nack(Nack {
+            change: 0,
+            reason: NOT_ALLOWED.to_string(),
+        });
     }
     let (path, home) = (path.to_path_buf(), shared.home.clone());
     let done = tokio::task::spawn_blocking(move || {
@@ -137,7 +147,8 @@ async fn commit(
     let (result, who, changes) = match done {
         Ok(d) => d,
         Err(e) => {
-            tracing::warn!("admin: {}: transaction refused ({e})", id.fmt_short());
+            tracing::warn!("admin: {}: transaction refused", id.fmt_short());
+            tracing::error!("admin: the commit failed: {e}");
             return admin_reply::Msg::Nack(Nack {
                 change: 0,
                 reason: "internal error".to_string(),
@@ -176,11 +187,17 @@ fn commit_blocking(
     let mut lock = match lock_config_waiting(path) {
         Ok(lock) => lock,
         Err(ManageError::Locked { .. }) => return (Err(whole(BUSY)), label_in(Some(path), &id)),
-        Err(_) => return (Err(whole(NOT_ALLOWED)), label_in(Some(path), &id)),
+        Err(e) => {
+            cannot_read(path, &e);
+            return (Err(whole(NOT_ALLOWED)), id.fmt_short().to_string());
+        }
     };
     let mut msg = match lock.load() {
         Ok(msg) => msg,
-        Err(_) => return (Err(whole(NOT_ALLOWED)), id.fmt_short().to_string()),
+        Err(e) => {
+            cannot_read(path, &e);
+            return (Err(whole(NOT_ALLOWED)), id.fmt_short().to_string());
+        }
     };
     let who = label(&msg, path, &id);
     let result = match engine::apply(&mut msg, path, home, &Committer { id }, changes) {
@@ -202,15 +219,14 @@ fn answer(
     id: &EndpointId,
     what: read::What,
 ) -> Option<admin_reply::Msg> {
-    let msg = load_message(path).ok()?;
+    let msg = read_config(path)?;
     engine::admin_of(&msg, path, id)?;
     Some(match what {
         read::What::View(_) => {
-            let allow_all_paths = Config::from_message(&msg, path)
-                .ok()?
-                .settings
-                .daemon
-                .allow_all_paths;
+            let config = Config::from_message(&msg, path)
+                .map_err(|e| cannot_read(path, &e))
+                .ok()?;
+            let allow_all_paths = config.settings.daemon.allow_all_paths;
             admin_reply::Msg::View(engine::view(&msg, local, allow_all_paths))
         }
         read::What::Config(c) => match engine::config_text(&msg, &c.key) {
@@ -238,10 +254,24 @@ fn label(msg: &pb::Config, path: &Path, id: &EndpointId) -> String {
 
 /// [`label`] from the config file at `path` as it is now.
 fn label_in(path: Option<&Path>, id: &EndpointId) -> String {
-    match path.map(load_message) {
-        Some(Ok(msg)) => label(&msg, path.unwrap_or(Path::new("")), id),
-        _ => id.fmt_short().to_string(),
+    if let Some(p) = path {
+        if let Ok(msg) = load_message(p) {
+            return label(&msg, p, id);
+        }
     }
+    id.fmt_short().to_string()
+}
+
+/// The config file at `path` as saved now; `None`, with the error
+/// logged, when it cannot be read.
+fn read_config(path: &Path) -> Option<pb::Config> {
+    load_message(path).map_err(|e| cannot_read(path, &e)).ok()
+}
+
+/// Logs why the config file cannot be read or locked. The client is
+/// told only `not allowed`: its right is not known then.
+fn cannot_read(path: &Path, e: &dyn std::fmt::Display) {
+    tracing::error!(path = %path.display(), "admin: cannot read the config: {e}");
 }
 
 /// The plain refusal, which says nothing about the server; closes the
@@ -251,7 +281,14 @@ async fn refuse(conn: &Connection, send: &mut SendStream, tap: &StreamTap) -> Re
 }
 
 /// The reply to a request with nothing in it; closes the session.
-async fn bad_request(conn: &Connection, send: &mut SendStream, tap: &StreamTap) -> Result<()> {
+async fn bad_request(
+    conn: &Connection,
+    send: &mut SendStream,
+    tap: &StreamTap,
+    path: &Path,
+    id: &EndpointId,
+) -> Result<()> {
+    tracing::warn!("admin: {}: bad request", label_in(Some(path), id));
     close_with(conn, send, tap, Code::Unknown, "bad request").await
 }
 

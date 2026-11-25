@@ -290,6 +290,9 @@ async fn admin_ro_reads_but_cannot_commit() {
     s.change(export_add("photos", &dir.join("photos"))).await;
     let n = nack(s.commit().await);
     assert_eq!((n.change, n.reason.as_str()), (0, "not allowed"));
+    // A COMMIT with nothing pending checks the right too.
+    let n = nack(s.commit().await);
+    assert_eq!((n.change, n.reason.as_str()), (0, "not allowed"));
     assert_eq!(std::fs::read(&path).unwrap(), before, "the file changed");
     stop(d).await;
 }
