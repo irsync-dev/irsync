@@ -1,8 +1,8 @@
 #[path = "common/bin.rs"]
 mod bin;
 
-use irsync::cli::location::Location;
 use irsync::cli::{validate, Args, Command, DeleteMode, Direction, FilterRule, SyncOptions};
+use irsync::location::Location;
 use std::path::PathBuf;
 use std::time::Duration;
 

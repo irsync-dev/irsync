@@ -1,5 +1,11 @@
-use super::UsageError;
+//! The operands of a sync: a local path or `HOST:PATH`.
+
 use std::path::PathBuf;
+
+/// An operand or a set of operands that cannot be used.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct UsageError(pub String);
 
 /// One side of a transfer: a local path, or `HOST:PATH` where `PATH` is
 /// passed to the daemon as typed (an export name, a path under the

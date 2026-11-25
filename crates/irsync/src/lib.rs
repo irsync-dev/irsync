@@ -18,6 +18,7 @@ pub mod fs;
 pub mod hasher;
 pub mod identity;
 pub mod index;
+pub mod location;
 pub mod manage;
 pub mod net;
 pub mod plan;

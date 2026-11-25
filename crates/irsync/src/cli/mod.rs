@@ -1,19 +1,15 @@
-pub mod location;
 pub mod progress;
 
 use crate::config::duration;
 use crate::config::settings::{parse_debug_addr, PqKeyExchange};
+use crate::location::Location;
+pub use crate::location::UsageError;
 use crate::net::addr::HostPort;
 use clap::{ArgAction, Args as _, CommandFactory, FromArgMatches, Parser, Subcommand};
-use location::Location;
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
-
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct UsageError(pub String);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {

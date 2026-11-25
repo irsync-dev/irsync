@@ -9,7 +9,6 @@ use std::time::Instant;
 use anyhow::{bail, Context};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::build::BuildInfo;
-use irsync::cli::location::Location;
 use irsync::cli::progress::render::Geometry;
 use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::summary::SessionSummary;
@@ -31,6 +30,7 @@ use irsync::identity::{
     load_client_identity, load_or_generate, parse_endpoint_id, KeySource, PassphraseSource,
 };
 use irsync::index::Index;
+use irsync::location::Location;
 use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
 use irsync::session::engine::list_exports;
