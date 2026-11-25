@@ -8,6 +8,7 @@
 
 use super::clients::RIGHTS;
 use super::duration;
+use super::settings::{Congestion, OtlpProtocol, PqKeyExchange, Spelled};
 use crate::authz::Access;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
@@ -22,25 +23,16 @@ pub fn write(msg: &pb::Config) -> String {
     let mut top = Keys::new(&msg.key_comments);
     top.int("config_version", msg.config_version);
     top.bool("unsafe_config_allowed", msg.unsafe_config_allowed);
-    top.string("identity", msg.identity.as_deref());
     top.string("state_dir", msg.state_dir.as_deref());
     let mut top = top.lines;
     top.extend(msg.tail.iter().cloned());
 
     let mut sections = vec![msg.header.clone(), top];
-    if let Some(c) = &msg.client {
-        sections.push(table(&["client"], &c.comment, &c.tail, client_table(c)));
+    if let Some(d) = &msg.defaults {
+        sections.push(table(&["defaults"], &d.comment, &d.tail, defaults(d)));
     }
     if let Some(d) = &msg.daemon {
         sections.push(table(&["daemon"], &d.comment, &d.tail, daemon(d)));
-        if let Some(x) = &d.discovery {
-            sections.push(table(
-                &["daemon", "discovery"],
-                &x.comment,
-                &x.tail,
-                discovery(x),
-            ));
-        }
     }
     if let Some(t) = &msg.telemetry {
         sections.push(table(&["telemetry"], &t.comment, &t.tail, telemetry(t)));
@@ -96,20 +88,21 @@ fn table(path: &[&str], comment: &Option<pb::Comment>, tail: &[String], keys: Ke
     lines
 }
 
-fn client_table(c: &pb::Client) -> Keys<'_> {
+fn defaults(c: &pb::Defaults) -> Keys<'_> {
     let mut k = Keys::new(&c.key_comments);
+    k.string("identity", c.identity.as_deref());
     k.int("parallel", c.parallel);
     k.duration("reconnect", c.reconnect.as_ref());
     k.int("dial_retries", c.dial_retries);
-    k.bool("dht", c.dht);
     k.bool("ssh_install", c.ssh_install);
-    k.bool("mdns", c.mdns);
     k.string("relay", c.relay.as_deref());
-    k.string("relay_mode", c.relay_mode.and_then(relay_mode));
-    k.string("congestion", c.congestion.and_then(congestion));
+    k.bool("dht", c.dht);
+    k.bool("dns", c.dns);
+    k.bool("mdns", c.mdns);
+    k.string("congestion", c.congestion.and_then(spelled::<Congestion>));
     k.string(
         "pq_key_exchange",
-        c.pq_key_exchange.and_then(pq_key_exchange),
+        c.pq_key_exchange.and_then(spelled::<PqKeyExchange>),
     );
     k
 }
@@ -129,11 +122,13 @@ fn daemon(d: &pb::Daemon) -> Keys<'_> {
     k.array("listen", &d.listen, d.listen_set);
     k.bool("portmap", d.portmap);
     k.string("relay", d.relay.as_deref());
-    k.string("relay_mode", d.relay_mode.and_then(relay_mode));
-    k.string("congestion", d.congestion.and_then(congestion));
+    k.bool("dht", d.dht);
+    k.bool("dns", d.dns);
+    k.bool("mdns", d.mdns);
+    k.string("congestion", d.congestion.and_then(spelled::<Congestion>));
     k.string(
         "pq_key_exchange",
-        d.pq_key_exchange.and_then(pq_key_exchange),
+        d.pq_key_exchange.and_then(spelled::<PqKeyExchange>),
     );
     k.string("debug_addr", d.debug_addr.as_deref());
     k.bool("allow_all_paths", d.allow_all_paths);
@@ -141,37 +136,32 @@ fn daemon(d: &pb::Daemon) -> Keys<'_> {
     k
 }
 
-fn discovery(d: &pb::Discovery) -> Keys<'_> {
-    let mut k = Keys::new(&d.key_comments);
-    k.bool("dht", d.dht);
-    k.bool("dns", d.dns);
-    k.bool("mdns", d.mdns);
-    k
-}
-
 fn telemetry(t: &pb::Telemetry) -> Keys<'_> {
     let mut k = Keys::new(&t.key_comments);
     k.string("otlp_endpoint", t.otlp_endpoint.as_deref());
-    k.string("otlp_protocol", t.otlp_protocol.and_then(otlp_protocol));
+    k.string(
+        "otlp_protocol",
+        t.otlp_protocol.and_then(spelled::<OtlpProtocol>),
+    );
     k
 }
 
 fn server(s: &pb::ServerEntry) -> Keys<'_> {
     let mut k = Keys::new(&s.key_comments);
     k.string("endpoint_id", non_empty(&s.endpoint_id).map(id).as_deref());
+    k.array("address", &s.address, s.address_set);
     k.string("relay", s.relay.as_deref());
-    k.string("relay_mode", s.relay_mode.and_then(relay_mode));
-    k.string("congestion", s.congestion.and_then(congestion));
+    k.bool("dht", s.dht);
+    k.bool("dns", s.dns);
+    k.bool("mdns", s.mdns);
+    k.string("congestion", s.congestion.and_then(spelled::<Congestion>));
     k.string(
         "pq_key_exchange",
-        s.pq_key_exchange.and_then(pq_key_exchange),
+        s.pq_key_exchange.and_then(spelled::<PqKeyExchange>),
     );
-    k.array("address", &s.address, s.address_set);
     k.int("parallel", s.parallel);
     k.duration("reconnect", s.reconnect.as_ref());
     k.int("dial_retries", s.dial_retries);
-    k.bool("dht", s.dht);
-    k.bool("mdns", s.mdns);
     k.string("ssh", s.ssh.as_deref());
     k.array("ssh_aliases", &s.ssh_aliases, s.ssh_aliases_set);
     k
@@ -325,34 +315,8 @@ pub(crate) fn duration_text(d: &prost_types::Duration) -> String {
     duration::format(Duration::new(secs, nanos))
 }
 
-pub(crate) fn relay_mode(m: i32) -> Option<&'static str> {
-    match pb::RelayMode::try_from(m).ok()? {
-        pb::RelayMode::Default => Some("default"),
-        pb::RelayMode::Disabled => Some("disabled"),
-        pb::RelayMode::Unspecified => None,
-    }
-}
-
-pub(crate) fn congestion(c: i32) -> Option<&'static str> {
-    match pb::Congestion::try_from(c).ok()? {
-        pb::Congestion::Bbr => Some("bbr"),
-        pb::Congestion::Cubic => Some("cubic"),
-        pb::Congestion::Unspecified => None,
-    }
-}
-
-pub(crate) fn pq_key_exchange(p: i32) -> Option<&'static str> {
-    match pb::PqKeyExchange::try_from(p).ok()? {
-        pb::PqKeyExchange::Prefer => Some("prefer"),
-        pb::PqKeyExchange::Require => Some("require"),
-        pb::PqKeyExchange::Unspecified => None,
-    }
-}
-
-pub(crate) fn otlp_protocol(p: i32) -> Option<&'static str> {
-    match pb::OtlpProtocol::try_from(p).ok()? {
-        pb::OtlpProtocol::Grpc => Some("grpc"),
-        pb::OtlpProtocol::Http => Some("http"),
-        pb::OtlpProtocol::Unspecified => None,
-    }
+/// An enum key's value as the file spells it; `None` for a number no
+/// value has.
+pub(crate) fn spelled<T: Spelled>(n: i32) -> Option<&'static str> {
+    T::from_message(n).ok().map(T::as_str)
 }

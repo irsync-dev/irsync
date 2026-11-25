@@ -11,8 +11,8 @@ use std::task::{Context, Poll, Waker};
 use irsync::delta::{Basis, Op};
 use irsync::net::frame::{read_body, MAX_FRAME};
 use irsync_proto::v1::{
-    control, AdminReply, AdminRequest, Control, DataChunk, DataStreamHeader, Error, ExportList,
-    Hello, HelloAck, ListingStreamHeader, PathInfo,
+    control, AdminReply, AdminRequest, Control, DataChunk, DataStreamHeader, Hello, HelloReply,
+    ListingFrame, ListingStreamHeader,
 };
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
@@ -34,13 +34,11 @@ fn round_trip<M: Message + Default + PartialEq + Debug>(body: &[u8]) -> Option<M
 
 fn body(b: &[u8]) {
     round_trip::<Hello>(b);
-    round_trip::<HelloAck>(b);
-    round_trip::<Error>(b);
-    round_trip::<ExportList>(b);
+    round_trip::<HelloReply>(b);
     round_trip::<AdminRequest>(b);
     round_trip::<AdminReply>(b);
-    round_trip::<PathInfo>(b);
     round_trip::<ListingStreamHeader>(b);
+    round_trip::<ListingFrame>(b);
     round_trip::<DataStreamHeader>(b);
     if let Some(c) = round_trip::<DataChunk>(b) {
         // What the receiver does next with a chunk's operations.

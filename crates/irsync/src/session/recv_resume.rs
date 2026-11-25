@@ -134,7 +134,14 @@ impl Receiver {
             else {
                 return;
             };
-            self.register(file_id, path.clone(), entry, action, deferred, None);
+            self.register(
+                file_id,
+                path.clone(),
+                entry,
+                (action, append_from),
+                deferred,
+                None,
+            );
             self.ctx.hooks.event("plan", &path);
             self.out.send(Msg::Plan(PlanItem {
                 file_id,

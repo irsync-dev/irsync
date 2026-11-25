@@ -38,10 +38,10 @@ pub struct FileDigest {
     pub chunks: Vec<ChunkRecord>,
 }
 
+/// The wire form leaves the offset out: it follows from the lengths before.
 impl From<ChunkRecord> for v1::ChunkRecord {
     fn from(c: ChunkRecord) -> Self {
         v1::ChunkRecord {
-            offset: c.offset,
             len: c.len,
             hash: Some(v1::Hash {
                 bytes: c.hash.to_vec(),
@@ -50,10 +50,10 @@ impl From<ChunkRecord> for v1::ChunkRecord {
     }
 }
 
-impl TryFrom<v1::ChunkRecord> for ChunkRecord {
-    type Error = io::Error;
-
-    fn try_from(c: v1::ChunkRecord) -> Result<Self, Self::Error> {
+impl ChunkRecord {
+    /// The record `c` of a chunk list, at `offset`: the end of the record
+    /// before it, or where the list starts.
+    pub fn from_wire(c: v1::ChunkRecord, offset: u64) -> io::Result<ChunkRecord> {
         let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_owned());
         let hash = c
             .hash
@@ -62,10 +62,15 @@ impl TryFrom<v1::ChunkRecord> for ChunkRecord {
             .try_into()
             .map_err(|_| bad("chunk hash is not 32 bytes"))?;
         Ok(ChunkRecord {
-            offset: c.offset,
+            offset,
             len: c.len,
             hash,
         })
+    }
+
+    /// Where the next chunk starts.
+    pub fn end(&self) -> u64 {
+        self.offset + u64::from(self.len)
     }
 }
 

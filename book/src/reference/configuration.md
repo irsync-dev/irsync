@@ -1,6 +1,7 @@
 # Configuration
 
-One file holds everything: `~/.config/irsync/irsync.toml`. It is optional; a
+One file holds everything: `~/.config/irsync/irsync.toml`, or
+`$XDG_CONFIG_HOME/irsync/irsync.toml` when that is set. It is optional; a
 missing file is the same as an empty one, and every key has a default except
 where noted. The [management commands](management.md) edit it for you and keep
 its comments and the order of its servers, clients and exports (they rewrite the rest in
@@ -25,18 +26,18 @@ Every table, with the defaults except where marked:
 ```toml
 config_version = 2              # written by irsync; always first
 unsafe_config_allowed = false   # true: skip the permission checks
-identity = "~/.config/irsync/id_ed25519"
 state_dir = "~/.local/state/irsync"
 
-[client]                     # defaults for every server
+[defaults]                   # this machine as a client
+identity = "~/.config/irsync/id_ed25519"
 parallel = 128
 reconnect = "1d"
 dial_retries = 4
-dht = true
 ssh_install = true           # false: copy nothing to the server
+relay = "default"             # n0's relays; "disabled" or a URL
+dht = true                   # the lookups
+dns = true
 mdns = true
-relay = "https://relay.example.net"   # no default: n0's relays
-relay_mode = "default"       # or "disabled": no relay
 congestion = "bbr"           # or "cubic", for pushes
 pq_key_exchange = "prefer"   # or "require"
 
@@ -48,18 +49,15 @@ max_dormant_sessions_per_key = 25        # 0: no limit
 # No default: any address, on a port picked at start.
 listen = ["0.0.0.0:4000", "[::]:4000"]
 portmap = true               # UPnP, PCP and NAT-PMP
-relay = "https://relay.example.net"      # no default: n0's relays
-relay_mode = "default"       # or "disabled"
+relay = "default"             # n0's relays; "disabled" or a URL
+dht = true                   # where clients may find the daemon
+dns = true
+mdns = true
 congestion = "bbr"           # or "cubic", for pulls
 pq_key_exchange = "prefer"   # or "require"
 debug_addr = "127.0.0.1:9464"            # no default: off
 allow_all_paths = true       # false: ignore all_paths
 allow_root = false           # true: let the daemon run as root
-
-[daemon.discovery]
-dht = true
-dns = true
-mdns = true
 
 [telemetry]
 otlp_endpoint = "http://localhost:4318"  # no default: off
@@ -69,16 +67,20 @@ otlp_protocol = "http"       # or "grpc"
 [servers.myserver]
 endpoint_id = "4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff"
 relay = "https://relay.example.net"   # the rest is optional
-relay_mode = "disabled"
+dht = false
+dns = false
+mdns = false
 congestion = "cubic"
 pq_key_exchange = "require"
-address = ["192.168.1.10:4000"]
 parallel = 64
 reconnect = "1h"
 dial_retries = 2
-dht = false
-mdns = false
 ssh = "myserver"             # set by irsync pair
+
+# A server dialled at its address: no relay, no lookups.
+[servers.mynas]
+endpoint_id = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"
+address = ["192.168.1.10:4000"]
 
 # One [clients.NAME] table per machine this one's daemon lets in.
 [clients.myclient]
@@ -142,12 +144,11 @@ Only regular files are checked. A passphrase read from a pipe, such as
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `identity` | `~/.config/irsync/id_ed25519` | The client's private key, an OpenSSH Ed25519 key file. |
 | `state_dir` | `~/.local/state/irsync`; `$XDG_STATE_HOME/irsync` when that is set | Where the client and the daemon keep their indexes, sessions and partial-file records. |
 
-The client's key is looked up the way ssh picks one: `--identity`; else
-`identity` when the file sets it; else `~/.config/irsync/id_ed25519` when it
-exists; else `~/.ssh/id_ed25519` when it exists, read as it is and never
+The client's key is `identity` in [`[defaults]`](#defaults). It is looked
+up the way ssh picks one: `--identity`; else `identity` when the file sets
+it; else `~/.config/irsync/id_ed25519` when it exists; else `~/.ssh/id_ed25519` when it exists, read as it is and never
 written; else a key generated at `~/.config/irsync/id_ed25519`. A key named by
 `--identity` or `identity` is the whole answer: when it is missing, a key is
 generated there. An encrypted key needs a passphrase, from
@@ -158,28 +159,31 @@ file-based Ed25519 keys work.
 The client and the daemon use different keys, so both can run in one account
 on one machine and reach each other.
 
-## Client
+## Defaults
 
-`[client]` holds the defaults for every sync. A server's table overrides them
-for that server, and a command-line flag overrides both: a sync resolves each
-setting from the flag, then the server's table, then `[client]`, then the
+`[defaults]` holds this machine's settings for when it connects to a server:
+its key, and the defaults for every sync. Do not mix it up with
+`[clients.NAME]`, the machines this machine's daemon lets in. A server's table
+overrides these defaults for that server, and a command-line flag overrides both: a sync resolves each
+setting from the flag, then the server's table, then `[defaults]`, then the
 built-in default.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `parallel` | `128` | Data streams a push keeps open at once. Flag: `--parallel`. |
+| `identity` | `~/.config/irsync/id_ed25519` | The client's private key, an OpenSSH Ed25519 key file. See [Identity and state](#identity-and-state). Flag: `--identity`. |
+| `parallel` | `128` | Data streams a push keeps open at once; at least 1. Flag: `--parallel`. |
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
-| `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. Not used for a server `irsync pair` saved: that is dialled once, unless `--dial-retries` is given. Flag: `--dial-retries`. |
-| `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
+| `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. A server `irsync pair` saved is dialled once when no `dial_retries` is set: not here, not in its table and not by the flag. Flag: `--dial-retries`. |
 | `ssh_install` | `true` | Copy irsync to the server when `irsync pair` sets it up. `false` copies nothing: `pair` uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
+| `relay` | `default` | Which relay to use when no direct path works: `default` for n0's public relays, `disabled` for direct connections only (the lookups stay on), or the URL of a relay of your own. Flag: `--relay`. |
+| `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
+| `dns` | `true` | Look daemons up through n0's DNS service. |
 | `mdns` | `true` | Look daemons up with mDNS on the local network. |
-| `relay` | n0's relays | The relay server to use, for a self-hosted relay. Flag: `--relay`. |
-| `relay_mode` | `default` | `disabled`: direct connections only, never through a relay; the lookups stay on. Flag: `--no-relay`. |
 | `congestion` | `bbr` | QUIC's congestion controller when the client sends, that is for a push: `bbr` or `cubic`. |
 | `pq_key_exchange` | `prefer` | `require`: refuse a daemon that does not offer the post-quantum key exchange. See [Post-quantum key exchange](#post-quantum-key-exchange). Flag: `--pq-key-exchange`. |
 
 `congestion` picks the congestion controller of the side that sends: the
-client's (the server's, else `[client]`'s) for a push, the daemon's for a pull.
+client's (the server's, else `[defaults]`'s) for a push, the daemon's for a pull.
 When to choose `cubic` over `bbr`, with measurements, is in
 [Connections](../explanation/connections.md#congestion-control).
 
@@ -198,7 +202,7 @@ the other side does not:
   sent. The side that refuses says why, and the other side prints it.
 
 Each side decides for itself. On the client it is the flag, else the server's
-table, else `[client]`. On the daemon it is `pq_key_exchange` in
+table, else `[defaults]`. On the daemon it is `pq_key_exchange` in
 [`[daemon]`](#daemon), and it holds for every client: there is no setting
 per export or per grant yet. A daemon tells only a client that has a grant;
 a key without one is turned away as before.
@@ -214,16 +218,16 @@ an `EndpointId`.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `endpoint_id` | required | The `EndpointId` of the server's daemon: the one dialled for `NAME:PATH`. The client pins it. |
-| `relay` | `[client]`'s | This server's relay server. |
-| `relay_mode` | `[client]`'s | `disabled`: reach this server directly only. |
-| `congestion` | `[client]`'s | The congestion controller for pushes to this server. |
-| `pq_key_exchange` | `[client]`'s | `require`: refuse this server when it does not offer the post-quantum key exchange. |
-| `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. Cannot be combined with `--relay`. |
-| `parallel` | `[client]`'s | Data streams a push to this server keeps open at once. |
-| `reconnect` | `[client]`'s | How long to keep redialling. |
-| `dial_retries` | `[client]`'s | How often to retry this server before it has answered. Not used when the server has `ssh`: see `--dial-retries`. |
-| `dht` | `[client]`'s | Look this server up in the mainline DHT. |
-| `mdns` | `[client]`'s | Look this server up with mDNS. |
+| `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. `relay`, `dht`, `dns` and `mdns` cannot be set beside it, and `[defaults]`'s do not apply to this server. Cannot be combined with `--relay`. |
+| `relay` | `[defaults]`'s | This server's relay: `default`, `disabled` or a URL, as in `[defaults]`. It wins over `[defaults]`'s, whatever each says. |
+| `dht` | `[defaults]`'s | Look this server up in the mainline DHT. |
+| `dns` | `[defaults]`'s | Look this server up through n0's DNS service. |
+| `mdns` | `[defaults]`'s | Look this server up with mDNS. |
+| `congestion` | `[defaults]`'s | The congestion controller for pushes to this server. |
+| `pq_key_exchange` | `[defaults]`'s | `require`: refuse this server when it does not offer the post-quantum key exchange. |
+| `parallel` | `[defaults]`'s | Data streams a push to this server keeps open at once; at least 1. |
+| `reconnect` | `[defaults]`'s | How long to keep redialling. |
+| `dial_retries` | `[defaults]`'s | How often to retry this server before it has answered. A server with `ssh` is dialled once when neither this nor `[defaults]` sets it. |
 | `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. It is what `irsync pair` logs in to. A sync never uses it, except to find the server when you type that address. `irsync pair` for a saved server checks it again, and never adds back `all_paths` that was removed on the server. |
 | `ssh_aliases` | none | Other ssh destinations that were typed for this server, such as its address: `["192.168.1.5"]`. Typing one of them finds this server, as typing its `ssh` value does. `irsync pair` adds to it; nothing is ever dialled through it. These are not server names: they do not work with `irsync server`. |
 
@@ -259,8 +263,9 @@ file without it is read as version 2. Any other version is an error.
 ## Daemon
 
 `[daemon]` configures `irsync daemon`. On SIGHUP the daemon re-reads this
-table and rebinds; changes to `debug_addr` and to the top-level `state_dir`
-take effect at the next start.
+table and rebinds. Changes to `debug_addr`, to `[telemetry]` and to the
+top-level `state_dir` take effect at the next start; the reload logs each at
+`warn`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -270,21 +275,15 @@ take effect at the next start.
 | `max_dormant_sessions_per_key` | `25` | How many interrupted sessions one client key may leave waiting in an export. When a key has more, the daemon drops the one that went longest without progress; the sync it belonged to plans afresh on its next run. A session that a connection is using does not count. `0` removes the limit. |
 | `listen` | none | The sockets to bind, at most one IPv4 and one IPv6; port `0` lets the system pick. Without it the daemon binds any address on a port picked at start. The daemon offers clients the addresses it binds for extra paths: a specific address offers only that one, any address offers every interface. Flag: `--listen`. |
 | `portmap` | `true` | Ask the router for a port mapping with UPnP, PCP or NAT-PMP. Set `false` in isolated setups. |
-| `relay` | n0's relays | The relay server to use, for a self-hosted relay. |
-| `relay_mode` | `default` | `disabled`: no relay, direct connections only. |
+| `relay` | `default` | `default` for n0's public relays, `disabled` for no relay (direct connections only), or the URL of a relay of your own. |
+| `dht` | `true` | Publish the daemon's addresses in the mainline DHT. With relays disabled the records carry no addresses, and the daemon warns. |
+| `dns` | `true` | Publish them through n0's DNS service. |
+| `mdns` | `true` | Announce the daemon with mDNS on the local network. |
 | `congestion` | `bbr` | The congestion controller when the daemon sends, that is for a pull. |
 | `pq_key_exchange` | `prefer` | `require`: close the connection of a client that does not offer the post-quantum key exchange, for every export. The client is told to upgrade. See [Post-quantum key exchange](#post-quantum-key-exchange). |
 | `debug_addr` | off | Serve metrics and span timings over HTTP at `IP:PORT`; a bare port means `127.0.0.1`. |
 | `allow_all_paths` | `true` | Honour every client's `all_paths`. `false`: the daemon ignores `all_paths` and makes no automatic exports, so clients reach only the exports granted to them. |
 | `allow_root` | `false` | Let the daemon run as root. Without it, or the flag `--run-as-root-i-know-what-i-am-doing`, a daemon started as root exits at once. See [Do not run it as root](../how-to/run-the-daemon.md#do-not-run-it-as-root). |
-
-`[daemon.discovery]` says how clients may find the daemon:
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `dht` | `true` | Publish the daemon's addresses in the mainline DHT. With relays disabled the records carry no addresses, and the daemon warns. |
-| `dns` | `true` | Publish them through n0's DNS service. |
-| `mdns` | `true` | Announce the daemon with mDNS on the local network. |
 
 ## Telemetry
 

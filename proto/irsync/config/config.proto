@@ -16,7 +16,6 @@ message Entry {                // one element of a string array
   Comment comment = 2;
 }
 
-enum RelayMode { RELAY_MODE_UNSPECIFIED = 0; RELAY_MODE_DEFAULT = 1; RELAY_MODE_DISABLED = 2; }
 enum Congestion { CONGESTION_UNSPECIFIED = 0; CONGESTION_BBR = 1; CONGESTION_CUBIC = 2; }
 enum PqKeyExchange { PQ_KEY_EXCHANGE_UNSPECIFIED = 0; PQ_KEY_EXCHANGE_PREFER = 1; PQ_KEY_EXCHANGE_REQUIRE = 2; }
 // A right a client can hold over every export or every path; unset: none.
@@ -29,32 +28,33 @@ enum OtlpProtocol { OTLP_PROTOCOL_UNSPECIFIED = 0; OTLP_PROTOCOL_GRPC = 1; OTLP_
 message Config {
   repeated string header = 1;  // lines at the top of the file; "" is a blank line
   repeated string footer = 2;  // lines after everything
-  optional bool unsafe_config_allowed = 3;
-  optional string identity = 4;
+  optional uint32 config_version = 3;
+  optional bool unsafe_config_allowed = 4;
   optional string state_dir = 5;
   map<string, Comment> key_comments = 6;
   repeated string tail = 7;    // after the last top-level key
-  Client client = 8;
+  Defaults defaults = 8;
   Daemon daemon = 9;
   Telemetry telemetry = 10;
-  repeated Export exports = 11;
-  optional uint32 config_version = 12;
-  repeated ServerEntry servers = 13;
-  repeated ClientEntry clients = 14;
+  repeated ServerEntry servers = 11;
+  repeated ClientEntry clients = 12;
+  repeated Export exports = 13;
 }
 
-message Client {
+// This machine's defaults for dialling a server, and its client identity.
+message Defaults {
   Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
-  optional uint32 parallel = 4;
-  google.protobuf.Duration reconnect = 5;
-  optional uint32 dial_retries = 6;
-  optional bool dht = 7;
+  optional string identity = 4;
+  optional uint32 parallel = 5;
+  google.protobuf.Duration reconnect = 6;
+  optional uint32 dial_retries = 7;
   optional bool ssh_install = 8;
-  optional bool mdns = 9;
-  optional string relay = 10;
-  optional RelayMode relay_mode = 11;
-  optional Congestion congestion = 12;
-  optional PqKeyExchange pq_key_exchange = 13;
+  optional string relay = 9;   // "default", "disabled" or a URL, as written
+  optional bool dht = 10;
+  optional bool dns = 11;
+  optional bool mdns = 12;
+  optional Congestion congestion = 13;
+  optional PqKeyExchange pq_key_exchange = 14;
 }
 
 message Daemon {
@@ -66,21 +66,15 @@ message Daemon {
   repeated Entry listen = 8;
   bool listen_set = 9;         // the key is in the file, even when empty
   optional bool portmap = 10;
-  optional string relay = 11;
-  optional RelayMode relay_mode = 12;
-  optional Congestion congestion = 13;
-  optional PqKeyExchange pq_key_exchange = 14;
-  Discovery discovery = 15;
-  optional string debug_addr = 16;
-  optional bool allow_root = 17;
+  optional string relay = 11;  // as in Defaults
+  optional bool dht = 12;
+  optional bool dns = 13;
+  optional bool mdns = 14;
+  optional Congestion congestion = 15;
+  optional PqKeyExchange pq_key_exchange = 16;
+  optional string debug_addr = 17;
   optional bool allow_all_paths = 18;
-}
-
-message Discovery {
-  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
-  optional bool dht = 4;
-  optional bool dns = 5;
-  optional bool mdns = 6;
+  optional bool allow_root = 19;
 }
 
 message Telemetry {
@@ -94,17 +88,17 @@ message ServerEntry {
   Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
   string name = 4;
   bytes endpoint_id = 5;       // empty: missing
-  optional string relay = 6;
-  optional RelayMode relay_mode = 7;
-  optional Congestion congestion = 8;
-  optional PqKeyExchange pq_key_exchange = 9;
-  repeated Entry address = 10;
-  bool address_set = 11;
-  optional uint32 parallel = 12;
-  google.protobuf.Duration reconnect = 13;
-  optional uint32 dial_retries = 14;
-  optional bool dht = 15;
-  optional bool mdns = 16;
+  repeated Entry address = 6;
+  bool address_set = 7;
+  optional string relay = 8;   // as in Defaults
+  optional bool dht = 9;
+  optional bool dns = 10;
+  optional bool mdns = 11;
+  optional Congestion congestion = 12;
+  optional PqKeyExchange pq_key_exchange = 13;
+  optional uint32 parallel = 14;
+  google.protobuf.Duration reconnect = 15;
+  optional uint32 dial_retries = 16;
   optional string ssh = 17;
   repeated Entry ssh_aliases = 18;
   bool ssh_aliases_set = 19;

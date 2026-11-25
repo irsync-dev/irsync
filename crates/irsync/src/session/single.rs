@@ -7,12 +7,10 @@ use std::time::Duration;
 
 use anyhow::Context;
 use iroh::endpoint::Connection;
-use irsync_proto::chunk::CHUNK_PARAMS;
-use irsync_proto::v1::{error::Code, hello, path_info, Error, Hello, PathInfo};
+use irsync_proto::v1::{hello, hello_reply, path_info, Hello, Probe};
 use irsync_proto::PROTOCOL_VERSION;
-use prost::Message;
 
-use super::engine::{read_reply_body, SessionRefused, TransportError};
+use super::engine::{read_hello_reply, TransportError};
 use crate::build::BuildInfo;
 use crate::fs::paths::RelPath;
 use crate::net::frame::write_msg_tapped;
@@ -160,12 +158,10 @@ pub async fn probe(
 ) -> anyhow::Result<path_info::Kind> {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
-        direction: hello::Direction::Probe as i32,
-        chunk_min: CHUNK_PARAMS.min,
-        chunk_avg: CHUNK_PARAMS.avg,
-        chunk_max: CHUNK_PARAMS.max,
         build: Some(BuildInfo::current().to_wire()),
-        path: path.to_vec(),
+        request: Some(hello::Request::Probe(Probe {
+            path: path.to_vec(),
+        })),
         ..Hello::default()
     };
     let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
@@ -175,35 +171,10 @@ pub async fn probe(
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
     send.finish()?;
     tap.finished();
-    let reply = async {
-        read_reply_body(&mut recv)
-            .await
-            .map_err(|e| TransportError(format!("reading PathInfo: {e}")))
-    };
-    let body = match timeout.filter(|t| !t.is_zero()) {
-        Some(t) => tokio::time::timeout(t, reply)
-            .await
-            .map_err(|_| TransportError(format!("no reply to Hello within {} s", t.as_secs())))??,
-        None => reply.await?,
-    };
-    // An Error never holds field 3, so a reply without `kind` is one.
-    if let Ok(info @ PathInfo { kind: Some(kind) }) = PathInfo::decode(&body[..]) {
-        tap.received(&info, body.len());
-        return path_info::Kind::try_from(kind).context("unknown kind of path in the reply");
-    }
-    match Error::decode(&body[..]) {
-        // A daemon's refusal always says why.
-        Ok(e) if e.code == Code::Unknown as i32 && e.message.is_empty() => {
-            anyhow::bail!("malformed reply to Hello")
+    match read_hello_reply(&mut recv, &tap, timeout).await? {
+        hello_reply::Reply::PathInfo(info) => {
+            path_info::Kind::try_from(info.kind).context("unknown kind of path in the reply")
         }
-        Ok(e) => {
-            tap.received(&e, body.len());
-            Err(SessionRefused {
-                code: Code::try_from(e.code).unwrap_or(Code::Unknown),
-                message: e.message,
-            }
-            .into())
-        }
-        Err(_) => anyhow::bail!("malformed reply to Hello"),
+        _ => anyhow::bail!("the daemon's reply does not fit a probe"),
     }
 }

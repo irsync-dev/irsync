@@ -12,8 +12,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use iroh::endpoint::{RecvStream, SendStream};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_entry::Kind, Control, FileEntry, Hash, ListingEnd, ListingEntry, PathError,
-    PlacedStat, PlanEntry, SessionPlan, SessionProgress, SourceStat,
+    control::Msg, file_entry::Kind, listing_frame::Frame, Control, FileEntry, Hash, ListingEnd,
+    PathError, PlacedStat, PlanEntry, SessionPlan, SessionProgress, SourceStat,
 };
 use prost::Message as _;
 use tokio::sync::mpsc;
@@ -25,7 +25,7 @@ use super::engine::{Ctx, PeerEvents};
 use super::limits::{Backlog, ByteBudget, OUT_BUDGET, PEER_EVENTS};
 use super::listing_stream::{ListingOut, PeerScan};
 use super::single::SingleFile;
-use super::{IndexScope, SessionRecord, StreamKind};
+use super::{IndexScope, SessionRecord};
 use crate::filter::{FilterSet, Verdict};
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
@@ -44,10 +44,12 @@ const PERSIST_EVERY: Duration = Duration::from_secs(2);
 /// What a role's main loop reacts to: inbound control frames, transport
 /// trouble, and completions of the tasks the role spawned.
 pub(super) enum Ev {
-    /// A control frame, or the peer's `ListingEnd` (from the listing stream).
+    /// A control frame.
     Ctrl(Msg),
     /// The peer started its listing (sent once, at its first listing frame).
     PeerListing,
+    /// The peer's listing ended (its last listing frame).
+    PeerListingEnd(ListingEnd),
     /// The peer finished its control stream.
     PeerEof,
     /// A stream from the peer failed (the message names the stream).
@@ -264,12 +266,7 @@ pub(super) fn spawn_writer(
     let task = tokio::spawn(
         async move {
             while let Some(Some(q)) = rx.recv().await {
-                for msg in q
-                    .frame
-                    .msg
-                    .into_iter()
-                    .flat_map(|m| tamper.frames(StreamKind::Control, m))
-                {
+                for msg in q.frame.msg.into_iter().flat_map(|m| tamper.frames(m)) {
                     let c = Control { msg: Some(msg) };
                     if let Err(e) = write_msg_tapped(&mut send, &c, &tap).await {
                         let _ =
@@ -387,16 +384,6 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
         let frame = read_msg_tapped::<Control, _>(&mut recv, &tap).await;
         match frame {
             Ok(Some(Control { msg: Some(msg) })) => match msg {
-                Msg::Listing(_) | Msg::ListingError(_) | Msg::ListingEnd(_) => {
-                    // Read on: dropping the stream would stop the peer's
-                    // writer, and that transport error could reach the peer
-                    // before our `Error` saying why.
-                    events
-                        .send(Ev::ProtocolError(
-                            "listing frame on the control stream".into(),
-                        ))
-                        .await;
-                }
                 // Counted as activity by `Counted`; it also carries the peer's
                 // progress this side cannot otherwise see.
                 Msg::Heartbeat(h) => {
@@ -433,10 +420,10 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
                     if h.skipped_bytes > 0 {
                         bus.emit(Event::PeerSkipped(h.skipped_bytes));
                     }
-                    if h.deleted > 0 || h.delete_total > 0 {
+                    if h.deleted_count > 0 || h.delete_total > 0 {
                         bus.emit(Event::Delete {
                             party: Party::Peer,
-                            done: h.deleted,
+                            done: h.deleted_count,
                             total: (h.delete_total > 0).then_some(h.delete_total),
                         });
                     }
@@ -586,7 +573,7 @@ pub(super) fn spawn_listing(
             })
         };
         let mut count = 0u64;
-        // `ListingEntry` frames sent, injected ones included.
+        // Entries sent, injected ones included.
         let mut sent = 0u64;
         let mut stats = crate::scan::ListStats::default();
         let mut names = crate::fs::ids::IdNames::new();
@@ -597,7 +584,7 @@ pub(super) fn spawn_listing(
         let mut walking = RelPath::root();
         #[cfg(feature = "test-hooks")]
         let queued = std::cell::Cell::new(0usize);
-        let send = |msg: Msg| {
+        let send = |frame: Frame| {
             #[cfg(feature = "test-hooks")]
             if let Some(n) = spec.cut_after {
                 if queued.get() >= n {
@@ -605,7 +592,7 @@ pub(super) fn spawn_listing(
                 }
                 queued.set(queued.get() + 1);
             }
-            listing.send_blocking(msg);
+            listing.send_blocking(frame);
             #[cfg(feature = "test-hooks")]
             if let Some((fault, conn)) = &spec.drop_after {
                 if fault.queued() {
@@ -622,7 +609,7 @@ pub(super) fn spawn_listing(
             let item = match ev {
                 ScanEvent::Entry(item) => item,
                 ScanEvent::Gap { path, message } => {
-                    send(Msg::ListingError(PathError {
+                    send(Frame::Error(PathError {
                         path: path.as_bytes().to_vec(),
                         message,
                     }));
@@ -711,14 +698,12 @@ pub(super) fn spawn_listing(
                         .insert(path, crate::hasher::Freshness::of(&item));
                 }
             }
-            send(Msg::Listing(ListingEntry {
-                entry: Some(entry.clone()),
-            }));
+            send(Frame::Entry(wire_entry(entry.clone())));
             sent += 1;
             #[cfg(feature = "test-hooks")]
             if let Some(inject) = &spec.inject {
                 for e in inject(&entry) {
-                    send(Msg::Listing(ListingEntry { entry: Some(e) }));
+                    send(Frame::Entry(wire_entry(e)));
                     sent += 1;
                 }
             }
@@ -763,7 +748,7 @@ pub(super) fn spawn_listing(
         if let Some(busy) = &spec.busy {
             *busy.walking.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
-        send(Msg::ListingEnd(ListingEnd {
+        send(Frame::End(ListingEnd {
             incomplete: summary.incomplete,
             count: sent,
         }));
@@ -974,12 +959,12 @@ impl Persister {
 
     /// Deletions made by every connection of this session so far.
     pub fn deleted(&self) -> u64 {
-        self.rec.progress.deleted
+        self.rec.progress.deleted_count
     }
 
     pub fn add_deleted(&mut self, n: u64) {
         if n > 0 {
-            self.rec.progress.deleted += n;
+            self.rec.progress.deleted_count += n;
             self.dirty = true;
         }
     }
@@ -1110,16 +1095,24 @@ pub(super) fn capped_errors(errors: &[(RelPath, String)]) -> Vec<PathError> {
     v
 }
 
+/// `e` as it goes on the wire: without the device and inode, which are
+/// this side's own and which the peer never reads.
+pub(super) fn wire_entry(mut e: FileEntry) -> FileEntry {
+    e.dev = 0;
+    e.inode = 0;
+    e
+}
+
 pub(super) fn msg_name(m: &Msg) -> &'static str {
     match m {
-        Msg::Listing(_) => "ListingEntry",
-        Msg::ListingEnd(_) => "ListingEnd",
-        Msg::ListingError(_) => "ListingError",
         Msg::Plan(_) => "PlanItem",
-        Msg::ChunkListPart(_) => "ChunkListPart",
+        Msg::ChunkListStart(_) => "ChunkListStart",
+        Msg::ChunkListMore(_) => "ChunkListMore",
+        Msg::WithdrawChunkList(_) => "WithdrawChunkList",
         Msg::Need(_) => "NeedChunks",
         Msg::ChunkBasis(_) => "ChunkBasis",
         Msg::Ack(_) => "FileAck",
+        Msg::SourceError(_) => "SourceError",
         Msg::Done(_) => "SessionDone",
         Msg::Error(_) => "Error",
         Msg::Itemized(_) => "Itemized",

@@ -1,68 +1,54 @@
+// Part of the normative irsync wire protocol. Any change to these messages
+// bumps PROTOCOL_VERSION (irsync-proto). FileEntry and SourceStat are also
+// stored in each side's index (session.proto).
 syntax = "proto3";
 package irsync.v1;
 
+// A 32-byte BLAKE3 hash.
 message Hash {
   bytes bytes = 1;
-} // 32-byte BLAKE3
+}
 
+// The first frame of a connection, on its control stream, client ->
+// daemon. The daemon answers with one HelloReply. `protocol_version` and
+// HelloReply's `error` keep their field numbers in every protocol version,
+// so a client of another version still reads why it was refused.
 message Hello {
   uint32 protocol_version = 1; // `PROTOCOL_VERSION` (irsync-proto)
-  bytes session_id = 2; // 16 bytes; empty = new session
-  reserved 3; // was the export name; the daemon resolves `path` now
+  BuildInfo build = 2; // the client's build, logged by the daemon
+  // The client's W3C trace context (`traceparent`, `tracestate`) so the
+  // daemon's session joins the client's trace; empty means no trace.
+  string traceparent = 3;
+  string tracestate = 4;
+  // What the client asks for. A Hello without one is refused.
+  oneof request {
+    SyncRequest push = 5; // a session in which the client sends
+    SyncRequest pull = 6; // a session in which the daemon sends
+    ListExports list_exports = 7;
+    Probe probe = 8;
+    OpenAdmin admin = 9;
+  }
+}
+// A push or a pull: the session's place and options.
+message SyncRequest {
+  bytes session_id = 1; // 16 bytes to resume a session; empty = new session
   // PATH as typed: an export name followed by a path inside it, a path
   // relative to the daemon's home, or an absolute path; a trailing slash
   // is stripped and sets contents_only.
-  bytes path = 4;
-  enum Direction {
-    CLIENT_SENDS = 0;
-    DAEMON_SENDS = 1;
-    // No session: the daemon answers with an ExportList of what this key
-    // may reach, then closes. `path` and `name` are empty.
-    LIST_EXPORTS = 2;
-    PROBE = 3; // no session: the daemon answers with PathInfo for path, then closes
-    // The control stream becomes an admin session (AdminRequest in,
-    // AdminReply out). `path` is empty.
-    ADMIN = 4;
-  }
-  Direction direction = 5;
+  bytes path = 2;
+  bool contents_only = 3; // rsync trailing-slash rule applied to the remote path
+  // On a push of a source without a trailing slash: its basename, which
+  // the daemon joins to the resolved path (rsync's rule). With
+  // `single_file`: the source's basename on a push, and the name the file
+  // gets on the client on a pull. Else empty.
+  bytes name = 4;
+  bool single_file = 5; // the session copies one file, named by `name`
   uint32 chunk_min = 6;
   uint32 chunk_avg = 7;
   uint32 chunk_max = 8; // must equal protocol constants
-  bool contents_only = 9; // rsync trailing-slash rule applied to the remote path
-  // Receiver-side options, honoured by the daemon only when it receives
-  // (CLIENT_SENDS, which already requires write access to a writable export).
-  enum DeleteMode {
-    DELETE_OFF = 0;
-    DELETE_BEFORE = 1;
-    DELETE_DURING = 2;
-    DELETE_AFTER = 3;
-  }
-  DeleteMode delete_mode = 10;
-  bool delete_excluded = 11;
-  optional uint64 max_delete = 12; // absent = unlimited; 0 = delete nothing
-  bool dry_run = 13; // the receiver changes nothing
-  bool ignore_errors = 14; // delete even if a listing was incomplete
-  bool itemize = 15; // the receiver sends Itemized codes (-i)
-  bool update_only = 16; // -u: keep destination files newer than the source
-  bool checksum = 17; // -c: equal size+mtime is not enough, compare content
-  // --inplace: a changed file is written into the destination file itself
-  // (ascending, forward-only reuse) instead of a `.part` renamed over it.
-  bool inplace = 18;
-  // --append / --append-verify: a destination file shorter than the
-  // source is extended by its tail; one that is not shorter is skipped.
-  enum AppendMode {
-    APPEND_OFF = 0;
-    APPEND = 1; // the existing prefix is trusted (rsync --append)
-    APPEND_VERIFY = 2; // the prefix is verified too: a plain DELTA, with the skip rule
-  }
-  AppendMode append = 19;
-  BuildInfo build = 20; // the client's build, logged by the daemon
-  // On CLIENT_SENDS when the source had no trailing slash: its basename,
-  // which the daemon joins to the resolved path (rsync's rule). Else empty.
-  bytes name = 21;
   // The client's -l -p -t -g -o -D -H -S: what a receiving daemon applies
-  // and what a sending daemon lists as hard links. Required for a push or
-  // a pull: the daemon refuses a Hello without it.
+  // and what a sending daemon lists as hard links. Required: the daemon
+  // refuses a push or a pull without it.
   message Preserve {
     bool links = 1;
     bool perms = 2;
@@ -73,10 +59,8 @@ message Hello {
     bool specials = 7;
     bool hard_links = 8;
     bool sparse = 9;
-    bool recursive = 10; // off: top-level entries only, directories skipped
-    bool dirs = 11; // with recursion off: directories themselves, without contents
   }
-  Preserve preserve = 22;
+  Preserve preserve = 9;
   // The client's include/exclude rules, compiled (files from --exclude-from
   // and --include-from already read), in command-line order. A sending
   // daemon walks with them; a receiving daemon protects what they exclude
@@ -85,35 +69,83 @@ message Hello {
     bool include = 1;
     bytes pattern = 2; // rsync pattern as typed (a pattern file may hold non-UTF-8 names)
   }
-  repeated FilterRule filters = 23;
+  repeated FilterRule filters = 10;
+  // Receiver-side options, honoured by the daemon only when it receives
+  // (a push, which already requires write access to a writable export).
+  enum DeleteMode {
+    DELETE_OFF = 0;
+    DELETE_BEFORE = 1;
+    DELETE_DURING = 2;
+    DELETE_AFTER = 3;
+  }
+  DeleteMode delete_mode = 11;
+  bool delete_excluded = 12;
+  optional uint64 max_delete = 13; // absent = unlimited; 0 = delete nothing
+  bool dry_run = 14; // the receiver changes nothing
+  bool ignore_errors = 15; // delete even if a listing was incomplete
+  bool itemize = 16; // the receiver sends Itemized codes (-i)
+  bool update_only = 17; // -u: keep destination files newer than the source
+  bool checksum = 18; // -c: equal size+mtime is not enough, compare content
+  // --inplace: a changed file is written into the destination file itself
+  // (ascending, forward-only reuse) instead of a `.part` renamed over it.
+  bool inplace = 19;
+  // --append / --append-verify: a destination file shorter than the
+  // source is extended by its tail; one that is not shorter is skipped.
+  enum AppendMode {
+    APPEND_OFF = 0;
+    APPEND = 1; // the existing prefix is trusted (rsync --append)
+    APPEND_VERIFY = 2; // the prefix is verified too: a plain DELTA, with the skip rule
+  }
+  AppendMode append = 20;
   // --partial-dir, relative to the destination root (a canonical relative
   // path: no `..`); honoured by a receiving daemon, which keeps the `.part`
   // files of interrupted transfers under it. Empty: beside their files.
-  bytes partial_dir = 24;
+  bytes partial_dir = 21;
   // --numeric-ids: a receiving daemon applies the ids as sent instead of
   // mapping the owner and group names to its own ids.
-  bool numeric_ids = 25;
-  // The client's W3C trace context (`traceparent`, `tracestate`) so the
-  // daemon's session joins the client's trace; empty means no trace.
-  string traceparent = 26;
-  string tracestate = 27;
+  bool numeric_ids = 22;
   // --no-rename-detection: a receiving daemon fills no file from chunks
   // other files on its side hold; everything not in a file's own old
   // version comes from the sender.
-  bool no_local_reuse = 28;
+  bool no_rename_detection = 23;
   // --fsync: a receiving daemon flushes each file to disk before renaming
   // it into place. Off (rsync's default): nothing is flushed explicitly.
-  bool fsync = 29;
+  bool fsync = 24;
   // --paranoid: both roles take part in the final re-check (Settle,
   // Replan, Settled), which the receiver asks for with Settle. Only the
   // sending side sends each file from a reflink clone or hashes it again
   // before the receiver places it; a receiving daemon (a push) does neither.
-  bool paranoid = 30;
-  bool single_file = 31; // name (21) is the source basename on a push and the receiver's file name on a pull
+  bool paranoid = 25;
   // --bwlimit in bytes per second, honoured by a sending daemon (a pull),
   // which paces the file data it sends. On a push the client paces its
   // own sending and the daemon ignores this. Absent or 0: no limit.
-  optional uint64 bwlimit = 32;
+  optional uint64 bwlimit = 26;
+  // -r: off lists top-level entries only, directories skipped. Both sides'
+  // listings follow it.
+  bool recursive = 27;
+  bool dirs = 28; // -d: with recursion off, directories themselves, without contents
+}
+// No session: the daemon answers with the ExportList of what this key may
+// reach, then closes.
+message ListExports {}
+// No session: the daemon resolves `path` and checks it as for a pull, and
+// answers with PathInfo, then closes.
+message Probe {
+  bytes path = 1;
+}
+// The control stream becomes an admin session (AdminRequest in,
+// AdminReply out) once the daemon answers with AdminReady.
+message OpenAdmin {}
+
+// The daemon's answer to Hello: exactly one of these.
+message HelloReply {
+  oneof reply {
+    Error error = 1; // a refusal; the daemon closes the connection (code 2)
+    HelloAck ack = 2; // a push or a pull: the session is open
+    ExportList exports = 3; // list_exports
+    PathInfo path_info = 4; // probe
+    AdminReady admin_ready = 5; // admin
+  }
 }
 // One export the asking key may use.
 message ExportEntry {
@@ -125,55 +157,61 @@ message ExportEntry {
   }
   Access access = 3; // effective: read_only caps RW to RO
 }
-// The reply to a LIST_EXPORTS Hello, sorted by name.
+// The reply to list_exports, sorted by name.
 message ExportList {
   repeated ExportEntry exports = 1;
 }
-// The reply to a PROBE Hello: what `path` is on the daemon. A refusal is
-// an Error instead; `kind` is always set and on a field number Error does
-// not use, so the client tells the two apart.
+// The reply to a probe: what `path` is on the daemon.
 message PathInfo {
   enum Kind {
     MISSING = 0;
     DIRECTORY = 1;
     FILE = 2; // anything that isn't a directory
   }
-  reserved 1, 2;
-  optional Kind kind = 3;
+  Kind kind = 1;
 }
+// The reply to a push or a pull: the session is open.
 message HelloAck {
   bytes session_id = 1;
   bool resumed = 2;
-  uint32 protocol_version = 3;
-  BuildInfo build = 4; // the daemon's build, logged by the client
-  bytes single_name = 5; // push: the daemon's name for the file (the wire name)
+  BuildInfo build = 3; // the daemon's build, logged by the client
+  bytes single_name = 4; // push: the daemon's name for the file (the wire name)
 }
+// The admin session is open: AdminRequest frames may follow.
+message AdminReady {}
 // What a peer was built from.
 message BuildInfo {
   string version = 1; // package version
   string commit = 2; // short git commit, or "unknown"
   optional bool dirty = 3; // uncommitted changes at build time; absent = unknown
 }
+// A refusal of a Hello (in HelloReply) or of an admin request (in
+// AdminReply), daemon -> client; or, in Control, a fatal session error,
+// which either side sends with INTERNAL before it gives the session up.
 message Error {
   enum Code {
-    UNKNOWN = 0;
+    UNSPECIFIED = 0; // never sent
     UNAUTHORIZED = 1;
-    reserved 2; // was NO_SUCH_EXPORT: a path the key may not use is UNAUTHORIZED
-    READ_ONLY = 3;
-    BAD_PATH = 4;
-    VERSION_MISMATCH = 5;
-    BAD_SESSION = 6;
-    INTERNAL = 7;
+    READ_ONLY = 2;
+    BAD_PATH = 3;
+    VERSION_MISMATCH = 4;
+    BAD_SESSION = 5;
+    INTERNAL = 6;
+    BAD_REQUEST = 7; // a malformed or unsupported request
   }
   Code code = 1;
   string message = 2;
 }
+// One chunk of a chunk list. Its offset is the sum of the lengths before
+// it, from the start of the list: 0, or for an APPEND tail `append_from`.
 message ChunkRecord {
-  uint64 offset = 1;
-  uint32 len = 2;
-  Hash hash = 3;
+  uint32 len = 1;
+  Hash hash = 2;
 }
 
+// A listing entry, and a row of each side's index. The listing sends every
+// field but `dev` and `inode`, which are the listing side's own (its
+// `-H` grouping, its index) and are cleared before an entry is sent.
 message FileEntry {
   bytes path = 1; // relative to root, '/'-separated, raw bytes
   // HARDLINK: a regular file sharing the inode of the earlier listed regular
@@ -197,20 +235,21 @@ message FileEntry {
   uint32 gid = 8;
   bytes link_target = 9;
   uint64 rdev = 10;
-  uint64 dev = 11;
-  uint64 inode = 12;
-  uint32 nlink = 13;
-  optional Hash whole_hash = 14; // lazy: absent until computed
-  bool sparse = 15;
-  reserved 16 to 31; // later metadata (xattrs)
+  uint32 nlink = 11;
+  optional Hash whole_hash = 12; // lazy: absent until computed
+  bool sparse = 13;
   // The owner's and group's names on the sending side, empty when the id has
   // none there. A receiver maps them to its own ids when the names exist
   // locally, else keeps the numbers (rsync's rule; --numeric-ids skips this).
-  string user = 32;
-  string group = 33;
+  string user = 14;
+  string group = 15;
+  uint64 dev = 16; // never sent
+  uint64 inode = 17; // never sent
 }
 
-// A source file's stat, as the sender compares it (`-H`'s link check).
+// A source file's stat, as the sender hashed it: what a chunk list was
+// hashed under, and what the sender compares (the final re-check, `-H`'s
+// link check).
 message SourceStat {
   uint64 size = 1;
   int64 mtime_sec = 2;
@@ -221,11 +260,4 @@ message SourceStat {
   uint32 mode = 7;
   uint32 uid = 8;
   uint32 gid = 9;
-}
-message Range {
-  uint64 offset = 1;
-  uint64 length = 2;
-}
-message RangeSet {
-  repeated Range ranges = 1;
 }

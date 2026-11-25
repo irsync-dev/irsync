@@ -20,7 +20,8 @@ use std::time::Duration;
 
 use iroh::endpoint::Connection;
 use iroh::EndpointId;
-use irsync_proto::v1::{Hello, SessionPlan, SessionProgress};
+use irsync_proto::v1::{hello, BuildInfo, Hello, SessionPlan, SessionProgress, SyncRequest};
+use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 
 use crate::cli::location::Location;
@@ -36,6 +37,76 @@ use crate::telemetry::meter::{Meter, Usage};
 /// `hasher::LARGE_WORKERS` of them large. Many small reads in flight let a
 /// spinning disk order them (`docs/IRSYNC_DECISIONS.md`, 2.1 item 7).
 pub const HASH_WORKERS: usize = 128;
+
+/// A push or a pull as its `Hello` asks for it: the request out of the
+/// Hello's oneof, with the direction its arm stands for.
+#[derive(Debug, Clone)]
+pub struct SyncHello {
+    pub direction: Direction,
+    pub req: SyncRequest,
+    /// The client's build.
+    pub build: Option<BuildInfo>,
+    /// The client's W3C trace context; empty: no trace.
+    pub traceparent: String,
+    pub tracestate: String,
+}
+
+impl SyncHello {
+    /// `req` from this build, with this build's chunking parameters and no
+    /// trace context.
+    pub fn new(direction: Direction, req: SyncRequest) -> SyncHello {
+        let p = irsync_proto::chunk::CHUNK_PARAMS;
+        SyncHello {
+            direction,
+            req: SyncRequest {
+                chunk_min: p.min,
+                chunk_avg: p.avg,
+                chunk_max: p.max,
+                ..req
+            },
+            build: Some(crate::build::BuildInfo::current().to_wire()),
+            traceparent: String::new(),
+            tracestate: String::new(),
+        }
+    }
+
+    /// `hello`'s push or pull; `None` for any other request.
+    pub fn from_hello(hello: Hello) -> Option<SyncHello> {
+        let (direction, req) = match hello.request? {
+            hello::Request::Push(r) => (Direction::ClientSends, r),
+            hello::Request::Pull(r) => (Direction::DaemonSends, r),
+            _ => return None,
+        };
+        Some(SyncHello {
+            direction,
+            req,
+            build: hello.build,
+            traceparent: hello.traceparent,
+            tracestate: hello.tracestate,
+        })
+    }
+
+    /// The `Hello` that asks for it.
+    pub fn to_hello(&self) -> Hello {
+        let req = self.req.clone();
+        Hello {
+            protocol_version: PROTOCOL_VERSION,
+            build: self.build.clone(),
+            traceparent: self.traceparent.clone(),
+            tracestate: self.tracestate.clone(),
+            request: Some(match self.direction {
+                Direction::ClientSends => hello::Request::Push(req),
+                Direction::DaemonSends => hello::Request::Pull(req),
+            }),
+        }
+    }
+}
+
+impl From<SyncHello> for Hello {
+    fn from(h: SyncHello) -> Hello {
+        h.to_hello()
+    }
+}
 
 /// Identity of a session: BLAKE3 over a canonical byte string of everything
 /// that changes what the session does (daemon, both locations, and the
@@ -143,9 +214,10 @@ impl SessionKey {
         client: EndpointId,
         export: &str,
         rel: &RelPath,
-        hello: &Hello,
+        hello: &SyncHello,
         single: Option<&single::SingleFile>,
     ) -> SessionKey {
+        let (direction, req) = (hello.direction, &hello.req);
         let mut h = blake3::Hasher::new();
         field(&mut h, b"irsync-daemon-session-key", b"v1");
         field(&mut h, b"client", client.as_bytes());
@@ -154,22 +226,22 @@ impl SessionKey {
         field(
             &mut h,
             b"flags",
-            &[hello.direction as u8, hello.contents_only as u8],
+            &[direction as u8, req.contents_only as u8],
         );
         field(
             &mut h,
             b"receiver",
             &[
-                hello.delete_mode as u8,
-                hello.delete_excluded as u8,
-                hello.dry_run as u8,
-                hello.update_only as u8,
-                hello.checksum as u8,
-                hello.inplace as u8,
-                hello.append as u8,
+                req.delete_mode as u8,
+                req.delete_excluded as u8,
+                req.dry_run as u8,
+                req.update_only as u8,
+                req.checksum as u8,
+                req.inplace as u8,
+                req.append as u8,
             ],
         );
-        field(&mut h, b"sender", &[hello.paranoid as u8]);
+        field(&mut h, b"sender", &[req.paranoid as u8]);
         if let Some(s) = single {
             field(&mut h, b"single", s.local.as_bytes());
         }
@@ -488,6 +560,7 @@ pub struct DaemonHooks {
     pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub tamper_frames: Option<FrameHook>,
+    pub tamper_listing: Option<ListingFrameHook>,
     pub close_quiet: Option<Duration>,
     pub close_timeout: Option<Duration>,
     pub stop_reading_after_done: bool,
@@ -690,7 +763,7 @@ impl Busy {
         irsync_proto::v1::Heartbeat {
             walking,
             skipped_bytes: self.skipped_bytes.load(Relaxed),
-            deleted: self.deleted.load(Relaxed),
+            deleted_count: self.deleted.load(Relaxed),
             delete_total: self.delete_total.load(Relaxed),
             received_bytes: self.received.load(Relaxed),
             listed: None,
@@ -825,7 +898,7 @@ pub struct SideHooks {
     /// hashed (a test replaces it meanwhile).
     #[cfg(feature = "test-hooks")]
     pub before_identical_check: Option<PathHook>,
-    /// Sender: records per `ChunkListPart` instead of the default.
+    /// Sender: records per chunk list part instead of the default.
     #[cfg(feature = "test-hooks")]
     pub chunk_list_part_records: Option<usize>,
     /// Sender: close the connection once this many parts have been queued
@@ -862,11 +935,14 @@ pub struct SideHooks {
     /// `ListingEnd` (a lister that stops short).
     #[cfg(feature = "test-hooks")]
     pub cut_listing_after: Option<usize>,
-    /// Both roles: every outgoing frame of the control and listing streams
-    /// passes through this; the frames it returns go out instead (a test
-    /// drops, duplicates, alters or injects frames).
+    /// Both roles: every outgoing frame of the control stream passes
+    /// through this; the frames it returns go out instead (a test drops,
+    /// duplicates, alters or injects frames).
     #[cfg(feature = "test-hooks")]
     pub tamper_frames: Option<FrameHook>,
+    /// Both roles: as `tamper_frames`, for the listing stream.
+    #[cfg(feature = "test-hooks")]
+    pub tamper_listing: Option<ListingFrameHook>,
     /// Receiver: counts the `NeedChunks` re-requests it sends.
     #[cfg(feature = "test-hooks")]
     pub rerequests: Option<Arc<std::sync::atomic::AtomicU64>>,
@@ -916,40 +992,41 @@ impl PartsFault {
     }
 }
 
-/// The stream a frame goes out on (see [`SideHooks::tamper_frames`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamKind {
-    Control,
-    Listing,
-}
-
-/// Test hook: the frames to send in place of one outgoing frame (see
-/// [`SideHooks`]).
+/// Test hook: the frames to send in place of one outgoing control frame
+/// (see [`SideHooks`]).
 #[cfg(feature = "test-hooks")]
 pub type FrameHook = Arc<
-    dyn Fn(StreamKind, irsync_proto::v1::control::Msg) -> Vec<irsync_proto::v1::control::Msg>
+    dyn Fn(irsync_proto::v1::control::Msg) -> Vec<irsync_proto::v1::control::Msg> + Send + Sync,
+>;
+
+/// Test hook: the frames to send in place of one outgoing listing frame
+/// (see [`SideHooks`]).
+#[cfg(feature = "test-hooks")]
+pub type ListingFrameHook = Arc<
+    dyn Fn(irsync_proto::v1::listing_frame::Frame) -> Vec<irsync_proto::v1::listing_frame::Frame>
         + Send
         + Sync,
 >;
 
-/// [`SideHooks::tamper_frames`] as the stream writers carry it; empty (and
-/// a no-op) without test hooks.
+/// [`SideHooks::tamper_frames`] and [`SideHooks::tamper_listing`] as the
+/// stream writers carry them; empty (and a no-op) without test hooks.
 #[derive(Clone, Default)]
 pub(crate) struct Tamper {
     #[cfg(feature = "test-hooks")]
-    hook: Option<FrameHook>,
+    control: Option<FrameHook>,
+    #[cfg(feature = "test-hooks")]
+    listing: Option<ListingFrameHook>,
 }
 
 impl Tamper {
-    /// The frames to send in place of `msg` on a `kind` stream.
+    /// The frames to send in place of `msg` on the control stream.
     #[cfg(feature = "test-hooks")]
     pub(crate) fn frames(
         &self,
-        kind: StreamKind,
         msg: irsync_proto::v1::control::Msg,
     ) -> impl Iterator<Item = irsync_proto::v1::control::Msg> {
-        match &self.hook {
-            Some(h) => h(kind, msg),
+        match &self.control {
+            Some(h) => h(msg),
             None => vec![msg],
         }
         .into_iter()
@@ -958,10 +1035,30 @@ impl Tamper {
     #[cfg(not(feature = "test-hooks"))]
     pub(crate) fn frames(
         &self,
-        _kind: StreamKind,
         msg: irsync_proto::v1::control::Msg,
     ) -> impl Iterator<Item = irsync_proto::v1::control::Msg> {
         std::iter::once(msg)
+    }
+
+    /// The frames to send in place of `frame` on the listing stream.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn listing_frames(
+        &self,
+        frame: irsync_proto::v1::listing_frame::Frame,
+    ) -> impl Iterator<Item = irsync_proto::v1::listing_frame::Frame> {
+        match &self.listing {
+            Some(h) => h(frame),
+            None => vec![frame],
+        }
+        .into_iter()
+    }
+
+    #[cfg(not(feature = "test-hooks"))]
+    pub(crate) fn listing_frames(
+        &self,
+        frame: irsync_proto::v1::listing_frame::Frame,
+    ) -> impl Iterator<Item = irsync_proto::v1::listing_frame::Frame> {
+        std::iter::once(frame)
     }
 }
 
@@ -1011,11 +1108,13 @@ impl SideHooks {
         false
     }
 
-    /// The `tamper_frames` hook for the stream writers.
+    /// The `tamper_frames` and `tamper_listing` hooks for the stream writers.
     pub(crate) fn tamper(&self) -> Tamper {
         Tamper {
             #[cfg(feature = "test-hooks")]
-            hook: self.tamper_frames.clone(),
+            control: self.tamper_frames.clone(),
+            #[cfg(feature = "test-hooks")]
+            listing: self.tamper_listing.clone(),
         }
     }
 
@@ -1309,9 +1408,14 @@ mod tests {
     fn daemon_session_key_is_by_resolved_place() {
         let c = iroh::SecretKey::from_bytes(&[1; 32]).public();
         let rel = RelPath::new(b"2024").unwrap();
-        let h = |path: &[u8]| Hello {
-            path: path.to_vec(),
-            ..Hello::default()
+        let h = |path: &[u8]| {
+            SyncHello::new(
+                Direction::ClientSends,
+                SyncRequest {
+                    path: path.to_vec(),
+                    ..SyncRequest::default()
+                },
+            )
         };
         assert_eq!(
             SessionKey::for_daemon(c, "photos", &rel, &h(b"photos/2024"), None),
@@ -1355,8 +1459,6 @@ mod tests {
                     file_id: 1,
                     path: b"a/\xff".to_vec(),
                     action: Action::Delta as i32,
-                    size: 9,
-                    whole_hash: None,
                     entry: None,
                     append_from: 0,
                 }],
@@ -1367,7 +1469,7 @@ mod tests {
             progress: SessionProgress {
                 done_file_ids: vec![1],
                 bytes_transferred: 9,
-                deleted: 3,
+                deleted_count: 3,
                 placed: vec![irsync_proto::v1::PlacedStat {
                     path: b"a".to_vec(),
                     stat: Some(irsync_proto::v1::SourceStat {

@@ -4,25 +4,25 @@
 
 use super::{id_bytes, id_of, ManageError};
 use crate::config::names::valid_alias;
-use crate::config::settings::{PqKeyExchange, RelayMode};
+use crate::config::servers::beside_address;
+use crate::config::settings::{PqKeyExchange, Relay, Spelled};
 use crate::config::writer;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::time::Duration;
-use url::Url;
 
 /// The optional keys `server add` writes; `None` leaves a key untouched.
 #[derive(Default)]
 pub struct ServerFlags {
-    pub relay: Option<Url>,
-    pub relay_mode: Option<RelayMode>,
+    pub relay: Option<Relay>,
     /// Replaces the whole `address` array.
     pub address: Option<Vec<HostPort>>,
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
+    pub dns: Option<bool>,
     pub mdns: Option<bool>,
     pub pq_key_exchange: Option<PqKeyExchange>,
     pub ssh: Option<String>,
@@ -66,13 +66,7 @@ pub fn server_add(
     let old = id_of(&h.endpoint_id).filter(|old| *old != id);
     h.endpoint_id = id_bytes(id);
     if let Some(r) = &flags.relay {
-        h.relay = Some(r.as_str().to_string());
-    }
-    if let Some(m) = flags.relay_mode {
-        h.relay_mode = Some(match m {
-            RelayMode::Default => pb::RelayMode::Default,
-            RelayMode::Disabled => pb::RelayMode::Disabled,
-        } as i32);
+        h.relay = Some(r.to_string());
     }
     if let Some(a) = &flags.address {
         h.address = a.iter().map(|a| entry(&a.to_string())).collect();
@@ -90,17 +84,28 @@ pub fn server_add(
     if let Some(d) = flags.dht {
         h.dht = Some(d);
     }
+    if let Some(d) = flags.dns {
+        h.dns = Some(d);
+    }
     if let Some(m) = flags.mdns {
         h.mdns = Some(m);
     }
     if let Some(p) = flags.pq_key_exchange {
-        h.pq_key_exchange = Some(match p {
-            PqKeyExchange::Prefer => pb::PqKeyExchange::Prefer,
-            PqKeyExchange::Require => pb::PqKeyExchange::Require,
-        } as i32);
+        h.pq_key_exchange = Some(p.to_message());
     }
     if let Some(s) = &flags.ssh {
         h.ssh = Some(s.clone());
+    }
+    if !h.address.is_empty() {
+        let keys = [
+            ("relay", h.relay.is_some()),
+            ("dht", h.dht.is_some()),
+            ("dns", h.dns.is_some()),
+            ("mdns", h.mdns.is_some()),
+        ];
+        if let Some(problem) = beside_address(name, keys) {
+            return Err(ManageError::BadValue(problem));
+        }
     }
     Ok(old)
 }

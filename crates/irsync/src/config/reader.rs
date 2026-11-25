@@ -9,32 +9,34 @@
 use super::clients::{Right, RIGHTS};
 use super::exports::{name_problem, not_absolute};
 use super::names::{invalid_name, valid_alias};
-use super::settings::{listen_problem, parse_debug_addr};
-use super::{duration, expand_tilde, line_of, ConfigError};
+use super::servers::beside_address;
+use super::settings::{
+    listen_problem, parallel_problem, parse_debug_addr, Congestion, OtlpProtocol, PqKeyExchange,
+    Relay, Spelled,
+};
+use super::{duration, expand_tilde, keys, line_of, ConfigError};
 use crate::authz::Access;
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
 use serde::{Deserialize, Deserializer};
-use spelled::{Congestion, OtlpProtocol, PqKeyExchange, RelayMode};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use toml::de::{DeTable, DeValue};
 use toml::Spanned;
 use url::Url;
 
-// The serde shapes of the file. Field names and their order are those of
-// the structs `Config::parse` once read into, so that serde's messages (an
-// unknown field names the expected ones) stay the same.
+// The serde shapes of the file. Each field is a key, in the order the
+// writer writes them.
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawFile {
     config_version: Option<Spanned<toml::Value>>,
     unsafe_config_allowed: Option<bool>,
-    identity: Option<String>,
     state_dir: Option<String>,
-    client: Option<RawClient>,
+    defaults: Option<RawDefaults>,
     daemon: Option<RawDaemon>,
     telemetry: Option<RawTelemetry>,
     #[serde(default)]
@@ -47,18 +49,20 @@ struct RawFile {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawClient {
+struct RawDefaults {
+    identity: Option<PathBuf>,
+    #[serde(default, deserialize_with = "de_opt_parallel")]
     parallel: Option<u32>,
     #[serde(default, deserialize_with = "de_opt_duration")]
     reconnect: Option<Duration>,
     dial_retries: Option<u32>,
-    dht: Option<bool>,
     ssh_install: Option<bool>,
+    relay: Option<RelayText>,
+    dht: Option<bool>,
+    dns: Option<bool>,
     mdns: Option<bool>,
-    relay: Option<UrlText>,
-    relay_mode: Option<RelayMode>,
-    congestion: Option<Congestion>,
-    pq_key_exchange: Option<PqKeyExchange>,
+    congestion: Option<Text<Congestion>>,
+    pq_key_exchange: Option<Text<PqKeyExchange>>,
 }
 
 #[derive(Deserialize)]
@@ -73,48 +77,41 @@ struct RawDaemon {
     #[serde(default, deserialize_with = "de_opt_listen")]
     listen: Option<Vec<HostPort>>,
     portmap: Option<bool>,
-    relay: Option<UrlText>,
-    relay_mode: Option<RelayMode>,
-    congestion: Option<Congestion>,
-    pq_key_exchange: Option<PqKeyExchange>,
-    discovery: Option<RawDiscovery>,
+    relay: Option<RelayText>,
+    dht: Option<bool>,
+    dns: Option<bool>,
+    mdns: Option<bool>,
+    congestion: Option<Text<Congestion>>,
+    pq_key_exchange: Option<Text<PqKeyExchange>>,
     #[serde(default, deserialize_with = "de_opt_debug_addr")]
     debug_addr: Option<String>,
     allow_all_paths: Option<bool>,
     allow_root: Option<bool>,
 }
 
-// Named as the typed struct was: serde's messages name it.
-#[derive(Deserialize)]
-#[serde(expecting = "struct Discovery", deny_unknown_fields)]
-struct RawDiscovery {
-    dht: Option<bool>,
-    dns: Option<bool>,
-    mdns: Option<bool>,
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTelemetry {
     otlp_endpoint: Option<UrlText>,
-    otlp_protocol: Option<OtlpProtocol>,
+    otlp_protocol: Option<Text<OtlpProtocol>>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawServer {
     endpoint_id: Option<Spanned<String>>,
-    relay: Option<UrlText>,
-    relay_mode: Option<RelayMode>,
-    congestion: Option<Congestion>,
-    pq_key_exchange: Option<PqKeyExchange>,
-    address: Option<Vec<HostPort>>,
+    address: Option<Spanned<Vec<HostPort>>>,
+    relay: Option<RelayText>,
+    dht: Option<bool>,
+    dns: Option<bool>,
+    mdns: Option<bool>,
+    congestion: Option<Text<Congestion>>,
+    pq_key_exchange: Option<Text<PqKeyExchange>>,
+    #[serde(default, deserialize_with = "de_opt_parallel")]
     parallel: Option<u32>,
     #[serde(default, deserialize_with = "de_opt_duration")]
     reconnect: Option<Duration>,
     dial_retries: Option<u32>,
-    dht: Option<bool>,
-    mdns: Option<bool>,
     ssh: Option<String>,
     ssh_aliases: Option<Vec<String>>,
 }
@@ -151,42 +148,33 @@ struct RawExport {
     ro: Option<Vec<String>>,
 }
 
-/// The enums as the file spells them. Named as the typed enums are, should
-/// serde name them in a message.
-mod spelled {
-    use serde::Deserialize;
+/// An enum key's value, read with its one spelling ([`Spelled`]).
+struct Text<T>(T);
 
-    #[derive(Clone, Copy, Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    pub(super) enum RelayMode {
-        Default,
-        Disabled,
-    }
-
-    #[derive(Clone, Copy, Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    pub(super) enum Congestion {
-        Bbr,
-        Cubic,
-    }
-
-    #[derive(Clone, Copy, Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    pub(super) enum PqKeyExchange {
-        Prefer,
-        Require,
-    }
-
-    #[derive(Clone, Copy, Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    pub(super) enum OtlpProtocol {
-        Grpc,
-        Http,
+impl<'de, T: Spelled> Deserialize<'de> for Text<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Text<T>, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map(Text).map_err(serde::de::Error::custom)
     }
 }
 
-/// A URL as written, once it parses. Its serde messages are those of
-/// `Url`'s own `Deserialize`, which the file was once read with.
+/// The message's number for an enum key's value.
+fn number<T: Spelled>(t: Text<T>) -> i32 {
+    t.0.to_message()
+}
+
+/// A relay as written, once it parses as one ([`Relay`]).
+struct RelayText(String);
+
+impl<'de> Deserialize<'de> for RelayText {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<RelayText, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse::<Relay>().map_err(serde::de::Error::custom)?;
+        Ok(RelayText(s))
+    }
+}
+
+/// A URL as written, once it parses.
 struct UrlText(String);
 
 impl<'de> Deserialize<'de> for UrlText {
@@ -208,7 +196,6 @@ impl<'de> Deserialize<'de> for UrlText {
 
 /// A duration: whole seconds, or text such as `"90m"`.
 fn de_opt_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
-    // `Raw` is named in serde's message for a value of neither kind.
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Raw {
@@ -222,6 +209,15 @@ fn de_opt_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, 
             .map(Some)
             .map_err(serde::de::Error::custom),
     }
+}
+
+/// `parallel`: at least one stream, as `--parallel` asks.
+fn de_opt_parallel<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    let n = u32::deserialize(d)?;
+    if let Some(problem) = parallel_problem(n) {
+        return Err(serde::de::Error::custom(problem));
+    }
+    Ok(Some(n))
 }
 
 fn de_opt_listen<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<HostPort>>, D::Error> {
@@ -302,9 +298,8 @@ pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
             .and_then(|v| v.get_ref().as_integer())
             .and_then(|n| u32::try_from(n).ok()),
         unsafe_config_allowed: raw.unsafe_config_allowed,
-        identity: raw.identity,
         state_dir: raw.state_dir,
-        client: raw.client.map(client),
+        defaults: raw.defaults.map(defaults),
         daemon: raw.daemon.map(daemon),
         telemetry: raw.telemetry.map(telemetry),
         ..Default::default()
@@ -315,59 +310,68 @@ pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
     Ok(config)
 }
 
-/// The shape pass over the top-level keys.
+/// The shape pass: every key of the file is one of [`keys::KEYS`], and
+/// every table there is a table here; `config_version` is one this
+/// irsync reads. The keys are checked in the order of the file.
 fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
-    let shape: BTreeMap<String, Spanned<toml::Value>> =
-        toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-    let mut keys: Vec<_> = shape.iter().collect();
-    keys.sort_by_key(|(_, v)| v.span().start);
-    for (name, value) in keys {
-        let start = value.span().start;
-        let value = value.get_ref();
-        let message = match name.as_str() {
-            "config_version" => match version_problem(value) {
-                None => continue,
-                Some(m) => m,
+    let at = |start, message| ConfigError::File {
+        path: path.to_path_buf(),
+        line: Some(line_of(text, start)),
+        message,
+    };
+    // First, so that a newer irsync's file says so rather than naming a
+    // key this irsync does not know.
+    #[derive(Deserialize)]
+    struct Version {
+        config_version: Option<Spanned<toml::Value>>,
+    }
+    let version: Version = toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
+    if let Some(v) = version.config_version {
+        if let Some(problem) = version_problem(v.get_ref()) {
+            return Err(at(v.span().start, problem));
+        }
+    }
+    let doc = DeTable::parse(text).map_err(|e| toml_err(text, path, e))?;
+    check_table(doc.get_ref(), &mut Vec::new()).map_err(|(start, message)| at(start, message))
+}
+
+/// [`check_shape`] below `at`: the first problem, with its offset.
+fn check_table(table: &DeTable, at: &mut Vec<String>) -> Result<(), (usize, String)> {
+    let mut entries: Vec<_> = table.iter().collect();
+    entries.sort_by_key(|(k, _)| k.span().start);
+    for (name, value) in entries {
+        at.push(name.get_ref().to_string());
+        let dotted = at.join(".");
+        let start = name.span().start;
+        match keys::find(at) {
+            None => return Err((start, format!("unknown key {dotted:?}"))),
+            Some(key) if key.kind == keys::Kind::Table => match value.get_ref() {
+                DeValue::Table(t) => check_table(t, at)?,
+                v => {
+                    let found = v.type_str();
+                    return Err((start, format!("{dotted}: expected a table, found {found}")));
+                }
             },
-            "servers" | "clients" | "exports" | "client" | "daemon" | "telemetry"
-                if value.is_table() =>
-            {
-                continue
-            }
-            "servers" | "clients" | "exports" | "client" | "daemon" | "telemetry" => {
-                format!("{name}: expected a table, found {}", value.type_str())
-            }
-            "unsafe_config_allowed" if value.is_bool() => continue,
-            "unsafe_config_allowed" => {
-                format!("{name}: expected a boolean, found {}", value.type_str())
-            }
-            "identity" | "state_dir" if value.is_str() => continue,
-            "identity" | "state_dir" => {
-                format!("{name}: expected a string, found {}", value.type_str())
-            }
-            _ => format!("unknown key {name:?}"),
-        };
-        return Err(ConfigError::File {
-            path: path.to_path_buf(),
-            line: Some(line_of(text, start)),
-            message,
-        });
+            Some(_) => {}
+        }
+        at.pop();
     }
     Ok(())
 }
 
-fn client(r: RawClient) -> pb::Client {
-    pb::Client {
+fn defaults(r: RawDefaults) -> pb::Defaults {
+    pb::Defaults {
+        identity: r.identity.map(path_text),
         parallel: r.parallel,
         reconnect: r.reconnect.map(duration::to_proto),
         dial_retries: r.dial_retries,
-        dht: r.dht,
         ssh_install: r.ssh_install,
+        relay: r.relay.map(|r| r.0),
+        dht: r.dht,
+        dns: r.dns,
         mdns: r.mdns,
-        relay: r.relay.map(|u| u.0),
-        relay_mode: r.relay_mode.map(relay_mode),
-        congestion: r.congestion.map(congestion),
-        pq_key_exchange: r.pq_key_exchange.map(pq_key_exchange),
+        congestion: r.congestion.map(number),
+        pq_key_exchange: r.pq_key_exchange.map(number),
         ..Default::default()
     }
 }
@@ -382,16 +386,12 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
         listen,
         listen_set,
         portmap: r.portmap,
-        relay: r.relay.map(|u| u.0),
-        relay_mode: r.relay_mode.map(relay_mode),
-        congestion: r.congestion.map(congestion),
-        pq_key_exchange: r.pq_key_exchange.map(pq_key_exchange),
-        discovery: r.discovery.map(|d| pb::Discovery {
-            dht: d.dht,
-            dns: d.dns,
-            mdns: d.mdns,
-            ..Default::default()
-        }),
+        relay: r.relay.map(|r| r.0),
+        dht: r.dht,
+        dns: r.dns,
+        mdns: r.mdns,
+        congestion: r.congestion.map(number),
+        pq_key_exchange: r.pq_key_exchange.map(number),
         debug_addr: r.debug_addr,
         allow_all_paths: r.allow_all_paths,
         allow_root: r.allow_root,
@@ -402,12 +402,7 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
 fn telemetry(r: RawTelemetry) -> pb::Telemetry {
     pb::Telemetry {
         otlp_endpoint: r.otlp_endpoint.map(|u| u.0),
-        otlp_protocol: r.otlp_protocol.map(|p| {
-            (match p {
-                OtlpProtocol::Grpc => pb::OtlpProtocol::Grpc,
-                OtlpProtocol::Http => pb::OtlpProtocol::Http,
-            }) as i32
-        }),
+        otlp_protocol: r.otlp_protocol.map(number),
         ..Default::default()
     }
 }
@@ -445,21 +440,32 @@ fn servers(
         let Some(endpoint_id) = id_bytes(r.endpoint_id, &what, at)? else {
             return Err(at(start, format!("{what}: needs an endpoint_id")));
         };
-        let (address, address_set) = addresses(r.address);
+        if let Some(a) = r.address.as_ref().filter(|a| !a.get_ref().is_empty()) {
+            let keys = [
+                ("relay", r.relay.is_some()),
+                ("dht", r.dht.is_some()),
+                ("dns", r.dns.is_some()),
+                ("mdns", r.mdns.is_some()),
+            ];
+            if let Some(problem) = beside_address(&name, keys) {
+                return Err(at(a.span().start, problem));
+            }
+        }
+        let (address, address_set) = addresses(r.address.map(Spanned::into_inner));
         let (ssh_aliases, ssh_aliases_set) = entries(r.ssh_aliases);
         let server = pb::ServerEntry {
             name,
             endpoint_id,
-            relay: r.relay.map(|u| u.0),
-            relay_mode: r.relay_mode.map(relay_mode),
-            congestion: r.congestion.map(congestion),
-            pq_key_exchange: r.pq_key_exchange.map(pq_key_exchange),
+            relay: r.relay.map(|r| r.0),
+            congestion: r.congestion.map(number),
+            pq_key_exchange: r.pq_key_exchange.map(number),
             address,
             address_set,
             parallel: r.parallel,
             reconnect: r.reconnect.map(duration::to_proto),
             dial_retries: r.dial_retries,
             dht: r.dht,
+            dns: r.dns,
             mdns: r.mdns,
             ssh: r.ssh,
             ssh_aliases,
@@ -516,8 +522,7 @@ fn clients(
 }
 
 /// Validates every `[exports.NAME]`: reserved names, the export schema,
-/// absolute paths. In name order, as the old parse checked them; the entries
-/// keep the order of the file.
+/// absolute paths. In name order; the entries keep the order of the file.
 fn exports(
     raw: BTreeMap<String, Spanned<toml::Value>>,
     at: &impl Fn(usize, String) -> ConfigError,
@@ -589,25 +594,4 @@ fn addresses(values: Option<Vec<HostPort>>) -> (Vec<pb::Entry>, bool) {
 /// A path from a TOML string, which is always UTF-8.
 fn path_text(p: PathBuf) -> String {
     p.to_string_lossy().into_owned()
-}
-
-fn relay_mode(m: RelayMode) -> i32 {
-    (match m {
-        RelayMode::Default => pb::RelayMode::Default,
-        RelayMode::Disabled => pb::RelayMode::Disabled,
-    }) as i32
-}
-
-fn congestion(c: Congestion) -> i32 {
-    (match c {
-        Congestion::Bbr => pb::Congestion::Bbr,
-        Congestion::Cubic => pb::Congestion::Cubic,
-    }) as i32
-}
-
-fn pq_key_exchange(p: PqKeyExchange) -> i32 {
-    (match p {
-        PqKeyExchange::Prefer => pb::PqKeyExchange::Prefer,
-        PqKeyExchange::Require => pb::PqKeyExchange::Require,
-    }) as i32
 }

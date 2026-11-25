@@ -751,12 +751,12 @@ async fn pull_to_new_name_uses_delta() {
 }
 
 /// A single-file pull `Hello` for `path`, with the receiver's name `name`.
-fn pull_hello(path: &[u8], name: &[u8]) -> irsync_proto::v1::Hello {
+fn pull_hello(path: &[u8], name: &[u8]) -> irsync::session::SyncHello {
     let mut hello = Harness::hello(Flow::Pull);
-    hello.path = path.to_vec();
-    hello.contents_only = false;
-    hello.single_file = true;
-    hello.name = name.to_vec();
+    hello.req.path = path.to_vec();
+    hello.req.contents_only = false;
+    hello.req.single_file = true;
+    hello.req.name = name.to_vec();
     hello
 }
 
@@ -866,13 +866,15 @@ fn fake_daemon(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn probe_retries_a_connection_lost_before_the_reply() {
     use irsync::session::reconnect::{probe_path, ReconnectOpts};
-    use irsync_proto::v1::PathInfo;
+    use irsync_proto::v1::{hello_reply::Reply, HelloReply, PathInfo};
     use prost::Message;
     within30(async {
         let (client, server) = common::loopback_pair().await;
         let addr = common::addr_of(&server);
-        let file = PathInfo {
-            kind: Some(Kind::File as i32),
+        let file = HelloReply {
+            reply: Some(Reply::PathInfo(PathInfo {
+                kind: Kind::File as i32,
+            })),
         }
         .encode_to_vec();
         let daemon = fake_daemon(server, move |n| (n > 0).then(|| file.clone()));

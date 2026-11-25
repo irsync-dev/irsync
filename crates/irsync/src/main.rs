@@ -20,6 +20,7 @@ use irsync::cli::{
     LogArgs, PairArgs, RemoteArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
 };
 use irsync::config::clients::Clients;
+use irsync::config::dial::{Dial, DialFlags};
 use irsync::config::file::Config;
 use irsync::config::paths::{state_dir, Paths};
 use irsync::config::servers::{ServerEntry, Servers};
@@ -40,13 +41,14 @@ use irsync::session::reconnect::{
 use irsync::session::single::{
     is_one_component, place_file, source_is_single, split_last, PlaceError,
 };
-use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
+use irsync::session::{
+    resolve_roots, Event, EventBus, LocalSide, Outcome, Party, SyncHello, HASH_WORKERS,
+};
 use irsync::ssh::onboard::SetupFlags;
 use irsync::telemetry::init::trace_files_from_env;
 use irsync::telemetry::meter::Usage;
 use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
-use irsync_proto::chunk::CHUNK_PARAMS;
-use irsync_proto::v1::{export_entry, hello, path_info, Hello};
+use irsync_proto::v1::{export_entry, hello, path_info, Hello, ListExports, SyncRequest};
 use irsync_proto::PROTOCOL_VERSION;
 
 mod remote;
@@ -510,37 +512,18 @@ fn direction_of(args: &Args) -> anyhow::Result<Direction> {
     Ok(locations(args)?.2)
 }
 
-/// Whether a connection to this host must have the post-quantum hybrid key
-/// exchange: the flag, else the host entry, else the client settings.
-fn pq_required(opts: &SyncOptions, host_entry: Option<&ServerEntry>, settings: &Settings) -> bool {
-    pq_required_of(
-        opts.pq_key_exchange,
-        host_entry.and_then(|h| h.pq_key_exchange),
-        settings.client.pq_key_exchange,
-    )
-}
-
-/// [`pq_required`] from the three places that can say: the first that is
-/// set decides.
-fn pq_required_of(
-    flag: Option<PqKeyExchange>,
-    host: Option<PqKeyExchange>,
-    client: Option<PqKeyExchange>,
-) -> bool {
-    flag.or(host).or(client) == Some(PqKeyExchange::Require)
-}
-
 /// A client endpoint ready to dial `host`, plus what the session setup
 /// still needs from the configuration.
 struct Connected {
     endpoint: iroh::Endpoint,
     target: EndpointAddr,
-    settings: Settings,
     host_entry: Option<ServerEntry>,
+    /// The settings of the dial, decided.
+    dial: Dial,
     /// The saved alias `host_entry` is under: the host as typed, or the
     /// alias a first run saved it as.
     alias: Option<String>,
-    /// `opts` with the per-host and settings defaults filled in.
+    /// `opts` with `parallel` and `state_dir` filled in from the config.
     opts: SyncOptions,
 }
 
@@ -591,29 +574,17 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
     } = config;
     let host_entry = servers.get(host).cloned();
     let target = resolve_target(&servers, &clients, host)?;
-    // Precedence: command line, then the host entry, then the client
-    // settings, then the built-in default.
     let mut opts = opts.clone();
     opts.state_dir = Some(settings.state_dir.clone());
-    if opts.parallel.is_none() {
-        opts.parallel = host_entry
-            .as_ref()
-            .and_then(|h| h.parallel)
-            .or(settings.client.parallel);
-    }
-    // Direct addresses: the command line's, else the host's. Any address
-    // means isolated mode: dial those and nothing else. Resolved before the
-    // identity is loaded so a bad address never prompts for a passphrase.
-    let addresses = if opts.addresses.is_empty() {
-        host_entry
-            .as_ref()
-            .map(|h| h.address.clone())
-            .unwrap_or_default()
-    } else {
-        opts.addresses.clone()
-    };
+    let dial = Dial::resolve(&dial_flags(&opts)?, host_entry.as_ref(), &settings.defaults)
+        .map_err(anyhow::Error::msg)?;
+    opts.parallel = Some(dial.parallel);
+    // Any direct address means isolated mode: dial those and nothing else.
+    // Resolved before the identity is loaded so a bad address never prompts
+    // for a passphrase.
+    let addresses = &dial.address;
     let mut resolved = Vec::new();
-    for entry in &addresses {
+    for entry in addresses {
         let addrs = entry
             .resolve()
             .await
@@ -630,15 +601,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
             "isolated mode: dialling directly, relay and lookups off"
         );
     }
-    let mut endpoint_opts = client_endpoint_opts(
-        secret,
-        opts.relay.as_deref(),
-        opts.no_relay,
-        opts.no_dht,
-        &settings.client,
-        host_entry.as_ref(),
-        &addresses,
-    )?;
+    let mut endpoint_opts = client_endpoint_opts(secret, &dial);
     if !addresses.is_empty() {
         // Bound to every interface, the client would offer the daemon all
         // of them for extra paths; bound to the source of the dial, only
@@ -657,10 +620,23 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
     Ok(Connected {
         endpoint,
         target,
-        settings,
         alias: host_entry.is_some().then(|| host.to_string()),
         host_entry,
+        dial,
         opts,
+    })
+}
+
+/// What the command line says about a dial.
+fn dial_flags(opts: &SyncOptions) -> anyhow::Result<DialFlags> {
+    Ok(DialFlags {
+        parallel: opts.parallel,
+        reconnect: opts.reconnect,
+        dial_retries: opts.dial_retries,
+        relay: opts.relay.clone(),
+        no_dht: opts.no_dht,
+        pq_key_exchange: opts.pq_key_exchange,
+        address: opts.addresses.clone(),
     })
 }
 
@@ -717,7 +693,10 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
             let flags = SetupFlags {
                 recheck: t.kind == irsync::ssh::pair::PairKind::Saved,
                 no_dht: a.no_dht,
-                no_install: a.no_install || config.settings.client.ssh_install == Some(false),
+                no_install: a.no_install
+                    || !Dial::resolve(&DialFlags::default(), None, &config.settings.defaults)
+                        .map_err(anyhow::Error::msg)?
+                        .ssh_install,
                 no_service: a.no_service,
             };
             let host = &t.host;
@@ -883,11 +862,8 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
 async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
-        direction: hello::Direction::ListExports as i32,
-        chunk_min: CHUNK_PARAMS.min,
-        chunk_avg: CHUNK_PARAMS.avg,
-        chunk_max: CHUNK_PARAMS.max,
         build: Some(BuildInfo::current().to_wire()),
+        request: Some(hello::Request::ListExports(ListExports {})),
         ..Hello::default()
     };
     let client = c.endpoint.id();
@@ -927,7 +903,7 @@ async fn dial(c: &Connected) -> anyhow::Result<iroh::endpoint::Connection> {
     irsync::net::tap::ConnTap::of(&conn).set_local_id(c.endpoint.id());
     irsync::session::reconnect::check_pq_key_exchange(
         &conn,
-        pq_required(&c.opts, c.host_entry.as_ref(), &c.settings),
+        c.dial.pq_key_exchange == PqKeyExchange::Require,
         &c.target.id,
     )?;
     Ok(conn)
@@ -1011,7 +987,6 @@ async fn sync(
             from: operand_from.clone(),
             to: operand_to.clone(),
         });
-        let (opts, settings, host_entry) = (&conn.opts, &conn.settings, conn.host_entry.as_ref());
         let (local, remote) = match direction {
             Direction::ClientSends => (src, dst),
             Direction::DaemonSends => (dst, src),
@@ -1034,45 +1009,25 @@ async fn sync(
         let dir_plan = Plan {
             root,
             local_contents_only: *local_co,
-            hello: Hello {
-                protocol_version: PROTOCOL_VERSION,
-                session_id: vec![],
-                path: rpath.clone(),
-                name,
-                direction: match direction {
-                    Direction::ClientSends => hello::Direction::ClientSends,
-                    Direction::DaemonSends => hello::Direction::DaemonSends,
-                } as i32,
-                chunk_min: CHUNK_PARAMS.min,
-                chunk_avg: CHUNK_PARAMS.avg,
-                chunk_max: CHUNK_PARAMS.max,
-                contents_only: *remote_co,
-                build: Some(BuildInfo::current().to_wire()),
-                // The receiver-side options are filled in from `opts` by the session.
-                ..Hello::default()
-            },
+            // The receiver-side options are filled in from `opts` by the session.
+            hello: SyncHello::new(
+                direction,
+                SyncRequest {
+                    path: rpath.clone(),
+                    name,
+                    contents_only: *remote_co,
+                    ..SyncRequest::default()
+                },
+            ),
             single: None,
         };
         let several = of > 1;
         let ropts = ReconnectOpts {
-            max: opts
-                .reconnect
-                .or(host_entry.and_then(|h| h.reconnect))
-                .or(settings.client.reconnect)
-                .unwrap_or(ReconnectOpts::default().max),
-            // A paired server is dialled once (see `PAIRED_FIRST_DIAL`), unless
-            // the command line asks for retries.
-            dial_retries: match conn.paired() {
-                Some(_) => opts.dial_retries.unwrap_or(0),
-                None => opts
-                    .dial_retries
-                    .or(host_entry.and_then(|h| h.dial_retries))
-                    .or(settings.client.dial_retries)
-                    .unwrap_or(ReconnectOpts::default().dial_retries),
-            },
+            max: conn.dial.reconnect,
+            dial_retries: conn.dial.dial_retries,
             source_index: index,
             first_dial_timeout: conn.first_dial(),
-            require_pq: pq_required(opts, host_entry, settings),
+            require_pq: conn.dial.pq_key_exchange == PqKeyExchange::Require,
             ..ReconnectOpts::default()
         };
         sessions += 1;
@@ -1175,7 +1130,7 @@ async fn sync(
 struct Plan {
     root: PathBuf,
     local_contents_only: bool,
-    hello: Hello,
+    hello: SyncHello,
     /// The local name of the one file a single-file session copies.
     single: Option<Vec<u8>>,
 }
@@ -1194,11 +1149,12 @@ fn push_plan(dir: Plan, path: &Path, contents_only: bool, several: bool) -> anyh
         return Ok(dir);
     }
     let (root, name) = split_last(path);
-    let hello = Hello {
+    let mut hello = dir.hello;
+    hello.req = SyncRequest {
         single_file: true,
         name: name.clone(),
-        contents_only: dir.hello.contents_only || several,
-        ..dir.hello
+        contents_only: hello.req.contents_only || several,
+        ..hello.req
     };
     Ok(Plan {
         root,
@@ -1225,11 +1181,12 @@ fn pull_plan(
         bail!("cannot tell the file's name from {}", escape_path(rpath));
     }
     let placed = place_file(local, contents_only, basename, true)?;
-    let hello = Hello {
+    let mut hello = dir.hello;
+    hello.req = SyncRequest {
         single_file: true,
         name: placed.name.clone(),
         contents_only: false,
-        ..dir.hello
+        ..hello.req
     };
     Ok(Plan {
         root: placed.root,
@@ -1315,9 +1272,10 @@ async fn session(
     {
         side.hooks.no_change_checks = irsync::session::no_change_checks_from_env();
     }
-    let hello_for = |id: Option<[u8; 16]>| Hello {
-        session_id: id.map(|i| i.to_vec()).unwrap_or_default(),
-        ..hello.clone()
+    let hello_for = |id: Option<[u8; 16]>| {
+        let mut h = hello.clone();
+        h.req.session_id = id.map(|i| i.to_vec()).unwrap_or_default();
+        h
     };
     let target_id = target.id;
     let on_state = |s: ConnState| match s {
@@ -2406,12 +2364,7 @@ fn run_show(f: &FilesArgs) -> i32 {
 fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let id = parse_endpoint_id(&a.id).with_context(|| format!("ID {:?}", a.id))?;
     let flags = manage::servers::ServerFlags {
-        relay: a
-            .relay
-            .as_deref()
-            .map(|r| r.parse().with_context(|| format!("--relay {r:?}")))
-            .transpose()?,
-        relay_mode: a.relay_mode,
+        relay: a.relay.clone(),
         address: (!a.address.is_empty()).then(|| a.address.clone()),
         parallel: a.parallel,
         reconnect: a
@@ -2423,6 +2376,7 @@ fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
             .transpose()?,
         dial_retries: a.dial_retries,
         dht: a.dht,
+        dns: a.dns,
         mdns: a.mdns,
         pq_key_exchange: a.pq_key_exchange,
         ssh: None,
@@ -2441,17 +2395,6 @@ fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_first_pq_key_exchange_that_is_set_decides() {
-        use PqKeyExchange::{Prefer, Require};
-        assert!(!pq_required_of(None, None, None));
-        assert!(pq_required_of(None, None, Some(Require)));
-        assert!(pq_required_of(None, Some(Require), Some(Prefer)));
-        assert!(!pq_required_of(None, Some(Prefer), Some(Require)));
-        assert!(pq_required_of(Some(Require), Some(Prefer), Some(Prefer)));
-        assert!(!pq_required_of(Some(Prefer), Some(Require), Some(Require)));
-    }
 
     /// Whether the filter `spec` lets `target` log at TRACE.
     fn filter_enables(spec: &str, target: &str) -> bool {

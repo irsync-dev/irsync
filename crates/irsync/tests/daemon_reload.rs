@@ -20,16 +20,15 @@ use irsync::daemon::{Daemon, Reloader};
 use irsync::identity::PassphraseSource;
 use irsync::net::build_endpoint;
 use irsync::net::frame::{read_msg, write_msg};
-use irsync_proto::chunk::CHUNK_PARAMS;
-use irsync_proto::v1::{hello::Direction, ExportList, Hello};
+use irsync_proto::v1::{hello, hello_reply, Hello, HelloReply, ListExports};
 
 fn config_text(identity: &Path, state: &Path, data: &Path, clients: &[EndpointId]) -> String {
     let ro: Vec<String> = clients.iter().map(|c| format!("\"{c}\"")).collect();
     format!(
         "state_dir = {state:?}\n\
          [daemon]\nidentity = {identity:?}\nlisten = [\"127.0.0.1:0\"]\n\
-         relay_mode = \"disabled\"\nportmap = false\nidle_timeout = \"5m\"\n\
-         [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n\
+         relay = \"disabled\"\nportmap = false\nidle_timeout = \"5m\"\n\
+         dht = false\ndns = false\nmdns = false\n\
          [exports.data]\npath = {data:?}\nro = [{ro}]\n",
         state = state.display().to_string(),
         identity = identity.display().to_string(),
@@ -47,15 +46,15 @@ async fn list_exports(conn: &iroh::endpoint::Connection) -> Vec<String> {
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     let hello = Hello {
         protocol_version: irsync_proto::PROTOCOL_VERSION,
-        direction: Direction::ListExports as i32,
-        chunk_min: CHUNK_PARAMS.min,
-        chunk_avg: CHUNK_PARAMS.avg,
-        chunk_max: CHUNK_PARAMS.max,
+        request: Some(hello::Request::ListExports(ListExports {})),
         ..Default::default()
     };
     write_msg(&mut send, &hello).await.unwrap();
     send.finish().unwrap();
-    let list: ExportList = read_msg(&mut recv).await.unwrap().expect("an export list");
+    let reply: HelloReply = read_msg(&mut recv).await.unwrap().expect("a reply");
+    let Some(hello_reply::Reply::Exports(list)) = reply.reply else {
+        panic!("not an export list: {reply:?}");
+    };
     list.exports.into_iter().map(|e| e.name).collect()
 }
 

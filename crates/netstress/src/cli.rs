@@ -80,7 +80,7 @@ pub struct Cli {
     #[arg(long)]
     pub keep_going: bool,
     /// QUIC congestion controller for both sides (written to the client's
-    /// `[client]` and the daemon's `[daemon]` config). Unset: irsync's
+    /// `[defaults]` and the daemon's `[daemon]` config). Unset: irsync's
     /// default.
     #[arg(long, value_enum)]
     pub congestion: Option<Congestion>,

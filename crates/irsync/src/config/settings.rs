@@ -8,11 +8,110 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use url::Url;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RelayMode {
+/// An enum key of the config file: its values as the file spells them
+/// and as the message numbers them. [`spelled!`] writes each spelling
+/// once; the reader, the writer and `irsync config set` all go through it.
+pub trait Spelled: Copy + std::str::FromStr<Err = String> {
+    /// The value as the file spells it.
+    fn as_str(self) -> &'static str;
+    /// The value as the message holds it.
+    fn to_message(self) -> i32;
+    /// A value of the message; an error for a number no value has.
+    fn from_message(n: i32) -> Result<Self, String>;
+
+    /// The value of the message, if set.
+    fn from_optional(n: Option<i32>) -> Result<Option<Self>, String> {
+        n.map(Self::from_message).transpose()
+    }
+}
+
+/// `"a or b"`, `"a, b or c"`: the spellings a value may take.
+fn alternatives(spellings: &[&str]) -> String {
+    match spellings {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// Implements [`Spelled`] and `FromStr` for `$T`, whose message enum is
+/// `pb::$pb` with variants of the same names; `$key` names the key in
+/// errors.
+macro_rules! spelled {
+    ($T:ident, $pb:ident, $key:literal, $($V:ident => $s:literal),+ $(,)?) => {
+        impl Spelled for $T {
+            fn as_str(self) -> &'static str {
+                match self {
+                    $($T::$V => $s),+
+                }
+            }
+
+            fn to_message(self) -> i32 {
+                (match self {
+                    $($T::$V => pb::$pb::$V),+
+                }) as i32
+            }
+
+            fn from_message(n: i32) -> Result<$T, String> {
+                match pb::$pb::try_from(n) {
+                    $(Ok(pb::$pb::$V) => Ok($T::$V),)+
+                    _ => Err(format!(concat!($key, ": unknown value {}"), n)),
+                }
+            }
+        }
+
+        impl std::str::FromStr for $T {
+            type Err = String;
+            fn from_str(s: &str) -> Result<$T, String> {
+                match s {
+                    $($s => Ok($T::$V),)+
+                    _ => Err(format!("{s:?}: expected {}", alternatives(&[$($s),+]))),
+                }
+            }
+        }
+    };
+}
+
+/// Which relay servers an endpoint uses: `relay` in `[daemon]`,
+/// `[defaults]` and a server's table, and `--relay`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Relay {
+    /// n0's public relays.
     #[default]
     Default,
+    /// No relay: direct connections only. The lookups stay on.
     Disabled,
+    /// A self-hosted relay.
+    Url(Url),
+}
+
+impl std::fmt::Display for Relay {
+    /// As the file spells it.
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Relay::Default => f.write_str("default"),
+            Relay::Disabled => f.write_str("disabled"),
+            Relay::Url(u) => f.write_str(u.as_str()),
+        }
+    }
+}
+
+impl std::str::FromStr for Relay {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Relay, String> {
+        match s {
+            "default" => Ok(Relay::Default),
+            "disabled" => Ok(Relay::Disabled),
+            _ => Url::parse(s)
+                .map(Relay::Url)
+                .map_err(|e| format!("{s:?}: expected default, disabled or a URL ({e})")),
+        }
+    }
+}
+
+/// A relay of the message, if set.
+pub(crate) fn relay_from(s: Option<&str>) -> Result<Option<Relay>, String> {
+    s.map(str::parse).transpose()
 }
 
 /// The congestion controller of the side that sends: the client's for a
@@ -27,15 +126,7 @@ pub enum Congestion {
     Cubic,
 }
 
-impl Congestion {
-    /// The name the config files use.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Congestion::Bbr => "bbr",
-            Congestion::Cubic => "cubic",
-        }
-    }
-}
+spelled!(Congestion, Congestion, "congestion", Bbr => "bbr", Cubic => "cubic");
 
 /// Whether a connection must have used the post-quantum hybrid key
 /// exchange (`X25519MLKEM768`). Every endpoint offers it first either way;
@@ -50,27 +141,10 @@ pub enum PqKeyExchange {
     Require,
 }
 
-impl PqKeyExchange {
-    /// The name the config files use.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            PqKeyExchange::Prefer => "prefer",
-            PqKeyExchange::Require => "require",
-        }
-    }
-}
+spelled!(PqKeyExchange, PqKeyExchange, "pq_key_exchange", Prefer => "prefer", Require => "require");
 
-impl std::str::FromStr for PqKeyExchange {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s {
-            "prefer" => Ok(PqKeyExchange::Prefer),
-            "require" => Ok(PqKeyExchange::Require),
-            _ => Err(format!("{s:?}: expected prefer or require")),
-        }
-    }
-}
-
+/// How clients may find the daemon: `dht`, `dns` and `mdns` in
+/// `[daemon]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {
     pub dht: bool,
@@ -86,6 +160,12 @@ impl Default for Discovery {
             mdns: true,
         }
     }
+}
+
+/// The message for a `parallel` of 0, which could send nothing; `None`
+/// for any other.
+pub(crate) fn parallel_problem(n: u32) -> Option<&'static str> {
+    (n == 0).then_some("parallel must be at least 1")
 }
 
 /// The message for a `listen` with two addresses of one family, or
@@ -144,24 +224,26 @@ pub fn parse_debug_addr(s: &str) -> Result<SocketAddr, String> {
         .map_err(|_| format!("bad debug address {s:?}: expected PORT or IP:PORT"))
 }
 
+/// `[defaults]` as the file says it, but for `identity` (see
+/// [`Settings::identity`]): a key left out is `None`. A dial decides
+/// each from here, the command line and the server's table in
+/// [`super::dial::Dial::resolve`], which also holds the built-in
+/// defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ClientSettings {
+pub struct Defaults {
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
-    /// Retries for a server that has not answered yet; unset: 4.
+    /// Retries for a server that has not answered yet.
     pub dial_retries: Option<u32>,
-    pub dht: Option<bool>,
-    /// Set the server up over ssh by copying irsync there; unset: true.
-    /// `false` is `--no-install` for every run.
+    /// Set the server up over ssh by copying irsync there. `false` is
+    /// `--no-install` for every run.
     pub ssh_install: Option<bool>,
+    pub relay: Option<Relay>,
+    pub dht: Option<bool>,
+    pub dns: Option<bool>,
     pub mdns: Option<bool>,
-    pub relay: Option<Url>,
-    /// `"disabled"`: direct connections only, no relay fallback; the lookups
-    /// stay on. Unset: relays as usual.
-    pub relay_mode: Option<RelayMode>,
-    /// For pushes; unset: BBR.
+    /// For pushes.
     pub congestion: Option<Congestion>,
-    /// Unset: prefer.
     pub pq_key_exchange: Option<PqKeyExchange>,
 }
 
@@ -175,8 +257,7 @@ pub struct DaemonSettings {
     pub max_dormant_sessions_per_key: u32,
     pub listen: Vec<HostPort>,
     pub portmap: bool,
-    pub relay: Option<Url>,
-    pub relay_mode: RelayMode,
+    pub relay: Relay,
     /// For pulls.
     pub congestion: Congestion,
     /// `require`: close a connection that did not get the hybrid key
@@ -204,15 +285,9 @@ impl OtlpProtocol {
     /// The protocol when neither the config file nor the environment
     /// names one.
     pub const DEFAULT: OtlpProtocol = OtlpProtocol::Http;
-
-    /// The name the config files use.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OtlpProtocol::Grpc => "grpc",
-            OtlpProtocol::Http => "http",
-        }
-    }
 }
+
+spelled!(OtlpProtocol, OtlpProtocol, "otlp_protocol", Grpc => "grpc", Http => "http");
 
 /// `[telemetry]`: OTLP export, for either side.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -230,8 +305,7 @@ impl Default for DaemonSettings {
             max_dormant_sessions_per_key: 25,
             listen: Vec::new(),
             portmap: true,
-            relay: None,
-            relay_mode: RelayMode::Default,
+            relay: Relay::Default,
             congestion: Congestion::Bbr,
             pq_key_exchange: PqKeyExchange::Prefer,
             discovery: Discovery::default(),
@@ -247,15 +321,16 @@ pub struct Settings {
     /// True: the config file, a private key and a passphrase file are used
     /// even when other users can read or change them, or own them.
     pub unsafe_config_allowed: bool,
-    /// The client identity: the key to load, or to generate when nothing
-    /// else serves (see `ssh_identity`).
+    /// The client identity, `[defaults] identity`: the key to load, or to
+    /// generate when nothing else serves (see `ssh_identity`).
     pub identity: PathBuf,
     /// `~/.ssh/id_ed25519`, used when `identity` is not set in the file and
     /// the key at `identity` does not exist yet; never generated. Not a file
     /// key: `None` once the file names an identity.
     pub ssh_identity: Option<PathBuf>,
     pub state_dir: PathBuf,
-    pub client: ClientSettings,
+    /// `[defaults]`: this machine's defaults for dialling a server.
+    pub defaults: Defaults,
     pub daemon: DaemonSettings,
     pub telemetry: TelemetrySettings,
 }
@@ -267,64 +342,9 @@ impl Default for Settings {
             identity: paths::config_dir().join("id_ed25519"),
             ssh_identity: paths::ssh_identity(),
             state_dir: paths::state_dir(),
-            client: ClientSettings::default(),
+            defaults: Defaults::default(),
             daemon: DaemonSettings::default(),
             telemetry: TelemetrySettings::default(),
-        }
-    }
-}
-
-impl RelayMode {
-    fn from_message(n: i32) -> Result<RelayMode, String> {
-        match pb::RelayMode::try_from(n) {
-            Ok(pb::RelayMode::Default) => Ok(RelayMode::Default),
-            Ok(pb::RelayMode::Disabled) => Ok(RelayMode::Disabled),
-            _ => Err(format!("relay_mode: unknown value {n}")),
-        }
-    }
-
-    /// `n` of the message, if set.
-    pub(crate) fn from_optional(n: Option<i32>) -> Result<Option<RelayMode>, String> {
-        n.map(RelayMode::from_message).transpose()
-    }
-}
-
-impl Congestion {
-    fn from_message(n: i32) -> Result<Congestion, String> {
-        match pb::Congestion::try_from(n) {
-            Ok(pb::Congestion::Bbr) => Ok(Congestion::Bbr),
-            Ok(pb::Congestion::Cubic) => Ok(Congestion::Cubic),
-            _ => Err(format!("congestion: unknown value {n}")),
-        }
-    }
-
-    /// `n` of the message, if set.
-    pub(crate) fn from_optional(n: Option<i32>) -> Result<Option<Congestion>, String> {
-        n.map(Congestion::from_message).transpose()
-    }
-}
-
-impl PqKeyExchange {
-    fn from_message(n: i32) -> Result<PqKeyExchange, String> {
-        match pb::PqKeyExchange::try_from(n) {
-            Ok(pb::PqKeyExchange::Prefer) => Ok(PqKeyExchange::Prefer),
-            Ok(pb::PqKeyExchange::Require) => Ok(PqKeyExchange::Require),
-            _ => Err(format!("pq_key_exchange: unknown value {n}")),
-        }
-    }
-
-    /// `n` of the message, if set.
-    pub(crate) fn from_optional(n: Option<i32>) -> Result<Option<PqKeyExchange>, String> {
-        n.map(PqKeyExchange::from_message).transpose()
-    }
-}
-
-impl OtlpProtocol {
-    fn from_message(n: i32) -> Result<OtlpProtocol, String> {
-        match pb::OtlpProtocol::try_from(n) {
-            Ok(pb::OtlpProtocol::Grpc) => Ok(OtlpProtocol::Grpc),
-            Ok(pb::OtlpProtocol::Http) => Ok(OtlpProtocol::Http),
-            _ => Err(format!("otlp_protocol: unknown value {n}")),
         }
     }
 }
@@ -349,17 +369,20 @@ pub(crate) fn addresses_from(entries: &[pb::Entry]) -> Result<Vec<HostPort>, Str
         .collect()
 }
 
-impl ClientSettings {
-    fn from_message(c: &pb::Client) -> Result<ClientSettings, String> {
-        Ok(ClientSettings {
+impl Defaults {
+    fn from_message(c: &pb::Defaults) -> Result<Defaults, String> {
+        if let Some(problem) = c.parallel.and_then(parallel_problem) {
+            return Err(problem.to_string());
+        }
+        Ok(Defaults {
             parallel: c.parallel,
             reconnect: duration_from(c.reconnect.as_ref())?,
             dial_retries: c.dial_retries,
             dht: c.dht,
+            dns: c.dns,
             ssh_install: c.ssh_install,
             mdns: c.mdns,
-            relay: url_from(c.relay.as_deref())?,
-            relay_mode: RelayMode::from_optional(c.relay_mode)?,
+            relay: relay_from(c.relay.as_deref())?,
             congestion: Congestion::from_optional(c.congestion)?,
             pq_key_exchange: PqKeyExchange::from_optional(c.pq_key_exchange)?,
         })
@@ -373,14 +396,11 @@ impl DaemonSettings {
         if let Some(problem) = listen_problem(&listen) {
             return Err(problem.to_string());
         }
-        let discovery = d
-            .discovery
-            .as_ref()
-            .map_or(defaults.discovery.clone(), |x| Discovery {
-                dht: x.dht.unwrap_or(defaults.discovery.dht),
-                dns: x.dns.unwrap_or(defaults.discovery.dns),
-                mdns: x.mdns.unwrap_or(defaults.discovery.mdns),
-            });
+        let discovery = Discovery {
+            dht: d.dht.unwrap_or(defaults.discovery.dht),
+            dns: d.dns.unwrap_or(defaults.discovery.dns),
+            mdns: d.mdns.unwrap_or(defaults.discovery.mdns),
+        };
         Ok(DaemonSettings {
             identity: d.identity.as_ref().map_or(defaults.identity, PathBuf::from),
             idle_timeout: duration_from(d.idle_timeout.as_ref())?.unwrap_or(defaults.idle_timeout),
@@ -391,8 +411,7 @@ impl DaemonSettings {
                 .unwrap_or(defaults.max_dormant_sessions_per_key),
             listen,
             portmap: d.portmap.unwrap_or(defaults.portmap),
-            relay: url_from(d.relay.as_deref())?,
-            relay_mode: RelayMode::from_optional(d.relay_mode)?.unwrap_or(defaults.relay_mode),
+            relay: relay_from(d.relay.as_deref())?.unwrap_or(defaults.relay),
             congestion: Congestion::from_optional(d.congestion)?.unwrap_or(defaults.congestion),
             pq_key_exchange: PqKeyExchange::from_optional(d.pq_key_exchange)?
                 .unwrap_or(defaults.pq_key_exchange),
@@ -408,10 +427,7 @@ impl TelemetrySettings {
     fn from_message(t: &pb::Telemetry) -> Result<TelemetrySettings, String> {
         Ok(TelemetrySettings {
             otlp_endpoint: url_from(t.otlp_endpoint.as_deref())?,
-            otlp_protocol: t
-                .otlp_protocol
-                .map(OtlpProtocol::from_message)
-                .transpose()?,
+            otlp_protocol: OtlpProtocol::from_optional(t.otlp_protocol)?,
         })
     }
 }
@@ -430,24 +446,27 @@ impl Settings {
             // A named identity is the whole answer; the ssh key is only
             // consulted for the built-in default.
             ssh_identity: msg
-                .identity
+                .defaults
+                .as_ref()
+                .and_then(|d| d.identity.as_ref())
                 .is_none()
                 .then_some(defaults.ssh_identity)
                 .flatten(),
             identity: msg
-                .identity
+                .defaults
                 .as_ref()
+                .and_then(|d| d.identity.as_ref())
                 .map_or(defaults.identity, PathBuf::from),
             state_dir: msg
                 .state_dir
                 .as_ref()
                 .map_or(defaults.state_dir, PathBuf::from),
-            client: msg
-                .client
+            defaults: msg
+                .defaults
                 .as_ref()
-                .map(ClientSettings::from_message)
+                .map(Defaults::from_message)
                 .transpose()
-                .map_err(in_table("client"))?
+                .map_err(in_table("defaults"))?
                 .unwrap_or_default(),
             daemon: msg
                 .daemon

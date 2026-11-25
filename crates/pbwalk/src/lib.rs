@@ -368,16 +368,19 @@ mod tests {
     fn hello() -> v1::Hello {
         v1::Hello {
             protocol_version: 5,
-            path: b"m".to_vec(),
+            request: Some(v1::hello::Request::Probe(v1::Probe {
+                path: b"m".to_vec(),
+            })),
             ..Default::default()
         }
     }
 
-    fn hello_ack() -> v1::HelloAck {
-        v1::HelloAck {
-            session_id: vec![7; 16],
-            protocol_version: 5,
-            ..Default::default()
+    fn hello_ack() -> v1::HelloReply {
+        v1::HelloReply {
+            reply: Some(v1::hello_reply::Reply::Ack(v1::HelloAck {
+                session_id: vec![7; 16],
+                ..Default::default()
+            })),
         }
     }
 
@@ -444,7 +447,7 @@ mod tests {
         let p = varint_len(a) + varint_len(b) + varint_len(c);
         let records = [
             hello_record(1, 1),
-            message(1, 2, Msg::HelloAck(hello_ack()), b as usize),
+            message(1, 2, Msg::HelloReply(hello_ack()), b as usize),
             event_record(),
             cut_chunk_record(),
         ];
@@ -714,7 +717,9 @@ mod tests {
     fn full_prints_long_values() {
         let long = v1::Hello {
             protocol_version: 5,
-            path: vec![b'a'; 100],
+            request: Some(v1::hello::Request::Probe(v1::Probe {
+                path: vec![b'a'; 100],
+            })),
             ..Default::default()
         };
         let n = long.encoded_len();
@@ -916,7 +921,9 @@ mod tests {
     fn control_characters_are_escaped() {
         let hello = v1::Hello {
             protocol_version: 5,
-            path: b"a\nb".to_vec(),
+            request: Some(v1::hello::Request::Probe(v1::Probe {
+                path: b"a\nb".to_vec(),
+            })),
             ..Default::default()
         };
         let n = hello.encoded_len();
@@ -995,13 +1002,16 @@ mod tests {
             record.extend(payload);
             record
         }
-        let ack = v1::HelloAck {
-            build: Some(v1::BuildInfo {
-                version: "0.1.0".into(),
-                commit: "abc".into(),
-                dirty: None,
-            }),
-            ..hello_ack()
+        let ack = v1::HelloReply {
+            reply: Some(v1::hello_reply::Reply::Ack(v1::HelloAck {
+                session_id: vec![7; 16],
+                build: Some(v1::BuildInfo {
+                    version: "0.1.0".into(),
+                    commit: "abc".into(),
+                    dirty: None,
+                }),
+                ..Default::default()
+            })),
         };
         let event = StreamEvent {
             kind: 1,
@@ -1020,7 +1030,7 @@ mod tests {
         vec![
             (hello_record(1, 1).encode_to_vec(), hello().encode_to_vec()),
             (
-                message(1, 2, Msg::HelloAck(ack.clone()), ack.encoded_len()).encode_to_vec(),
+                message(1, 2, Msg::HelloReply(ack.clone()), ack.encoded_len()).encode_to_vec(),
                 ack.encode_to_vec(),
             ),
             (event_record().encode_to_vec(), event.encode_to_vec()),

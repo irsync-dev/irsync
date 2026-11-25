@@ -100,8 +100,8 @@ fn start_daemon(tmp: &Path, debug_addr: Option<&str>) -> Daemon {
         &config,
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n{debug}\
-             relay_mode = \"disabled\"\nportmap = false\n\
-             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+             relay = \"disabled\"\nportmap = false\n\
+             dht = false\ndns = false\nmdns = false\n",
             tmp.join("state"),
             tmp.join("daemon_key"),
         ),

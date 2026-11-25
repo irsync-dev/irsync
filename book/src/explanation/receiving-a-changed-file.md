@@ -53,9 +53,9 @@ turns off.
 
 ### Chunk list arrival
 
-The chunk list arrives as `ChunkListPart` frames, which
-`Receiver::on_chunk_list_part` reassembles (`session/parts.rs`) into one
-digest. A malformed sequence fails the file. A connection lost in the middle
+The chunk list arrives as a `ChunkListStart` and `ChunkListMore` frames,
+which `Receiver::on_chunk_list_start` and `on_chunk_list_more` reassemble
+(`session/parts.rs`) into one digest. A malformed sequence fails the file. A connection lost in the middle
 of a sequence drops the half-built list; the resumed session gets a fresh
 sequence.
 

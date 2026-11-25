@@ -1,4 +1,5 @@
-// Part of the normative irsync wire protocol. Field numbers are never reused.
+// Part of the normative irsync wire protocol. Any change to these messages
+// bumps PROTOCOL_VERSION (irsync-proto).
 syntax = "proto3";
 package irsync.v1;
 
@@ -24,16 +25,17 @@ message DataChunk {
   bytes data = 1;
   repeated DeltaOp ops = 2;
 }
-// `len` bytes at `offset` of the receiver's old file (inside the region the
-// receiver signed), or literal bytes.
+// `len` bytes at `offset` of the receiver's old file, inside the region
+// the receiver signed for the chunk.
 message CopyOld {
   uint64 offset = 1;
   uint32 len = 2;
 }
+// One step of rebuilding a chunk: literal bytes, or a copy from the
+// receiver's old file.
 message DeltaOp {
   oneof op {
     bytes literal = 1;
     CopyOld copy = 2;
   }
 }
-// RangeSet/Range (persisted partial progress) live in common.proto.

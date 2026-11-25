@@ -1,4 +1,4 @@
-[client]
+[defaults]
 parallel = 2
 
 [daemon]

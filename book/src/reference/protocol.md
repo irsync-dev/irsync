@@ -2,7 +2,7 @@
 
 The protobuf definitions in
 [`proto/irsync/v1/`](https://github.com/irsync-dev/irsync/tree/main/proto/irsync/v1)
-(`common.proto`, `control.proto`, `data.proto`, `session.proto`) are
+(`common.proto`, `control.proto`, `data.proto`, `admin.proto`, `session.proto`) are
 normative. This page summarises the constants, the streams and the messages;
 where it disagrees with the `.proto` files, they win. The Rust types are
 generated from them in the `irsync-proto` crate.
@@ -13,28 +13,35 @@ The protocol and the on-disk state (index, session records) change without
 compatibility paths until the first release. A client that speaks another
 version is refused with `VERSION_MISMATCH`.
 
+Any change to the wire format bumps `PROTOCOL_VERSION`
+(`crates/irsync-proto/src/lib.rs`), in the same change: a message or field
+added, removed or renumbered, a field's type changed, an enum value added or
+renumbered, or a field's meaning changed. Two peers of one version always
+read each other's frames the same way. `session.proto` is not on the wire;
+a change to it needs no new version.
+
 ## Constants
 
 | Item | Value |
 | --- | --- |
 | ALPN | `irsync/1` |
-| `PROTOCOL_VERSION` | `7`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
+| `PROTOCOL_VERSION` | `8`, carried in `Hello.protocol_version` |
 | Framing | A protobuf varint length (at most 4 bytes for `MAX_FRAME`), then that many bytes of one protobuf message: protobuf's standard length-delimited form |
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
 | Chunking | FastCDC 2020, normalisation level 1; minimum 64 KiB, average 256 KiB, maximum 1 MiB |
-| Chunk list part | At most 32,768 records |
+| Chunk list part | At most 32,768 records in a `ChunkListStart` or `ChunkListMore` |
 | Chunk list | At most 2^24 records. Every chunk but a file's last is at least 64 KiB; the receiver refuses a list with a shorter one. |
 | List room | 2^24 records per connection, across all files |
-| `NeedChunks` | At most 2^18 chunk indices per message |
-| `Hello.filters` | At most 16,384 rules; a pattern at most 4,096 bytes; all patterns together at most 1 MiB. The daemon refuses a `Hello` with more. |
+| `NeedChunks` | At most 2^18 chunk indices and 16 entries of `held` per message; the sender treats more as a protocol error |
+| `SyncRequest.filters` | At most 16,384 rules; a pattern at most 4,096 bytes; all patterns together at most 1 MiB. The daemon refuses a `Hello` with more. |
 | Path in `PlanItem` and `CheckLink` | At most 64 KiB, and a valid relative path; anything else is a protocol error |
 | Chunk basis | Blocks of 512 B to 4 KiB, at most 8,192 blocks; at most 32 MiB of bases held per session |
 | `DataChunk` | A piece of one chunk, at most 64 KiB of data; or the operations that rebuild one whole chunk |
 | Heartbeat | At most one every 500 ms |
 | Hello timeout | The daemon waits 10 s for `Hello` |
 
-The chunking parameters travel in the handshake (`Hello.chunk_min`,
+The chunking parameters travel in the handshake (`SyncRequest.chunk_min`,
 `chunk_avg`, `chunk_max`); a client with others is refused with
 `VERSION_MISMATCH`. A file's chunk list and whole-file hash are a pure function
 of its bytes and these parameters.
@@ -64,14 +71,16 @@ A session uses two bidirectional streams, both opened by the client, and many
 unidirectional ones.
 
 - **The control stream** is the first bidirectional stream. It carries `Hello`
-  and the reply, then every `Control` frame except the listing's.
+  and the `HelloReply`, then `Control` frames.
 - **The listing stream** is the second. The client opens it right after
   `HelloAck` and starts it with a `ListingStreamHeader` naming the session.
-  Each half then carries one side's listing: `ListingEntry` frames in path
-  order, a `ListingError` wherever entries are missing (a directory that could
-  not be read, right after its own entry; an entry that could not be stat'ed),
-  one `ListingEnd` with the count and an `incomplete` flag, and the end of the
-  half. A side that does not list, a receiver resuming a complete plan, ends
+  Each half then carries one side's listing as `ListingFrame`s: an `entry`
+  (a `FileEntry`, without `dev` and `inode`, which are the lister's own) per
+  path, in path order; an `error` (a `PathError`)
+  wherever entries are missing (a directory that could not be read, right
+  after its own entry; an entry that could not be stat'ed); one `end` (a
+  `ListingEnd`, with the count of entries and an `incomplete` flag); and the
+  end of the half. A side that does not list, a receiver resuming a complete plan, ends
   its half without a frame. The listing has its own stream so that a planner
   that stops taking it, while it waits for files in flight to finish, stalls
   only the listing and never the frames that finish those files.
@@ -88,50 +97,84 @@ unidirectional ones.
 
 ## Handshake
 
-The client sends `Hello` on the control stream:
+The client sends `Hello` on the control stream: `protocol_version`, its
+`build` (`BuildInfo`: package version, short git commit, dirty flag), its
+W3C trace context (`traceparent` and `tracestate`, empty: no trace; a
+daemon that exports traces makes its `session` span a child of it), and
+exactly one `request`:
 
-- `protocol_version` and the three chunking parameters;
+| Request | Meaning |
+| --- | --- |
+| `push` | A `SyncRequest`: a session in which the client sends. |
+| `pull` | A `SyncRequest`: a session in which the daemon sends. |
+| `list_exports` | No session: the exports this key may use. |
+| `probe` | No session: what `Probe.path` is on the daemon. |
+| `admin` | The control stream becomes an admin session. |
+
+The daemon answers with one `HelloReply`, which holds exactly one of
+`error` (a refusal, then close code 2), `ack` (a `HelloAck`, for a push or
+a pull), `exports` (an `ExportList`), `path_info` (a `PathInfo`) or
+`admin_ready`. A `Hello` without a request is refused with `BAD_REQUEST`.
+`Hello.protocol_version` and `HelloReply.error` keep their field numbers in
+every version, so a client of another version still reads why it was
+refused.
+
+A `SyncRequest` holds:
+
 - `session_id`: 16 bytes to resume a session, empty for a new one;
-- `direction`: `CLIENT_SENDS` (a push), `DAEMON_SENDS` (a pull) or
-  `LIST_EXPORTS`, `PROBE` or `ADMIN`;
+- the three chunking parameters;
 - `path`, the remote `PATH` as typed, which the daemon resolves (see
   [Remote addresses](remote-addresses.md#resolution-order)); `contents_only`,
   the trailing-slash rule; and on a push of a source without a trailing slash,
   `name`, its basename;
-- `single_file` (field 31): the session copies one file. `name` is then the
+- `single_file`: the session copies one file. `name` is then the
   source's basename on a push, and the name the file gets on the client on a
   pull; it must be one path component. The daemon treats the directory that
   holds the file as the session root, so nothing else in it is listed or
   deleted. `--delete` and its relatives are ignored. On a push the daemon
   decides the file's name on its side by rsync's rules and returns it in
   `HelloAck.single_name`, which can differ from `name` (a file named `T`);
-- the client's preserve flags (`-l -p -t -g -o -D -H -S`, `-r`, `-d`), which
+- `preserve`, the client's preserve flags (`-l -p -t -g -o -D -H -S`), which
   the daemon honours in both directions; it refuses a push or a pull whose
-  `Hello` lacks them;
+  request lacks them;
+- `recursive` and `dirs`: `-r` and `-d`, which both sides' listings follow;
 - the include and exclude rules, compiled and in order. A sending daemon walks
   with them; a receiving daemon protects what they exclude from deletion;
 - the receiver-side options, which the daemon honours only when it receives:
   the deletion mode, `--delete-excluded`, `--max-delete`, `-n`, `-u`, `-c`,
   `--inplace`, `--append` or `--append-verify`, `--partial-dir` (relative and
-  inside the destination, or refused), `--no-rename-detection`, `--fsync`
-  (field 29; an export's `fsync = true` flushes whatever the client sent). `-i`,
+  inside the destination, or refused), `--no-rename-detection`
+  (`no_rename_detection`), `--fsync`
+  (an export's `fsync = true` flushes whatever the client sent). `-i`,
   `--ignore-errors` and `--numeric-ids` apply in both directions;
-- `paranoid` (field 30): `--paranoid`. Both roles take part in the final
+- `paranoid`: `--paranoid`. Both roles take part in the final
   re-check, which the receiver asks for with `Settle`, so a daemon honours it
   in both directions. Only the sending side clones or hashes each file again,
   so on a push the daemon does neither;
-- `bwlimit` (field 32): `--bwlimit` in bytes per second. The side that sends
+- `bwlimit`: `--bwlimit` in bytes per second. The side that sends
   the file data paces it, so the daemon honours it only when it sends (a
-  pull); on a push the client paces itself. Absent or 0 means no limit;
-- `traceparent` and `tracestate`, the client's W3C trace context (empty: no
-  trace). A daemon that exports traces makes its `session` span a child of it;
-- `build`: the client's `BuildInfo` (package version, short git commit, dirty
-  flag).
+  pull); on a push the client paces itself. Absent or 0 means no limit.
 
-An `ADMIN` Hello (`path` empty) turns the control stream into an admin
-session, defined in `admin.proto`. The client sends `AdminRequest` frames and
-the daemon answers each with an `AdminReply`. A key without `admin` gets an
-`Error` with `UNAUTHORIZED` and the message `not allowed`. Otherwise:
+A push or a pull is answered with `ack`: a `HelloAck` with the session id,
+whether the session was resumed, the daemon's `BuildInfo` and, on a
+single-file push, `single_name`. Each side logs the
+other's build at info level once the session is up.
+
+`list_exports` is answered with `exports`: the exports this key may use with
+their paths and effective access, sorted by name. The daemon then closes the
+connection.
+
+A `probe` opens no session. The daemon resolves `Probe.path` as it would
+for a pull, applies the same access checks, and answers with `path_info`,
+whose `kind` is `MISSING`, `DIRECTORY` or `FILE` (anything that is not a
+directory, a symlink included), then closes. A client uses it to learn
+whether a pull without a trailing slash names a file.
+
+An `admin` request turns the control stream into an admin session, defined
+in `admin.proto`. A key without `admin` gets an `error` with
+`UNAUTHORIZED` and the message `not allowed`. Otherwise the daemon answers
+with `admin_ready`; the client then sends `AdminRequest` frames and the
+daemon answers each with an `AdminReply`:
 
 | Message | Direction | Meaning |
 | --- | --- | --- |
@@ -140,35 +183,29 @@ the daemon answers each with an `AdminReply`. A key without `admin` gets an
 | `Read` | client to daemon | `ReadView` for the exports, clients and daemon facts, or `ReadConfig` for one key (empty: every key). Answered with `View` or `ConfigText`, from the saved config. Needs `admin` `ro` or `rw`. |
 | `Nack` | daemon to client | Nothing was applied. `change` is the 1-based number of the change at fault, or 0 for the whole transaction (busy, not allowed, own `admin` right, too many changes). |
 
-A `PROBE` opens no session. The daemon resolves `path` as it would for a
-pull, applies the same access checks, and answers with a `PathInfo` whose
-`kind` is `MISSING`, `DIRECTORY` or `FILE` (anything that is not a directory,
-a symlink included), then closes. A client uses it to learn whether a pull
-without a trailing slash names a file. `PathInfo` has `kind` on field 3, with
-fields 1 and 2 reserved and the field marked `optional`, so a refusal (an
-`Error`) never decodes as a `PathInfo`.
-
-For `LIST_EXPORTS` the daemon answers with an `ExportList`, the exports this
-key may use with their paths and effective access, sorted by name, and closes
-the connection. Otherwise it answers with `HelloAck` (the session id, whether
-the session was resumed, its protocol version, its `BuildInfo` and, on a
-single-file push, `single_name`), or with an
-`Error` and close code 2. Each side logs the other's build at info level once
-the session is up.
+A request the daemon refuses inside the session (one it cannot read, a read
+of a key that does not exist, a request too large) gets an `AdminReply`
+whose `refused` holds the `Error`.
 
 ## Errors
 
+An `Error` is a code and a message. It refuses a `Hello` (in
+`HelloReply`), refuses an admin request (in `AdminReply`), or, as the
+`error` of a `Control` frame, ends a session that failed: either side may
+send that one, with `INTERNAL`.
+
 | Code | Sent when |
 | --- | --- |
-| `UNKNOWN` | A malformed request, such as an unknown direction. |
+| `UNSPECIFIED` | Never sent. |
 | `UNAUTHORIZED` | The key has grants, but none for an export that contains the path. The message is `no access to PATH`. |
 | `READ_ONLY` | A push to an export that is `read_only` or that this key may only read. |
 | `BAD_PATH` | The path has a `..` component or a NUL byte, or the session's root cannot be prepared. |
 | `VERSION_MISMATCH` | Another protocol version or other chunking parameters. |
 | `BAD_SESSION` | A resume of a session the daemon does not know, that is finished, or that another key started. The client starts a fresh session at once. |
-| `INTERNAL` | The daemon failed, for example opening the export's index. |
+| `INTERNAL` | The daemon failed, for example opening the export's index; or a session failed (in `Control`). |
+| `BAD_REQUEST` | A malformed request: a `Hello` without a request, rules over the limits, an admin request that cannot be read. |
 
-Field number 2 is reserved. The answer for a path a key may not use is the
+The answer for a path a key may not use is the
 same whether the path lies outside every export, inside an export without a
 grant, or does not exist at all, so a key cannot probe the daemon's layout.
 `READ_ONLY` and a `BAD_PATH` about the root go only to a key that may use the
@@ -179,52 +216,60 @@ export.
 | Message | Direction | Meaning |
 | --- | --- | --- |
 | `PlanItem` | receiver to sender | Send this file: `WHOLE` (nothing to reuse at that path), `DELTA` (the receiver holds an old version) or `APPEND` (the receiver trusts its first `append_from` bytes). |
-| `ChunkListPart` | sender to receiver | Part of a file's chunk list. The first part also carries the stat the file was hashed under: mtime, mode, owner and group (with their names), change time and inode. With the `size`, the receiver places the file with them instead of the walk's. The change time and inode are for the link check (`CheckLink`). |
+| `ChunkListStart` | sender to receiver | The start of a file's chunk list: its total record count, the whole-file hash, the first records, and the stat the file was hashed under (`SourceStat`: size, mtime, change time, inode, mode, uid and gid, with the names of the owner and group). The receiver places the file with the size, mtime, mode, owner and group instead of the walk's. The change time and inode are for the link check (`CheckLink`). |
+| `ChunkListMore` | sender to receiver | The next records of a file's chunk list. |
+| `WithdrawChunkList` | sender to receiver | Drop the file's chunk list and free its room: a new list follows. |
 | `ListRoom` | receiver to sender | Room for this many more chunk records, freed by lists the receiver dropped. |
 | `ChunkBasis` | receiver to sender | Block signatures over a region of the receiver's old file, for one chunk. |
 | `NeedChunks` | receiver to sender | The chunks to send; empty means none. |
 | `MayPlace` | receiver to sender | The file is verified against chunk list number `gen`; may it be placed? |
-| `PlaceVerdict` | sender to receiver | The answer: `changed` if the source differs from the stat it was hashed under. The receiver places the file only when it is unchanged; otherwise it drops it and waits for the new chunk list, or for `SOURCE_ERROR`. A `MayPlace` about a list older than the sender's latest is always answered `changed`. |
-| `FileAck` | either | From the receiver: `DONE`, `HASH_MISMATCH`, `WRITE_ERROR`. From the sender: `SOURCE_ERROR`, it cannot read the file. `DONE` carries the bytes the receiver did not take from the sender. |
+| `PlaceVerdict` | sender to receiver | The answer: `changed` if the source differs from the stat it was hashed under. The receiver places the file only when it is unchanged; otherwise it drops it and waits for the new chunk list, or for a `SourceError`. A `MayPlace` about a list older than the sender's latest is always answered `changed`. |
+| `FileAck` | receiver to sender | How the file ended: `DONE`, `HASH_MISMATCH` or `WRITE_ERROR` (`UNSPECIFIED` is never sent; the sender takes it as a protocol error). `DONE` carries the bytes the receiver did not take from the sender. |
+| `SourceError` | sender to receiver | The sender cannot read the file, and says why. The receiver drops it without a reply. |
 | `Itemized` | receiver to sender | One rsync `-i` line, for a client that pushes with `-i`. |
 | `Heartbeat` | either | This side is busy; see below. |
 | `Settle` | receiver to sender | With `--paranoid` (not on a dry run), once, in place of the first `SessionDone`: every path is planned and no file is in flight. The sender stats every file it listed again. |
-| `Replan` | sender to receiver | After `Settle`: a listed file that changed since it was listed or last hashed, with its entry as it is now. The receiver plans it again, under a new file id. |
+| `Replan` | sender to receiver | After `Settle`: a listed file that changed since it was listed or last hashed: its entry as it is now, path included. The receiver plans it again, under a new file id. |
 | `Settled` | sender to receiver | The re-check is over: the listed files that vanished, and those it could not stat. The receiver sends `SessionDone` once the re-planned files are done. |
 | `CheckLink` | receiver to sender | With `-H` (not on a dry run), once every path is planned, no file is in flight and the re-check (if any) is over: one per hard link about to be made to a file sent in this session, on this connection or an earlier one. It carries the name and the stat its target was hashed under. |
 | `CheckLinksEnd` | receiver to sender | The last `CheckLink` has been sent. With `-H` it is always sent, even with no links to check, before `SessionDone`. |
-| `Unlinked` | sender to receiver | A name that is no longer exactly the file its target was hashed as: its stat differs (inode, size, times, mode, owner or group), or it is gone or no longer a regular file the walk would list. The receiver does not link it. If it is still a regular file, `entry` holds it as it is now, and the receiver plans it as a file of its own, as for `Replan`. Otherwise that name fails. |
+| `Unlinked` | sender to receiver | A name that is no longer exactly the file its target was hashed as: its stat differs (inode, size, times, mode, owner or group), or it is gone or no longer a regular file the walk would list. The receiver does not link it. If it is still a regular file, `entry` holds it as it is now, and the receiver plans it as a file of its own, as for `Replan`. Otherwise `failed` holds the name, which fails. |
 | `LinksChecked` | sender to receiver | The link check is over. The receiver makes the other links, then sends `SessionDone`. |
-| `SessionDone` | receiver to sender | The session's totals, errors and deletions, and what the sender's listing held (`listed`): a sender that resumed from the receiver's stored plan listed nothing itself and reports these counts. |
-| `Error` | daemon to client | A refusal, as above. |
+| `SessionDone` | receiver to sender | The session's totals (`files_placed`, `placed_size`, `bytes_received`, `created`), errors and deletions (`deleted_paths`, `would_delete_paths`, capped, with counts of the rest), and what the sender's listing held (`listed`): a sender that resumed from the receiver's stored plan listed nothing itself and reports these counts. |
+| `Error` | either | The session failed on this side, with `INTERNAL` and why; it ends the session. |
 
 Every message on the control stream is a `Control` frame with exactly one of
-these set. A file costs a `PlanItem`, at least one `ChunkListPart`, a
-`NeedChunks`, a `MayPlace`, a `PlaceVerdict` and a `FileAck`; the room its list took comes back in a
+these set. A file costs a `PlanItem`, a `ChunkListStart` (and
+`ChunkListMore`s for a long list), a `NeedChunks`, a `MayPlace`, a
+`PlaceVerdict` and a `FileAck`; the room its list took comes back in a
 `ListRoom`, which may cover several files.
 
 ### Chunk lists
 
-A chunk list travels as `ChunkListPart` frames of at most 32,768 records, in
-order, the last one flagged `last`; an empty file's list is one empty last
-part. Every part repeats the file id, the size, the whole-file hash and the
-total record count. The receiver reassembles them and fails the file when a
-sequence skips, describes another file, or announces more records than 2^24 or
-than the size allows at the minimum chunk length. The first part also holds the
-stat the file was hashed under: mtime, mode, uid and gid, with the names of the
-uid and gid on the sender. These and the list's size replace the walk's for the
-file, and the names are mapped to the receiver's ids as for a listing entry
-(not with `--numeric-ids`). An `APPEND` tail's list carries the whole file's
-stat.
+A chunk list travels as one `ChunkListStart` and then `ChunkListMore`
+frames, in order, each with at most 32,768 records; an empty file's list is
+one `ChunkListStart` without records. The start carries the file id, the
+total record count, the whole-file hash and the stat the file was hashed
+under; each `ChunkListMore` carries the file id and the index of its first
+record. A `ChunkRecord` is a length and a hash: its offset is the sum of the
+lengths before it, from 0, or from `append_from` for an `APPEND` tail. The
+list is complete once `total` records have come. The receiver
+reassembles them and fails the file when a sequence skips or announces more
+records than 2^24 or than the size allows at the minimum chunk length. The
+stat (`SourceStat`) is the size, mtime, change time, inode, mode, uid and
+gid, and the start also holds the names of the uid and gid on the sender.
+These replace the walk's for the file, and the names are mapped to the
+receiver's ids as for a listing entry (not with `--numeric-ids`). An
+`APPEND` tail's list carries the whole file's stat.
 
 Lists travel in room the receiver grants. Each connection starts with room for
-2^24 records on both sides; a list's first part takes its whole `total` of it,
+2^24 records on both sides; a list's start takes its whole `total` of it,
 and a sender sends a list only once it fits. The receiver gives room back with
 `ListRoom` when it drops a list: the file was placed, failed or replaced. A
-first part that does not fit, or a grant above the starting room, is a
-protocol error. A first part for a file that already has a list replaces that
-list; a sender that lists a file again first sends an empty unfinished first
-part, so the old list is dropped without waiting for room.
+start that does not fit, or a grant above the starting room, is a
+protocol error. A start for a file that already has a list replaces that
+list; a sender that lists a file again first sends a `WithdrawChunkList`,
+so the old list is dropped without waiting for room.
 
 For an `APPEND`, the list covers only the tail from `append_from` and carries
 no whole-file hash; the receiver folds the hash from the bytes it places. Every
@@ -269,7 +314,7 @@ it against the chunk's hash like any other. How the receiver chooses and uses ba
 A `Heartbeat` means "I am busy". A side sends one every 500 ms in which it made
 progress: hashing, writing, finalizing, deleting, or traffic. It carries what
 the other side cannot otherwise see: the directory this side's walk is in,
-the bytes its planner found up to date, and its deletion count. An idle side sends none,
+the bytes its planner found up to date, and its deletion count (`deleted_count`). An idle side sends none,
 so a stuck side still times out. The receiver sends none after `SessionDone`,
 which is the last message on its control stream. A receiver that resumes its stored plan sends
 one extra `Heartbeat` before its first request, with `listed`, the totals of
@@ -283,8 +328,9 @@ Nothing is listed again, and the sender shows its progress from these. See
 `session.proto` describes what each side stores in its index for a session
 that may resume: the plan (`SessionPlan`, with `PlanEntry` per file) and the
 progress (`SessionProgress`). These messages never go on the wire. Partial
-files are stored as `PartialRanges`: the verified bytes, and the first bytes
-of chunks that did not finish (`held`). See
+files are stored as `PartialRanges` (of `Range`s): the verified bytes, and the
+first bytes of chunks that did not finish (`held`); a `RangeSet` is the
+verified bytes alone. See
 [Sessions and resume](../explanation/sessions-and-resume.md).
 
 ## Cross-implementation check
@@ -295,5 +341,6 @@ of 1 MiB from the xorshift64 generator seeded with `0x9E3779B97F4A7C15` (see
 `crates/irsync-proto/tests/chunk.rs`). An independent implementation must
 reproduce it exactly to interoperate, because chunk boundaries decide which
 chunks a client and a daemon consider equal.
-`crates/irsync-proto/tests/golden_bytes.rs` pins the exact wire bytes of several messages, so a change of field number or
-wire type shows.
+`crates/irsync-proto/tests/golden_bytes.rs` pins `PROTOCOL_VERSION` and the
+exact wire bytes of several messages, so a change of field number or wire
+type shows, and with it a version that was not bumped.

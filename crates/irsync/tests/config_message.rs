@@ -31,12 +31,15 @@ fn unset_and_set_to_the_default_differ() {
 #[test]
 fn values_not_spellings() {
     let c = values(&format!(
-        "identity = \"~/k\"\n[client]\nreconnect = \"90\"\n[servers.nas]\nendpoint_id = \"{}\"\nrelay_mode = \"disabled\"\nreconnect = 3600\n",
+        "[defaults]\nidentity = \"~/k\"\nreconnect = \"90\"\n[servers.nas]\nendpoint_id = \"{}\"\nrelay = \"disabled\"\nreconnect = 3600\n",
         id(1)
     ));
-    assert_eq!(c.identity.as_deref(), Some("~/k")); // as written
     assert_eq!(
-        c.client
+        c.defaults.as_ref().unwrap().identity.as_deref(),
+        Some("~/k")
+    ); // as written
+    assert_eq!(
+        c.defaults
             .as_ref()
             .unwrap()
             .reconnect
@@ -47,20 +50,20 @@ fn values_not_spellings() {
     );
     let h = &c.servers[0];
     assert_eq!(h.endpoint_id, id(1).as_bytes());
-    assert_eq!(h.relay_mode, Some(pb::RelayMode::Disabled as i32));
+    assert_eq!(h.relay.as_deref(), Some("disabled"));
     assert_eq!(h.reconnect.as_ref().unwrap().seconds, 3600);
 }
 
 #[test]
 fn urls_are_kept_as_written() {
     let text = format!(
-        "[client]\nrelay = \"https://r.example\"\n\n[daemon]\nrelay = \"https://d.example\"\n\n\
+        "[defaults]\nrelay = \"https://r.example\"\n\n[daemon]\nrelay = \"https://d.example\"\n\n\
          [telemetry]\notlp_endpoint = \"http://c:4318\"\n\n[servers.nas]\nendpoint_id = \"{}\"\nrelay = \"https://h.example\"\n",
         id(1)
     );
     let c = values(&text);
     assert_eq!(
-        c.client.as_ref().unwrap().relay.as_deref(),
+        c.defaults.as_ref().unwrap().relay.as_deref(),
         Some("https://r.example")
     );
     assert_eq!(
@@ -155,8 +158,11 @@ fn a_client_id_is_32_bytes() {
 
 #[test]
 fn from_message_applies_defaults_and_expands_tilde() {
-    let c =
-        Config::from_message(&values("identity = \"~/k\"\n[daemon]\n"), Path::new("f")).unwrap();
+    let c = Config::from_message(
+        &values("[defaults]\nidentity = \"~/k\"\n[daemon]\n"),
+        Path::new("f"),
+    )
+    .unwrap();
     assert_eq!(c.settings.identity, dirs::home_dir().unwrap().join("k"));
     assert_eq!(c.settings.ssh_identity, None); // the file names an identity
     assert_eq!(c.settings.daemon, DaemonSettings::default());
@@ -252,18 +258,17 @@ fn from_message_checks_each_edit_again() {
     );
     assert_eq!(
         refusal(&|m| {
-            m.client = Some(pb::Client {
+            m.defaults = Some(pb::Defaults {
                 relay: Some("not a url".into()),
                 ..Default::default()
             })
         }),
-        "f: [client]: relative URL without a base: \"not a url\""
+        "f: [defaults]: \"not a url\": expected default, disabled or a URL (relative URL without a base)"
     );
 }
 
 #[test]
 fn errors_are_those_of_config_parse() {
-    // The messages `Config::parse` gave before it read through the message.
     for (text, message) in [
         (
             "[servers.nas]\nendpoint_id = \"nope\"\n",
@@ -290,8 +295,8 @@ fn errors_are_those_of_config_parse() {
             "f:1: invalid name \"all\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId",
         ),
         (
-            "[client]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `parallel`, `reconnect`, `dial_retries`, `dht`, `ssh_install`, `mdns`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`",
+            "[defaults]\nbogus = 1\n",
+            "f:2: unknown key \"defaults.bogus\"",
         ),
         (
             "[daemon]\nidentity = 1\n",
@@ -306,16 +311,16 @@ fn errors_are_those_of_config_parse() {
             "f:2: bad debug address \"x\": expected PORT or IP:PORT",
         ),
         (
-            "[daemon.discovery]\nbogus = true\n",
-            "f:2: unknown field `bogus`, expected one of `dht`, `dns`, `mdns`",
+            "[daemon]\ndiscovery = true\n",
+            "f:2: unknown key \"daemon.discovery\"",
         ),
         (
-            "[client]\nrelay = \"not a url\"\n",
-            "f:2: relative URL without a base: \"not a url\"",
+            "[defaults]\nrelay = \"not a url\"\n",
+            "f:2: \"not a url\": expected default, disabled or a URL (relative URL without a base)",
         ),
         (
             "[telemetry]\notlp_protocol = \"udp\"\n",
-            "f:2: unknown variant `udp`, expected `grpc` or `http`",
+            "f:2: \"udp\": expected grpc or http",
         ),
         (
             "[servers.nas]\naddress = [\"nope\"]\n",
@@ -335,7 +340,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[exports.p]\npath = \"/p\"\nbogus = 1\n",
-            "f:1: [exports.p]: unknown field `bogus`, expected one of `path`, `read_only`, `warm_index`, `fsync`, `auto`, `rw`, `ro`",
+            "f:3: unknown key \"exports.p.bogus\"",
         ),
         (
             "[exports.b]\npath = \"b\"\n[exports.a]\npath = \"a\"\n",
@@ -343,15 +348,15 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[exports]\np = 1\n",
-            "f:2: exports.p: expected a table (an export), found integer",
+            "f:2: exports.p: expected a table, found integer",
         ),
         (
             "[all]\nrw = \"x\"\n",
             "f:1: unknown key \"all\"",
         ),
         (
-            "identity = 1\n",
-            "f:1: identity: expected a string, found integer",
+            "state_dir = 1\n",
+            "f:1: invalid type: integer `1`, expected a string",
         ),
         (
             "[daemon]\nidle_timeout = true\n",
@@ -362,31 +367,31 @@ fn errors_are_those_of_config_parse() {
             "f:2: invalid type: integer `1`, expected a string",
         ),
         (
-            "[client]\nrelay_mode = 1\n",
-            "f:2: wanted string or table",
+            "[defaults]\nrelay = 1\n",
+            "f:2: invalid type: integer `1`, expected a string",
         ),
         (
-            "[client]\nrelay_mode = \"x\"\n",
-            "f:2: unknown variant `x`, expected `default` or `disabled`",
+            "[defaults]\nrelay = \"x\"\n",
+            "f:2: \"x\": expected default, disabled or a URL (relative URL without a base)",
         ),
         (
             "[daemon]\ncongestion = \"reno\"\n",
-            "f:2: unknown variant `reno`, expected `bbr` or `cubic`",
+            "f:2: \"reno\": expected bbr or cubic",
         ),
         (
             "[servers.h]\npq_key_exchange = \"only\"\n",
-            "f:2: unknown variant `only`, expected `prefer` or `require`",
+            "f:2: \"only\": expected prefer or require",
         ),
         (
             "[telemetry]\notlp_protocol = 1\n",
-            "f:2: wanted string or table",
+            "f:2: invalid type: integer `1`, expected a string",
         ),
         (
-            "[client]\nreconnect = true\n",
+            "[defaults]\nreconnect = true\n",
             "f:2: data did not match any variant of untagged enum Raw",
         ),
         (
-            "[client]\nreconnect = \"soon\"\n",
+            "[defaults]\nreconnect = \"soon\"\n",
             "f:2: bad duration \"soon\": expected <number>[s|m|h|d]",
         ),
         (
@@ -402,36 +407,32 @@ fn errors_are_those_of_config_parse() {
             "f:2: at most one IPv4 and one IPv6 listen address",
         ),
         (
-            "[daemon]\ndiscovery = 1\n",
-            "f:2: invalid type: integer `1`, expected struct Discovery",
-        ),
-        (
             "[servers.nas]\nreconnect = \"x\"\n",
             "f:2: bad duration \"x\": expected <number>[s|m|h|d]",
         ),
         (
             "[daemon]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `discovery`, `debug_addr`, `allow_all_paths`, `allow_root`",
+            "f:2: unknown key \"daemon.bogus\"",
         ),
         (
             "[telemetry]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected `otlp_endpoint` or `otlp_protocol`",
+            "f:2: unknown key \"telemetry.bogus\"",
         ),
         (
             "[servers.nas]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`",
+            "f:2: unknown key \"servers.nas.bogus\"",
         ),
         (
-            "[daemon.discovery]\ndht = 1\n",
+            "[daemon]\ndht = 1\n",
             "f:2: invalid type: integer `1`, expected a boolean",
         ),
         (
             "[servers]\nnas = 1\n",
-            "f:2: invalid type: integer `1`, expected struct RawServer",
+            "f:2: servers.nas: expected a table, found integer",
         ),
         (
             "[daemon]\nrelay = 1\n",
-            "f:2: invalid type: integer `1`, expected a string representing an URL",
+            "f:2: invalid type: integer `1`, expected a string",
         ),
         (
             "[servers.nas]\naddress = 1\n",
@@ -451,19 +452,19 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "unsafe_config_allowed = 1\n",
-            "f:1: unsafe_config_allowed: expected a boolean, found integer",
+            "f:1: invalid type: integer `1`, expected a boolean",
         ),
         (
-            "[client]\nrelay_mode = {}\n",
-            "f:2: wanted exactly 1 element, found 0 elements",
+            "[defaults]\nrelay = {}\n",
+            "f:2: invalid type: map, expected a string",
         ),
         (
-            "[client]\nrelay_mode = { default = 1 }\n",
-            "f:2: expected table, found integer",
+            "[defaults]\nrelay = { default = 1 }\n",
+            "f:2: invalid type: map, expected a string",
         ),
         (
             "[daemon]\ncongestion = { x = 1 }\n",
-            "f:2: unknown variant `x`, expected `bbr` or `cubic`",
+            "f:2: invalid type: map, expected a string",
         ),
         (
             "[daemon]\nidle_timeout = {}\n",
@@ -495,7 +496,7 @@ const COMMENTED: &str = "\
 # irsync on the nas
 # second header line
 
-identity = \"~/k\" # my key
+state_dir = \"~/k\" # my key
 # after the top keys
 
 # about the daemon
@@ -520,7 +521,7 @@ rw = [
 fn every_comment_has_a_home() {
     let c = read(COMMENTED, Path::new("f")).unwrap();
     assert_eq!(c.header, ["# irsync on the nas", "# second header line"]);
-    assert_eq!(c.key_comments["identity"].trailing, "# my key");
+    assert_eq!(c.key_comments["state_dir"].trailing, "# my key");
     assert_eq!(c.tail, ["# after the top keys"]);
     let d = c.daemon.unwrap();
     assert_eq!(d.comment.as_ref().unwrap().above, ["# about the daemon"]);
@@ -547,7 +548,7 @@ fn the_footer_starts_at_the_first_blank_line_after_the_last_key() {
     assert_eq!(c.daemon.unwrap().tail, ["# daemon tail"]);
     assert_eq!(c.footer, ["# the footer", "", "# more"]);
     // Top-level keys and no table: the top level's tail.
-    let c = commented("identity = \"~/k\"\n# top tail\n\n# the footer\n");
+    let c = commented("state_dir = \"~/k\"\n# top tail\n\n# the footer\n");
     assert_eq!(c.tail, ["# top tail"]);
     assert_eq!(c.footer, ["# the footer"]);
 }
@@ -589,11 +590,12 @@ fn a_file_that_starts_with_a_table_has_a_header() {
 
 #[test]
 fn a_tail_keeps_its_inner_blank_lines() {
-    let c =
-        commented("[daemon]\nportmap = true\n\n# a\n\n# b\n\n[client]\n# first\n\nparallel = 2\n");
+    let c = commented(
+        "[daemon]\nportmap = true\n\n# a\n\n# b\n\n[defaults]\n# first\n\nparallel = 2\n",
+    );
     let d = c.daemon.unwrap();
     assert_eq!(d.tail, ["# a", "", "# b"]);
-    let cl = c.client.unwrap();
+    let cl = c.defaults.unwrap();
     assert_eq!(cl.comment, None);
     assert_eq!(cl.key_comments["parallel"].above, ["# first"]);
 }
@@ -632,10 +634,10 @@ fn comments_in_arrays() {
 #[test]
 fn comments_on_dotted_keys_and_inline_tables() {
     let c = commented(&format!(
-        "[daemon]\n# on dht\ndiscovery.dht = false # off\n[servers]\n# the nas\nnas = {{ endpoint_id = \"{}\" }} # inline\n",
+        "# on dht\ndaemon.dht = false # off\n[servers]\n# the nas\nnas = {{ endpoint_id = \"{}\" }} # inline\n",
         id(1)
     ));
-    let disc = c.daemon.unwrap().discovery.unwrap();
+    let disc = c.daemon.unwrap();
     assert_eq!(disc.key_comments["dht"].above, ["# on dht"]);
     assert_eq!(disc.key_comments["dht"].trailing, "# off");
     let h = c.servers[0].comment.as_ref().unwrap();
@@ -696,7 +698,7 @@ fn the_writers_form() {
 # irsync on the nas
 # second header line
 
-identity = \"~/k\" # my key
+state_dir = \"~/k\" # my key
 # after the top keys
 
 # about the daemon
@@ -751,6 +753,111 @@ fn the_typed_config_is_the_same_after_a_rewrite() {
             Config::parse(&text, Path::new("f")).unwrap(),
             "{name}"
         );
+    }
+}
+
+/// `parallel = 0` could send nothing: refused at its line, as
+/// `--parallel 0` is, and in an edited message.
+#[test]
+fn parallel_must_be_at_least_one() {
+    let e = read("[defaults]\nreconnect = 1\nparallel = 0\n", Path::new("f")).unwrap_err();
+    assert_eq!(e.to_string(), "f:3: parallel must be at least 1");
+    let text = format!("[servers.nas]\nendpoint_id = \"{}\"\nparallel = 0\n", id(1));
+    let e = read(&text, Path::new("f")).unwrap_err();
+    assert_eq!(e.to_string(), "f:3: parallel must be at least 1");
+    assert!(read("[defaults]\nparallel = 1\n", Path::new("f")).is_ok());
+    let mut m = values("[defaults]\nparallel = 1\n");
+    m.defaults.as_mut().unwrap().parallel = Some(0);
+    let e = Config::from_message(&m, Path::new("f")).unwrap_err();
+    assert_eq!(e.to_string(), "f: [defaults]: parallel must be at least 1");
+    let mut m = values(&text.replace("parallel = 0", "parallel = 2"));
+    m.servers[0].parallel = Some(0);
+    let e = Config::from_message(&m, Path::new("f")).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "f: server \"nas\": parallel must be at least 1"
+    );
+}
+
+/// A server's `address` dials it directly: `relay` and the lookups
+/// beside it are refused, at the line of `address`.
+#[test]
+fn address_refuses_relay_and_lookups_beside_it() {
+    let text = format!(
+        "[servers.nas]\nendpoint_id = \"{}\"\ndht = false\naddress = [\"10.0.0.2:4433\"]\nrelay = \"disabled\"\n",
+        id(1)
+    );
+    let e = read(&text, Path::new("f")).unwrap_err().to_string();
+    assert_eq!(
+        e,
+        "f:4: server \"nas\": relay and dht cannot be set beside address, which dials the server directly with the relay and the lookups off"
+    );
+    // An empty list dials nothing directly.
+    let text = format!(
+        "[servers.nas]\nendpoint_id = \"{}\"\naddress = []\nmdns = false\n",
+        id(1)
+    );
+    assert!(read(&text, Path::new("f")).is_ok());
+    // The typed view checks an edited message again.
+    let mut m = values(&format!(
+        "[servers.nas]\nendpoint_id = \"{}\"\naddress = [\"10.0.0.2:4433\"]\n",
+        id(1)
+    ));
+    m.servers[0].mdns = Some(true);
+    let e = Config::from_message(&m, Path::new("f"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("mdns cannot be set beside address"), "{e}");
+}
+
+/// full.toml sets every key of the key table, and only those: the
+/// reader reads each of them, the writer writes each, and `config list`
+/// (which goes through `config get`'s fields) shows each.
+#[test]
+fn full_toml_sets_every_key_of_the_table() {
+    use irsync::config::keys::{Kind, KEYS};
+    use std::collections::BTreeSet;
+    let m = read(&fixture("full.toml"), Path::new("f")).unwrap();
+    let listed: BTreeSet<String> = irsync::manage::config::list(&m)
+        .iter()
+        .map(|line| {
+            let key = line.split(" = ").next().unwrap();
+            let mut parts: Vec<&str> = key.split('.').collect();
+            if parts.len() == 3 {
+                parts[1] = "*";
+            }
+            parts.join(".")
+        })
+        .collect();
+    let table: BTreeSet<String> = KEYS
+        .iter()
+        .filter(|k| k.kind != Kind::Table)
+        .map(|k| k.path.to_string())
+        .collect();
+    assert_eq!(listed, table);
+}
+
+/// A key the table does not know is refused at its line, in every table.
+#[test]
+fn a_key_the_table_does_not_know_is_refused() {
+    for (text, message) in [
+        ("bogus = 1\n", "f:1: unknown key \"bogus\""),
+        (
+            "[defaults]\nparallel = 2\nbogus = 1\n",
+            "f:3: unknown key \"defaults.bogus\"",
+        ),
+        ("daemon.bogus.x = 1\n", "f:1: unknown key \"daemon.bogus\""),
+        (
+            "[exports.p]\npath = \"/p\"\nrw = []\nx = 1\n",
+            "f:4: unknown key \"exports.p.x\"",
+        ),
+        (
+            "[[servers]]\nx = 1\n",
+            "f:1: servers: expected a table, found array",
+        ),
+    ] {
+        let e = read(text, Path::new("f")).unwrap_err().to_string();
+        assert_eq!(e, message, "{text}");
     }
 }
 
@@ -832,13 +939,11 @@ rw = [\"nas\", \"lap\"]
     let dotted_twin = format!(
         "\
 # top
-identity = \"~/k\"
+state_dir = \"~/k\"
 
 [daemon]
 # on portmap
 portmap = false # off
-
-[daemon.discovery]
 dht = false # dht off
 
 [servers.nas]
@@ -1134,11 +1239,14 @@ fn the_current_reader_checks_servers_and_clients_at_their_line() {
             "[clients.lap]\nclient_id = \"{}\"\nendpoint_id = \"x\"\n",
             id(1)
         )),
-        "f:3: unknown field `endpoint_id`, expected one of `client_id`, `all_exports`, `all_paths`, `admin`"
+        "f:3: unknown key \"clients.lap.endpoint_id\""
     );
     assert_eq!(
-        error(&format!("[servers.nas]\nendpoint_id = \"{}\"\nclient_id = \"x\"\n", id(1))),
-        "f:3: unknown field `client_id`, expected one of `endpoint_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`"
+        error(&format!(
+            "[servers.nas]\nendpoint_id = \"{}\"\nclient_id = \"x\"\n",
+            id(1)
+        )),
+        "f:3: unknown key \"servers.nas.client_id\""
     );
     assert_eq!(
         error(&format!("[servers.all]\nendpoint_id = \"{}\"\n", id(1))),

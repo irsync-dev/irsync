@@ -2,9 +2,11 @@
 
 pub mod clients;
 mod comments;
+pub mod dial;
 pub mod duration;
 pub mod exports;
 pub mod file;
+pub mod keys;
 pub mod names;
 pub mod paths;
 pub mod reader;
@@ -20,14 +22,6 @@ pub enum ConfigError {
     Io {
         path: PathBuf,
         source: std::io::Error,
-    },
-    #[error("line {line}: unknown keyword {keyword:?}")]
-    UnknownKeyword { line: usize, keyword: String },
-    #[error("line {line}: bad value for {keyword}: {message}")]
-    BadValue {
-        line: usize,
-        keyword: String,
-        message: String,
     },
     #[error("bad duration {0:?}: expected <number>[s|m|h|d]")]
     BadDuration(String),

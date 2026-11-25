@@ -378,7 +378,7 @@ pub enum Command {
         /// identity gets one).
         #[arg(long)]
         recheck: bool,
-        /// Turn the daemon's DHT publishing off (`[daemon.discovery] dht`).
+        /// Turn the daemon's DHT publishing off (`[daemon] dht`).
         #[arg(long)]
         no_dht: bool,
         /// Start the daemon in the background, not as a user service.
@@ -683,21 +683,18 @@ pub struct ServerAddArgs {
     pub name: String,
     /// The server's EndpointId: its daemon, the id dialled.
     pub id: String,
-    /// The server's home relay, used instead of the client settings' or n0's
-    /// default.
-    #[arg(long, value_name = "URL")]
-    pub relay: Option<String>,
-    /// `disabled`: reach this server directly only, never through a relay;
-    /// `default`: relays as usual (default: the client settings').
-    #[arg(long, value_name = "default|disabled", value_parser = parse_relay_mode)]
-    pub relay_mode: Option<crate::config::settings::RelayMode>,
+    /// This server's relay: `default` (n0's relays), `disabled` (direct
+    /// connections only; the lookups stay on) or the URL of a relay of your
+    /// own (default: `[defaults]`'s, else n0's).
+    #[arg(long, value_name = "default|disabled|URL")]
+    pub relay: Option<crate::config::settings::Relay>,
     /// Dial the server at this `ip:port`, `[ipv6]:port` or `host:port`
     /// directly, with relay and lookups off (repeatable; replaces the
     /// stored list).
     #[arg(long, value_name = "ADDR")]
     pub address: Vec<HostPort>,
-    /// Data streams a push to this server keeps open at once (default: the
-    /// client settings', else 128).
+    /// Data streams a push to this server keeps open at once (default:
+    /// `[defaults]`'s, else 128).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long a sync with this server keeps redialling after a dropped
@@ -705,21 +702,25 @@ pub struct ServerAddArgs {
     #[arg(long, value_name = "DUR", value_parser = validate_duration)]
     pub reconnect: Option<String>,
     /// How often a sync retries this server when it has not answered yet,
-    /// before giving up; 0 gives up on the first failure (default: the
-    /// client settings', else 4).
+    /// before giving up; 0 gives up on the first failure (default:
+    /// `[defaults]`'s, else 4).
     #[arg(long, value_name = "N")]
     pub dial_retries: Option<u32>,
-    /// Look this server up in the mainline DHT (default: the client
-    /// settings', else yes).
+    /// Look this server up in the mainline DHT (default:
+    /// `[defaults]`'s, else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub dht: Option<bool>,
-    /// Look this server up with mDNS on the local network (default: the
-    /// client settings', else yes).
+    /// Look this server up through n0's DNS service (default:
+    /// `[defaults]`'s, else yes).
+    #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
+    pub dns: Option<bool>,
+    /// Look this server up with mDNS on the local network (default:
+    /// `[defaults]`'s, else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub mdns: Option<bool>,
     /// `require`: refuse this server when it does not offer the
     /// post-quantum hybrid key exchange (X25519MLKEM768); `prefer`: use it
-    /// when offered (default: the client settings', else prefer).
+    /// when offered (default: `[defaults]`'s, else prefer).
     #[arg(long, value_name = "prefer|require")]
     pub pq_key_exchange: Option<PqKeyExchange>,
 }
@@ -729,15 +730,6 @@ fn validate_duration(s: &str) -> Result<String, String> {
     duration::parse(s)
         .map(|_| s.to_string())
         .map_err(|e| e.to_string())
-}
-
-fn parse_relay_mode(s: &str) -> Result<crate::config::settings::RelayMode, String> {
-    use crate::config::settings::RelayMode;
-    match s {
-        "default" => Ok(RelayMode::Default),
-        "disabled" => Ok(RelayMode::Disabled),
-        other => Err(format!("{other:?} is not `default` or `disabled`")),
-    }
 }
 
 /// Whether an rsync `--info` list (`flist0,progress2`) turns progress on.
@@ -797,7 +789,7 @@ pub struct PairArgs {
     /// version. Default: `ssh_install` in the config file, else install.
     #[arg(long)]
     pub no_install: bool,
-    /// Turn the server's DHT publishing off (`[daemon.discovery] dht =
+    /// Turn the server's DHT publishing off (`[daemon] dht =
     /// false`). Without it the server's setting is left alone.
     #[arg(long)]
     pub no_dht: bool,
@@ -806,7 +798,7 @@ pub struct PairArgs {
     /// your own way.
     #[arg(long)]
     pub no_service: bool,
-    /// The private key to pair with (default: `identity` in irsync.toml,
+    /// The private key to pair with (default: `[defaults] identity` in irsync.toml,
     /// else id_ed25519 in the config directory; generated if missing).
     #[arg(long, value_name = "FILE")]
     pub identity: Option<PathBuf>,
@@ -1040,33 +1032,31 @@ pub struct SyncArgs {
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
     /// Data streams a push keeps open at once (default: `parallel` from the
-    /// server entry or the client settings, else 128).
+    /// server entry or `[defaults]`, else 128).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long to keep redialling after a dropped connection:
     /// `<N>[s|m|h|d]`; 0 gives up at once like rsync (default: `reconnect`
-    /// from the server entry or the client settings, else 24h). A server that
+    /// from the server entry or `[defaults]`, else 24h). A server that
     /// has never answered gets only `--dial-retries` retries.
     #[arg(long, value_name = "DUR", value_parser = duration::parse)]
     pub reconnect: Option<Duration>,
     /// How often to retry a server that has not answered yet, with growing
     /// waits (1s, 2s, 4s, ...), before giving up; 0 gives up on the first
-    /// failure (default: `dial_retries` from the server entry or the client
-    /// settings, else 4; 0 for a server `irsync pair` saved).
+    /// failure (default: `dial_retries` from the server entry or
+    /// `[defaults]`, else 4; 0 for a server `irsync pair` saved).
     #[arg(long, value_name = "N")]
     pub dial_retries: Option<u32>,
-    /// Use this relay server instead of the server entry's, the client
-    /// settings' or n0's default.
-    #[arg(long, value_name = "URL")]
-    pub relay: Option<String>,
-    /// Direct connections only: never fall back to a relay (the lookups stay
-    /// on). Default: `relay_mode` from the server entry or the client settings.
-    #[arg(long, conflicts_with = "relay")]
-    pub no_relay: bool,
+    /// The relay for this sync: `default` (n0's relays), `disabled` (direct
+    /// connections only; the lookups stay on) or the URL of a relay of your
+    /// own. Default: `relay` from the server entry, else `[defaults]`, else
+    /// n0's.
+    #[arg(long, value_name = "default|disabled|URL")]
+    pub relay: Option<crate::config::settings::Relay>,
     /// `require`: refuse a daemon that does not offer the post-quantum
     /// hybrid key exchange (X25519MLKEM768), such as an irsync built without it.
     /// `prefer`: use it when offered. Default: `pq_key_exchange` from the
-    /// server entry or the client settings, else prefer.
+    /// server entry or `[defaults]`, else prefer.
     #[arg(long, value_name = "prefer|require")]
     pub pq_key_exchange: Option<PqKeyExchange>,
     /// Do not look the daemon up in the mainline DHT.
@@ -1077,7 +1067,7 @@ pub struct SyncArgs {
     /// mapper off; the daemon's EndpointId is still required.
     #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
     pub address: Vec<HostPort>,
-    /// The private key to connect with (default: `identity` in irsync.toml,
+    /// The private key to connect with (default: `[defaults] identity` in irsync.toml,
     /// else id_ed25519 in the config directory; generated if missing).
     #[arg(long, value_name = "FILE")]
     pub identity: Option<PathBuf>,
@@ -1210,8 +1200,7 @@ pub struct SyncOptions {
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
     pub dial_retries: Option<u32>,
-    pub relay: Option<String>,
-    pub no_relay: bool,
+    pub relay: Option<crate::config::settings::Relay>,
     pub pq_key_exchange: Option<PqKeyExchange>,
     pub no_dht: bool,
     pub addresses: Vec<HostPort>,
@@ -1290,7 +1279,6 @@ impl SyncOptions {
             reconnect: a.reconnect,
             dial_retries: a.dial_retries,
             relay: a.relay.clone(),
-            no_relay: a.no_relay,
             pq_key_exchange: a.pq_key_exchange,
             no_dht: a.no_dht,
             addresses: a.address.clone(),

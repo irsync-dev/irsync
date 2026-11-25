@@ -129,7 +129,8 @@ read it:
   `trimmed.content` holds its length and the first 8 bytes of its BLAKE3
   hash.
 - **Wireshark refuses a packet over 256 KiB.** A larger message, such as a
-  long `ChunkListPart` or `NeedChunks`, keeps its first entries up to that
+  long `ChunkListStart`, `ChunkListMore` or `NeedChunks`, keeps its first
+  entries up to that
   size. `trimmed.original_len` gives its full size and
   `trimmed.dropped_entries` how many entries were dropped.
 
@@ -221,64 +222,68 @@ First comes a listing, one block per message. This is a `Hello`, with its
 last fields cut for space, from a capture of a small push:
 
 ```text
-#3 0.000188 fd69:7273::1 → fd69:7273::1:0:0 port 1  Hello  38 B + 1 B prefix
-   side=SIDE_CLIENT(1) direction=DIRECTION_SENT(1) stream=STREAM_KIND_CONTROL(1) connection=1 local_endpoint_id=628d53b962da7234… remote_endpoint_id=9af7fe23a076f62b…
-  protocol_version = 5                                     2 B  (tag 1, value 1)
-  path = "m"                                               3 B  (tag 1, len 1, value 1)
-  chunk_min = 65536                                        4 B  (tag 1, value 3)
-  chunk_avg = 262144                                       4 B  (tag 1, value 3)
-  chunk_max = 1048576                                      4 B  (tag 1, value 3)
-  contents_only = true                                     2 B  (tag 1, value 1)
-  preserve: Hello.Preserve                                19 B  (tag 2, len 1, value 16)
-    links = true                                           2 B  (tag 1, value 1)
+#3 0.000232 fd69:7273::1 → fd69:7273::1:0:0 port 1  Hello  67 B + 1 B prefix
+   side=SIDE_CLIENT(1) direction=DIRECTION_SENT(1) stream=STREAM_KIND_CONTROL(1) connection=1 local_endpoint_id=7e5c34797aa6620e… remote_endpoint_id=a63aa632caa1d647…
+  protocol_version = 8                                     2 B  (tag 1, value 1)
+  build: BuildInfo                                        27 B  (tag 1, len 1, value 25)
+    version = "0.1.0-beta.6"                              14 B  (tag 1, len 1, value 12)
     ...
+  push: SyncRequest                                       38 B  (tag 1, len 1, value 36)
+    path = "m"                                             3 B  (tag 1, len 1, value 1)
+    contents_only = true                                   2 B  (tag 1, value 1)
+    chunk_min = 65536                                      4 B  (tag 1, value 3)
+    chunk_avg = 262144                                     4 B  (tag 1, value 3)
+    chunk_max = 1048576                                    4 B  (tag 1, value 3)
+    preserve: SyncRequest.Preserve                        16 B  (tag 1, len 1, value 14)
+      links = true                                         2 B  (tag 1, value 1)
+      ...
 ```
 
 Each line is a field, its value, and its size. The size is the sum of its
 tag (which holds the field number and the kind of value), its length (for
 text, bytes and nested messages) and its value. In `path = "m"`, the
 tag takes 1 byte, the length 1 byte and the text 1 byte, so 3 B. A nested
-message such as `preserve` counts its own tag and length as well as
+message such as `push` counts its own tag and length as well as
 everything inside it. The first line, after the message's type, gives its
-size on the wire: 38 B, plus 1 B for the length prefix in front of it.
+size on the wire: 67 B, plus 1 B for the length prefix in front of it.
 
 Then come the totals. For the client's side of a small push, shortened:
 
 ```text
-Totals: 41 messages and 13 events of 108 packets read; 901,120 B on the wire, length prefixes (50 B) included
+Totals: 53 messages and 13 events of 132 packets read; 901,180 B on the wire, length prefixes (86 B) included
 
 By message
   type                          count             bytes   share
-  DataChunk                         3         900,012 B   99.9%
-  Control                          32             883 B    0.1%
+  DataChunk                        15         900,060 B   99.9%
+  Control                          25             588 B    0.1%
+  ListingFrame                      7             242 B   <0.1%
   DataStreamHeader                  3              72 B   <0.1%
-  HelloAck                          1              47 B   <0.1%
-  Hello                             1              38 B   <0.1%
+  Hello                             1              67 B   <0.1%
+  HelloReply                        1              47 B   <0.1%
   ListingStreamHeader               1              18 B   <0.1%
-  total                            41         901,070 B  100.0%
+  total                            53         901,094 B  100.0%
 ```
 
 ```text
 By field
-  path                                                  bytes   share
-  DataChunk (cut content)                           900,000 B   99.9%
-  Control.chunk_list_part.chunks.hash.bytes             102 B   <0.1%
-  Control.chunk_list_part.whole_hash.bytes              102 B   <0.1%
+  path                                                   bytes   share
+  DataChunk (cut content)                            900,000 B   99.9%
+  Control.chunk_list_start.chunks.hash.bytes             102 B   <0.1%
+  Control.chunk_list_start.whole_hash.bytes              102 B   <0.1%
+  DataChunk (cut, not itemised)                           60 B   <0.1%
   ...
-  DataChunk (cut, not itemised)                          12 B   <0.1%
-  ...
-  total                                             901,070 B  100.0%
+  total                                              901,094 B  100.0%
 ```
 
 ```text
 Overhead
                                        bytes   share
-  not in the capture               900,012 B   99.9%
-  values                               715 B    0.1%
-  tags                                 250 B   <0.1%
-  length bytes                          93 B   <0.1%
-  length prefixes                       50 B   <0.1%
-  total                            901,120 B  100.0%
+  not in the capture               900,060 B   99.9%
+  values                               712 B    0.1%
+  tags                                 226 B   <0.1%
+  length bytes                          96 B   <0.1%
+  length prefixes                       86 B   <0.1%
+  total                            901,180 B  100.0%
 ```
 
 `Overhead` splits the same bytes by what they are: the values themselves,
@@ -393,26 +398,26 @@ By stream (with prefixes)
 `-C`, or `--canonical-hex-dump`, puts the bytes of each field in front of
 its line: first in hex, 16 to a line, then the same bytes as characters,
 with a `.` for every byte that is not a printable ASCII character. It is
-the layout of `hexdump -C` without the offsets. A `HelloAck`:
+the layout of `hexdump -C` without the offsets. A `HelloReply`:
 
 ```sh
 cargo run -p pbwalk -- -C --no-totals ~/push.pcapng
 ```
 
 ```text
-                                                                      #7 0.010483 fd69:7273::1:0:0 → fd69:7273::2 port 1  HelloAck  47 B + 1 B prefix
+                                                                      #7 0.009716 fd69:7273::1:0:0 → fd69:7273::2 port 1  HelloReply  47 B + 1 B prefix
                                                                          side=SIDE_DAEMON(2) direction=DIRECTION_SENT(1) stream=STREAM_KIND_CONTROL(1) …
-0a 10 b9 db 55 0a f3 b7  18 a1 33 5d 80 f1 62 46  |....U.....3]..bF|    session_id = b9db550af3b718a1335d80f16246cd08           18 B  (tag 1, len 1, value 16)
-cd 08                                             |..|
-18 05                                             |..|                  protocol_version = 5                                     2 B  (tag 1, value 1)
-22 19                                             |".|                  build: BuildInfo                                        27 B  (tag 1, len 1, value 25)
-0a 0c 30 2e 31 2e 30 2d  62 65 74 61 2e 36        |..0.1.0-beta.6|        version = "0.1.0-beta.6"                              14 B  (tag 1, len 1, value 12)
-12 07 63 39 64 35 64 64  65                       |..c9d5dde|             commit = "c9d5dde"                                     9 B  (tag 1, len 1, value 7)
-18 01                                             |..|                    dirty = true                                           2 B  (tag 1, value 1)
+12 2d                                             |.-|                  ack: HelloAck                                           47 B  (tag 1, len 1, value 45)
+0a 10 32 22 75 f1 1f 4f  c8 0f 25 0c 6f ec 85 03  |..2"u..O..%.o...|      session_id = 322275f11f4fc80f250c6fec8503c5ee          18 B  (tag 1, len 1, value 16)
+c5 ee                                             |..|
+1a 19                                             |..|                    build: BuildInfo                                      27 B  (tag 1, len 1, value 25)
+0a 0c 30 2e 31 2e 30 2d  62 65 74 61 2e 36        |..0.1.0-beta.6|          version = "0.1.0-beta.6"                            14 B  (tag 1, len 1, value 12)
+12 07 38 37 32 65 38 65  33                       |..872e8e3|               commit = "872e8e3"                                   9 B  (tag 1, len 1, value 7)
+18 01                                             |..|                      dirty = true                                         2 B  (tag 1, value 1)
 ```
 
 A field with more than 16 bytes, such as `session_id` with its 18,
-continues on the next line. A nested message such as `build` shows only
+continues on the next line. A nested message such as `ack` or `build` shows only
 its own two bytes, the tag and the length; the fields under it show the
 rest. So no byte is printed twice and none is left out: the hex of one
 block, read from top to bottom, is the message. Lines that stand for no

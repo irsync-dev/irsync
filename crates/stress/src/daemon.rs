@@ -67,9 +67,8 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
          [daemon]\n\
          {congestion}\
          identity = {}\n\
-         relay_mode = \"disabled\"\n\
+         relay = \"disabled\"\n\
          portmap = false\n\
-         [daemon.discovery]\n\
          dht = false\n\
          dns = false\n\
          mdns = false\n\
@@ -115,6 +114,7 @@ pub fn client_id_generate(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, 
             .args(["id", "generate", "--out"])
             .arg(&key)
             .env("HOME", &home)
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("IRSYNC_PASSPHRASE")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -559,14 +559,14 @@ mod tests {
         assert_eq!(parsed["state_dir"], s(cfg.join("state")));
         let d = &parsed["daemon"];
         assert_eq!(d["identity"], s(cfg.join("daemon_ed25519")));
-        assert_eq!(d["relay_mode"].as_str(), Some("disabled"));
+        assert_eq!(d["relay"].as_str(), Some("disabled"));
         assert_eq!(d["portmap"].as_bool(), Some(false));
         assert!(
             d.get("congestion").is_none(),
             "irsync's default unless asked"
         );
         for k in ["dht", "dns", "mdns"] {
-            assert_eq!(d["discovery"][k].as_bool(), Some(false));
+            assert_eq!(d[k].as_bool(), Some(false));
         }
         assert_eq!(parsed["exports"]["data"]["path"], s(export));
         assert_eq!(

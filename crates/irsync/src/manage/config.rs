@@ -5,79 +5,18 @@
 use super::{id_bytes, ManageError};
 use crate::authz::Access;
 use crate::config::clients::RIGHTS;
-use crate::config::settings::{OtlpProtocol, RelayMode, Settings};
+use crate::config::keys;
+use crate::config::settings::{Congestion, OtlpProtocol, PqKeyExchange, Relay, Spelled};
 use crate::config::{duration, reader, writer};
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
 
-/// What a key holds, which decides how `set` reads a value and how `get`
-/// prints one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Bool,
-    Int,
-    Duration,
-    Str,
-    Path,
-    Url,
-    Id,
-    StrArray,
-    AddrArray,
-    Table,
-}
+pub use crate::config::keys::Kind;
 
 /// The kind of a key path, or `None` for a key the file does not know.
 pub fn kind_of(path: &[String]) -> Option<Kind> {
-    let parts: Vec<&str> = path.iter().map(String::as_str).collect();
-    use Kind::*;
-    Some(match parts.as_slice() {
-        // Read-only: see [`writable`].
-        ["config_version"] => Int,
-        ["unsafe_config_allowed"] => Bool,
-        ["identity"] | ["state_dir"] => Path,
-        ["client"]
-        | ["daemon"]
-        | ["daemon", "discovery"]
-        | ["telemetry"]
-        | ["servers"]
-        | ["servers", _]
-        | ["clients"]
-        | ["clients", _]
-        | ["exports"]
-        | ["exports", _] => Table,
-        ["client", "parallel"] => Int,
-        ["client", "reconnect"] => Duration,
-        ["client", "dial_retries"] => Int,
-        ["client", "dht" | "mdns" | "ssh_install"] => Bool,
-        ["client", "relay"] => Url,
-        ["client", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
-        ["daemon", "identity"] => Path,
-        ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
-        ["daemon", "max_dormant_sessions_per_key"] => Int,
-        ["daemon", "listen"] => AddrArray,
-        ["daemon", "portmap" | "allow_all_paths" | "allow_root"] => Bool,
-        ["daemon", "relay"] => Url,
-        ["daemon", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
-        ["daemon", "debug_addr"] => Str,
-        ["telemetry", "otlp_endpoint"] => Url,
-        ["telemetry", "otlp_protocol"] => Str,
-        ["daemon", "discovery", "dht" | "dns" | "mdns"] => Bool,
-        ["servers", _, "endpoint_id"] | ["clients", _, "client_id"] => Id,
-        ["servers", _, "relay"] => Url,
-        ["servers", _, "relay_mode" | "congestion" | "pq_key_exchange" | "ssh"] => Str,
-        ["servers", _, "address"] => AddrArray,
-        ["servers", _, "ssh_aliases"] => StrArray,
-        ["servers", _, "parallel"] => Int,
-        ["servers", _, "reconnect"] => Duration,
-        ["servers", _, "dial_retries"] => Int,
-        ["servers", _, "dht" | "mdns"] => Bool,
-        ["clients", _, key] if RIGHTS.iter().any(|r| r.key() == *key) => Str,
-        ["exports", _, "path"] => Path,
-        ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => Bool,
-        ["exports", _, "rw" | "ro"] => StrArray,
-        _ => return None,
-    })
+    keys::find(path).map(|k| k.kind)
 }
 
 /// The error for a key the file does not know, `key` as typed.
@@ -139,71 +78,11 @@ pub fn get_or_default(
     })
 }
 
-/// A default path as the file would hold it: the home directory as `~`.
-fn as_written(p: &std::path::Path) -> String {
-    match crate::config::paths::home_dir().and_then(|h| p.strip_prefix(h).ok()) {
-        Some(rest) => format!("~/{}", rest.display()),
-        None => p.display().to_string(),
-    }
-}
-
 /// The default of a key, as `get` prints it (one element per line);
 /// `None` when the key has no default or is not a key. A server's keys
-/// have none of their own: they fall back to `[client]`'s.
+/// have none of their own: they fall back to `[defaults]`'s.
 pub fn default_of(path: &[String]) -> Option<Vec<String>> {
-    let parts: Vec<&str> = path.iter().map(String::as_str).collect();
-    let s = Settings::default();
-    let one = |v: String| Some(vec![v]);
-    match parts.as_slice() {
-        ["config_version"] => one(reader::CONFIG_VERSION.to_string()),
-        ["unsafe_config_allowed"] => one(s.unsafe_config_allowed.to_string()),
-        ["identity"] => one(as_written(&s.identity)),
-        // The effective [client] defaults, as book/src/reference/configuration.md lists them.
-        ["client", "parallel"] => one(crate::send::DEFAULT_PARALLEL.to_string()),
-        ["client", "reconnect"] => one(duration::format(
-            crate::session::reconnect::ReconnectOpts::default().max,
-        )),
-        ["client", "dial_retries"] => one(crate::session::reconnect::ReconnectOpts::default()
-            .dial_retries
-            .to_string()),
-        ["client", "dht"] | ["client", "mdns"] | ["client", "ssh_install"] => {
-            one("true".to_string())
-        }
-        ["client", "relay_mode"] => one("default".to_string()),
-        ["client", "congestion"] => one(crate::config::settings::Congestion::default()
-            .as_str()
-            .into()),
-        ["client", "pq_key_exchange"] => one(crate::config::settings::PqKeyExchange::default()
-            .as_str()
-            .into()),
-        ["state_dir"] => one(as_written(&s.state_dir)),
-        ["daemon", "identity"] => one(as_written(&s.daemon.identity)),
-        ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),
-        ["daemon", "dormant_session_timeout"] => {
-            one(duration::format(s.daemon.dormant_session_timeout))
-        }
-        ["daemon", "max_dormant_sessions_per_key"] => {
-            one(s.daemon.max_dormant_sessions_per_key.to_string())
-        }
-        ["daemon", "listen"] => Some(s.daemon.listen.iter().map(|a| a.to_string()).collect()),
-        ["daemon", "portmap"] => one(s.daemon.portmap.to_string()),
-        ["daemon", "relay_mode"] => one(match s.daemon.relay_mode {
-            RelayMode::Default => "default",
-            RelayMode::Disabled => "disabled",
-        }
-        .to_string()),
-        ["daemon", "congestion"] => one(s.daemon.congestion.as_str().to_string()),
-        ["daemon", "pq_key_exchange"] => one(s.daemon.pq_key_exchange.as_str().to_string()),
-        ["daemon", "discovery", "dht"] => one(s.daemon.discovery.dht.to_string()),
-        ["daemon", "discovery", "dns"] => one(s.daemon.discovery.dns.to_string()),
-        ["daemon", "discovery", "mdns"] => one(s.daemon.discovery.mdns.to_string()),
-        ["daemon", "allow_all_paths"] => one(s.daemon.allow_all_paths.to_string()),
-        ["daemon", "allow_root"] => one(s.daemon.allow_root.to_string()),
-        ["telemetry", "otlp_protocol"] => one(OtlpProtocol::DEFAULT.as_str().into()),
-        // A flag left out of an export is off, as config/exports.rs reads it.
-        ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => one("false".into()),
-        _ => None,
-    }
+    keys::find(path)?.default.map(|default| default())
 }
 
 /// What `get` found.
@@ -269,6 +148,11 @@ pub fn parse_value(kind: Kind, values: &[String]) -> Result<Value, ManageError> 
             }
         }
         Kind::Str | Kind::Path => Value::Text(one()?.to_string()),
+        Kind::Relay => {
+            let v = one()?;
+            v.parse::<Relay>().map_err(bad)?;
+            Value::Text(v.to_string())
+        }
         Kind::Url => {
             let v = one()?;
             url::Url::parse(v).map_err(|e| bad(format!("expected a URL: {e}")))?;
@@ -339,7 +223,7 @@ pub fn set(msg: &mut pb::Config, path: &[String], value: Value) -> Result<(), Ma
 
 /// Removes `path`: a key with its comments, or a whole table with its
 /// comments. A table the removal leaves without keys goes too, as an
-/// empty `[servers.home]` would not load and an empty `[client]` is only
+/// empty `[servers.home]` would not load and an empty `[defaults]` is only
 /// noise. Absent: `NothingToRemove`.
 pub fn unset(msg: &mut pb::Config, path: &[String]) -> Result<(), ManageError> {
     let kind = kind_of(path).ok_or_else(|| unknown(path))?;
@@ -374,12 +258,12 @@ enum Field<'a> {
     /// A string, a path or a debug address, as written.
     Text(&'a mut Option<String>),
     Url(&'a mut Option<String>),
+    /// A relay as written: `default`, `disabled` or a URL.
+    Relay(&'a mut Option<String>),
     /// An id's 32 bytes; empty is unset.
     Id(&'a mut Vec<u8>),
-    RelayMode(&'a mut Option<i32>),
-    Congestion(&'a mut Option<i32>),
-    PqKeyExchange(&'a mut Option<i32>),
-    OtlpProtocol(&'a mut Option<i32>),
+    /// An enum key, with its spellings.
+    Spelled(&'a mut Option<i32>, Spelling),
     /// A client's right: `rw` or `ro`.
     Right(&'a mut Option<i32>),
     /// A string array and whether its key is in the file.
@@ -387,6 +271,21 @@ enum Field<'a> {
     Addresses(&'a mut Vec<pb::Entry>, &'a mut bool),
     /// An export's path; "" is unset.
     ExportPath(&'a mut String),
+}
+
+/// How an enum key is spelled: [`Spelled`] for one type, as plain
+/// functions.
+#[derive(Clone, Copy)]
+struct Spelling {
+    show: fn(i32) -> Option<&'static str>,
+    parse: fn(&str) -> Result<i32, String>,
+}
+
+fn spelling<T: Spelled>() -> Spelling {
+    Spelling {
+        show: writer::spelled::<T>,
+        parse: |s| s.parse::<T>().map(T::to_message),
+    }
 }
 
 /// A key's field with the comments of its table.
@@ -468,7 +367,6 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let pb::Config {
                 config_version,
                 unsafe_config_allowed,
-                identity,
                 state_dir,
                 key_comments,
                 ..
@@ -476,39 +374,28 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let f = match *key {
                 "config_version" => Int(config_version),
                 "unsafe_config_allowed" => Bool(unsafe_config_allowed),
-                "identity" => Text(identity),
                 "state_dir" => Text(state_dir),
                 _ => return None,
             };
             (f, key_comments)
         }
-        ["client", key] => {
-            let c = table(&mut msg.client, create)?;
+        ["defaults", key] => {
+            let c = table(&mut msg.defaults, create)?;
             let f = match *key {
+                "identity" => Text(&mut c.identity),
                 "parallel" => Int(&mut c.parallel),
                 "reconnect" => Duration(&mut c.reconnect),
                 "dial_retries" => Int(&mut c.dial_retries),
                 "dht" => Bool(&mut c.dht),
+                "dns" => Bool(&mut c.dns),
                 "ssh_install" => Bool(&mut c.ssh_install),
                 "mdns" => Bool(&mut c.mdns),
-                "relay" => Url(&mut c.relay),
-                "relay_mode" => RelayMode(&mut c.relay_mode),
-                "congestion" => Congestion(&mut c.congestion),
-                "pq_key_exchange" => PqKeyExchange(&mut c.pq_key_exchange),
+                "relay" => Relay(&mut c.relay),
+                "congestion" => Spelled(&mut c.congestion, spelling::<Congestion>()),
+                "pq_key_exchange" => Spelled(&mut c.pq_key_exchange, spelling::<PqKeyExchange>()),
                 _ => return None,
             };
             (f, &mut c.key_comments)
-        }
-        ["daemon", "discovery", key] => {
-            let d = table(&mut msg.daemon, create)?;
-            let x = table(&mut d.discovery, create)?;
-            let f = match *key {
-                "dht" => Bool(&mut x.dht),
-                "dns" => Bool(&mut x.dns),
-                "mdns" => Bool(&mut x.mdns),
-                _ => return None,
-            };
-            (f, &mut x.key_comments)
         }
         ["daemon", key] => {
             let d = table(&mut msg.daemon, create)?;
@@ -519,10 +406,12 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "max_dormant_sessions_per_key" => Int(&mut d.max_dormant_sessions_per_key),
                 "listen" => Addresses(&mut d.listen, &mut d.listen_set),
                 "portmap" => Bool(&mut d.portmap),
-                "relay" => Url(&mut d.relay),
-                "relay_mode" => RelayMode(&mut d.relay_mode),
-                "congestion" => Congestion(&mut d.congestion),
-                "pq_key_exchange" => PqKeyExchange(&mut d.pq_key_exchange),
+                "relay" => Relay(&mut d.relay),
+                "dht" => Bool(&mut d.dht),
+                "dns" => Bool(&mut d.dns),
+                "mdns" => Bool(&mut d.mdns),
+                "congestion" => Spelled(&mut d.congestion, spelling::<Congestion>()),
+                "pq_key_exchange" => Spelled(&mut d.pq_key_exchange, spelling::<PqKeyExchange>()),
                 "debug_addr" => Text(&mut d.debug_addr),
                 "allow_all_paths" => Bool(&mut d.allow_all_paths),
                 "allow_root" => Bool(&mut d.allow_root),
@@ -534,7 +423,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let t = table(&mut msg.telemetry, create)?;
             let f = match *key {
                 "otlp_endpoint" => Url(&mut t.otlp_endpoint),
-                "otlp_protocol" => OtlpProtocol(&mut t.otlp_protocol),
+                "otlp_protocol" => Spelled(&mut t.otlp_protocol, spelling::<OtlpProtocol>()),
                 _ => return None,
             };
             (f, &mut t.key_comments)
@@ -543,15 +432,15 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let h = server(msg, name, create)?;
             let f = match *key {
                 "endpoint_id" => Id(&mut h.endpoint_id),
-                "relay" => Url(&mut h.relay),
-                "relay_mode" => RelayMode(&mut h.relay_mode),
-                "congestion" => Congestion(&mut h.congestion),
-                "pq_key_exchange" => PqKeyExchange(&mut h.pq_key_exchange),
+                "relay" => Relay(&mut h.relay),
+                "congestion" => Spelled(&mut h.congestion, spelling::<Congestion>()),
+                "pq_key_exchange" => Spelled(&mut h.pq_key_exchange, spelling::<PqKeyExchange>()),
                 "address" => Addresses(&mut h.address, &mut h.address_set),
                 "parallel" => Int(&mut h.parallel),
                 "reconnect" => Duration(&mut h.reconnect),
                 "dial_retries" => Int(&mut h.dial_retries),
                 "dht" => Bool(&mut h.dht),
+                "dns" => Bool(&mut h.dns),
                 "mdns" => Bool(&mut h.mdns),
                 "ssh" => Text(&mut h.ssh),
                 "ssh_aliases" => List(&mut h.ssh_aliases, &mut h.ssh_aliases_set),
@@ -588,94 +477,37 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
     Some(Slot { field, comments })
 }
 
-/// The keys of each table, in the order the writer writes them.
-const TOP: &[&str] = &[
-    "config_version",
-    "unsafe_config_allowed",
-    "identity",
-    "state_dir",
-];
-const CLIENT: &[&str] = &[
-    "parallel",
-    "reconnect",
-    "dial_retries",
-    "dht",
-    "ssh_install",
-    "mdns",
-    "relay",
-    "relay_mode",
-    "congestion",
-    "pq_key_exchange",
-];
-const DAEMON: &[&str] = &[
-    "identity",
-    "idle_timeout",
-    "dormant_session_timeout",
-    "max_dormant_sessions_per_key",
-    "listen",
-    "portmap",
-    "relay",
-    "relay_mode",
-    "congestion",
-    "pq_key_exchange",
-    "debug_addr",
-    "allow_all_paths",
-    "allow_root",
-];
-const DISCOVERY: &[&str] = &["dht", "dns", "mdns"];
-const TELEMETRY: &[&str] = &["otlp_endpoint", "otlp_protocol"];
-const SERVER: &[&str] = &[
-    "endpoint_id",
-    "relay",
-    "relay_mode",
-    "congestion",
-    "pq_key_exchange",
-    "address",
-    "parallel",
-    "reconnect",
-    "dial_retries",
-    "dht",
-    "mdns",
-    "ssh",
-    "ssh_aliases",
-];
-const CLIENT_ENTRY: &[&str] = &["client_id"];
-const EXPORT: &[&str] = &[
-    "path",
-    "read_only",
-    "warm_index",
-    "fsync",
-    "auto",
-    "rw",
-    "ro",
-];
-
-/// The path of every key the message could hold, in the writer's order.
+/// The path of every key the message could hold, in the writer's order:
+/// [`keys::KEYS`], with each `*` table once for every entry of its group.
 fn key_paths(msg: &pb::Config) -> Vec<Vec<String>> {
-    let mut out = Vec::new();
-    let mut add = |table: &[&str], keys: &[&str]| {
-        for k in keys {
-            out.push(table.iter().chain([k]).map(|s| s.to_string()).collect());
+    let names = |group: &str| -> Vec<String> {
+        match group {
+            "servers" => msg.servers.iter().map(|s| s.name.clone()).collect(),
+            "clients" => msg.clients.iter().map(|c| c.name.clone()).collect(),
+            "exports" => msg.exports.iter().map(|e| e.name.clone()).collect(),
+            _ => Vec::new(),
         }
     };
-    add(&[], TOP);
-    add(&["client"], CLIENT);
-    add(&["daemon"], DAEMON);
-    add(&["daemon", "discovery"], DISCOVERY);
-    add(&["telemetry"], TELEMETRY);
-    for s in &msg.servers {
-        add(&["servers", &s.name], SERVER);
-    }
-    for c in &msg.clients {
-        let keys: Vec<&str> = CLIENT_ENTRY
-            .iter()
-            .copied()
-            .chain(RIGHTS.iter().map(|r| r.key()))
-            .collect();
-        add(&["clients", &c.name], &keys);
-    }
-    for e in &msg.exports {
-        add(&["exports", &e.name], EXPORT);
+    let leaves: Vec<&keys::Key> = keys::KEYS
+        .iter()
+        .filter(|k| k.kind != Kind::Table)
+        .collect();
+    let mut out = Vec::new();
+    // The keys of one table are next to each other in KEYS.
+    for run in leaves.chunk_by(|a, b| a.table() == b.table()) {
+        match run[0].table().strip_suffix(".*") {
+            Some(group) => {
+                for name in names(group) {
+                    for k in run {
+                        out.push(vec![group.to_string(), name.clone(), k.name().to_string()]);
+                    }
+                }
+            }
+            None => out.extend(
+                run.iter()
+                    .map(|k| k.path.split('.').map(String::from).collect()),
+            ),
+        }
     }
     out
 }
@@ -700,9 +532,8 @@ fn key_lines(msg: &pb::Config, prefix: &[String]) -> Vec<String> {
 fn has_table(msg: &pb::Config, path: &[String]) -> bool {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     match parts.as_slice() {
-        ["client"] => msg.client.is_some(),
+        ["defaults"] => msg.defaults.is_some(),
         ["daemon"] => msg.daemon.is_some(),
-        ["daemon", "discovery"] => msg.daemon.as_ref().is_some_and(|d| d.discovery.is_some()),
         ["telemetry"] => msg.telemetry.is_some(),
         ["servers"] => !msg.servers.is_empty(),
         ["servers", name] => msg.servers.iter().any(|s| s.name == *name),
@@ -718,12 +549,8 @@ fn has_table(msg: &pb::Config, path: &[String]) -> bool {
 fn remove_table(msg: &mut pb::Config, path: &[String]) -> bool {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     match parts.as_slice() {
-        ["client"] => msg.client.take().is_some(),
+        ["defaults"] => msg.defaults.take().is_some(),
         ["daemon"] => msg.daemon.take().is_some(),
-        ["daemon", "discovery"] => msg
-            .daemon
-            .as_mut()
-            .is_some_and(|d| d.discovery.take().is_some()),
         ["telemetry"] => msg.telemetry.take().is_some(),
         ["servers"] => !std::mem::take(&mut msg.servers).is_empty(),
         ["servers", name] => {
@@ -773,15 +600,8 @@ fn drop_if<T>(t: &mut Option<T>, empty: impl Fn(&T) -> bool) {
 fn prune(msg: &mut pb::Config, path: &[String]) {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     match parts.as_slice() {
-        ["client", _] => drop_if(&mut msg.client, |c| keyless!(c, Client)),
-        ["daemon", rest @ ..] if !rest.is_empty() => {
-            if rest.len() > 1 {
-                if let Some(d) = msg.daemon.as_mut() {
-                    drop_if(&mut d.discovery, |x| keyless!(x, Discovery));
-                }
-            }
-            drop_if(&mut msg.daemon, |d| keyless!(d, Daemon));
-        }
+        ["defaults", _] => drop_if(&mut msg.defaults, |c| keyless!(c, Defaults)),
+        ["daemon", _] => drop_if(&mut msg.daemon, |d| keyless!(d, Daemon)),
         ["telemetry", _] => drop_if(&mut msg.telemetry, |t| keyless!(t, Telemetry)),
         ["servers", name, _] => msg
             .servers
@@ -827,12 +647,9 @@ fn shown(field: &Field) -> Option<Shown> {
         Field::Bool(v) => v.map(|b| plain(b.to_string())),
         Field::Int(v) => v.map(|n| plain(n.to_string())),
         Field::Duration(v) => v.as_ref().map(|d| text(&writer::duration_text(d))),
-        Field::Text(v) | Field::Url(v) => v.as_deref().map(text),
+        Field::Text(v) | Field::Url(v) | Field::Relay(v) => v.as_deref().map(text),
         Field::Id(v) => (!v.is_empty()).then(|| text(&writer::id(v))),
-        Field::RelayMode(v) => v.and_then(writer::relay_mode).map(text),
-        Field::Congestion(v) => v.and_then(writer::congestion).map(text),
-        Field::PqKeyExchange(v) => v.and_then(writer::pq_key_exchange).map(text),
-        Field::OtlpProtocol(v) => v.and_then(writer::otlp_protocol).map(text),
+        Field::Spelled(v, s) => v.and_then(s.show).map(text),
         Field::Right(v) => v.and_then(Access::from_message).map(|a| text(a.as_str())),
         Field::List(v, set) | Field::Addresses(v, set) => list(v, **set),
         Field::ExportPath(p) => (!p.is_empty()).then(|| text(p)),
@@ -845,13 +662,9 @@ fn clear(field: Field) -> bool {
         Field::Bool(v) => v.take().is_some(),
         Field::Int(v) => v.take().is_some(),
         Field::Duration(v) => v.take().is_some(),
-        Field::Text(v) | Field::Url(v) => v.take().is_some(),
+        Field::Text(v) | Field::Url(v) | Field::Relay(v) => v.take().is_some(),
         Field::Id(v) => !std::mem::take(v).is_empty(),
-        Field::RelayMode(v)
-        | Field::Congestion(v)
-        | Field::PqKeyExchange(v)
-        | Field::OtlpProtocol(v)
-        | Field::Right(v) => v.take().is_some(),
+        Field::Spelled(v, _) | Field::Right(v) => v.take().is_some(),
         Field::List(v, set) | Field::Addresses(v, set) => {
             let was = *set || !v.is_empty();
             v.clear();
@@ -872,21 +685,7 @@ fn entries(values: Vec<String>) -> Vec<pb::Entry> {
         .collect()
 }
 
-/// One of two spellings of an enum key, in serde's words when it is
-/// neither, as loading the file said it.
-fn variant(s: &str, a: (&str, i32), b: (&str, i32)) -> Result<i32, String> {
-    match s {
-        _ if s == a.0 => Ok(a.1),
-        _ if s == b.0 => Ok(b.1),
-        _ => Err(format!(
-            "unknown variant `{s}`, expected `{}` or `{}`",
-            a.0, b.0
-        )),
-    }
-}
-
-/// An integer key holds a `u32`; the message for one out of range, in
-/// serde's words, as loading the file said it.
+/// An integer key holds a `u32`; the message for one out of range.
 fn uint(n: i64) -> Result<u32, String> {
     u32::try_from(n).map_err(|_| format!("invalid value: integer `{n}`, expected u32"))
 }
@@ -907,6 +706,10 @@ fn assign(field: Field, value: Value) -> Result<(), String> {
             *f = Some(duration::to_proto(d));
         }
         (Field::Text(f), Value::Text(s)) => *f = Some(s),
+        (Field::Relay(f), Value::Text(s)) => {
+            s.parse::<Relay>()?;
+            *f = Some(s);
+        }
         (Field::Url(f), Value::Text(s)) => {
             url::Url::parse(&s).map_err(|e| format!("expected a URL: {e}"))?;
             *f = Some(s);
@@ -915,34 +718,7 @@ fn assign(field: Field, value: Value) -> Result<(), String> {
             let id = crate::identity::parse_endpoint_id(&s).map_err(|e| e.to_string())?;
             *f = id_bytes(id);
         }
-        (Field::RelayMode(f), Value::Text(s)) => {
-            *f = Some(variant(
-                &s,
-                ("default", pb::RelayMode::Default as i32),
-                ("disabled", pb::RelayMode::Disabled as i32),
-            )?);
-        }
-        (Field::Congestion(f), Value::Text(s)) => {
-            *f = Some(variant(
-                &s,
-                ("bbr", pb::Congestion::Bbr as i32),
-                ("cubic", pb::Congestion::Cubic as i32),
-            )?);
-        }
-        (Field::PqKeyExchange(f), Value::Text(s)) => {
-            *f = Some(variant(
-                &s,
-                ("prefer", pb::PqKeyExchange::Prefer as i32),
-                ("require", pb::PqKeyExchange::Require as i32),
-            )?);
-        }
-        (Field::OtlpProtocol(f), Value::Text(s)) => {
-            *f = Some(variant(
-                &s,
-                ("grpc", pb::OtlpProtocol::Grpc as i32),
-                ("http", pb::OtlpProtocol::Http as i32),
-            )?);
-        }
+        (Field::Spelled(f, spelling), Value::Text(s)) => *f = Some((spelling.parse)(&s)?),
         (Field::Right(f), Value::Text(s)) => {
             let access = Access::parse(&s).ok_or("expected \"rw\" or \"ro\"")?;
             *f = Some(pb::Access::from(access) as i32);

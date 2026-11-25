@@ -1,4 +1,5 @@
 use irsync::config::file::Config;
+use irsync::config::keys::KEYS;
 use irsync::config::reader::read;
 use irsync::config::writer::write;
 use irsync::manage::config::{default_of, kind_of, parse_key, Got, Kind};
@@ -44,15 +45,16 @@ fn kinds_of_known_keys() {
     assert_eq!(kind_of(&p("servers.home.endpoint_id")), Some(Kind::Id));
     assert_eq!(kind_of(&p("clients.home.client_id")), Some(Kind::Id));
     assert_eq!(kind_of(&p("config_version")), Some(Kind::Int));
-    assert_eq!(kind_of(&p("client.dial_retries")), Some(Kind::Int));
+    assert_eq!(kind_of(&p("defaults.dial_retries")), Some(Kind::Int));
     assert_eq!(kind_of(&p("exports.photos.read_only")), Some(Kind::Bool));
     assert_eq!(kind_of(&p("exports.photos.fsync")), Some(Kind::Bool));
     assert_eq!(kind_of(&p("servers.home")), Some(Kind::Table));
     assert_eq!(kind_of(&p("clients.home")), Some(Kind::Table));
-    assert_eq!(kind_of(&p("daemon.discovery")), Some(Kind::Table));
+    assert_eq!(kind_of(&p("daemon.discovery")), None);
+    assert_eq!(kind_of(&p("daemon.dns")), Some(Kind::Bool));
     assert_eq!(kind_of(&p("exports.photos.rw")), Some(Kind::StrArray));
     // The old tables of rights are no keys any more.
-    assert_eq!(kind_of(&p("identity")), Some(Kind::Path));
+    assert_eq!(kind_of(&p("defaults.identity")), Some(Kind::Path));
     assert!(kind_of(&p("daemon.nope")).is_none() && kind_of(&p("nope")).is_none());
     assert!(kind_of(&p("servers.home.nope")).is_none());
     // A dialled identity and a granted one are never in one table.
@@ -83,9 +85,9 @@ fn unknown_keys_are_refused() {
 /// `config_version` is read like any key, and only irsync sets it.
 #[test]
 fn config_version_is_read_only() {
-    let mut m = msg("config_version = 2\n[client]\nparallel = 4\n");
+    let mut m = msg("config_version = 2\n[defaults]\nparallel = 4\n");
     assert_eq!(get(&m, &p("config_version")).unwrap(), lines(&["2"]));
-    assert_eq!(list(&m), ["config_version = 2", "client.parallel = 4"]);
+    assert_eq!(list(&m), ["config_version = 2", "defaults.parallel = 4"]);
     for e in [
         set(&mut m, &p("config_version"), Value::Int(3)).unwrap_err(),
         unset(&mut m, &p("config_version")).unwrap_err(),
@@ -117,11 +119,11 @@ fn clients_are_set_and_unset_by_their_id() {
 #[test]
 fn get_prints_scalars_arrays_and_tables() {
     let m = msg(&format!(
-        "[client]\nparallel = 4\n[daemon]\nlisten = [\"0.0.0.0:0\", \"[::]:0\"]\n\
-         [servers.home]\nendpoint_id = \"{}\"\nrelay = \"https://r/\"\n[daemon.discovery]\nmdns = false\n",
+        "[defaults]\nparallel = 4\n[daemon]\nlisten = [\"0.0.0.0:0\", \"[::]:0\"]\nmdns = false\n\
+         [servers.home]\nendpoint_id = \"{}\"\nrelay = \"https://r/\"\n",
         id()
     ));
-    assert_eq!(get(&m, &p("client.parallel")).unwrap(), lines(&["4"]));
+    assert_eq!(get(&m, &p("defaults.parallel")).unwrap(), lines(&["4"]));
     assert_eq!(
         get(&m, &p("daemon.listen")).unwrap(),
         lines(&["0.0.0.0:0", "[::]:0"])
@@ -135,10 +137,7 @@ fn get_prints_scalars_arrays_and_tables() {
     );
     assert_eq!(
         get(&m, &p("daemon")).unwrap(),
-        lines(&[
-            "listen = [\"0.0.0.0:0\", \"[::]:0\"]",
-            "discovery.mdns = false"
-        ])
+        lines(&["listen = [\"0.0.0.0:0\", \"[::]:0\"]", "mdns = false"])
     );
     assert_eq!(
         get(&m, &p("servers")).unwrap(),
@@ -147,7 +146,7 @@ fn get_prints_scalars_arrays_and_tables() {
             "home.relay = \"https://r/\"".to_string()
         ])
     );
-    assert_eq!(get(&m, &p("client.reconnect")).unwrap(), Got::Unset);
+    assert_eq!(get(&m, &p("defaults.reconnect")).unwrap(), Got::Unset);
     assert_eq!(get(&m, &p("servers.nope")).unwrap(), Got::Unset);
     assert_eq!(get(&m, &p("clients")).unwrap(), Got::Unset);
     assert_eq!(get(&m, &p("telemetry")).unwrap(), Got::Unset);
@@ -158,133 +157,66 @@ fn get_prints_scalars_arrays_and_tables() {
     ));
 }
 
-/// Every key `kind_of` knows, with `NAME` for an entry's name. A key
-/// added to `kind_of` belongs here too.
-const EVERY_KEY: &[&str] = &[
-    "config_version",
-    "unsafe_config_allowed",
-    "identity",
-    "state_dir",
-    "client",
-    "client.parallel",
-    "client.reconnect",
-    "client.dial_retries",
-    "client.dht",
-    "client.mdns",
-    "client.ssh_install",
-    "client.relay",
-    "client.relay_mode",
-    "client.congestion",
-    "client.pq_key_exchange",
-    "daemon",
-    "daemon.identity",
-    "daemon.idle_timeout",
-    "daemon.dormant_session_timeout",
-    "daemon.max_dormant_sessions_per_key",
-    "daemon.listen",
-    "daemon.portmap",
-    "daemon.allow_all_paths",
-    "daemon.allow_root",
-    "daemon.relay",
-    "daemon.relay_mode",
-    "daemon.congestion",
-    "daemon.pq_key_exchange",
-    "daemon.debug_addr",
-    "daemon.discovery",
-    "daemon.discovery.dht",
-    "daemon.discovery.dns",
-    "daemon.discovery.mdns",
-    "telemetry",
-    "telemetry.otlp_endpoint",
-    "telemetry.otlp_protocol",
-    "servers",
-    "servers.NAME",
-    "servers.NAME.endpoint_id",
-    "servers.NAME.relay",
-    "servers.NAME.relay_mode",
-    "servers.NAME.congestion",
-    "servers.NAME.pq_key_exchange",
-    "servers.NAME.ssh",
-    "servers.NAME.address",
-    "servers.NAME.ssh_aliases",
-    "servers.NAME.parallel",
-    "servers.NAME.reconnect",
-    "servers.NAME.dial_retries",
-    "servers.NAME.dht",
-    "servers.NAME.mdns",
-    "clients",
-    "clients.NAME",
-    "clients.NAME.client_id",
-    "clients.NAME.all_exports",
-    "clients.NAME.all_paths",
-    "clients.NAME.admin",
-    "exports",
-    "exports.NAME",
-    "exports.NAME.path",
-    "exports.NAME.read_only",
-    "exports.NAME.warm_index",
-    "exports.NAME.fsync",
-    "exports.NAME.auto",
-    "exports.NAME.rw",
-    "exports.NAME.ro",
-];
-
-/// The keys of `EVERY_KEY` that have no default, on purpose: tables, the
-/// keys an entry must have or that name someone, relays (n0's are used),
-/// `debug_addr` (off), the OTLP endpoint (no export), and a server's keys,
-/// which fall back to `[client]`'s.
+/// The keys of [`KEYS`] that have no default, on purpose: tables, the
+/// keys an entry must have or that name someone, `debug_addr` (off), the OTLP endpoint (no export), and a server's keys,
+/// which fall back to `[defaults]`'s.
 const NO_DEFAULT: &[&str] = &[
-    "client",
-    "client.relay",
+    "defaults",
     "daemon",
-    "daemon.relay",
     "daemon.debug_addr",
-    "daemon.discovery",
     "telemetry",
     "telemetry.otlp_endpoint",
     "servers",
-    "servers.NAME",
-    "servers.NAME.endpoint_id",
-    "servers.NAME.relay",
-    "servers.NAME.relay_mode",
-    "servers.NAME.congestion",
-    "servers.NAME.pq_key_exchange",
-    "servers.NAME.ssh",
-    "servers.NAME.address",
-    "servers.NAME.ssh_aliases",
-    "servers.NAME.parallel",
-    "servers.NAME.reconnect",
-    "servers.NAME.dial_retries",
-    "servers.NAME.dht",
-    "servers.NAME.mdns",
+    "servers.*",
+    "servers.*.endpoint_id",
+    "servers.*.relay",
+    "servers.*.congestion",
+    "servers.*.pq_key_exchange",
+    "servers.*.ssh",
+    "servers.*.address",
+    "servers.*.ssh_aliases",
+    "servers.*.parallel",
+    "servers.*.reconnect",
+    "servers.*.dial_retries",
+    "servers.*.dht",
+    "servers.*.dns",
+    "servers.*.mdns",
     "clients",
-    "clients.NAME",
-    "clients.NAME.client_id",
-    "clients.NAME.all_exports",
-    "clients.NAME.all_paths",
-    "clients.NAME.admin",
+    "clients.*",
+    "clients.*.client_id",
+    "clients.*.all_exports",
+    "clients.*.all_paths",
+    "clients.*.admin",
     "exports",
-    "exports.NAME",
-    "exports.NAME.path",
-    "exports.NAME.rw",
-    "exports.NAME.ro",
+    "exports.*",
+    "exports.*.path",
+    "exports.*.rw",
+    "exports.*.ro",
 ];
 
 /// `config get` of an unset key prints its default: every key has one,
 /// or is listed as having none, and those listed really have none.
 #[test]
 fn every_key_has_a_default_or_says_it_has_none() {
-    for key in EVERY_KEY {
-        let path = p(key);
-        assert!(kind_of(&path).is_some(), "{key}: not a key");
-        let listed = NO_DEFAULT.contains(key);
+    for key in KEYS {
+        let path: Vec<String> = key.path.split('.').map(|s| s.replace('*', "x")).collect();
+        assert_eq!(kind_of(&path), Some(key.kind), "{}", key.path);
+        let listed = NO_DEFAULT.contains(&key.path);
         match default_of(&path) {
-            Some(_) => assert!(!listed, "{key}: listed as without default, but has one"),
-            None => assert!(listed, "{key}: no default and not listed as having none"),
+            Some(_) => assert!(
+                !listed,
+                "{}: listed as without default, but has one",
+                key.path
+            ),
+            None => assert!(
+                listed,
+                "{}: no default and not listed as having none",
+                key.path
+            ),
         }
     }
     for key in NO_DEFAULT {
-        assert!(EVERY_KEY.contains(key), "{key}: not in EVERY_KEY");
+        assert!(KEYS.iter().any(|k| k.path == *key), "{key}: not in KEYS");
     }
 }
 
@@ -335,44 +267,43 @@ fn defaults_for_settings_keys() {
     );
     assert_eq!(default_of(&p("daemon.portmap")), Some(vec!["true".into()]));
     assert_eq!(default_of(&p("daemon.listen")), Some(vec![]));
-    assert_eq!(
-        default_of(&p("daemon.relay_mode")),
-        Some(vec!["default".into()])
-    );
-    assert_eq!(
-        default_of(&p("daemon.discovery.dht")),
-        Some(vec!["true".into()])
-    );
+    assert_eq!(default_of(&p("daemon.relay")), Some(vec!["default".into()]));
+    assert_eq!(default_of(&p("daemon.dht")), Some(vec!["true".into()]));
     // Path defaults print as the file would hold them: home as `~`.
     assert_eq!(
-        default_of(&p("identity")),
+        default_of(&p("defaults.identity")),
         Some(vec!["~/.config/irsync/id_ed25519".into()])
     );
     assert_eq!(
         default_of(&p("daemon.identity")),
         Some(vec!["~/.config/irsync/daemon_ed25519".into()])
     );
-    // The [client] keys book/src/reference/configuration.md lists with defaults: the effective ones.
-    assert_eq!(default_of(&p("client.parallel")), Some(vec!["128".into()]));
-    assert_eq!(default_of(&p("client.reconnect")), Some(vec!["1d".into()]));
+    // The [defaults] keys book/src/reference/configuration.md lists with defaults: the effective ones.
     assert_eq!(
-        default_of(&p("client.dial_retries")),
+        default_of(&p("defaults.parallel")),
+        Some(vec!["128".into()])
+    );
+    assert_eq!(
+        default_of(&p("defaults.reconnect")),
+        Some(vec!["1d".into()])
+    );
+    assert_eq!(
+        default_of(&p("defaults.dial_retries")),
         Some(vec!["4".into()])
     );
-    assert_eq!(default_of(&p("client.dht")), Some(vec!["true".into()]));
-    assert_eq!(default_of(&p("client.mdns")), Some(vec!["true".into()]));
+    assert_eq!(default_of(&p("defaults.dht")), Some(vec!["true".into()]));
+    assert_eq!(default_of(&p("defaults.mdns")), Some(vec!["true".into()]));
     assert_eq!(
-        default_of(&p("client.ssh_install")),
+        default_of(&p("defaults.ssh_install")),
         Some(vec!["true".into()])
     );
-    assert_eq!(default_of(&p("client.relay")), None);
     assert_eq!(
-        default_of(&p("client.relay_mode")),
+        default_of(&p("defaults.relay")),
         Some(vec!["default".to_string()])
     );
-    assert!(kind_of(&p("servers.home.relay_mode")).is_some());
+    assert!(kind_of(&p("servers.home.relay_mode")).is_none());
     assert_eq!(
-        default_of(&p("client.congestion")),
+        default_of(&p("defaults.congestion")),
         Some(vec!["bbr".into()])
     );
     assert_eq!(
@@ -381,7 +312,7 @@ fn defaults_for_settings_keys() {
     );
     assert!(kind_of(&p("servers.home.congestion")).is_some());
     assert_eq!(
-        default_of(&p("client.pq_key_exchange")),
+        default_of(&p("defaults.pq_key_exchange")),
         Some(vec!["prefer".into()])
     );
     assert_eq!(
@@ -389,27 +320,29 @@ fn defaults_for_settings_keys() {
         Some(vec!["prefer".into()])
     );
     assert!(kind_of(&p("servers.home.pq_key_exchange")).is_some());
-    assert_eq!(default_of(&p("daemon.relay")), None);
     assert_eq!(default_of(&p("servers.home.relay")), None);
 }
 
 #[test]
 fn list_is_dotted_keys_in_the_writers_order_with_quoting() {
     let m = msg(
-        "[exports.\"www.example.com\"]\npath = \"/w\"\n[daemon.discovery]\ndht = false\n\
-         [daemon]\nlisten = [\"a:1\"]\n\nidentity = \"/k\"\n",
+        "[exports.\"www.example.com\"]\npath = \"/w\"\n[daemon]\ndht = false\n\
+         listen = [\"a:1\"]\n\nidentity = \"/k\"\n",
     );
     assert_eq!(
         list(&m),
         vec![
             "daemon.identity = \"/k\"",
             "daemon.listen = [\"a:1\"]",
-            "daemon.discovery.dht = false",
+            "daemon.dht = false",
             "exports.\"www.example.com\".path = \"/w\"",
         ]
     );
-    let m = msg("identity = \"/k\"\n[client]\nparallel = 2\n");
-    assert_eq!(list(&m), vec!["identity = \"/k\"", "client.parallel = 2"]);
+    let m = msg("state_dir = \"/k\"\n[defaults]\nparallel = 2\n");
+    assert_eq!(
+        list(&m),
+        vec!["state_dir = \"/k\"", "defaults.parallel = 2"]
+    );
 }
 
 #[test]
@@ -477,24 +410,19 @@ fn values_are_typed_by_kind() {
 
 #[test]
 fn set_and_unset_edit_the_message_and_keep_the_rest() {
-    let mut m = msg("# keep me\n[client]\nparallel = 4   # inline\n");
+    let mut m = msg("# keep me\n[defaults]\nparallel = 4   # inline\n");
     let val = |k, s: &str| parse_value(k, &[s.to_string()]).unwrap();
-    set(&mut m, &p("client.parallel"), val(Kind::Int, "8")).unwrap();
+    set(&mut m, &p("defaults.parallel"), val(Kind::Int, "8")).unwrap();
     set(&mut m, &p("servers.home.endpoint_id"), val(Kind::Id, &id())).unwrap();
-    set(
-        &mut m,
-        &p("daemon.discovery.mdns"),
-        val(Kind::Bool, "false"),
-    )
-    .unwrap();
+    set(&mut m, &p("daemon.mdns"), val(Kind::Bool, "false")).unwrap();
     assert_eq!(
         write(&m),
         format!(
-            "# keep me\n[client]\nparallel = 8 # inline\n\n[daemon.discovery]\nmdns = false\n\n[servers.home]\nendpoint_id = \"{}\"\n",
+            "# keep me\n[defaults]\nparallel = 8 # inline\n\n[daemon]\nmdns = false\n\n[servers.home]\nendpoint_id = \"{}\"\n",
             id()
         )
     );
-    unset(&mut m, &p("client.parallel")).unwrap();
+    unset(&mut m, &p("defaults.parallel")).unwrap();
     unset(&mut m, &p("servers.home")).unwrap();
     let text = write(&m);
     assert!(
@@ -502,7 +430,7 @@ fn set_and_unset_edit_the_message_and_keep_the_rest() {
         "{text}"
     );
     assert!(matches!(
-        unset(&mut m, &p("client.parallel")),
+        unset(&mut m, &p("defaults.parallel")),
         Err(ManageError::NothingToRemove(_))
     ));
     assert!(matches!(
@@ -523,9 +451,9 @@ fn set_and_unset_edit_the_message_and_keep_the_rest() {
 #[test]
 fn get_and_list_ignore_comments_and_layout() {
     let m = msg(
-        "[client]\nparallel = 4 # four streams\n[daemon]\nlisten = [\n  \"a:1\", # v4\n  \"b:2\",\n] # both\nportmap = false # no\n",
+        "[defaults]\nparallel = 4 # four streams\n[daemon]\nlisten = [\n  \"a:1\", # v4\n  \"b:2\",\n] # both\nportmap = false # no\n",
     );
-    assert_eq!(get(&m, &p("client.parallel")).unwrap(), lines(&["4"]));
+    assert_eq!(get(&m, &p("defaults.parallel")).unwrap(), lines(&["4"]));
     assert_eq!(
         get(&m, &p("daemon.listen")).unwrap(),
         lines(&["a:1", "b:2"])
@@ -537,7 +465,7 @@ fn get_and_list_ignore_comments_and_layout() {
     assert_eq!(
         list(&m),
         vec![
-            "client.parallel = 4",
+            "defaults.parallel = 4",
             "daemon.listen = [\"a:1\", \"b:2\"]",
             "daemon.portmap = false",
         ]
@@ -553,7 +481,7 @@ fn bare_seconds_set_a_duration_as_an_integer() {
     assert!(parse_value(Kind::Duration, &["-5".to_string()]).is_err());
     // Either way the message holds a duration, which prints as the writer spells it.
     let mut m = pb::Config::default();
-    let key = p("client.reconnect");
+    let key = p("defaults.reconnect");
     set(
         &mut m,
         &key,
@@ -568,21 +496,21 @@ fn bare_seconds_set_a_duration_as_an_integer() {
     )
     .unwrap();
     assert_eq!(get(&m, &key).unwrap(), lines(&["10m"]));
-    assert_eq!(write(&m), "[client]\nreconnect = \"10m\"\n");
+    assert_eq!(write(&m), "[defaults]\nreconnect = \"10m\"\n");
 }
 
 #[test]
 fn unset_removes_tables_it_leaves_empty() {
     let mut m = msg(&format!(
-        "[client]\nparallel = 4\nrelay = \"https://r/\"\n\n[servers.home]\nendpoint_id = \"{}\"\n\n[clients.home]\nclient_id = \"{}\"\n\n[daemon.discovery]\nmdns = false\n",
+        "[defaults]\nparallel = 4\nrelay = \"https://r/\"\n\n[servers.home]\nendpoint_id = \"{}\"\n\n[clients.home]\nclient_id = \"{}\"\n\n[daemon]\nmdns = false\n",
         id(),
         id2()
     ));
-    unset(&mut m, &p("client.parallel")).unwrap();
+    unset(&mut m, &p("defaults.parallel")).unwrap();
     unset(&mut m, &p("servers.home.endpoint_id")).unwrap();
     unset(&mut m, &p("clients.home.client_id")).unwrap();
-    unset(&mut m, &p("daemon.discovery.mdns")).unwrap();
-    assert_eq!(write(&m), "[client]\nrelay = \"https://r/\"\n");
+    unset(&mut m, &p("daemon.mdns")).unwrap();
+    assert_eq!(write(&m), "[defaults]\nrelay = \"https://r/\"\n");
     assert!(m.daemon.is_none() && m.servers.is_empty() && m.clients.is_empty());
 }
 
@@ -626,39 +554,37 @@ fn set_telemetry_endpoint() {
 /// that loads.
 const ALL_KEYS: &[(&str, &[&str])] = &[
     ("unsafe_config_allowed", &["false"]),
-    ("identity", &["/k"]),
+    ("defaults.identity", &["/k"]),
     ("state_dir", &["~/state"]),
-    ("client.parallel", &["4"]),
-    ("client.reconnect", &["1h"]),
-    ("client.dial_retries", &["2"]),
-    ("client.dht", &["false"]),
-    ("client.ssh_install", &["false"]),
-    ("client.mdns", &["false"]),
-    ("client.relay", &["https://r/"]),
-    ("client.relay_mode", &["disabled"]),
-    ("client.congestion", &["cubic"]),
-    ("client.pq_key_exchange", &["require"]),
+    ("defaults.parallel", &["4"]),
+    ("defaults.reconnect", &["1h"]),
+    ("defaults.dial_retries", &["2"]),
+    ("defaults.dht", &["false"]),
+    ("defaults.dns", &["false"]),
+    ("defaults.ssh_install", &["false"]),
+    ("defaults.mdns", &["false"]),
+    ("defaults.relay", &["https://r/"]),
+    ("defaults.congestion", &["cubic"]),
+    ("defaults.pq_key_exchange", &["require"]),
     ("daemon.identity", &["/d"]),
     ("daemon.idle_timeout", &["10m"]),
     ("daemon.dormant_session_timeout", &["1d"]),
     ("daemon.max_dormant_sessions_per_key", &["3"]),
     ("daemon.listen", &["0.0.0.0:0", "[::]:0"]),
     ("daemon.portmap", &["false"]),
-    ("daemon.relay", &["https://r/"]),
-    ("daemon.relay_mode", &["disabled"]),
+    ("daemon.relay", &["disabled"]),
     ("daemon.congestion", &["cubic"]),
     ("daemon.pq_key_exchange", &["require"]),
     ("daemon.debug_addr", &["127.0.0.1:9000"]),
     ("daemon.allow_all_paths", &["false"]),
     ("daemon.allow_root", &["true"]),
-    ("daemon.discovery.dht", &["false"]),
-    ("daemon.discovery.dns", &["false"]),
-    ("daemon.discovery.mdns", &["false"]),
+    ("daemon.dht", &["false"]),
+    ("daemon.dns", &["false"]),
+    ("daemon.mdns", &["false"]),
     ("telemetry.otlp_endpoint", &["http://c:4318/"]),
     ("telemetry.otlp_protocol", &["http"]),
     ("servers.nas.endpoint_id", &[ID5]),
-    ("servers.nas.relay", &["https://r/"]),
-    ("servers.nas.relay_mode", &["disabled"]),
+    ("servers.nas.relay", &["default"]),
     ("servers.nas.congestion", &["cubic"]),
     ("servers.nas.pq_key_exchange", &["require"]),
     ("servers.nas.address", &["10.0.0.1:4000"]),
@@ -666,6 +592,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("servers.nas.reconnect", &["1h"]),
     ("servers.nas.dial_retries", &["2"]),
     ("servers.nas.dht", &["false"]),
+    ("servers.nas.dns", &["false"]),
     ("servers.nas.mdns", &["false"]),
     ("servers.nas.ssh", &["me@nas"]),
     ("servers.nas.ssh_aliases", &["box"]),
@@ -749,6 +676,16 @@ fn file_keys(t: &toml::Table, path: &[String], out: &mut Vec<String>) {
 fn every_key_of_the_message_is_in_full_toml_and_all_keys() {
     let keys = message_keys();
     assert!(keys.len() > 40, "{keys:?}");
+    // The message and the key table have the same keys.
+    let mut table: Vec<String> = KEYS
+        .iter()
+        .filter(|k| k.kind != Kind::Table)
+        .map(|k| k.path.to_string())
+        .collect();
+    let mut sorted = keys.clone();
+    table.sort();
+    sorted.sort();
+    assert_eq!(sorted, table);
     let full: toml::Table = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config_corpus/full.toml"),
     )
@@ -816,13 +753,13 @@ fn unset_takes_the_keys_comment_and_set_keeps_it() {
 fn unset_of_a_table_takes_its_comments() {
     let mut m = msg(&format!(
         "# the nas\n[servers.nas]\nendpoint_id = \"{}\"\n\n# the tv\n[servers.tv]\nendpoint_id = \"{}\"\n\n\
-         # client side\n[client]\nparallel = 2\n\n[daemon]\nportmap = false\n\n# found how\n[daemon.discovery]\ndns = false\n",
+         # client side\n[defaults]\nparallel = 2\n\n[daemon]\nportmap = false\n\n# found how\n[telemetry]\notlp_protocol = \"grpc\"\n",
         id(),
         id2()
     ));
     unset(&mut m, &p("servers.nas")).unwrap();
-    unset(&mut m, &p("client")).unwrap();
-    unset(&mut m, &p("daemon.discovery")).unwrap();
+    unset(&mut m, &p("defaults")).unwrap();
+    unset(&mut m, &p("telemetry")).unwrap();
     assert_eq!(
         write(&m),
         format!(
@@ -837,7 +774,7 @@ fn unset_of_a_table_takes_its_comments() {
         "servers",
         "clients",
         "daemon",
-        "client",
+        "defaults",
         "exports",
         "telemetry",
     ] {
@@ -852,12 +789,12 @@ fn unset_of_a_table_takes_its_comments() {
 fn set_refuses_what_the_message_cannot_hold_and_changes_nothing() {
     let mut m = pb::Config::default();
     for (key, value) in [
-        ("servers.nas.relay_mode", Value::Text("bogus".into())),
-        ("client.congestion", Value::Text("reno".into())),
+        ("servers.nas.relay", Value::Text("bogus".into())),
+        ("defaults.congestion", Value::Text("reno".into())),
         ("telemetry.otlp_protocol", Value::Text("udp".into())),
-        ("client.parallel", Value::Int(-1)),
-        ("client.parallel", Value::Int(1 << 40)),
-        ("client.parallel", Value::Text("4".into())),
+        ("defaults.parallel", Value::Int(-1)),
+        ("defaults.parallel", Value::Int(1 << 40)),
+        ("defaults.parallel", Value::Text("4".into())),
     ] {
         assert!(
             matches!(set(&mut m, &p(key), value), Err(ManageError::BadValue(_))),
@@ -865,10 +802,10 @@ fn set_refuses_what_the_message_cannot_hold_and_changes_nothing() {
         );
     }
     assert_eq!(m, pb::Config::default());
-    let e = set(&mut m, &p("client.relay_mode"), Value::Text("bogus".into())).unwrap_err();
+    let e = set(&mut m, &p("defaults.relay"), Value::Text("bogus".into())).unwrap_err();
     assert_eq!(
         e.to_string(),
-        "unknown variant `bogus`, expected `default` or `disabled`"
+        "\"bogus\": expected default, disabled or a URL (relative URL without a base)"
     );
 }
 

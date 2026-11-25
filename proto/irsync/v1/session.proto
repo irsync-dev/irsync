@@ -10,10 +10,8 @@ message PlanEntry {
   uint64 file_id = 1;
   bytes path = 2; // relative to the session root, raw bytes
   PlanItem.Action action = 3;
-  uint64 size = 4; // source size when planned (0 if unknown)
-  Hash whole_hash = 5; // source whole-file hash, when known
-  FileEntry entry = 6; // receiver: the sender's listing entry (applied at finalize)
-  uint64 append_from = 7; // APPEND: the trusted prefix length
+  FileEntry entry = 4; // receiver: the sender's listing entry (applied at finalize)
+  uint64 append_from = 5; // APPEND: the trusted prefix length
 }
 message SessionPlan {
   repeated PlanEntry entries = 1;
@@ -37,7 +35,7 @@ message SessionPlan {
 message SessionProgress {
   repeated uint64 done_file_ids = 1; // files acknowledged DONE
   uint64 bytes_transferred = 2; // cumulative over all connections
-  uint64 deleted = 3; // deletions so far (counts against --max-delete)
+  uint64 deleted_count = 3; // deletions so far (counts against --max-delete)
   // Receiver, `-H`: files placed that had more than one name when listed,
   // with the stat their chunk list was hashed under, for the link check.
   repeated PlacedStat placed = 4;
@@ -54,4 +52,14 @@ message PlacedStat {
 message PartialRanges {
   repeated Range ranges = 1;
   repeated Range held = 2;
+}
+// A byte range of a file.
+message Range {
+  uint64 offset = 1;
+  uint64 length = 2;
+}
+// The ranges of a `.part` the receiver has verified, as its partial record
+// in the index holds them.
+message RangeSet {
+  repeated Range ranges = 1;
 }

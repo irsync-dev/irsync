@@ -1,18 +1,16 @@
 #[test]
 fn hello_roundtrips() {
-    use irsync_proto::v1::{hello::Direction, Hello};
+    use irsync_proto::v1::{hello, sync_request, Hello, SyncRequest};
     use prost::Message;
-    let h = Hello {
-        protocol_version: irsync_proto::PROTOCOL_VERSION,
+    let req = SyncRequest {
         session_id: vec![7; 16],
         name: b"photos".to_vec(),
         path: b"2024/\xff".to_vec(),
-        direction: Direction::DaemonSends as i32,
         chunk_min: 65536,
         chunk_avg: 262144,
         chunk_max: 1048576,
         contents_only: true,
-        delete_mode: irsync_proto::v1::hello::DeleteMode::DeleteAfter as i32,
+        delete_mode: sync_request::DeleteMode::DeleteAfter as i32,
         delete_excluded: true,
         max_delete: Some(0),
         dry_run: true,
@@ -25,15 +23,10 @@ fn hello_roundtrips() {
         paranoid: true,
         bwlimit: Some(1 << 20),
         single_file: true,
-        append: irsync_proto::v1::hello::AppendMode::AppendVerify as i32,
-        build: Some(irsync_proto::v1::BuildInfo {
-            version: "0.1.0".into(),
-            commit: "abc1234".into(),
-            dirty: Some(true),
-        }),
-        preserve: Some(irsync_proto::v1::hello::Preserve {
-            recursive: false,
-            dirs: true,
+        append: sync_request::AppendMode::AppendVerify as i32,
+        recursive: false,
+        dirs: true,
+        preserve: Some(sync_request::Preserve {
             links: true,
             perms: false,
             times: true,
@@ -45,47 +38,84 @@ fn hello_roundtrips() {
             sparse: true,
         }),
         filters: vec![
-            irsync_proto::v1::hello::FilterRule {
+            sync_request::FilterRule {
                 include: true,
                 pattern: "keep.o".into(),
             },
-            irsync_proto::v1::hello::FilterRule {
+            sync_request::FilterRule {
                 include: false,
                 pattern: "*.o".into(),
             },
         ],
         partial_dir: b".p".to_vec(),
         numeric_ids: true,
-        traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into(),
-        tracestate: "k=v".into(),
-        no_local_reuse: true,
+        no_rename_detection: true,
     };
-    let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
-    assert_eq!(back, h);
+    for request in [
+        hello::Request::Push(req.clone()),
+        hello::Request::Pull(req),
+        hello::Request::Probe(irsync_proto::v1::Probe {
+            path: b"photos/a".to_vec(),
+        }),
+    ] {
+        let h = Hello {
+            protocol_version: irsync_proto::PROTOCOL_VERSION,
+            build: Some(irsync_proto::v1::BuildInfo {
+                version: "0.1.0".into(),
+                commit: "abc1234".into(),
+                dirty: Some(true),
+            }),
+            traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into(),
+            tracestate: "k=v".into(),
+            request: Some(request),
+        };
+        let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(back, h);
+    }
     assert_eq!(irsync_proto::ALPN, b"irsync/1");
+}
+
+/// Every reply to Hello decodes as itself and as nothing else: an empty
+/// export listing and a refusal no longer look alike.
+#[test]
+fn hello_reply_arms_stay_apart() {
+    use irsync_proto::v1::{
+        error::Code, hello_reply::Reply, path_info, AdminReady, Error, ExportList, HelloAck,
+        HelloReply, PathInfo,
+    };
+    use prost::Message;
+    let replies = [
+        Reply::Error(Error {
+            code: Code::BadRequest as i32,
+            message: String::new(),
+        }),
+        Reply::Ack(HelloAck {
+            session_id: vec![1; 16],
+            ..Default::default()
+        }),
+        Reply::Exports(ExportList::default()),
+        Reply::PathInfo(PathInfo {
+            kind: path_info::Kind::Missing as i32,
+        }),
+        Reply::AdminReady(AdminReady {}),
+    ];
+    for r in replies {
+        let m = HelloReply { reply: Some(r) };
+        let back = HelloReply::decode(m.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(back, m);
+    }
 }
 
 #[test]
 fn control_oneof_roundtrips() {
     use irsync_proto::v1::{
-        control::Msg, file_ack::Status, plan_item::Action, ChunkBasis, ChunkListPart, ChunkRecord,
-        Control, Error, FileAck, FileEntry, Hash, ListingEnd, ListingEntry, MayPlace, NeedChunks,
-        PlaceVerdict, PlanItem, SessionDone,
+        control::Msg, file_ack::Status, plan_item::Action, ChunkBasis, ChunkListMore,
+        ChunkListStart, ChunkRecord, Control, Error, FileAck, Hash, MayPlace, NeedChunks,
+        PlaceVerdict, PlanItem, SessionDone, SourceStat, WithdrawChunkList,
     };
     use prost::Message;
     let h = |b: u8| Hash { bytes: vec![b; 32] };
     let msgs = vec![
-        Msg::Listing(ListingEntry {
-            entry: Some(FileEntry {
-                path: b"dir/\xff\xfe".to_vec(),
-                size: 42,
-                ..Default::default()
-            }),
-        }),
-        Msg::ListingEnd(ListingEnd {
-            incomplete: true,
-            count: 9,
-        }),
         Msg::Plan(PlanItem {
             file_id: 3,
             path: b"a/\xff".to_vec(),
@@ -98,36 +128,43 @@ fn control_oneof_roundtrips() {
             action: Action::Append as i32,
             append_from: 1 << 35,
         }),
-        Msg::ChunkListPart(ChunkListPart {
+        Msg::ChunkListStart(ChunkListStart {
             file_id: 3,
-            size: 2048,
             whole_hash: Some(h(9)),
-            total: 2,
-            first: 0,
-            last: true,
-            mtime_sec: -5,
-            mtime_nsec: 999_999_999,
-            mode: 0o100644,
-            uid: 1000,
-            gid: 100,
+            total: 3,
+            stat: Some(SourceStat {
+                size: 3072,
+                mtime_sec: -5,
+                mtime_nsec: 999_999_999,
+                ctime_sec: 1_700_000_000,
+                ctime_nsec: 1,
+                inode: 1 << 40,
+                mode: 0o100644,
+                uid: 1000,
+                gid: 100,
+            }),
             user: "alice".into(),
             group: "users".into(),
-            ctime_sec: 1_700_000_000,
-            ctime_nsec: 1,
-            inode: 1 << 40,
             chunks: vec![
                 ChunkRecord {
-                    offset: 0,
                     len: 1024,
                     hash: Some(h(1)),
                 },
                 ChunkRecord {
-                    offset: 1024,
                     len: 1024,
                     hash: Some(h(2)),
                 },
             ],
         }),
+        Msg::ChunkListMore(ChunkListMore {
+            file_id: 3,
+            first: 2,
+            chunks: vec![ChunkRecord {
+                len: 1024,
+                hash: Some(h(3)),
+            }],
+        }),
+        Msg::WithdrawChunkList(WithdrawChunkList { file_id: 3 }),
         Msg::Need(NeedChunks {
             file_id: 3,
             chunk_idx: vec![0, 5, 7],
@@ -148,19 +185,19 @@ fn control_oneof_roundtrips() {
             matched: 7,
         }),
         Msg::Done(SessionDone {
-            files: 1,
-            bytes: 2,
+            files_placed: 1,
+            bytes_received: 2,
             errors: vec![irsync_proto::v1::PathError {
                 path: b"d/\xff".to_vec(),
                 message: "mkdir: denied".into(),
             }],
-            deleted: vec![b"old".to_vec()],
-            would_delete: vec![b"x/\xff".to_vec()],
+            deleted_paths: vec![b"old".to_vec()],
+            would_delete_paths: vec![b"x/\xff".to_vec()],
             max_delete_reached: true,
             deleted_omitted: 3,
             would_delete_omitted: 4,
             created: 5,
-            transferred_size: 6,
+            placed_size: 6,
             listed: Some(irsync_proto::v1::ListTotals {
                 reg: 7,
                 dir: 8,
@@ -170,7 +207,7 @@ fn control_oneof_roundtrips() {
             }),
         }),
         Msg::Error(Error {
-            code: 7,
+            code: 6,
             message: "boom".into(),
         }),
         Msg::MayPlace(MayPlace {
@@ -187,6 +224,34 @@ fn control_oneof_roundtrips() {
         let c = Control { msg: Some(m) };
         let back = Control::decode(c.encode_to_vec().as_slice()).unwrap();
         assert_eq!(back, c);
+    }
+}
+
+#[test]
+fn listing_frame_oneof_roundtrips() {
+    use irsync_proto::v1::{listing_frame::Frame, FileEntry, ListingEnd, ListingFrame, PathError};
+    use prost::Message;
+    let frames = [
+        Frame::Entry(FileEntry {
+            path: b"dir/\xff\xfe".to_vec(),
+            size: 42,
+            ..Default::default()
+        }),
+        Frame::Error(PathError {
+            path: b"dir".to_vec(),
+            message: "unreadable".into(),
+        }),
+        Frame::End(ListingEnd {
+            incomplete: true,
+            count: 9,
+        }),
+    ];
+    for f in frames {
+        let m = ListingFrame { frame: Some(f) };
+        assert_eq!(
+            ListingFrame::decode(m.encode_to_vec().as_slice()).unwrap(),
+            m
+        );
     }
 }
 

@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use iroh::endpoint::{ConnectError, ConnectWithOptsError, Connection, ConnectionError};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use irsync_proto::v1::{error::Code, Hello};
+use irsync_proto::v1::error::Code;
 use tokio::time::Instant;
 use tracing::Instrument;
 
@@ -18,7 +18,7 @@ use super::engine::{
     client_session_key, record_outcome, role_of, run_client_inner, session_span, Attempt,
     PeerError, SessionRefused, TransportError,
 };
-use super::{control::hex, LocalSide, Outcome, SessionRecord, CLOSE_SUPERSEDED};
+use super::{control::hex, LocalSide, Outcome, SessionRecord, SyncHello, CLOSE_SUPERSEDED};
 use crate::cli::SyncOptions;
 use crate::platform::local_time;
 use crate::telemetry::{phase, Phase, PhaseKind, Side};
@@ -265,8 +265,9 @@ pub fn client_only(host: &str) -> String {
 
 /// How long the first dial to a server `irsync pair` saved (one with an
 /// `ssh` value) waits for an answer. Such a server is not retried before
-/// it has answered unless `--dial-retries` is given: its daemon is either
-/// up, or stopped and to be started again with `irsync pair`.
+/// it has answered unless a `dial_retries` is set (the flag, its table or
+/// `[defaults]`): its daemon is either up, or stopped and to be started
+/// again with `irsync pair`.
 pub const PAIRED_FIRST_DIAL: Duration = Duration::from_secs(15);
 
 /// A saved server with an `ssh` value that never answered.
@@ -496,7 +497,7 @@ pub async fn run_with_reconnect(
     endpoint: &Endpoint,
     target: impl Into<EndpointAddr>,
     remote: &str,
-    hello_for: impl Fn(Option<[u8; 16]>) -> Hello,
+    hello_for: impl Fn(Option<[u8; 16]>) -> SyncHello,
     local: LocalSide,
     sync_opts: &SyncOptions,
     opts: ReconnectOpts,
@@ -505,7 +506,7 @@ pub async fn run_with_reconnect(
     let target: EndpointAddr = target.into();
     let span = session_span(
         Side::Client,
-        &hello_for(None),
+        hello_for(None).direction,
         target.id.fmt_short().to_string(),
         Some(opts.source_index),
         &endpoint.id().to_string(),
@@ -526,7 +527,7 @@ async fn attempts(
     endpoint: &Endpoint,
     target: impl Into<EndpointAddr>,
     remote: &str,
-    hello_for: impl Fn(Option<[u8; 16]>) -> Hello,
+    hello_for: impl Fn(Option<[u8; 16]>) -> SyncHello,
     local: LocalSide,
     sync_opts: &SyncOptions,
     opts: ReconnectOpts,

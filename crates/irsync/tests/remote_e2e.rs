@@ -259,13 +259,13 @@ fn remote_config_get_show_and_the_help() {
     let _ = &s.client_id;
 }
 
-/// A stub daemon that speaks the protocol version before this one answers
-/// the ADMIN Hello as an older irsync does, with a plain version error:
+/// A stub daemon that speaks the protocol version before this one refuses
+/// the admin Hello as an older irsync does, with a version error:
 /// `irsync remote` tells the user to update the server.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_older_daemon_is_told_to_update() {
     use irsync::net::frame::{read_msg, write_msg};
-    use irsync_proto::v1::{error::Code, Error, Hello};
+    use irsync_proto::v1::{error::Code, hello_reply, Error, Hello, HelloReply};
     use irsync_proto::PROTOCOL_VERSION;
 
     let stub = common::loopback_endpoint().await;
@@ -283,7 +283,10 @@ async fn an_older_daemon_is_told_to_update() {
                 hello.protocol_version
             ),
         };
-        write_msg(&mut send, &e).await.unwrap();
+        let refusal = HelloReply {
+            reply: Some(hello_reply::Reply::Error(e)),
+        };
+        write_msg(&mut send, &refusal).await.unwrap();
         send.finish().unwrap();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send.stopped()).await;
         conn.closed().await;
@@ -309,7 +312,7 @@ async fn an_older_daemon_is_told_to_update() {
     .unwrap();
     assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
     assert!(
-        stderr(&o).contains("myserver runs an older irsync without remote admin: update it there"),
+        stderr(&o).contains("myserver runs an older irsync: update it there"),
         "{}",
         stderr(&o)
     );
@@ -398,7 +401,7 @@ fn admin_traffic_is_captured_on_both_sides() {
     for recs in [&change, &read] {
         assert!(recs.iter().any(|r| matches!(
             &r.msg,
-            Some(Msg::Hello(h)) if h.direction == hello::Direction::Admin as i32
+            Some(Msg::Hello(h)) if matches!(h.request, Some(hello::Request::Admin(_)))
                 && r.direction() == Direction::Sent
         )));
     }

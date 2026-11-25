@@ -15,9 +15,9 @@ use irsync::config::paths::Paths;
 use irsync::daemon::{ADMIN_MAX_CHANGES, ADMIN_MAX_PENDING, ADMIN_MAX_REQUEST};
 use irsync::net::frame::{read_msg, write_msg};
 use irsync_proto::v1::{
-    admin_reply, admin_request, change::Op, error::Code, hello::Direction, read, AdminReply,
-    AdminRequest, Change, Commit, ExportAdd, ExportRemove, GrantAdd, Hello, Nack, Read, ReadConfig,
-    ReadView,
+    admin_reply, admin_request, change::Op, error::Code, hello, hello_reply, read, AdminReply,
+    AdminRequest, Change, Commit, ExportAdd, ExportRemove, GrantAdd, Hello, HelloReply, Nack,
+    OpenAdmin, Read, ReadConfig, ReadView,
 };
 use irsync_proto::{ALPN, PROTOCOL_VERSION};
 
@@ -42,6 +42,8 @@ struct Session {
     _conn: Connection,
     send: SendStream,
     recv: RecvStream,
+    /// The daemon's reply to the Hello has been read.
+    opened: bool,
 }
 
 impl Session {
@@ -50,7 +52,7 @@ impl Session {
         let (mut send, recv) = within(conn.open_bi()).await.unwrap();
         let hello = Hello {
             protocol_version: PROTOCOL_VERSION,
-            direction: Direction::Admin as i32,
+            request: Some(hello::Request::Admin(OpenAdmin {})),
             ..Default::default()
         };
         within(write_msg(&mut send, &hello)).await.unwrap();
@@ -58,6 +60,7 @@ impl Session {
             _conn: conn,
             send,
             recv,
+            opened: false,
         }
     }
 
@@ -71,8 +74,19 @@ impl Session {
             .await;
     }
 
-    /// The next reply; `None` when the daemon ended the stream.
+    /// The next reply; `None` when the daemon ended the stream. The first
+    /// call reads the reply to the Hello before it: a refusal there comes
+    /// back as a refused request.
     async fn reply(&mut self) -> Option<admin_reply::Msg> {
+        if !self.opened {
+            self.opened = true;
+            let r: HelloReply = within(read_msg(&mut self.recv)).await.unwrap()?;
+            match r.reply {
+                Some(hello_reply::Reply::AdminReady(_)) => {}
+                Some(hello_reply::Reply::Error(e)) => return Some(admin_reply::Msg::Refused(e)),
+                other => panic!("not a reply to an admin Hello: {other:?}"),
+            }
+        }
         let r: Option<AdminReply> = within(read_msg(&mut self.recv)).await.unwrap();
         r.map(|r| r.msg.expect("a reply with a message"))
     }
@@ -92,6 +106,14 @@ impl Session {
 
     /// The daemon ends the stream: no more replies.
     async fn assert_closed(&mut self) {
+        if !self.opened {
+            self.opened = true;
+            let r: HelloReply = within(read_msg(&mut self.recv)).await.unwrap().unwrap();
+            assert!(
+                matches!(r.reply, Some(hello_reply::Reply::AdminReady(_))),
+                "{r:?}"
+            );
+        }
         let r = within(read_msg::<AdminReply, _>(&mut self.recv)).await;
         assert!(
             matches!(r, Ok(None) | Err(_)),
@@ -252,11 +274,14 @@ async fn a_wrong_protocol_version_is_a_version_mismatch() {
     let (mut send, mut recv) = within(conn.open_bi()).await.unwrap();
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION - 1,
-        direction: Direction::Admin as i32,
+        request: Some(hello::Request::Admin(OpenAdmin {})),
         ..Default::default()
     };
     within(write_msg(&mut send, &hello)).await.unwrap();
-    let e: irsync_proto::v1::Error = within(read_msg(&mut recv)).await.unwrap().unwrap();
+    let r: HelloReply = within(read_msg(&mut recv)).await.unwrap().unwrap();
+    let Some(hello_reply::Reply::Error(e)) = r.reply else {
+        panic!("not a refusal: {r:?}");
+    };
     assert_eq!(e.code, Code::VersionMismatch as i32, "{}", e.message);
     stop(d).await;
 }

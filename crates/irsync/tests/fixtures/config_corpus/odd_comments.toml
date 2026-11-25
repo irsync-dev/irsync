@@ -9,7 +9,7 @@ listen = [
 # a block between tables
 
 # above the client
-[client]
+[defaults]
 parallel = 2
 
 [exports] # the exports

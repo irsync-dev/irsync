@@ -142,12 +142,10 @@ fn inner(msg: &record::Msg) -> DynamicMessage {
     use record::Msg as M;
     let (name, bytes) = match msg {
         M::Hello(m) => ("irsync.v1.Hello", m.encode_to_vec()),
-        M::HelloAck(m) => ("irsync.v1.HelloAck", m.encode_to_vec()),
-        M::Error(m) => ("irsync.v1.Error", m.encode_to_vec()),
-        M::ExportList(m) => ("irsync.v1.ExportList", m.encode_to_vec()),
-        M::PathInfo(m) => ("irsync.v1.PathInfo", m.encode_to_vec()),
+        M::HelloReply(m) => ("irsync.v1.HelloReply", m.encode_to_vec()),
         M::Control(m) => ("irsync.v1.Control", m.encode_to_vec()),
         M::ListingStreamHeader(m) => ("irsync.v1.ListingStreamHeader", m.encode_to_vec()),
+        M::ListingFrame(m) => ("irsync.v1.ListingFrame", m.encode_to_vec()),
         M::DataStreamHeader(m) => ("irsync.v1.DataStreamHeader", m.encode_to_vec()),
         M::DataChunk(m) => ("irsync.v1.DataChunk", m.encode_to_vec()),
         M::AdminRequest(m) => ("irsync.v1.AdminRequest", m.encode_to_vec()),
@@ -192,7 +190,8 @@ pub(crate) fn emit(record: &Record) {
 mod tests {
     use super::*;
     use irsync_proto::v1::{
-        control::Msg, Control, DataChunk, DeltaOp, FileEntry, ListingEntry, NeedChunks,
+        control::Msg, listing_frame::Frame, Control, DataChunk, DeltaOp, FileEntry, ListingFrame,
+        NeedChunks,
     };
 
     fn dyn_of<M: prost::Message>(m: &M) -> DynamicMessage {
@@ -248,14 +247,11 @@ mod tests {
 
     #[test]
     fn non_utf8_path_prints_as_hex() {
-        let e = ListingEntry {
-            entry: Some(FileEntry {
+        let c = ListingFrame {
+            frame: Some(Frame::Entry(FileEntry {
                 path: vec![0x66, 0xff],
                 ..Default::default()
-            }),
-        };
-        let c = Control {
-            msg: Some(Msg::Listing(e)),
+            })),
         };
         assert!(render(&dyn_of(&c)).contains("path: 0x66ff"));
     }
@@ -277,12 +273,10 @@ mod tests {
         use record::Msg as M;
         let all = [
             M::Hello(Default::default()),
-            M::HelloAck(Default::default()),
-            M::Error(Default::default()),
-            M::ExportList(Default::default()),
-            M::PathInfo(Default::default()),
+            M::HelloReply(Default::default()),
             M::Control(Default::default()),
             M::ListingStreamHeader(Default::default()),
+            M::ListingFrame(Default::default()),
             M::DataStreamHeader(Default::default()),
             M::DataChunk(Default::default()),
             M::AdminRequest(Default::default()),
@@ -293,12 +287,10 @@ mod tests {
         for msg in all {
             let name = match &msg {
                 M::Hello(_) => "Hello",
-                M::HelloAck(_) => "HelloAck",
-                M::Error(_) => "Error",
-                M::ExportList(_) => "ExportList",
-                M::PathInfo(_) => "PathInfo",
+                M::HelloReply(_) => "HelloReply",
                 M::Control(_) => "Control",
                 M::ListingStreamHeader(_) => "ListingStreamHeader",
+                M::ListingFrame(_) => "ListingFrame",
                 M::DataStreamHeader(_) => "DataStreamHeader",
                 M::DataChunk(_) => "DataChunk",
                 M::AdminRequest(_) => "AdminRequest",

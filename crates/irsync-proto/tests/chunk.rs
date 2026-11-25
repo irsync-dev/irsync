@@ -112,21 +112,18 @@ fn sub_minimum_tail_is_its_own_chunk() {
 fn chunk_record_conversion_errors() {
     use irsync_proto::chunk::ChunkRecord;
     use irsync_proto::v1;
-    let rec = |hash| v1::ChunkRecord {
-        offset: 1,
-        len: 2,
-        hash,
-    };
-    let err = ChunkRecord::try_from(rec(None)).unwrap_err();
+    let rec = |hash| v1::ChunkRecord { len: 2, hash };
+    let err = ChunkRecord::from_wire(rec(None), 1).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert!(err.to_string().contains("missing hash"));
     for n in [0, 31, 33] {
-        let err = ChunkRecord::try_from(rec(Some(v1::Hash { bytes: vec![0; n] }))).unwrap_err();
+        let err = ChunkRecord::from_wire(rec(Some(v1::Hash { bytes: vec![0; n] })), 1).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("32 bytes"));
     }
-    let ok = ChunkRecord::try_from(rec(Some(v1::Hash { bytes: vec![9; 32] }))).unwrap();
+    let ok = ChunkRecord::from_wire(rec(Some(v1::Hash { bytes: vec![9; 32] })), 1).unwrap();
     assert_eq!((ok.offset, ok.len, ok.hash), (1, 2, [9; 32]));
+    assert_eq!(ok.end(), 3);
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]

@@ -591,21 +591,31 @@ fn address_flag_repeats_and_conflicts_with_relay() {
 }
 
 #[test]
-fn no_relay_flag_parses_and_conflicts_with_relay() {
-    assert!(opts(&["--no-relay", "a", "h:m"]).no_relay);
-    assert!(!opts(&["a", "h:m"]).no_relay);
-    assert!(
-        Args::try_parse_from(["irsync", "--no-relay", "--relay", "https://r", "a", "h:m"]).is_err()
+fn relay_takes_default_disabled_or_a_url() {
+    use irsync::config::settings::Relay;
+    assert_eq!(
+        opts(&["--relay", "disabled", "a", "h:m"]).relay,
+        Some(Relay::Disabled)
     );
-    // server add takes the mode by name.
-    use irsync::config::settings::RelayMode;
+    assert_eq!(
+        opts(&["--relay", "default", "a", "h:m"]).relay,
+        Some(Relay::Default)
+    );
+    assert_eq!(
+        opts(&["--relay", "https://r", "a", "h:m"]).relay,
+        Some(Relay::Url("https://r".parse().unwrap()))
+    );
+    assert_eq!(opts(&["a", "h:m"]).relay, None);
+    assert!(Args::try_parse_from(["irsync", "--relay", "maybe", "a", "h:m"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "--no-relay", "a", "h:m"]).is_err());
+    // server add takes the same values.
     let a = Args::try_parse_from([
         "irsync",
         "server",
         "add",
         "home",
         "k51",
-        "--relay-mode",
+        "--relay",
         "disabled",
         "--dial-retries",
         "1",
@@ -614,23 +624,20 @@ fn no_relay_flag_parses_and_conflicts_with_relay() {
     match a.cmd {
         Some(Command::Server(h)) => match h.cmd.unwrap() {
             irsync::cli::ServerCmd::Add(add) => {
-                assert_eq!(add.relay_mode, Some(RelayMode::Disabled));
+                assert_eq!(add.relay, Some(Relay::Disabled));
                 assert_eq!(add.dial_retries, Some(1));
             }
             c => panic!("{c:?}"),
         },
         c => panic!("{c:?}"),
     }
-    assert!(Args::try_parse_from([
-        "irsync",
-        "server",
-        "add",
-        "home",
-        "k51",
-        "--relay-mode",
-        "maybe"
-    ])
-    .is_err());
+    for gone in ["--relay-mode", "--no-relay"] {
+        assert!(
+            Args::try_parse_from(["irsync", "server", "add", "home", "k51", gone, "disabled"])
+                .is_err(),
+            "{gone}"
+        );
+    }
 }
 
 #[test]

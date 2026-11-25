@@ -375,7 +375,7 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
     }
     if r.dht == Dht::TurnedOff {
         out.push(format!(
-            "  turned off DHT publishing on {dest} ([daemon.discovery] dht = false)"
+            "  turned off DHT publishing on {dest} ([daemon] dht = false)"
         ));
     }
     match &r.daemon {
@@ -905,7 +905,7 @@ mod tests {
         let s = summary(&o);
         let off = at(
             &s,
-            "  turned off DHT publishing on myserver ([daemon.discovery] dht = false)",
+            "  turned off DHT publishing on myserver ([daemon] dht = false)",
         );
         assert!(off < at(&s, "  told the daemon to reload its settings"));
         assert!(howto(&o).is_empty());

@@ -1,33 +1,31 @@
 //! The `[servers]` table of `irsync.toml`: aliases for daemons to dial.
 
 use super::names::{invalid_name, valid_alias};
-use super::settings::{addresses_from, duration_from, url_from};
+use super::settings::{addresses_from, duration_from, parallel_problem};
 use super::{endpoint_id_from, file_error, ConfigError};
-use crate::config::settings::{Congestion, PqKeyExchange, RelayMode};
+use crate::config::settings::{relay_from, Congestion, PqKeyExchange, Relay, Spelled};
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerEntry {
     /// The daemon's id: the id to dial.
     pub endpoint_id: EndpointId,
-    pub relay: Option<Url>,
-    /// `"disabled"`: reach this server directly only, never through a relay.
-    pub relay_mode: Option<RelayMode>,
-    /// For pushes to this server; unset: the client settings'.
+    pub relay: Option<Relay>,
+    /// For pushes to this server; unset: `[defaults]`'s.
     pub congestion: Option<Congestion>,
-    /// For connections to this server; unset: the client settings'.
+    /// For connections to this server; unset: `[defaults]`'s.
     pub pq_key_exchange: Option<PqKeyExchange>,
     pub address: Vec<HostPort>,
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
+    pub dns: Option<bool>,
     pub mdns: Option<bool>,
     /// The `[user@]host` that `ssh` reaches this daemon's machine by.
     pub ssh: Option<String>,
@@ -42,6 +40,22 @@ pub struct Servers {
     pub entries: BTreeMap<String, ServerEntry>,
 }
 
+/// The keys of a server that do not go with `address`, which dials it
+/// directly with the relay and the lookups off: the message for the ones
+/// set (`(key, set)`), or `None`.
+pub(crate) fn beside_address(name: &str, keys: [(&str, bool); 4]) -> Option<String> {
+    let set: Vec<&str> = keys.iter().filter(|(_, s)| *s).map(|(k, _)| *k).collect();
+    let (last, rest) = set.split_last()?;
+    let keys = match rest {
+        [] => format!("{last} cannot"),
+        _ => format!("{} and {last} cannot", rest.join(", ")),
+    };
+    Some(format!(
+        "server {name:?}: {keys} be set beside address, which dials the server directly \
+         with the relay and the lookups off"
+    ))
+}
+
 impl ServerEntry {
     fn from_message(s: &pb::ServerEntry) -> Result<ServerEntry, String> {
         let name = &s.name;
@@ -49,10 +63,23 @@ impl ServerEntry {
             return Err(format!("server {name:?}: needs an endpoint_id"));
         }
         let field = |e: String| format!("server {name:?}: {e}");
+        if let Some(problem) = s.parallel.and_then(parallel_problem) {
+            return Err(field(problem.to_string()));
+        }
+        if !s.address.is_empty() {
+            let keys = [
+                ("relay", s.relay.is_some()),
+                ("dht", s.dht.is_some()),
+                ("dns", s.dns.is_some()),
+                ("mdns", s.mdns.is_some()),
+            ];
+            if let Some(problem) = beside_address(name, keys) {
+                return Err(problem);
+            }
+        }
         Ok(ServerEntry {
             endpoint_id: endpoint_id_from(&s.endpoint_id).map_err(|e| field(e.to_string()))?,
-            relay: url_from(s.relay.as_deref()).map_err(field)?,
-            relay_mode: RelayMode::from_optional(s.relay_mode).map_err(field)?,
+            relay: relay_from(s.relay.as_deref()).map_err(field)?,
             congestion: Congestion::from_optional(s.congestion).map_err(field)?,
             pq_key_exchange: PqKeyExchange::from_optional(s.pq_key_exchange).map_err(field)?,
             address: addresses_from(&s.address).map_err(field)?,
@@ -60,6 +87,7 @@ impl ServerEntry {
             reconnect: duration_from(s.reconnect.as_ref()).map_err(field)?,
             dial_retries: s.dial_retries,
             dht: s.dht,
+            dns: s.dns,
             mdns: s.mdns,
             ssh: s.ssh.clone(),
             ssh_aliases: s.ssh_aliases.iter().map(|e| e.value.clone()).collect(),

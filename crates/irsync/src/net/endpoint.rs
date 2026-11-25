@@ -5,13 +5,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
-
-use crate::config::servers::ServerEntry;
-use crate::config::settings::{
-    ClientSettings, Congestion, DaemonSettings, RelayMode as DaemonRelayMode,
-};
-use crate::net::addr::HostPort;
+use crate::config::dial::Dial;
+use crate::config::settings::{Congestion, DaemonSettings, Relay};
 
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
 use iroh::endpoint::{
@@ -25,22 +20,11 @@ use noq_proto::congestion::{Bbr3Config, ControllerFactory, CubicConfig};
 
 const MIB: u32 = 1024 * 1024;
 
-/// Which relay servers the endpoint uses.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RelayChoice {
-    /// Number 0's public relays.
-    N0Default,
-    /// A single self-hosted relay.
-    Custom(url::Url),
-    /// No relay: direct connections only.
-    Disabled,
-}
-
 /// Everything needed to build an endpoint.
 #[derive(Debug, Clone)]
 pub struct EndpointOpts {
     pub secret: SecretKey,
-    pub relay: RelayChoice,
+    pub relay: Relay,
     /// Mainline DHT address lookup.
     pub dht: bool,
     /// n0 DNS / pkarr address lookup.
@@ -65,7 +49,7 @@ impl EndpointOpts {
     pub fn isolated(secret: SecretKey) -> EndpointOpts {
         EndpointOpts {
             secret,
-            relay: RelayChoice::Disabled,
+            relay: Relay::Disabled,
             dht: false,
             dns: false,
             mdns: false,
@@ -214,76 +198,26 @@ fn transport_config_with(
         .build()
 }
 
-/// The client's endpoint options. Any address in `addresses` (from the
-/// command line, else the host entry) means isolated mode: no relay, no
-/// lookups, no port mapper, whatever the config says; `cli_relay` together
-/// with addresses is an error. Without addresses: the relay from `cli_relay`, else none when
-/// `no_relay` or a `relay_mode = "disabled"` (host entry, then client
-/// settings) says so, else the host entry's, else the client settings',
-/// else n0's; lookups likewise (host entry, then client settings, then on).
-pub fn client_endpoint_opts(
-    secret: SecretKey,
-    cli_relay: Option<&str>,
-    no_relay: bool,
-    no_dht: bool,
-    client: &ClientSettings,
-    host: Option<&ServerEntry>,
-    addresses: &[HostPort],
-) -> anyhow::Result<EndpointOpts> {
-    let host_relay = host.and_then(|h| h.relay.as_ref());
-    // `--no-relay`, else the host entry's mode, else the client settings'.
-    let relay_off = no_relay
-        || host
-            .and_then(|h| h.relay_mode)
-            .or(client.relay_mode)
-            .is_some_and(|m| m == DaemonRelayMode::Disabled);
-    let host_dht = host.and_then(|h| h.dht);
-    let host_mdns = host.and_then(|h| h.mdns);
-    // The host entry's, else the client settings', else BBR.
-    let congestion = host
-        .and_then(|h| h.congestion)
-        .or(client.congestion)
-        .unwrap_or_default();
-    if !addresses.is_empty() {
-        // The host entry's addresses with `--relay` on the command line: the
-        // same contradiction as `--address` with `--relay`.
-        if cli_relay.is_some() {
-            anyhow::bail!(
-                "--relay cannot be used with direct addresses (the server's entry has `address`)"
-            );
-        }
-        if host_relay.is_some()
-            || host_dht.is_some()
-            || host_mdns.is_some()
-            || client.relay.is_some()
-            || client.dht.is_some()
-            || client.mdns.is_some()
-        {
-            tracing::debug!("address given: ignoring relay/dht/mdns from the config");
-        }
-        return Ok(EndpointOpts {
-            congestion,
+/// The client's endpoint options for `dial`. Any address in it means
+/// isolated mode: no relay, no lookups, no port mapper.
+pub fn client_endpoint_opts(secret: SecretKey, dial: &Dial) -> EndpointOpts {
+    if !dial.address.is_empty() {
+        return EndpointOpts {
+            congestion: dial.congestion,
             ..EndpointOpts::isolated(secret)
-        });
+        };
     }
-    // A `--relay` on the command line beats a config file's "disabled".
-    let relay = match (cli_relay, host_relay.or(client.relay.as_ref())) {
-        (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
-        _ if relay_off => RelayChoice::Disabled,
-        (None, Some(u)) => RelayChoice::Custom(u.clone()),
-        (None, None) => RelayChoice::N0Default,
-    };
-    Ok(EndpointOpts {
+    EndpointOpts {
         secret,
-        relay,
-        dht: !no_dht && host_dht.or(client.dht).unwrap_or(true),
-        dns: true,
-        mdns: host_mdns.or(client.mdns).unwrap_or(true),
+        relay: dial.relay.clone(),
+        dht: dial.dht,
+        dns: dial.dns,
+        mdns: dial.mdns,
         publish: false,
         bind_addrs: Vec::new(),
         portmap: true,
-        congestion,
-    })
+        congestion: dial.congestion,
+    }
 }
 
 /// The daemon's endpoint options from its settings; `bind_addrs` are the
@@ -293,14 +227,9 @@ pub fn daemon_endpoint_opts(
     secret: SecretKey,
     bind_addrs: Vec<SocketAddr>,
 ) -> EndpointOpts {
-    let relay = match (&cfg.relay_mode, &cfg.relay) {
-        (DaemonRelayMode::Disabled, _) => RelayChoice::Disabled,
-        (_, Some(url)) => RelayChoice::Custom(url.clone()),
-        _ => RelayChoice::N0Default,
-    };
     EndpointOpts {
         secret,
-        relay,
+        relay: cfg.relay.clone(),
         dht: cfg.discovery.dht,
         dns: cfg.discovery.dns,
         mdns: cfg.discovery.mdns,
@@ -392,13 +321,11 @@ async fn build(
         );
     }
     let builder = match &opts.relay {
-        RelayChoice::N0Default => Endpoint::builder(presets::N0),
-        RelayChoice::Custom(url) => Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(
+        Relay::Default => Endpoint::builder(presets::N0),
+        Relay::Url(url) => Endpoint::builder(presets::N0).relay_mode(RelayMode::Custom(
             RelayMap::from(RelayUrl::from(url.clone())),
         )),
-        RelayChoice::Disabled => {
-            Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled)
-        }
+        Relay::Disabled => Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled),
     };
 
     // Start from no lookups and add exactly what was asked for, so the N0

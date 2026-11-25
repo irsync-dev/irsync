@@ -4,22 +4,22 @@
 //! the control stream whose frames complete those files.
 //!
 //! The client opens it right after `HelloAck` and sends a
-//! `ListingStreamHeader`; then each half carries listing frames
-//! (`ListingEntry`, `ListingError`, one `ListingEnd`) and ends.
+//! `ListingStreamHeader`; then each half carries `ListingFrame`s (entries
+//! and errors, then one `end`) and ends.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
-use irsync_proto::v1::{control::Msg, Control, ListingEntry, ListingStreamHeader};
+use irsync_proto::v1::{listing_frame::Frame, ListingFrame, ListingStreamHeader};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
-use super::control::{msg_name, side_of, Ev, Listed, PeerTx, DRAIN_TIMEOUT};
+use super::control::{side_of, Ev, Listed, PeerTx, DRAIN_TIMEOUT};
 use super::limits::LISTING_QUEUE;
-use super::{SideHooks, StreamKind};
+use super::SideHooks;
 use crate::fs::ids::IdMap;
 use crate::fs::paths::RelPath;
 use crate::net::frame::{read_msg_tapped, write_msg_tapped};
@@ -59,7 +59,7 @@ pub(super) async fn accept(
 
 /// Handle for queueing listing frames to the listing writer.
 pub(super) struct ListingOut {
-    tx: mpsc::Sender<Control>,
+    tx: mpsc::Sender<Frame>,
     #[cfg(feature = "test-hooks")]
     waits: Option<Arc<AtomicU64>>,
 }
@@ -68,8 +68,7 @@ impl ListingOut {
     /// Queues a frame from the walk's blocking thread, waiting while the
     /// queue is full (the link, or the peer's planner, is slower than the
     /// walk). A closed writer surfaces as `Ev::WriterFailed`.
-    pub fn send_blocking(&self, msg: Msg) {
-        let c = Control { msg: Some(msg) };
+    pub fn send_blocking(&self, c: Frame) {
         #[cfg(feature = "test-hooks")]
         let c = match self.tx.try_send(c) {
             Ok(()) => return,
@@ -86,8 +85,8 @@ impl ListingOut {
 
     /// Queues the first frame from async code: the queue is empty, so this
     /// never waits.
-    pub fn send_first(&self, msg: Msg) {
-        let _ = self.tx.try_send(Control { msg: Some(msg) });
+    pub fn send_first(&self, frame: Frame) {
+        let _ = self.tx.try_send(frame);
     }
 
     /// Ends this side's half of the stream after everything queued so far
@@ -99,7 +98,7 @@ impl ListingOut {
 /// [`ListingOut`] is gone it ends the stream and waits (bounded) until the
 /// peer has the bytes.
 ///
-/// A half whose last frame queued is not a `ListingEnd` (nothing queued
+/// A half whose last frame queued is not an `end` (nothing queued
 /// at all, or cut short) waits for the returned gate to be dropped
 /// first, which the caller does once the role has ended (on failure, after
 /// its `Error` had its chance to arrive). A role that fails before or while
@@ -107,7 +106,7 @@ impl ListingOut {
 /// ahead of the `Error`: a receiver listing afresh takes an empty half as
 /// a protocol error of ours, and a half cut short as a transport error
 /// (retried), either of which would hide the real error. An honest half
-/// without `ListingEnd` (no listing, as a resumed session decides) is never
+/// without `end` (no listing, as a resumed session decides) is never
 /// waited for, so nothing waits on the gate.
 pub(super) fn spawn_listing_writer(
     mut send: SendStream,
@@ -116,22 +115,18 @@ pub(super) fn spawn_listing_writer(
     tap: StreamTap,
 ) -> (ListingOut, oneshot::Sender<()>, JoinHandle<()>) {
     let tamper = hooks.tamper();
-    let (tx, mut rx) = mpsc::channel::<Control>(LISTING_QUEUE);
+    let (tx, mut rx) = mpsc::channel::<Frame>(LISTING_QUEUE);
     let (gate, gated) = oneshot::channel::<()>();
     let task = tokio::spawn(
         async move {
-            // The last frame the role queued was `ListingEnd`: the half is
+            // The last frame the role queued was `end`: the half is
             // complete. (Judged before the test hook that tampers with what
             // goes out, so a test can still cut a running role's half short.)
             let mut ended = false;
-            while let Some(c) = rx.recv().await {
-                ended = matches!(c.msg, Some(Msg::ListingEnd(_)));
-                for msg in c
-                    .msg
-                    .into_iter()
-                    .flat_map(|m| tamper.frames(StreamKind::Listing, m))
-                {
-                    let c = Control { msg: Some(msg) };
+            while let Some(f) = rx.recv().await {
+                ended = matches!(f, Frame::End(_));
+                for frame in tamper.listing_frames(f) {
+                    let c = ListingFrame { frame: Some(frame) };
                     if let Err(e) = write_msg_tapped(&mut send, &c, &tap).await {
                         let _ = events.send(Ev::WriterFailed(format!("listing stream: {e}")));
                         return;
@@ -161,7 +156,7 @@ pub(super) fn spawn_listing_writer(
 
 /// Where the peer's listing goes.
 pub(super) enum ListingSink {
-    /// The receiver's planner, closed at the peer's `ListingEnd` (and only
+    /// The receiver's planner, closed at the peer's `end` (and only
     /// then: a listing cut short must never look complete to it).
     Planner(mpsc::Sender<Listed>),
     /// The sender: the receiver's listing is only a start signal and scan
@@ -174,7 +169,7 @@ pub(super) enum ListingSink {
 /// reader, which reports the peer's walk from its heartbeats.
 #[derive(Default)]
 pub(super) struct PeerScan {
-    /// Set at the peer's `ListingEnd`: a later heartbeat's walk position is stale.
+    /// Set at the peer's `end`: a later heartbeat's walk position is stale.
     ended: AtomicBool,
     seen: Mutex<ListStats>,
 }
@@ -197,7 +192,7 @@ impl PeerScan {
 }
 
 /// Spawns the listing reader: entries and gaps go to `sink`; the first frame
-/// posts `Ev::PeerListing`, the `ListingEnd` `Ev::Ctrl` (a full queue of
+/// posts `Ev::PeerListing`, the `end` `Ev::PeerListingEnd` (a full queue of
 /// either kind stops the reading). A listing that ends any other way keeps
 /// `sink` open until the task is aborted.
 #[allow(clippy::too_many_arguments)]
@@ -263,21 +258,21 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
     let mut ended = false;
     // The order check: the last path listed, or named by a gap.
     let mut last: Option<RelPath> = None;
-    // `ListingEntry` frames received, against `ListingEnd.count`.
+    // Entries received, against `ListingEnd.count`.
     let mut entries = 0u64;
     // Why the listing stopped short, if it did.
     let failure = loop {
-        let frame = read_msg_tapped::<Control, _>(&mut recv, &tap).await;
+        let frame = read_msg_tapped::<ListingFrame, _>(&mut recv, &tap).await;
         activity.fetch_add(1, Ordering::Relaxed);
         let msg = match frame {
-            Ok(Some(Control { msg: Some(msg) })) => msg,
-            Ok(Some(Control { msg: None })) => {
+            Ok(Some(ListingFrame { frame: Some(f) })) => f,
+            Ok(Some(ListingFrame { frame: None })) => {
                 tracing::warn!("empty listing frame; ignored");
                 continue;
             }
             Ok(None) if ended => break None,
             // Nothing at all, to a planner still waiting for it: a sender
-            // always lists (its root at least, and `ListingEnd`) once the
+            // always lists (its root at least, and `end`) once the
             // receiver plans afresh, and the planner would wait forever.
             Ok(None) if !started && planner.as_ref().is_some_and(|tx| !tx.is_closed()) => {
                 break Some(Ev::ProtocolError(
@@ -291,7 +286,7 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
             Ok(None) if !started => break None,
             Ok(None) => {
                 break Some(Ev::PeerFailed(
-                    "listing stream: the peer's listing is incomplete (the stream ended before ListingEnd)"
+                    "listing stream: the peer's listing is incomplete (the stream ended before its end)"
                         .into(),
                 ))
             }
@@ -307,17 +302,16 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
             Err(e) => break Some(Ev::PeerFailed(format!("listing stream: {e}"))),
         };
         if ended {
-            break Some(Ev::ProtocolError(format!(
-                "{} after ListingEnd on the listing stream",
-                msg_name(&msg)
-            )));
+            break Some(Ev::ProtocolError(
+                "a listing frame after the listing's end".into(),
+            ));
         }
         if !started {
             started = true;
             events.send(Ev::PeerListing).await;
         }
         match msg {
-            Msg::Listing(ListingEntry { entry: Some(mut e) }) => {
+            Frame::Entry(mut e) => {
                 entries += 1;
                 // Strictly increasing: the planner's merge would otherwise
                 // drop entries, and a source path that looks absent makes
@@ -351,12 +345,8 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
                     }
                 }
             }
-            Msg::Listing(ListingEntry { entry: None }) => {
-                entries += 1;
-                tracing::warn!("listing frame without entry; ignored");
-            }
             // The receiver's planner wants the gap in order with the entries.
-            Msg::ListingError(e) => {
+            Frame::Error(e) => {
                 tracing::info!(path = ?String::from_utf8_lossy(&e.path), error = %e.message, "a gap in the peer's listing");
                 let path = RelPath::new(&e.path).unwrap_or_default();
                 // At or after the last path, or at the root (see `out_of_order`).
@@ -370,13 +360,13 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
                     let _ = tx.send(Listed::Gap(path)).await;
                 }
             }
-            Msg::ListingEnd(e) if e.count != entries => {
+            Frame::End(e) if e.count != entries => {
                 break Some(Ev::ProtocolError(format!(
                     "listing count mismatch: ListingEnd says {}, {entries} received",
                     e.count
                 )));
             }
-            m @ Msg::ListingEnd(_) => {
+            Frame::End(e) => {
                 let seen = scan.seen();
                 hooks.bus.emit(Event::Total {
                     party: Party::Peer,
@@ -386,13 +376,7 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
                 planner = None;
                 ended = true;
                 scan.ended.store(true, Ordering::Relaxed);
-                events.send(Ev::Ctrl(m)).await;
-            }
-            m => {
-                break Some(Ev::ProtocolError(format!(
-                    "{} on the listing stream",
-                    msg_name(&m)
-                )))
+                events.send(Ev::PeerListingEnd(e)).await;
             }
         }
     };
@@ -404,7 +388,7 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
         std::future::pending::<()>().await;
     }
     if planner.is_some() {
-        // No `ListingEnd`: the rest of the peer's listing would look absent
+        // No `end`: the rest of the peer's listing would look absent
         // to the planner (and its destination copies extraneous). Keep the
         // planner waiting until the session ends and aborts this task.
         std::future::pending::<()>().await;

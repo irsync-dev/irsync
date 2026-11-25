@@ -191,7 +191,7 @@ mod tests {
     use super::*;
     use irsync_proto::capture::v1::record::Msg;
     use irsync_proto::v1::{
-        control, delta_op, ChunkBasis, ChunkListPart, ChunkRecord, Control, CopyOld, DataChunk,
+        control, delta_op, ChunkBasis, ChunkListStart, ChunkRecord, Control, CopyOld, DataChunk,
         DeltaOp, Hash, Heartbeat,
     };
 
@@ -215,12 +215,11 @@ mod tests {
     }
 
     fn part_with_records(n: usize) -> control::Msg {
-        control::Msg::ChunkListPart(ChunkListPart {
+        control::Msg::ChunkListStart(ChunkListStart {
             file_id: 7,
             total: n as u32,
             chunks: (0..n)
                 .map(|i| ChunkRecord {
-                    offset: i as u64 * 65_536,
                     len: 65_536,
                     hash: Some(Hash {
                         bytes: vec![i as u8; 32],
@@ -281,7 +280,7 @@ mod tests {
         assert_eq!(t.original_len as usize, before);
         assert!(t.dropped_entries > 0);
         let Some(Msg::Control(Control {
-            msg: Some(control::Msg::ChunkListPart(p)),
+            msg: Some(control::Msg::ChunkListStart(p)),
         })) = &r.msg
         else {
             panic!()
@@ -289,7 +288,7 @@ mod tests {
         // The first entries stay, and the record is not cut much shorter
         // than it has to be.
         assert_eq!(p.chunks.len() as u32 + t.dropped_entries, 32_768);
-        assert_eq!(p.chunks[0].offset, 0);
+        assert_eq!(p.chunks[0].hash.as_ref().unwrap().bytes, vec![0; 32]);
         assert!(r.encoded_len() > 262_144 - 1024);
     }
 
@@ -316,8 +315,8 @@ mod tests {
 
     #[test]
     fn huge_message_without_lists_keeps_only_its_context() {
-        let mut r = record_with(Msg::Error(irsync_proto::v1::Error {
-            message: "x".repeat(300_000),
+        let mut r = record_with(Msg::Hello(irsync_proto::v1::Hello {
+            traceparent: "x".repeat(300_000),
             ..Default::default()
         }));
         fit(&mut r, 262_144);

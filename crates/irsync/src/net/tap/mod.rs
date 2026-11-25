@@ -16,8 +16,8 @@ use iroh::endpoint::{Connection, WeakConnectionHandle};
 use iroh::EndpointId;
 use irsync_proto::capture::v1::{record, stream_event, Direction, PathChange, Record, StreamEvent};
 use irsync_proto::v1::{
-    control, AdminReply, AdminRequest, Control, DataChunk, DataStreamHeader, Error, ExportList,
-    Hello, HelloAck, ListingStreamHeader, PathInfo,
+    control, AdminReply, AdminRequest, Control, DataChunk, DataStreamHeader, Hello, HelloReply,
+    ListingFrame, ListingStreamHeader,
 };
 
 mod capture;
@@ -49,11 +49,9 @@ macro_rules! wire_msg {
 
 wire_msg! {
     Hello => Hello,
-    HelloAck => HelloAck,
-    Error => Error,
-    ExportList => ExportList,
-    PathInfo => PathInfo,
+    HelloReply => HelloReply,
     ListingStreamHeader => ListingStreamHeader,
+    ListingFrame => ListingFrame,
     DataChunk => DataChunk,
     AdminRequest => AdminRequest,
     AdminReply => AdminReply,
@@ -69,7 +67,9 @@ impl WireMsg for Control {
             Msg::Plan(m) => Some(m.file_id),
             Msg::Need(m) => Some(m.file_id),
             Msg::Ack(m) => Some(m.file_id),
-            Msg::ChunkListPart(m) => Some(m.file_id),
+            Msg::ChunkListStart(m) => Some(m.file_id),
+            Msg::ChunkListMore(m) => Some(m.file_id),
+            Msg::WithdrawChunkList(m) => Some(m.file_id),
             Msg::ChunkBasis(m) => Some(m.file_id),
             Msg::MayPlace(m) => Some(m.file_id),
             Msg::PlaceVerdict(m) => Some(m.file_id),

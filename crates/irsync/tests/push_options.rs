@@ -147,7 +147,7 @@ async fn push_with_a_relative_partial_dir_keeps_parts_under_the_destination_root
         let h = Harness::new().await;
         fs::write(h.local.path().join("f"), b"x").unwrap();
         let mut hello = Harness::hello(Flow::Push);
-        hello.path = b"m/sub".to_vec();
+        hello.req.path = b"m/sub".to_vec();
         let out = h.run_hello(&o, hello, h.local_side()).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         let sub = h.export.path().join("sub");

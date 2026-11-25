@@ -114,7 +114,8 @@ A sync never does this for you. When the daemon does not answer within
 15 seconds, the sync stops and says `myserver did not answer`. It names what
 to check on the server and the command to start the daemon again:
 `irsync pair myserver`. The sync dials only once, unless you pass
-`--dial-retries N`, which tries N more times first. A daemon that answers but refuses the client is
+`--dial-retries N` or set `dial_retries` in the server's table or in
+`[defaults]`: then it tries N more times first. A daemon that answers but refuses the client is
 "fixed" by no one: that refusal is on purpose, and the sync stops with the
 "rejected this client's key" message.
 
@@ -128,7 +129,7 @@ table, pass `--no-dht`:
 irsync pair --no-dht myserver
 ```
 
-`pair` then writes `dht = false` under `[daemon.discovery]` on the server.
+`pair` then writes `dht = false` under `[daemon]` on the server.
 The daemon can still be found through DNS and the relay.
 
 ## Use another ssh command

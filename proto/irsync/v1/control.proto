@@ -1,4 +1,5 @@
-// Part of the normative irsync wire protocol. Field numbers are never reused.
+// Part of the normative irsync wire protocol. Any change to these messages
+// bumps PROTOCOL_VERSION (irsync-proto).
 syntax = "proto3";
 package irsync.v1;
 
@@ -6,30 +7,35 @@ import "irsync/v1/common.proto";
 
 // A session uses two bidirectional streams, both opened by the client right
 // after HelloAck. The control stream (the one that carried Hello) carries
-// every Control frame except the listing's. The listing stream carries each
-// side's listing, both directions: ListingEntry and ListingError (`listing`,
-// `listing_error`) frames in path order, then one ListingEnd, then the end
-// of that half. A side that does not list (a receiver resuming a complete
-// plan) ends its half without a frame.
+// Control frames. The listing stream carries each side's listing, both
+// directions: ListingFrame frames, entries and errors in path order, then
+// one `end`, then the end of that half. A side that does not list (a
+// receiver resuming a complete plan) ends its half without a frame.
 
 // The first frame of the client's half of the listing stream, before any
-// Control frame: the session (from HelloAck) the stream belongs to.
+// ListingFrame: the session (from HelloAck) the stream belongs to.
 message ListingStreamHeader {
   bytes session_id = 1;
 }
-message ListingEntry {
-  FileEntry entry = 1;
-} // path order ascending
-// `count`: the ListingEntry frames sent before it.
+// One frame of a side's listing.
+message ListingFrame {
+  oneof frame {
+    FileEntry entry = 1; // in path order, ascending
+    // A gap in the listing, sent in path order where the missing entries
+    // would have been: a directory that could not be read (right after its
+    // own entry) or an entry that could not be stat'ed. The listing goes
+    // on; `end` then says incomplete.
+    PathError error = 2;
+    ListingEnd end = 3; // the last frame
+  }
+}
+// `count`: the entries sent before it.
 message ListingEnd {
   bool incomplete = 1;
   uint64 count = 2;
 }
-// A gap in the listing (`listing_error`, a PathError), sent in path order
-// where the missing entries would have been: a directory that could not be
-// read (right after its own entry) or an entry that could not be stat'ed.
-// The listing goes on; ListingEnd then says incomplete.
-message PlanItem { // receiver -> sender
+// receiver -> sender: send this file, under this id.
+message PlanItem {
   uint64 file_id = 1;
   bytes path = 2;
   enum Action {
@@ -43,46 +49,44 @@ message PlanItem { // receiver -> sender
   Action action = 3;
   uint64 append_from = 4;
 }
-// sender -> receiver: the chunk list of a file, in pieces small enough for
-// a control frame. The parts of a file arrive in order: `first` is the
-// index of `chunks[0]` in the whole list, `total` the whole list's length,
-// `last` marks the final part. `size` and `whole_hash` are repeated in
-// every part. A list of no chunks (an empty file) is one empty last part.
+// sender -> receiver: the start of a file's chunk list. A list travels in
+// pieces small enough for a control frame: a ChunkListStart, then
+// ChunkListMore frames in order, until `total` records have come. A list
+// of no chunks (an empty file) is one ChunkListStart without records.
 // For an APPEND the list covers only the tail and `whole_hash` is absent:
 // the receiver folds the whole-file hash from the bytes it places.
-// Lists travel in room the receiver grants (see ListRoom): a list's first
-// part takes `total` records of it, and a sender sends a list only once it
-// fits. A first part that does not fit is a protocol error. A first part
-// for a file that already has a list replaces it (its room is freed); a
-// sender that lists a file again first sends an empty, unfinished first
-// part (`total` 0, not `last`), so the old list is dropped without waiting
-// for room for the new one.
-message ChunkListPart {
+// Lists travel in room the receiver grants (see ListRoom): a list's start
+// takes `total` records of it, and a sender sends a list only once it
+// fits. A start that does not fit is a protocol error. A start for a file
+// that already has a list replaces it (its room is freed).
+message ChunkListStart {
   uint64 file_id = 1;
-  uint64 size = 2;
-  Hash whole_hash = 3;
-  uint32 total = 4;
-  uint32 first = 5;
-  repeated ChunkRecord chunks = 6;
-  bool last = 7;
+  Hash whole_hash = 2;
+  uint32 total = 3;
   // The stat the file was hashed under: the receiver places the file with
-  // this size (field 2), mtime, mode, owner and group, not the walk's, so
-  // content and metadata come from the same moment. Set on the part with
-  // `first` 0. `user` and `group` are the names of `uid` and `gid` on the
-  // sender (empty when it has none), mapped as a listing entry's are.
-  int64 mtime_sec = 8;
-  uint32 mtime_nsec = 9;
-  uint32 mode = 10;
-  uint32 uid = 11;
-  uint32 gid = 12;
-  string user = 13;
-  string group = 14;
-  // The rest of that stat, set on the same part: with `-H`, the receiver
-  // asks the sender whether a file's other names still are this file (see
-  // CheckLink).
-  int64 ctime_sec = 15;
-  uint32 ctime_nsec = 16;
-  uint64 inode = 17;
+  // its size, mtime, mode, owner and group, not the walk's, so content and
+  // metadata come from the same moment. With `-H`, the receiver asks the
+  // sender whether a file's other names still are this file (CheckLink).
+  SourceStat stat = 4;
+  // The names of `stat.uid` and `stat.gid` on the sender (empty when it
+  // has none), mapped as a listing entry's are.
+  string user = 5;
+  string group = 6;
+  repeated ChunkRecord chunks = 7; // the list's first records
+}
+// sender -> receiver: the next records of a file's chunk list. `first` is
+// the index of `chunks[0]` in the whole list: the number of records sent
+// so far.
+message ChunkListMore {
+  uint64 file_id = 1;
+  uint32 first = 2;
+  repeated ChunkRecord chunks = 3;
+}
+// sender -> receiver: drop the file's chunk list and free its room. A
+// sender that lists a file again sends this first, so the old list is
+// dropped without waiting for room for the new one.
+message WithdrawChunkList {
+  uint64 file_id = 1;
 }
 // receiver -> sender: `records` chunk records of room freed (lists the
 // receiver dropped: placed, failed or replaced files). Each connection
@@ -95,40 +99,40 @@ message ListRoom {
 // The receiver renames the file into place (or settles it in place) only
 // after a PlaceVerdict that says the source is unchanged.
 // `gen`: the number of the chunk list the file was verified against, counted
-// per file and connection from 1: every first part (`first` 0) except the
-// empty, unfinished one that withdraws a list. The sender answers a MayPlace
-// for a list that is not its latest with `changed`, and never places it.
+// per file and connection from 1: every ChunkListStart. The sender answers
+// a MayPlace for a list that is not its latest with `changed`, and never
+// places it.
 message MayPlace {
   uint64 file_id = 1;
   uint32 gen = 2;
 }
 // sender -> receiver: the answer to MayPlace. `changed`: the source differs
 // from the stat its chunk list was hashed under; the receiver drops what it
-// verified and waits for a new chunk list (or the sender's SOURCE_ERROR).
+// verified and waits for a new chunk list (or the sender's SourceError).
 message PlaceVerdict {
   uint64 file_id = 1;
   bool changed = 2;
   uint32 gen = 3; // the MayPlace's
 }
-// `--paranoid` (the client's Hello), unless a dry run: the final re-check.
+// `--paranoid` (the client's SyncRequest), unless a dry run: the final
+// re-check.
 // receiver -> sender, once, in place of SessionDone when the receiver has
 // planned every path and has no file in flight: the sender stats every
 // listed regular file again (a resumed session that reuses the stored plan
 // lists nothing: only the files sent on this connection).
 message Settle {}
 // sender -> receiver, after Settle: a listed regular file that differs from
-// the stat it was listed (or last hashed) under, with its entry as it is
-// now. The receiver plans it again as it plans a listed file, under a new
-// file id above every id the session used; a file already placed stays
-// placed. One per path at most; only before Settled.
+// the stat it was listed (or last hashed) under: its entry as it is now,
+// with its path. The receiver plans it again as it plans a listed file,
+// under a new file id above every id the session used; a file already
+// placed stays placed. One per path at most; only before Settled.
 message Replan {
-  bytes path = 1;
-  FileEntry entry = 2;
+  FileEntry entry = 1;
 }
 // sender -> receiver, after its Replans: the re-check is over. `vanished`:
 // listed files gone, or no longer regular files (capped as
-// SessionDone.deleted is; `vanished_omitted` counts the rest). `errors`:
-// files the re-check could not stat. The receiver sends SessionDone once
+// SessionDone.deleted_paths is; `vanished_omitted` counts the rest).
+// `errors`: files the re-check could not stat. The receiver sends SessionDone once
 // the re-planned files are done.
 message Settled {
   repeated bytes vanished = 1;
@@ -148,18 +152,27 @@ message CheckLink {
   bytes path = 1;
   SourceStat want = 2;
 }
+// receiver -> sender: the last CheckLink has been sent. With `-H` it is
+// always sent, even with no links to check.
 message CheckLinksEnd {}
 // sender -> receiver, after CheckLinksEnd: a CheckLink `path` that is no
-// longer the file it names in `want`. The receiver does not link it. With
-// `entry` (a regular file the walk would list, as it is now) the receiver
-// plans it as a file of its own, as for a Replan, and the sender admits its
-// PlanItem with its retry used. Without (gone, or not such a file) the name
-// fails. Then LinksChecked ends the check.
+// longer the file it names in `want`. The receiver does not link it. Then
+// LinksChecked ends the check.
 message Unlinked {
-  bytes path = 1;
-  FileEntry entry = 2;
+  oneof name {
+    // Still a regular file the walk would list: the name as it is now (its
+    // path in the entry). The receiver plans it as a file of its own, as
+    // for a Replan, and the sender admits its PlanItem with its retry used.
+    FileEntry entry = 1;
+    // Gone, or not such a file: the name, which fails.
+    bytes failed = 2;
+  }
 }
+// sender -> receiver: the link check is over.
 message LinksChecked {}
+// receiver -> sender: the chunks of a file to send; empty means none are
+// needed (local copies, or the receiver has them). A large request comes
+// as several, each taking the bases sent before it.
 message NeedChunks {
   uint64 file_id = 1;
   repeated uint32 chunk_idx = 2;
@@ -167,8 +180,7 @@ message NeedChunks {
   // from an earlier connection: chunk index -> bytes held, less than the
   // chunk. The sender starts that chunk's data there and sends it raw.
   map<uint32, uint32> held = 3;
-} // receiver -> sender; empty = nothing needed (local copy / already have).
-// A large request comes as several, each taking the bases sent before it.
+}
 // receiver -> sender, before the NeedChunks that asks for `chunk_idx`: block
 // signatures over a region of the receiver's old file (`offset` is where it
 // starts in that file; the region is `block` * blocks long, a shorter tail
@@ -184,16 +196,15 @@ message ChunkBasis {
   repeated fixed32 weak = 5;
   bytes strong = 6; // 8 * weak.len() bytes
 }
-// receiver -> sender: DONE (only after a PlaceVerdict saying unchanged), HASH_MISMATCH,
-// WRITE_ERROR. sender -> receiver: SOURCE_ERROR
-// (the sender cannot read the file; the receiver drops it without a reply).
+// receiver -> sender: how a file ended on the receiver. DONE only after a
+// PlaceVerdict saying unchanged.
 message FileAck {
   uint64 file_id = 1;
   enum Status {
-    DONE = 0;
-    HASH_MISMATCH = 1;
-    WRITE_ERROR = 2;
-    SOURCE_ERROR = 3;
+    UNSPECIFIED = 0; // never sent
+    DONE = 1;
+    HASH_MISMATCH = 2;
+    WRITE_ERROR = 3;
   }
   Status status = 2;
   string message = 3;
@@ -202,7 +213,14 @@ message FileAck {
   // matched count.
   uint64 matched = 4;
 }
-// A per-path problem the receiver recorded locally (mkdir, symlink, metadata, walk, ...).
+// sender -> receiver: the sender cannot read the file; the receiver drops
+// it without a reply.
+message SourceError {
+  uint64 file_id = 1;
+  string message = 2;
+}
+// A problem with one path (a walk, mkdir, symlink, metadata, ...): a gap in
+// a listing, and the errors of SessionDone and Settled.
 message PathError {
   bytes path = 1;
   string message = 2;
@@ -216,26 +234,32 @@ message ListTotals {
   uint64 special = 4;
   uint64 total_size = 5; // summed size of the regular files
 }
+// receiver -> sender: the session is over; its last frame on the control
+// stream.
 message SessionDone {
-  uint64 files = 1;
-  uint64 bytes = 2;
+  // Files the receiver placed on this connection (one it found already
+  // holding the content, settled in place, is not counted).
+  uint64 files_placed = 1;
+  uint64 bytes_received = 2; // file data received on this connection
   repeated PathError errors = 3;
-  repeated bytes deleted = 4; // paths the receiver deleted (capped)
-  repeated bytes would_delete = 5; // dry run: paths it would delete (capped)
+  repeated bytes deleted_paths = 4; // paths the receiver deleted (capped)
+  repeated bytes would_delete_paths = 5; // dry run: paths it would delete (capped)
   bool max_delete_reached = 6; // deletions stopped at --max-delete
   uint64 deleted_omitted = 7; // deleted paths beyond the cap
   uint64 would_delete_omitted = 8; // would-delete paths beyond the cap
   uint64 created = 9; // items the receiver created new (for --stats)
-  uint64 transferred_size = 10; // summed size of the files it placed
+  uint64 placed_size = 10; // summed size of the files it placed
   // What the receiver counted in the sender's listing, over every
   // connection of the session. A sender that resumed from the receiver's
   // stored plan listed nothing itself and reports these.
   ListTotals listed = 11;
 }
+// receiver -> sender: one rsync `-i` line, for a client that pushes with
+// `-i` (`>` = received).
 message Itemized {
   bytes path = 1;
   string code = 2;
-} // receiver -> sender, rsync -i code (`>` = received)
+}
 // "I am busy": sent by either side while it makes local progress (hashing,
 // writing, finalizing) that the peer cannot otherwise see, so the peer's
 // inactivity watchdog stays quiet. Carries what the peer cannot otherwise see
@@ -243,7 +267,7 @@ message Itemized {
 message Heartbeat {
   optional bytes walking = 1; // directory this side's listing walk is in (empty = the root); unset when not listing
   uint64 skipped_bytes = 2; // bytes of source files this side's planner found up to date (cumulative)
-  uint64 deleted = 3;       // paths this side's deletion pass removed so far
+  uint64 deleted_count = 3; // paths this side's deletion pass removed so far
   uint64 delete_total = 4;  // its candidate count once known, else 0
   // A receiver that resumes its stored plan, once, before its first
   // request: what the sender's listing held on the first connection. Nothing
@@ -257,30 +281,30 @@ message Heartbeat {
   // none of which finishes it, still moves the session on.
   uint64 received_bytes = 7;
 }
+// Every frame on the control stream after the handshake.
 message Control {
-  reserved 4; // ChunkList, one frame per list (never shipped)
   oneof msg {
-    ListingEntry listing = 1;
-    ListingEnd listing_end = 2;
-    PlanItem plan = 3;
-    NeedChunks need = 5;
-    FileAck ack = 6;
-    SessionDone done = 7;
-    Error error = 8;
-    Itemized itemized = 9;
-    Heartbeat heartbeat = 10;
-    ChunkListPart chunk_list_part = 11;
-    ChunkBasis chunk_basis = 12;
-    PathError listing_error = 13;
-    ListRoom list_room = 14;
-    MayPlace may_place = 15;
-    PlaceVerdict place_verdict = 16;
-    Replan replan = 17;
-    Settle settle = 18;
-    Settled settled = 19;
-    CheckLink check_link = 20;
-    CheckLinksEnd check_links_end = 21;
-    Unlinked unlinked = 22;
-    LinksChecked links_checked = 23;
+    PlanItem plan = 1;
+    ChunkListStart chunk_list_start = 2;
+    ChunkListMore chunk_list_more = 3;
+    WithdrawChunkList withdraw_chunk_list = 4;
+    ListRoom list_room = 5;
+    ChunkBasis chunk_basis = 6;
+    NeedChunks need = 7;
+    MayPlace may_place = 8;
+    PlaceVerdict place_verdict = 9;
+    FileAck ack = 10;
+    SourceError source_error = 11;
+    Itemized itemized = 12;
+    Heartbeat heartbeat = 13;
+    Settle settle = 14;
+    Replan replan = 15;
+    Settled settled = 16;
+    CheckLink check_link = 17;
+    CheckLinksEnd check_links_end = 18;
+    Unlinked unlinked = 19;
+    LinksChecked links_checked = 20;
+    SessionDone done = 21;
+    Error error = 22; // a fatal error; the session ends
   }
 }

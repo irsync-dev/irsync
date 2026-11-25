@@ -296,7 +296,7 @@ fn read_varint(bytes: &[u8]) -> Option<(u64, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use irsync_proto::v1::{self, control::Msg, delta_op, hello};
+    use irsync_proto::v1::{self, control::Msg, delta_op, hello, sync_request};
     use prost::Message;
     use prost_reflect::DescriptorPool;
 
@@ -386,13 +386,6 @@ mod tests {
 
     fn control_variants() -> Vec<Msg> {
         vec![
-            Msg::Listing(v1::ListingEntry {
-                entry: Some(entry()),
-            }),
-            Msg::ListingEnd(v1::ListingEnd {
-                incomplete: true,
-                count: 300,
-            }),
             Msg::Plan(v1::PlanItem {
                 file_id: 1,
                 path: b"p".to_vec(),
@@ -406,21 +399,25 @@ mod tests {
             }),
             Msg::Ack(v1::FileAck {
                 file_id: 3,
-                status: 1,
+                status: 2,
                 message: "bad".into(),
                 matched: 10,
             }),
+            Msg::SourceError(v1::SourceError {
+                file_id: 3,
+                message: "unreadable".into(),
+            }),
             Msg::Done(v1::SessionDone {
-                files: 1,
-                bytes: 2,
+                files_placed: 1,
+                bytes_received: 2,
                 errors: vec![path_error(), path_error()],
-                deleted: vec![b"a".to_vec(), b"b".to_vec()],
-                would_delete: vec![b"c".to_vec()],
+                deleted_paths: vec![b"a".to_vec(), b"b".to_vec()],
+                would_delete_paths: vec![b"c".to_vec()],
                 max_delete_reached: true,
                 deleted_omitted: 3,
                 would_delete_omitted: 4,
                 created: 5,
-                transferred_size: 6,
+                placed_size: 6,
                 listed: totals(),
             }),
             Msg::Error(v1::Error {
@@ -434,42 +431,39 @@ mod tests {
             Msg::Heartbeat(v1::Heartbeat {
                 walking: Some(Vec::new()),
                 skipped_bytes: 1,
-                deleted: 2,
+                deleted_count: 2,
                 delete_total: 3,
                 listed: totals(),
                 listed_settled: 4,
                 received_bytes: 5,
             }),
-            Msg::ChunkListPart(v1::ChunkListPart {
+            Msg::ChunkListStart(v1::ChunkListStart {
                 file_id: 4,
-                size: 5,
                 whole_hash: hash(1),
-                total: 2,
-                first: 0,
+                total: 3,
+                stat: Some(stat()),
+                user: "u".into(),
+                group: "g".into(),
                 chunks: vec![
                     v1::ChunkRecord {
-                        offset: 0,
                         len: 3,
                         hash: hash(2),
                     },
                     v1::ChunkRecord {
-                        offset: 3,
                         len: 2,
                         hash: hash(4),
                     },
                 ],
-                last: true,
-                mtime_sec: -1,
-                mtime_nsec: 1,
-                mode: 2,
-                uid: 3,
-                gid: 4,
-                user: "u".into(),
-                group: "g".into(),
-                ctime_sec: 5,
-                ctime_nsec: 6,
-                inode: 7,
             }),
+            Msg::ChunkListMore(v1::ChunkListMore {
+                file_id: 4,
+                first: 2,
+                chunks: vec![v1::ChunkRecord {
+                    len: 1,
+                    hash: hash(5),
+                }],
+            }),
+            Msg::WithdrawChunkList(v1::WithdrawChunkList { file_id: 4 }),
             Msg::ChunkBasis(v1::ChunkBasis {
                 file_id: 5,
                 chunk_idx: 6,
@@ -478,7 +472,6 @@ mod tests {
                 weak: vec![1, 0xdead_beef],
                 strong: vec![9; 16],
             }),
-            Msg::ListingError(path_error()),
             Msg::ListRoom(v1::ListRoom { records: 64 }),
             Msg::MayPlace(v1::MayPlace { file_id: 6, gen: 1 }),
             Msg::PlaceVerdict(v1::PlaceVerdict {
@@ -487,7 +480,6 @@ mod tests {
                 gen: 1,
             }),
             Msg::Replan(v1::Replan {
-                path: b"r".to_vec(),
                 entry: Some(entry()),
             }),
             Msg::Settle(v1::Settle {}),
@@ -502,8 +494,10 @@ mod tests {
             }),
             Msg::CheckLinksEnd(v1::CheckLinksEnd {}),
             Msg::Unlinked(v1::Unlinked {
-                path: b"u".to_vec(),
-                entry: Some(entry()),
+                name: Some(v1::unlinked::Name::Entry(entry())),
+            }),
+            Msg::Unlinked(v1::Unlinked {
+                name: Some(v1::unlinked::Name::Failed(b"u".to_vec())),
             }),
             Msg::LinksChecked(v1::LinksChecked {}),
         ]
@@ -512,54 +506,56 @@ mod tests {
     fn hello() -> v1::Hello {
         v1::Hello {
             protocol_version: 5,
-            session_id: vec![7; 16],
-            path: b"export/sub".to_vec(),
-            direction: 1,
-            chunk_min: 1,
-            chunk_avg: 2,
-            chunk_max: 3,
-            contents_only: true,
-            delete_mode: 2,
-            delete_excluded: true,
-            max_delete: Some(0),
-            dry_run: true,
-            ignore_errors: true,
-            itemize: true,
-            update_only: true,
-            checksum: true,
-            inplace: true,
-            append: 2,
             build: Some(v1::BuildInfo {
                 version: "1.0".into(),
                 commit: "abc".into(),
                 dirty: Some(false),
             }),
-            name: b"n".to_vec(),
-            preserve: Some(hello::Preserve {
-                links: true,
-                hard_links: true,
-                dirs: true,
-                ..Default::default()
-            }),
-            filters: vec![
-                hello::FilterRule {
-                    include: true,
-                    pattern: b"*.rs".to_vec(),
-                },
-                hello::FilterRule {
-                    include: false,
-                    pattern: b"\xff".to_vec(),
-                },
-            ],
-            partial_dir: b".partial".to_vec(),
-            numeric_ids: true,
             traceparent: "00-abc".into(),
             tracestate: "k=v".into(),
-            no_local_reuse: true,
-            fsync: true,
-            paranoid: true,
-            single_file: true,
-            bwlimit: Some(1 << 20),
+            request: Some(hello::Request::Pull(v1::SyncRequest {
+                session_id: vec![7; 16],
+                path: b"export/sub".to_vec(),
+                chunk_min: 1,
+                chunk_avg: 2,
+                chunk_max: 3,
+                contents_only: true,
+                delete_mode: 2,
+                delete_excluded: true,
+                max_delete: Some(0),
+                dry_run: true,
+                ignore_errors: true,
+                itemize: true,
+                update_only: true,
+                checksum: true,
+                inplace: true,
+                append: 2,
+                name: b"n".to_vec(),
+                recursive: false,
+                dirs: true,
+                preserve: Some(sync_request::Preserve {
+                    links: true,
+                    hard_links: true,
+                    ..Default::default()
+                }),
+                filters: vec![
+                    sync_request::FilterRule {
+                        include: true,
+                        pattern: b"*.rs".to_vec(),
+                    },
+                    sync_request::FilterRule {
+                        include: false,
+                        pattern: b"\xff".to_vec(),
+                    },
+                ],
+                partial_dir: b".partial".to_vec(),
+                numeric_ids: true,
+                no_rename_detection: true,
+                fsync: true,
+                paranoid: true,
+                single_file: true,
+                bwlimit: Some(1 << 20),
+            })),
         }
     }
 
@@ -568,49 +564,64 @@ mod tests {
         let mut cases: Vec<(&str, Vec<u8>)> = vec![
             ("irsync.v1.Hello", hello().encode_to_vec()),
             (
-                "irsync.v1.HelloAck",
-                v1::HelloAck {
-                    session_id: vec![1; 16],
-                    resumed: true,
-                    protocol_version: 5,
-                    build: Some(v1::BuildInfo {
-                        version: "2".into(),
-                        commit: "unknown".into(),
-                        dirty: None,
-                    }),
-                    single_name: b"s".to_vec(),
+                "irsync.v1.HelloReply",
+                v1::HelloReply {
+                    reply: Some(v1::hello_reply::Reply::Ack(v1::HelloAck {
+                        session_id: vec![1; 16],
+                        resumed: true,
+                        build: Some(v1::BuildInfo {
+                            version: "2".into(),
+                            commit: "unknown".into(),
+                            dirty: None,
+                        }),
+                        single_name: b"s".to_vec(),
+                    })),
                 }
                 .encode_to_vec(),
             ),
             (
-                "irsync.v1.Error",
-                v1::Error {
-                    code: 1,
-                    message: "denied".into(),
+                "irsync.v1.HelloReply",
+                v1::HelloReply {
+                    reply: Some(v1::hello_reply::Reply::Error(v1::Error {
+                        code: 1,
+                        message: "denied".into(),
+                    })),
                 }
                 .encode_to_vec(),
             ),
             (
-                "irsync.v1.ExportList",
-                v1::ExportList {
-                    exports: vec![
-                        v1::ExportEntry {
-                            name: "a".into(),
-                            path: b"/srv/a".to_vec(),
-                            access: 1,
-                        },
-                        v1::ExportEntry {
-                            name: "b".into(),
-                            path: b"/srv/b".to_vec(),
-                            access: 0,
-                        },
-                    ],
+                "irsync.v1.HelloReply",
+                v1::HelloReply {
+                    reply: Some(v1::hello_reply::Reply::Exports(v1::ExportList {
+                        exports: vec![
+                            v1::ExportEntry {
+                                name: "a".into(),
+                                path: b"/srv/a".to_vec(),
+                                access: 1,
+                            },
+                            v1::ExportEntry {
+                                name: "b".into(),
+                                path: b"/srv/b".to_vec(),
+                                access: 0,
+                            },
+                        ],
+                    })),
                 }
                 .encode_to_vec(),
             ),
             (
-                "irsync.v1.PathInfo",
-                v1::PathInfo { kind: Some(0) }.encode_to_vec(),
+                "irsync.v1.HelloReply",
+                v1::HelloReply {
+                    reply: Some(v1::hello_reply::Reply::PathInfo(v1::PathInfo { kind: 2 })),
+                }
+                .encode_to_vec(),
+            ),
+            (
+                "irsync.v1.HelloReply",
+                v1::HelloReply {
+                    reply: Some(v1::hello_reply::Reply::AdminReady(v1::AdminReady {})),
+                }
+                .encode_to_vec(),
             ),
             (
                 "irsync.v1.ListingStreamHeader",
@@ -671,6 +682,19 @@ mod tests {
             }
             .encode_to_vec(),
         ));
+        for frame in [
+            v1::listing_frame::Frame::Entry(entry()),
+            v1::listing_frame::Frame::Error(path_error()),
+            v1::listing_frame::Frame::End(v1::ListingEnd {
+                incomplete: true,
+                count: 300,
+            }),
+        ] {
+            cases.push((
+                "irsync.v1.ListingFrame",
+                v1::ListingFrame { frame: Some(frame) }.encode_to_vec(),
+            ));
+        }
         for msg in control_variants() {
             cases.push((
                 "irsync.v1.Control",
@@ -689,7 +713,7 @@ mod tests {
     fn hello_fields_are_named_and_sized() {
         let bytes = v1::Hello {
             protocol_version: 5,
-            path: b"m".into(),
+            traceparent: "m".into(),
             ..Default::default()
         }
         .encode_to_vec();
@@ -709,8 +733,8 @@ mod tests {
                     own: &bytes[0..2],
                 },
                 Field {
-                    number: 4,
-                    name: Some("path".into()),
+                    number: 3,
+                    name: Some("traceparent".into()),
                     sizes: Sizes {
                         tag: 1,
                         len: 1,
@@ -725,18 +749,18 @@ mod tests {
 
     #[test]
     fn enum_prints_name_and_number() {
-        let d = desc("irsync.v1.Hello");
-        let known = v1::Hello {
-            direction: 2,
+        let d = desc("irsync.v1.SyncRequest");
+        let known = v1::SyncRequest {
+            delete_mode: 2,
             ..Default::default()
         }
         .encode_to_vec();
         assert_eq!(
             walk(&d, &known)[0].value,
-            Value::Scalar("LIST_EXPORTS(2)".into())
+            Value::Scalar("DELETE_DURING(2)".into())
         );
-        let unknown = v1::Hello {
-            direction: 9,
+        let unknown = v1::SyncRequest {
+            delete_mode: 9,
             ..Default::default()
         }
         .encode_to_vec();
@@ -787,10 +811,10 @@ mod tests {
 
     #[test]
     fn wrong_wire_type_is_unknown() {
-        // path (field 4, bytes) sent as a varint.
+        // tracestate (field 4, string) sent as a varint.
         let bytes = [0x20, 0x05];
         let fields = walk(&desc("irsync.v1.Hello"), &bytes);
-        assert_eq!(fields[0].name.as_deref(), Some("path"));
+        assert_eq!(fields[0].name.as_deref(), Some("tracestate"));
         assert_eq!(
             fields[0].value,
             Value::Unknown {
@@ -892,10 +916,9 @@ mod tests {
     #[test]
     fn every_truncation_still_adds_up() {
         let bytes = v1::Control {
-            msg: Some(Msg::ChunkListPart(match &control_variants()[9] {
-                Msg::ChunkListPart(p) => p.clone(),
-                _ => unreachable!(),
-            })),
+            msg: control_variants()
+                .into_iter()
+                .find(|m| matches!(m, Msg::ChunkListStart(_))),
         }
         .encode_to_vec();
         let d = desc("irsync.v1.Control");
@@ -1016,7 +1039,7 @@ mod tests {
     fn own_bytes_are_the_input() {
         let bytes = v1::Hello {
             protocol_version: 5,
-            path: b"m".into(),
+            traceparent: "m".into(),
             build: Some(v1::BuildInfo {
                 version: "0.1.0".into(),
                 commit: "abc".into(),
@@ -1036,8 +1059,8 @@ mod tests {
         // A nested message's own bytes are its tag and length only.
         let build = named("build");
         assert_eq!(build.own.len() as u64, build.sizes.tag + build.sizes.len);
-        let path = named("path");
-        assert_eq!(path.own.len() as u64, path.sizes.total());
+        let trace = named("traceparent");
+        assert_eq!(trace.own.len() as u64, trace.sizes.total());
     }
 
     #[test]

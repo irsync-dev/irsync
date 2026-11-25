@@ -24,8 +24,10 @@ pub fn home_dir() -> Option<PathBuf> {
     crate::platform::home_dir(&process_env)
 }
 
-/// The directory of the config file (`~/.config/irsync`, on Windows
-/// `%APPDATA%\irsync`); the default keys live there. `.` without one.
+/// The directory of the config file (`$XDG_CONFIG_HOME/irsync` when that
+/// is an absolute path, else `~/.config/irsync`, on every Unix;
+/// `%APPDATA%\irsync` on Windows); the default keys live there. `.`
+/// without one.
 pub fn config_dir() -> PathBuf {
     locations()
         .and_then(|l| l.config.parent().map(Path::to_path_buf))
@@ -87,6 +89,7 @@ mod tests {
             ("USERPROFILE", r"C:\t\me"),
             ("HOME", r"C:\elsewhere"),
             ("XDG_STATE_HOME", r"C:\elsewhere\xdg"),
+            ("XDG_CONFIG_HOME", r"C:\elsewhere\config"),
         ];
         let l = crate::platform::default_locations(&env_of(&all)).unwrap();
         assert_eq!(l.config, PathBuf::from(r"C:\t\roaming\irsync\irsync.toml"));
@@ -159,14 +162,24 @@ mod tests {
         assert_eq!(l.config, PathBuf::from("/h/.config/irsync/irsync.toml"));
         assert_eq!(l.state, PathBuf::from("/h/.local/state/irsync"));
         assert_eq!(l.key, Some(PathBuf::from("/h/.ssh/id_ed25519")));
-        let with_xdg = [("HOME", "/h"), ("XDG_STATE_HOME", "/x")];
+        let with_xdg = [
+            ("HOME", "/h"),
+            ("XDG_STATE_HOME", "/x"),
+            ("XDG_CONFIG_HOME", "/c"),
+        ];
         let l = crate::platform::default_locations(&env_of(&with_xdg)).unwrap();
-        assert_eq!(l.config, PathBuf::from("/h/.config/irsync/irsync.toml"));
+        assert_eq!(l.config, PathBuf::from("/c/irsync/irsync.toml"));
         assert_eq!(l.state, PathBuf::from("/x/irsync"));
-        // A relative XDG_STATE_HOME is ignored, as the spec says.
-        let relative = [("HOME", "/h"), ("XDG_STATE_HOME", "x")];
+        assert_eq!(l.key, Some(PathBuf::from("/h/.ssh/id_ed25519")));
+        // A relative XDG variable is ignored, as the spec says.
+        let relative = [
+            ("HOME", "/h"),
+            ("XDG_STATE_HOME", "x"),
+            ("XDG_CONFIG_HOME", "c"),
+        ];
         let l = crate::platform::default_locations(&env_of(&relative)).unwrap();
         assert_eq!(l.state, PathBuf::from("/h/.local/state/irsync"));
+        assert_eq!(l.config, PathBuf::from("/h/.config/irsync/irsync.toml"));
         assert_eq!(
             crate::platform::home_dir(&env_of(&[("HOME", "/h")])),
             Some(PathBuf::from("/h"))

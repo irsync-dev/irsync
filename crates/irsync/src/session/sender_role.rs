@@ -18,9 +18,9 @@ use std::time::Duration;
 use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, CheckLink, ChunkBasis, ChunkListPart,
-    FileAck, LinksChecked, MayPlace, NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan,
-    SessionDone, Settled, Unlinked,
+    control::Msg, file_ack::Status, file_entry::Kind, unlinked, CheckLink, ChunkBasis, FileAck,
+    LinksChecked, MayPlace, NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone,
+    Settled, SourceError, SourceStat, Unlinked, WithdrawChunkList,
 };
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
@@ -28,11 +28,13 @@ use tracing::Instrument;
 
 use super::control::msg_name;
 use super::control::{
-    capped_errors, is_own_temp, spawn_listing, walk_errors, Ev, ListedFiles, ListingSpec, Out,
-    Persister,
+    capped_errors, is_own_temp, spawn_listing, walk_errors, wire_entry, Ev, ListedFiles,
+    ListingSpec, Out, Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
-use super::limits::{basis_budget, basis_wire_len, link_backlog, link_wire_len, list_budget};
+use super::limits::{
+    basis_budget, basis_wire_len, link_backlog, link_wire_len, list_budget, NEED_PIECE,
+};
 use super::listing_stream::ListingOut;
 use super::parts::{records_at_most, split, ListCredit, ListStat, PART_RECORDS};
 use super::planner::MAX_INFLIGHT;
@@ -42,6 +44,7 @@ use crate::filter::{FilterSet, Verdict as FilterVerdict};
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed};
 use crate::platform::clone::{Cloned, Clones};
+use crate::recv::MAX_HELD_CHUNKS;
 use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
 use crate::telemetry::meter::Counter;
@@ -316,7 +319,7 @@ struct SenderRole {
     links_ended: bool,
 }
 
-/// Records per `ChunkListPart` (a test hook may shrink it).
+/// Records per chunk list part (a test hook may shrink it).
 fn part_records(ctx: &Ctx) -> usize {
     #[cfg(feature = "test-hooks")]
     if let Some(n) = ctx.hooks.chunk_list_part_records {
@@ -549,11 +552,9 @@ impl SenderRole {
             .bus
             .emit(super::Event::Failed(f.path.clone(), msg.clone()));
         self.errors.push((f.path.clone(), msg.clone()));
-        self.out.send(Msg::Ack(FileAck {
+        self.out.send(Msg::SourceError(SourceError {
             file_id,
-            status: Status::SourceError as i32,
             message: msg,
-            matched: 0,
         }));
     }
 
@@ -595,17 +596,11 @@ impl SenderRole {
         if listed && !self.lists.cancel(file_id) {
             // The old list went out, and the receiver holds it until a new
             // one replaces it. The new one may have to wait for room, which
-            // the old one may be taking: restart the list now with an empty,
-            // unfinished first part, so the receiver drops the old one and
-            // frees its room. No room needed (it announces no records), so
-            // it goes out at once.
-            self.out.send(Msg::ChunkListPart(ChunkListPart {
-                file_id,
-                total: 0,
-                first: 0,
-                last: false,
-                ..ChunkListPart::default()
-            }));
+            // the old one may be taking: withdraw the old one now, so the
+            // receiver drops it and frees its room. No room needed, so it
+            // goes out at once.
+            self.out
+                .send(Msg::WithdrawChunkList(WithdrawChunkList { file_id }));
         }
         self.spawn_digest(file_id, gen, path, true, false, None);
     }
@@ -785,16 +780,21 @@ impl SenderRole {
                 // tail's stat is the whole file's too): the file is placed
                 // with its mtime, mode and ids, never the walk's.
                 let list_stat = ListStat {
-                    mtime: stat.mtime,
-                    ctime: stat.ctime,
-                    inode: stat.inode,
-                    mode: stat.mode,
-                    uid: stat.uid,
-                    gid: stat.gid,
+                    stat: SourceStat {
+                        size: d.size,
+                        mtime_sec: stat.mtime.0,
+                        mtime_nsec: stat.mtime.1,
+                        ctime_sec: stat.ctime.0,
+                        ctime_nsec: stat.ctime.1,
+                        inode: stat.inode,
+                        mode: stat.mode,
+                        uid: stat.uid,
+                        gid: stat.gid,
+                    },
                     user: self.names.user(stat.uid).to_string(),
                     group: self.names.group(stat.gid).to_string(),
                 };
-                let parts = split(file_id, &d, &list_stat, part_records(&self.ctx), with_hash);
+                let parts = split(file_id, &d, list_stat, part_records(&self.ctx), with_hash);
                 self.lists.push(file_id, parts, Some(held));
                 #[cfg(feature = "test-hooks")]
                 if let Some(p) = &self.ctx.hooks.lists_ahead_peak {
@@ -817,15 +817,14 @@ impl SenderRole {
     /// They are bounded already, by the room granted.
     fn pump_lists(&mut self) {
         for p in self.lists.ready() {
-            // A list's first part (never the empty one withdrawing a list,
-            // which does not come this way): counted as the receiver does.
-            if p.first == 0 && (p.total > 0 || p.last) {
-                if let Some(f) = self.files.get_mut(&p.file_id) {
+            // A list's start: counted as the receiver does.
+            if let Msg::ChunkListStart(s) = &p {
+                if let Some(f) = self.files.get_mut(&s.file_id) {
                     f.lists_sent += 1;
                     f.listed_gen = Some(f.gen);
                 }
             }
-            self.out.send(Msg::ChunkListPart(p));
+            self.out.send(p);
             #[cfg(feature = "test-hooks")]
             if let Some(h) = &self.ctx.hooks.drop_after_parts {
                 if h.queued() {
@@ -878,11 +877,26 @@ impl SenderRole {
         Ok(())
     }
 
-    fn on_need(&mut self, n: NeedChunks) {
+    /// A request for chunks of a file. One that names more chunks than a
+    /// receiver puts in one `NeedChunks` (`NEED_PIECE`), or more held
+    /// chunks than it keeps (`MAX_HELD_CHUNKS`), is a protocol error.
+    fn on_need(&mut self, n: NeedChunks) -> anyhow::Result<()> {
         let file_id = n.file_id;
+        if n.chunk_idx.len() > NEED_PIECE {
+            bail!(
+                "protocol error: NeedChunks for file id {file_id} names {} chunks (at most {NEED_PIECE})",
+                n.chunk_idx.len()
+            );
+        }
+        if n.held.len() > MAX_HELD_CHUNKS {
+            bail!(
+                "protocol error: NeedChunks for file id {file_id} holds {} partial chunks (at most {MAX_HELD_CHUNKS})",
+                n.held.len()
+            );
+        }
         let Some(f) = self.files.get_mut(&file_id) else {
             tracing::debug!(file_id, "NeedChunks for a file no longer in flight");
-            return;
+            return Ok(());
         };
         // Any request, empty or not, takes the file's bases: those of its
         // chunks are used, the rest dropped. A basis serves only the
@@ -897,7 +911,7 @@ impl SenderRole {
         // Without a digest a fresh chunk list is on its way and will be
         // answered with a new request.
         let Some(digest) = f.digest.clone() else {
-            return;
+            return Ok(());
         };
         let idxs: Vec<u32> = n
             .chunk_idx
@@ -907,11 +921,15 @@ impl SenderRole {
         // What the receiver holds of the chunks it asks for: those start
         // there (`send::split_ranges` ignores a count that is not less
         // than the chunk).
-        let from: BTreeMap<u32, u32> = n
-            .held
-            .into_iter()
-            .filter(|(i, n)| *n > 0 && idxs.contains(i))
-            .collect();
+        let from: BTreeMap<u32, u32> = if n.held.is_empty() {
+            BTreeMap::new()
+        } else {
+            let asked: HashSet<u32> = idxs.iter().copied().collect();
+            n.held
+                .into_iter()
+                .filter(|(i, n)| *n > 0 && asked.contains(i))
+                .collect()
+        };
         // Everything not requested so far is matched. An empty request says
         // nothing (it may be "nothing for now", with chunks that have a
         // basis still to come), so it reports nothing: a file the receiver
@@ -935,7 +953,7 @@ impl SenderRole {
                 .emit(super::Event::FileMatched(f.path.clone(), matched));
         }
         if idxs.is_empty() {
-            return; // The receiver has everything; wait for its ack.
+            return Ok(()); // The receiver has everything; wait for its ack.
         }
         let bases: HashMap<u32, Basis> = idxs
             .iter()
@@ -957,9 +975,10 @@ impl SenderRole {
             p.idxs.extend(idxs);
             p.bases.extend(bases);
             p.held.extend(from);
-            return;
+            return Ok(());
         }
         self.spawn_send(file_id, idxs, bases, from);
+        Ok(())
     }
 
     /// Starts the file's send task for `idxs` (the file is in flight, with
@@ -1285,17 +1304,27 @@ impl SenderRole {
         Verdict::Later
     }
 
-    fn on_ack(&mut self, a: FileAck) {
+    /// How a file ended on the receiver. One without a status it can send
+    /// is a protocol error.
+    fn on_ack(&mut self, a: FileAck) -> anyhow::Result<()> {
         let file_id = a.file_id;
-        let status = Status::try_from(a.status);
+        let status = match Status::try_from(a.status) {
+            Ok(Status::Unspecified) | Err(_) => {
+                bail!(
+                    "protocol error: FileAck for file id {file_id} with status {}",
+                    a.status
+                )
+            }
+            Ok(s) => s,
+        };
         if !self.files.contains_key(&file_id) {
             // Late: a file given up is never placed (the receiver places
             // only on our verdict), so this ack changes nothing.
             tracing::debug!(file_id, "FileAck for a file no longer in flight");
-            return;
+            return Ok(());
         }
         match status {
-            Ok(Status::Done) => {
+            Status::Done => {
                 self.ctx
                     .progress
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1312,8 +1341,8 @@ impl SenderRole {
                 self.files_done += 1;
                 self.persist.done(file_id);
             }
-            Ok(Status::HashMismatch) => self.retry(file_id, "whole-file hash mismatch".into()),
-            Ok(Status::WriteError) => {
+            Status::HashMismatch => self.retry(file_id, "whole-file hash mismatch".into()),
+            Status::WriteError => {
                 if let Some(f) = self.remove_file(file_id) {
                     self.final_stats.remove(&f.path);
                     let msg = format!("receiver: {}", a.message);
@@ -1325,10 +1354,9 @@ impl SenderRole {
                     self.errors.push((f.path, msg));
                 }
             }
-            Ok(Status::SourceError) | Err(_) => {
-                tracing::warn!(file_id, status = a.status, "unexpected FileAck status");
-            }
+            Status::Unspecified => unreachable!("refused above"),
         }
+        Ok(())
     }
 
     /// The receiver has planned every path and has nothing in flight:
@@ -1450,7 +1478,11 @@ impl SenderRole {
     /// Folds the receiver's own per-path errors in (those not already known
     /// from a file ack).
     fn on_session_done(&mut self, d: SessionDone) {
-        tracing::debug!(files = d.files, bytes = d.bytes, "receiver done");
+        tracing::debug!(
+            files = d.files_placed,
+            bytes = d.bytes_received,
+            "receiver done"
+        );
         for e in d.errors {
             let path = RelPath::new(&e.path).unwrap_or_default();
             if !self.errors.iter().any(|(p, _)| *p == path) {
@@ -1460,9 +1492,9 @@ impl SenderRole {
         let paths = |v: &[Vec<u8>]| -> Vec<RelPath> {
             v.iter().filter_map(|p| RelPath::new(p).ok()).collect()
         };
-        self.deleted = paths(&d.deleted);
+        self.deleted = paths(&d.deleted_paths);
         self.deleted_omitted = d.deleted_omitted;
-        self.would_delete = paths(&d.would_delete);
+        self.would_delete = paths(&d.would_delete_paths);
         self.would_delete_omitted = d.would_delete_omitted;
         for p in &self.deleted {
             self.ctx.hooks.bus.emit(super::Event::Itemized(
@@ -1482,8 +1514,8 @@ impl SenderRole {
         // The receiver knows what it placed: a file whose content was
         // already there is acknowledged DONE but settled in place, a
         // metadata-only update rather than a transfer.
-        self.files_done = d.files;
-        self.transferred_size = d.transferred_size;
+        self.files_done = d.files_placed;
+        self.transferred_size = d.placed_size;
         self.max_delete_reached = d.max_delete_reached;
         if d.deleted_omitted + d.would_delete_omitted > 0 {
             tracing::info!(
@@ -1777,8 +1809,7 @@ async fn recheck(
                         .unwrap_or_else(|e| e.into_inner())
                         .insert(path.clone());
                     out.send_paced(Msg::Replan(Replan {
-                        path: path.as_bytes().to_vec(),
-                        entry: Some(*entry),
+                        entry: Some(wire_entry(*entry)),
                     }))
                     .await;
                 }
@@ -1881,11 +1912,12 @@ async fn check_links(
                     crate::fs::paths::escape_path(path.as_bytes())
                 );
             }
-            out.send_paced(Msg::Unlinked(Unlinked {
-                path: path.as_bytes().to_vec(),
-                entry,
-            }))
-            .await;
+            let name = match entry {
+                Some(e) => unlinked::Name::Entry(wire_entry(e)),
+                None => unlinked::Name::Failed(path.as_bytes().to_vec()),
+            };
+            out.send_paced(Msg::Unlinked(Unlinked { name: Some(name) }))
+                .await;
         }
     }
     out.send_paced(Msg::LinksChecked(LinksChecked {})).await;
@@ -2069,7 +2101,7 @@ pub(super) async fn run(
         };
         if let Listing::Undecided(_) = s.listing {
             match &ev {
-                Ev::PeerListing | Ev::Ctrl(Msg::ListingEnd(_)) => s.decide(true),
+                Ev::PeerListing | Ev::PeerListingEnd(_) => s.decide(true),
                 // A resumed plan with nothing left to request asks for the
                 // final re-check first.
                 Ev::Ctrl(
@@ -2123,19 +2155,13 @@ pub(super) async fn run(
             }
             Ev::Ctrl(Msg::ChunkBasis(b)) => s.on_basis(b),
             Ev::Ctrl(Msg::MayPlace(m)) => s.on_may_place(m),
-            Ev::Ctrl(Msg::Need(n)) => {
-                s.on_need(n);
-                Ok(())
-            }
-            Ev::Ctrl(Msg::Ack(a)) => {
-                s.on_ack(a);
-                Ok(())
-            }
+            Ev::Ctrl(Msg::Need(n)) => s.on_need(n),
+            Ev::Ctrl(Msg::Ack(a)) => s.on_ack(a),
             Ev::Ctrl(Msg::ListRoom(r)) => s
                 .lists
                 .grant(r.records)
                 .map_err(|e| anyhow::anyhow!("protocol error: list room beyond the budget: {e}")),
-            Ev::Ctrl(Msg::ListingEnd(e)) => {
+            Ev::PeerListingEnd(e) => {
                 if e.incomplete {
                     let msg = "the receiver's listing is incomplete".to_string();
                     tracing::warn!("{msg}");
@@ -2470,7 +2496,8 @@ mod tests {
             file_id: 1,
             status: Status::Done as i32,
             ..FileAck::default()
-        });
+        })
+        .unwrap();
         assert!(s.files.is_empty());
         for _ in 0..100 {
             if ended.load(SeqCst) {
@@ -2509,11 +2536,56 @@ mod tests {
         s.on_need(NeedChunks {
             file_id: 1,
             ..NeedChunks::default()
-        });
+        })
+        .unwrap();
         assert_eq!(s.basis_held, 0);
         assert_eq!(s.files[&1].bases_held, 0);
         assert!(s.files[&1].bases.is_empty());
         assert_eq!(s.tasks.len(), 0, "an empty request sends nothing");
+    }
+
+    /// An ack without a status (an empty `FileAck`) is a protocol error,
+    /// never a success.
+    #[tokio::test]
+    async fn an_ack_without_a_status_is_a_protocol_error() {
+        let (mut s, _t) = role().await;
+        s.files.insert(1, in_flight("a", Some(empty_digest())));
+        let e = s
+            .on_ack(FileAck {
+                file_id: 1,
+                ..FileAck::default()
+            })
+            .unwrap_err();
+        assert!(e.to_string().starts_with("protocol error"), "{e:#}");
+        assert!(s.files.contains_key(&1), "the file was taken as done");
+    }
+
+    /// A `NeedChunks` beyond what a receiver ever sends in one, by chunks or
+    /// by held chunks, is a protocol error; one at the limits is served.
+    #[tokio::test]
+    async fn an_oversized_need_is_a_protocol_error() {
+        let (mut s, _t) = role().await;
+        s.files.insert(1, in_flight("a", Some(empty_digest())));
+        let too_many = NeedChunks {
+            file_id: 1,
+            chunk_idx: (0..=NEED_PIECE as u32).collect(),
+            ..NeedChunks::default()
+        };
+        let e = s.on_need(too_many).unwrap_err();
+        assert!(e.to_string().starts_with("protocol error"), "{e:#}");
+        let held = NeedChunks {
+            file_id: 1,
+            chunk_idx: (0..=MAX_HELD_CHUNKS as u32).collect(),
+            held: (0..=MAX_HELD_CHUNKS as u32).map(|i| (i, 1)).collect(),
+        };
+        let e = s.on_need(held).unwrap_err();
+        assert!(e.to_string().starts_with("protocol error"), "{e:#}");
+        let at_limits = NeedChunks {
+            file_id: 1,
+            chunk_idx: (0..NEED_PIECE as u32).collect(),
+            held: (0..MAX_HELD_CHUNKS as u32).map(|i| (i, 1)).collect(),
+        };
+        s.on_need(at_limits).unwrap();
     }
 
     /// A `MayPlace` is about one chunk list. One about a list older than

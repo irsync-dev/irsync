@@ -4,8 +4,8 @@
 //! link's target may itself have been in flight until then.
 
 use irsync_proto::v1::{
-    control::Msg, file_entry::Kind, plan_item::Action, CheckLink, CheckLinksEnd, FileEntry,
-    PlanEntry, SourceStat, Unlinked,
+    control::Msg, file_entry::Kind, plan_item::Action, unlinked, CheckLink, CheckLinksEnd,
+    FileEntry, PlanEntry, SourceStat, Unlinked,
 };
 
 use super::super::engine::blocking;
@@ -20,8 +20,6 @@ impl Receiver {
             file_id: l.file_id,
             path: l.path.as_bytes().to_vec(),
             action: Action::Whole as i32,
-            size: l.entry.size,
-            whole_hash: None,
             entry: Some(l.entry.clone()),
             append_from: 0,
         });
@@ -93,14 +91,19 @@ impl Receiver {
         if self.link_check != LinkCheck::Asked {
             anyhow::bail!("protocol error: Unlinked outside the link check");
         }
-        let Ok(path) = RelPath::new(&u.path) else {
+        let (name, entry) = match u.name {
+            Some(unlinked::Name::Entry(e)) => (e.path.clone(), Some(e)),
+            Some(unlinked::Name::Failed(p)) => (p, None),
+            None => anyhow::bail!("protocol error: Unlinked without a name"),
+        };
+        let Ok(path) = RelPath::new(&name) else {
             anyhow::bail!("protocol error: Unlinked with an invalid path");
         };
         // Only names this side asked about, each once.
         let Some(at) = self.links.iter().position(|l| l.path == path) else {
             anyhow::bail!("protocol error: Unlinked for a name not being linked");
         };
-        match u.entry {
+        match entry {
             Some(entry) if entry.kind() == Kind::Regular => {
                 let l = self.links.swap_remove(at);
                 if !self.replanned.insert(path.clone()) {
