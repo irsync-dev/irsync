@@ -182,8 +182,8 @@ impl RoleOpts {
         // `daemon::validate`).
         let p = req.preserve.unwrap_or_default();
         let preserve = Preserve {
-            recursive: p.recursive,
-            dirs: p.dirs,
+            recursive: req.recursive,
+            dirs: req.dirs,
             links: p.links,
             perms: p.perms,
             times: p.times,
@@ -198,7 +198,7 @@ impl RoleOpts {
             preserve,
             checksum: receives && req.checksum,
             update_only: receives && req.update_only,
-            reuse_local: !(receives && req.no_local_reuse),
+            reuse_local: !(receives && req.no_rename_detection),
             // Validated by `serve_daemon` before this is used.
             partial_dir: (receives && !req.partial_dir.is_empty())
                 .then(|| crate::platform::bytes_to_os(&req.partial_dir).ok())
@@ -253,9 +253,9 @@ pub fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: &Filter
         })
         .collect();
     let p = &o.preserve;
+    req.recursive = p.recursive;
+    req.dirs = p.dirs;
     req.preserve = Some(irsync_proto::v1::sync_request::Preserve {
-        recursive: p.recursive,
-        dirs: p.dirs,
         links: p.links,
         perms: p.perms,
         times: p.times,
@@ -279,7 +279,7 @@ pub fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: &Filter
     // `-n -v` lists what a push would transfer: only the daemon knows.
     req.itemize = o.itemize || (o.dry_run && o.verbose > 0);
     req.update_only = o.update_only;
-    req.no_local_reuse = o.no_rename_detection;
+    req.no_rename_detection = o.no_rename_detection;
     req.numeric_ids = o.numeric_ids;
     req.checksum = o.checksum;
     req.inplace = o.inplace;

@@ -55,8 +55,6 @@ message SyncRequest {
     bool specials = 7;
     bool hard_links = 8;
     bool sparse = 9;
-    bool recursive = 10; // off: top-level entries only, directories skipped
-    bool dirs = 11; // with recursion off: directories themselves, without contents
   }
   Preserve preserve = 9;
   // The client's include/exclude rules, compiled (files from --exclude-from
@@ -105,7 +103,7 @@ message SyncRequest {
   // --no-rename-detection: a receiving daemon fills no file from chunks
   // other files on its side hold; everything not in a file's own old
   // version comes from the sender.
-  bool no_local_reuse = 23;
+  bool no_rename_detection = 23;
   // --fsync: a receiving daemon flushes each file to disk before renaming
   // it into place. Off (rsync's default): nothing is flushed explicitly.
   bool fsync = 24;
@@ -118,6 +116,10 @@ message SyncRequest {
   // which paces the file data it sends. On a push the client paces its
   // own sending and the daemon ignores this. Absent or 0: no limit.
   optional uint64 bwlimit = 26;
+  // -r: off lists top-level entries only, directories skipped. Both sides'
+  // listings follow it.
+  bool recursive = 27;
+  bool dirs = 28; // -d: with recursion off, directories themselves, without contents
 }
 // No session: the daemon answers with the ExportList of what this key may
 // reach, then closes.

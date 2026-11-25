@@ -420,10 +420,10 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
                     if h.skipped_bytes > 0 {
                         bus.emit(Event::PeerSkipped(h.skipped_bytes));
                     }
-                    if h.deleted > 0 || h.delete_total > 0 {
+                    if h.deleted_count > 0 || h.delete_total > 0 {
                         bus.emit(Event::Delete {
                             party: Party::Peer,
-                            done: h.deleted,
+                            done: h.deleted_count,
                             total: (h.delete_total > 0).then_some(h.delete_total),
                         });
                     }
@@ -959,12 +959,12 @@ impl Persister {
 
     /// Deletions made by every connection of this session so far.
     pub fn deleted(&self) -> u64 {
-        self.rec.progress.deleted
+        self.rec.progress.deleted_count
     }
 
     pub fn add_deleted(&mut self, n: u64) {
         if n > 0 {
-            self.rec.progress.deleted += n;
+            self.rec.progress.deleted_count += n;
             self.dirty = true;
         }
     }
@@ -1112,6 +1112,7 @@ pub(super) fn msg_name(m: &Msg) -> &'static str {
         Msg::Need(_) => "NeedChunks",
         Msg::ChunkBasis(_) => "ChunkBasis",
         Msg::Ack(_) => "FileAck",
+        Msg::SourceError(_) => "SourceError",
         Msg::Done(_) => "SessionDone",
         Msg::Error(_) => "Error",
         Msg::Itemized(_) => "Itemized",

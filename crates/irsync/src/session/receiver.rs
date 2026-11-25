@@ -1462,9 +1462,7 @@ impl Receiver {
             Ev::Ctrl(Msg::Settled(s)) => self.on_settled(s)?,
             Ev::Ctrl(Msg::Unlinked(u)) => self.on_unlinked(u).await?,
             Ev::Ctrl(Msg::LinksChecked(_)) => self.on_links_checked()?,
-            Ev::Ctrl(Msg::Ack(a)) if a.status == Status::SourceError as i32 => {
-                self.on_source_error(a.file_id, a.message).await
-            }
+            Ev::Ctrl(Msg::SourceError(e)) => self.on_source_error(e.file_id, e.message).await,
             Ev::PeerListingEnd(e) => {
                 if e.incomplete {
                     tracing::warn!("the sender's listing is incomplete");
@@ -1825,14 +1823,14 @@ pub(super) async fn run(
     let (deleted, deleted_omitted) = capped_paths(&r.deleted);
     let (would_delete, would_delete_omitted) = capped_paths(&r.would_delete);
     out.send(Msg::Done(SessionDone {
-        files: r.files_done,
-        bytes: bytes_total,
+        files_placed: r.files_done,
+        bytes_received: bytes_total,
         errors: capped_errors(&errors),
-        deleted,
-        would_delete,
+        deleted_paths: deleted,
+        would_delete_paths: would_delete,
         max_delete_reached: r.max_delete_reached,
         created: report.created,
-        transferred_size: r.transferred_size,
+        placed_size: r.transferred_size,
         deleted_omitted,
         would_delete_omitted,
         listed: Some(report.listed.to_wire()),

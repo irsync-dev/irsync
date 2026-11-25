@@ -763,7 +763,7 @@ impl Busy {
         irsync_proto::v1::Heartbeat {
             walking,
             skipped_bytes: self.skipped_bytes.load(Relaxed),
-            deleted: self.deleted.load(Relaxed),
+            deleted_count: self.deleted.load(Relaxed),
             delete_total: self.delete_total.load(Relaxed),
             received_bytes: self.received.load(Relaxed),
             listed: None,
@@ -1469,7 +1469,7 @@ mod tests {
             progress: SessionProgress {
                 done_file_ids: vec![1],
                 bytes_transferred: 9,
-                deleted: 3,
+                deleted_count: 3,
                 placed: vec![irsync_proto::v1::PlacedStat {
                     path: b"a".to_vec(),
                     stat: Some(irsync_proto::v1::SourceStat {

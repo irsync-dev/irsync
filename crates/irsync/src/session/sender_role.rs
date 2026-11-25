@@ -20,7 +20,7 @@ use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
     control::Msg, file_ack::Status, file_entry::Kind, unlinked, CheckLink, ChunkBasis, FileAck,
     LinksChecked, MayPlace, NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone,
-    Settled, SourceStat, Unlinked, WithdrawChunkList,
+    Settled, SourceError, SourceStat, Unlinked, WithdrawChunkList,
 };
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
@@ -552,11 +552,9 @@ impl SenderRole {
             .bus
             .emit(super::Event::Failed(f.path.clone(), msg.clone()));
         self.errors.push((f.path.clone(), msg.clone()));
-        self.out.send(Msg::Ack(FileAck {
+        self.out.send(Msg::SourceError(SourceError {
             file_id,
-            status: Status::SourceError as i32,
             message: msg,
-            matched: 0,
         }));
     }
 
@@ -1306,17 +1304,27 @@ impl SenderRole {
         Verdict::Later
     }
 
-    fn on_ack(&mut self, a: FileAck) {
+    /// How a file ended on the receiver. One without a status it can send
+    /// is a protocol error.
+    fn on_ack(&mut self, a: FileAck) -> anyhow::Result<()> {
         let file_id = a.file_id;
-        let status = Status::try_from(a.status);
+        let status = match Status::try_from(a.status) {
+            Ok(Status::Unspecified) | Err(_) => {
+                bail!(
+                    "protocol error: FileAck for file id {file_id} with status {}",
+                    a.status
+                )
+            }
+            Ok(s) => s,
+        };
         if !self.files.contains_key(&file_id) {
             // Late: a file given up is never placed (the receiver places
             // only on our verdict), so this ack changes nothing.
             tracing::debug!(file_id, "FileAck for a file no longer in flight");
-            return;
+            return Ok(());
         }
         match status {
-            Ok(Status::Done) => {
+            Status::Done => {
                 self.ctx
                     .progress
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1333,8 +1341,8 @@ impl SenderRole {
                 self.files_done += 1;
                 self.persist.done(file_id);
             }
-            Ok(Status::HashMismatch) => self.retry(file_id, "whole-file hash mismatch".into()),
-            Ok(Status::WriteError) => {
+            Status::HashMismatch => self.retry(file_id, "whole-file hash mismatch".into()),
+            Status::WriteError => {
                 if let Some(f) = self.remove_file(file_id) {
                     self.final_stats.remove(&f.path);
                     let msg = format!("receiver: {}", a.message);
@@ -1346,10 +1354,9 @@ impl SenderRole {
                     self.errors.push((f.path, msg));
                 }
             }
-            Ok(Status::SourceError) | Err(_) => {
-                tracing::warn!(file_id, status = a.status, "unexpected FileAck status");
-            }
+            Status::Unspecified => unreachable!("refused above"),
         }
+        Ok(())
     }
 
     /// The receiver has planned every path and has nothing in flight:
@@ -1471,7 +1478,11 @@ impl SenderRole {
     /// Folds the receiver's own per-path errors in (those not already known
     /// from a file ack).
     fn on_session_done(&mut self, d: SessionDone) {
-        tracing::debug!(files = d.files, bytes = d.bytes, "receiver done");
+        tracing::debug!(
+            files = d.files_placed,
+            bytes = d.bytes_received,
+            "receiver done"
+        );
         for e in d.errors {
             let path = RelPath::new(&e.path).unwrap_or_default();
             if !self.errors.iter().any(|(p, _)| *p == path) {
@@ -1481,9 +1492,9 @@ impl SenderRole {
         let paths = |v: &[Vec<u8>]| -> Vec<RelPath> {
             v.iter().filter_map(|p| RelPath::new(p).ok()).collect()
         };
-        self.deleted = paths(&d.deleted);
+        self.deleted = paths(&d.deleted_paths);
         self.deleted_omitted = d.deleted_omitted;
-        self.would_delete = paths(&d.would_delete);
+        self.would_delete = paths(&d.would_delete_paths);
         self.would_delete_omitted = d.would_delete_omitted;
         for p in &self.deleted {
             self.ctx.hooks.bus.emit(super::Event::Itemized(
@@ -1503,8 +1514,8 @@ impl SenderRole {
         // The receiver knows what it placed: a file whose content was
         // already there is acknowledged DONE but settled in place, a
         // metadata-only update rather than a transfer.
-        self.files_done = d.files;
-        self.transferred_size = d.transferred_size;
+        self.files_done = d.files_placed;
+        self.transferred_size = d.placed_size;
         self.max_delete_reached = d.max_delete_reached;
         if d.deleted_omitted + d.would_delete_omitted > 0 {
             tracing::info!(
@@ -2145,10 +2156,7 @@ pub(super) async fn run(
             Ev::Ctrl(Msg::ChunkBasis(b)) => s.on_basis(b),
             Ev::Ctrl(Msg::MayPlace(m)) => s.on_may_place(m),
             Ev::Ctrl(Msg::Need(n)) => s.on_need(n),
-            Ev::Ctrl(Msg::Ack(a)) => {
-                s.on_ack(a);
-                Ok(())
-            }
+            Ev::Ctrl(Msg::Ack(a)) => s.on_ack(a),
             Ev::Ctrl(Msg::ListRoom(r)) => s
                 .lists
                 .grant(r.records)
@@ -2488,7 +2496,8 @@ mod tests {
             file_id: 1,
             status: Status::Done as i32,
             ..FileAck::default()
-        });
+        })
+        .unwrap();
         assert!(s.files.is_empty());
         for _ in 0..100 {
             if ended.load(SeqCst) {
@@ -2533,6 +2542,22 @@ mod tests {
         assert_eq!(s.files[&1].bases_held, 0);
         assert!(s.files[&1].bases.is_empty());
         assert_eq!(s.tasks.len(), 0, "an empty request sends nothing");
+    }
+
+    /// An ack without a status (an empty `FileAck`) is a protocol error,
+    /// never a success.
+    #[tokio::test]
+    async fn an_ack_without_a_status_is_a_protocol_error() {
+        let (mut s, _t) = role().await;
+        s.files.insert(1, in_flight("a", Some(empty_digest())));
+        let e = s
+            .on_ack(FileAck {
+                file_id: 1,
+                ..FileAck::default()
+            })
+            .unwrap_err();
+        assert!(e.to_string().starts_with("protocol error"), "{e:#}");
+        assert!(s.files.contains_key(&1), "the file was taken as done");
     }
 
     /// A `NeedChunks` beyond what a receiver ever sends in one, by chunks or

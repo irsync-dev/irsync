@@ -18,17 +18,17 @@ fn enc(m: Msg) -> Vec<u8> {
 
 #[test]
 fn control_heartbeat_golden_bytes() {
-    // heartbeat = 12, walking = 1, skipped_bytes = 2
+    // heartbeat = 13, walking = 1, skipped_bytes = 2
     let hb = enc(Msg::Heartbeat(Heartbeat {
         walking: Some(b"a".to_vec()),
         skipped_bytes: 5,
-        deleted: 0,
+        deleted_count: 0,
         delete_total: 0,
         listed: None,
         listed_settled: 0,
         received_bytes: 0,
     }));
-    assert_eq!(hb, [0x62, 0x05, 0x0A, 0x01, 0x61, 0x10, 0x05]);
+    assert_eq!(hb, [0x6A, 0x05, 0x0A, 0x01, 0x61, 0x10, 0x05]);
 }
 
 #[test]
@@ -61,9 +61,9 @@ fn control_place_verdict_golden_bytes() {
 
 #[test]
 fn control_links_checked_golden_bytes() {
-    // links_checked = 19 (two-byte tag), empty
+    // links_checked = 20 (two-byte tag), empty
     let l = enc(Msg::LinksChecked(irsync_proto::v1::LinksChecked {}));
-    assert_eq!(l, [0x9A, 0x01, 0x00]);
+    assert_eq!(l, [0xA2, 0x01, 0x00]);
 }
 
 #[test]

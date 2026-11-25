@@ -24,9 +24,9 @@ fn hello_roundtrips() {
         bwlimit: Some(1 << 20),
         single_file: true,
         append: sync_request::AppendMode::AppendVerify as i32,
+        recursive: false,
+        dirs: true,
         preserve: Some(sync_request::Preserve {
-            recursive: false,
-            dirs: true,
             links: true,
             perms: false,
             times: true,
@@ -49,7 +49,7 @@ fn hello_roundtrips() {
         ],
         partial_dir: b".p".to_vec(),
         numeric_ids: true,
-        no_local_reuse: true,
+        no_rename_detection: true,
     };
     for request in [
         hello::Request::Push(req.clone()),
@@ -185,19 +185,19 @@ fn control_oneof_roundtrips() {
             matched: 7,
         }),
         Msg::Done(SessionDone {
-            files: 1,
-            bytes: 2,
+            files_placed: 1,
+            bytes_received: 2,
             errors: vec![irsync_proto::v1::PathError {
                 path: b"d/\xff".to_vec(),
                 message: "mkdir: denied".into(),
             }],
-            deleted: vec![b"old".to_vec()],
-            would_delete: vec![b"x/\xff".to_vec()],
+            deleted_paths: vec![b"old".to_vec()],
+            would_delete_paths: vec![b"x/\xff".to_vec()],
             max_delete_reached: true,
             deleted_omitted: 3,
             would_delete_omitted: 4,
             created: 5,
-            transferred_size: 6,
+            placed_size: 6,
             listed: Some(irsync_proto::v1::ListTotals {
                 reg: 7,
                 dir: 8,

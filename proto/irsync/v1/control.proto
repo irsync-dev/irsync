@@ -106,7 +106,7 @@ message MayPlace {
 }
 // sender -> receiver: the answer to MayPlace. `changed`: the source differs
 // from the stat its chunk list was hashed under; the receiver drops what it
-// verified and waits for a new chunk list (or the sender's SOURCE_ERROR).
+// verified and waits for a new chunk list (or the sender's SourceError).
 message PlaceVerdict {
   uint64 file_id = 1;
   bool changed = 2;
@@ -128,7 +128,7 @@ message Replan {
 }
 // sender -> receiver, after its Replans: the re-check is over. `vanished`:
 // listed files gone, or no longer regular files (capped as
-// SessionDone.deleted is; `vanished_omitted` counts the rest). `errors`:
+// SessionDone.deleted_paths is; `vanished_omitted` counts the rest). `errors`:
 // files the re-check could not stat. The receiver sends SessionDone once
 // the re-planned files are done.
 message Settled {
@@ -188,16 +188,15 @@ message ChunkBasis {
   repeated fixed32 weak = 5;
   bytes strong = 6; // 8 * weak.len() bytes
 }
-// receiver -> sender: DONE (only after a PlaceVerdict saying unchanged), HASH_MISMATCH,
-// WRITE_ERROR. sender -> receiver: SOURCE_ERROR
-// (the sender cannot read the file; the receiver drops it without a reply).
+// receiver -> sender: how a file ended on the receiver. DONE only after a
+// PlaceVerdict saying unchanged.
 message FileAck {
   uint64 file_id = 1;
   enum Status {
-    DONE = 0;
-    HASH_MISMATCH = 1;
-    WRITE_ERROR = 2;
-    SOURCE_ERROR = 3;
+    UNSPECIFIED = 0; // never sent
+    DONE = 1;
+    HASH_MISMATCH = 2;
+    WRITE_ERROR = 3;
   }
   Status status = 2;
   string message = 3;
@@ -205,6 +204,12 @@ message FileAck {
   // (local copies, adopted progress, an identical file), for the sender's
   // matched count.
   uint64 matched = 4;
+}
+// sender -> receiver: the sender cannot read the file; the receiver drops
+// it without a reply.
+message SourceError {
+  uint64 file_id = 1;
+  string message = 2;
 }
 // A per-path problem the receiver recorded locally (mkdir, symlink, metadata, walk, ...).
 message PathError {
@@ -220,17 +225,21 @@ message ListTotals {
   uint64 special = 4;
   uint64 total_size = 5; // summed size of the regular files
 }
+// receiver -> sender: the session is over; its last frame on the control
+// stream.
 message SessionDone {
-  uint64 files = 1;
-  uint64 bytes = 2;
+  // Files the receiver placed on this connection (one it found already
+  // holding the content, settled in place, is not counted).
+  uint64 files_placed = 1;
+  uint64 bytes_received = 2; // file data received on this connection
   repeated PathError errors = 3;
-  repeated bytes deleted = 4; // paths the receiver deleted (capped)
-  repeated bytes would_delete = 5; // dry run: paths it would delete (capped)
+  repeated bytes deleted_paths = 4; // paths the receiver deleted (capped)
+  repeated bytes would_delete_paths = 5; // dry run: paths it would delete (capped)
   bool max_delete_reached = 6; // deletions stopped at --max-delete
   uint64 deleted_omitted = 7; // deleted paths beyond the cap
   uint64 would_delete_omitted = 8; // would-delete paths beyond the cap
   uint64 created = 9; // items the receiver created new (for --stats)
-  uint64 transferred_size = 10; // summed size of the files it placed
+  uint64 placed_size = 10; // summed size of the files it placed
   // What the receiver counted in the sender's listing, over every
   // connection of the session. A sender that resumed from the receiver's
   // stored plan listed nothing itself and reports these.
@@ -247,7 +256,7 @@ message Itemized {
 message Heartbeat {
   optional bytes walking = 1; // directory this side's listing walk is in (empty = the root); unset when not listing
   uint64 skipped_bytes = 2; // bytes of source files this side's planner found up to date (cumulative)
-  uint64 deleted = 3;       // paths this side's deletion pass removed so far
+  uint64 deleted_count = 3; // paths this side's deletion pass removed so far
   uint64 delete_total = 4;  // its candidate count once known, else 0
   // A receiver that resumes its stored plan, once, before its first
   // request: what the sender's listing held on the first connection. Nothing
@@ -274,16 +283,17 @@ message Control {
     MayPlace may_place = 8;
     PlaceVerdict place_verdict = 9;
     FileAck ack = 10;
-    Itemized itemized = 11;
-    Heartbeat heartbeat = 12;
-    Settle settle = 13;
-    Replan replan = 14;
-    Settled settled = 15;
-    CheckLink check_link = 16;
-    CheckLinksEnd check_links_end = 17;
-    Unlinked unlinked = 18;
-    LinksChecked links_checked = 19;
-    SessionDone done = 20;
-    Error error = 21; // a fatal error; the session ends
+    SourceError source_error = 11;
+    Itemized itemized = 12;
+    Heartbeat heartbeat = 13;
+    Settle settle = 14;
+    Replan replan = 15;
+    Settled settled = 16;
+    CheckLink check_link = 17;
+    CheckLinksEnd check_links_end = 18;
+    Unlinked unlinked = 19;
+    LinksChecked links_checked = 20;
+    SessionDone done = 21;
+    Error error = 22; // a fatal error; the session ends
   }
 }

@@ -127,15 +127,17 @@ A `SyncRequest` holds:
   deleted. `--delete` and its relatives are ignored. On a push the daemon
   decides the file's name on its side by rsync's rules and returns it in
   `HelloAck.single_name`, which can differ from `name` (a file named `T`);
-- the client's preserve flags (`-l -p -t -g -o -D -H -S`, `-r`, `-d`), which
+- `preserve`, the client's preserve flags (`-l -p -t -g -o -D -H -S`), which
   the daemon honours in both directions; it refuses a push or a pull whose
   request lacks them;
+- `recursive` and `dirs`: `-r` and `-d`, which both sides' listings follow;
 - the include and exclude rules, compiled and in order. A sending daemon walks
   with them; a receiving daemon protects what they exclude from deletion;
 - the receiver-side options, which the daemon honours only when it receives:
   the deletion mode, `--delete-excluded`, `--max-delete`, `-n`, `-u`, `-c`,
   `--inplace`, `--append` or `--append-verify`, `--partial-dir` (relative and
-  inside the destination, or refused), `--no-rename-detection`, `--fsync`
+  inside the destination, or refused), `--no-rename-detection`
+  (`no_rename_detection`), `--fsync`
   (an export's `fsync = true` flushes whatever the client sent). `-i`,
   `--ignore-errors` and `--numeric-ids` apply in both directions;
 - `paranoid`: `--paranoid`. Both roles take part in the final
@@ -214,8 +216,9 @@ export.
 | `ChunkBasis` | receiver to sender | Block signatures over a region of the receiver's old file, for one chunk. |
 | `NeedChunks` | receiver to sender | The chunks to send; empty means none. |
 | `MayPlace` | receiver to sender | The file is verified against chunk list number `gen`; may it be placed? |
-| `PlaceVerdict` | sender to receiver | The answer: `changed` if the source differs from the stat it was hashed under. The receiver places the file only when it is unchanged; otherwise it drops it and waits for the new chunk list, or for `SOURCE_ERROR`. A `MayPlace` about a list older than the sender's latest is always answered `changed`. |
-| `FileAck` | either | From the receiver: `DONE`, `HASH_MISMATCH`, `WRITE_ERROR`. From the sender: `SOURCE_ERROR`, it cannot read the file. `DONE` carries the bytes the receiver did not take from the sender. |
+| `PlaceVerdict` | sender to receiver | The answer: `changed` if the source differs from the stat it was hashed under. The receiver places the file only when it is unchanged; otherwise it drops it and waits for the new chunk list, or for a `SourceError`. A `MayPlace` about a list older than the sender's latest is always answered `changed`. |
+| `FileAck` | receiver to sender | How the file ended: `DONE`, `HASH_MISMATCH` or `WRITE_ERROR` (`UNSPECIFIED` is never sent; the sender takes it as a protocol error). `DONE` carries the bytes the receiver did not take from the sender. |
+| `SourceError` | sender to receiver | The sender cannot read the file, and says why. The receiver drops it without a reply. |
 | `Itemized` | receiver to sender | One rsync `-i` line, for a client that pushes with `-i`. |
 | `Heartbeat` | either | This side is busy; see below. |
 | `Settle` | receiver to sender | With `--paranoid` (not on a dry run), once, in place of the first `SessionDone`: every path is planned and no file is in flight. The sender stats every file it listed again. |
@@ -225,7 +228,7 @@ export.
 | `CheckLinksEnd` | receiver to sender | The last `CheckLink` has been sent. With `-H` it is always sent, even with no links to check, before `SessionDone`. |
 | `Unlinked` | sender to receiver | A name that is no longer exactly the file its target was hashed as: its stat differs (inode, size, times, mode, owner or group), or it is gone or no longer a regular file the walk would list. The receiver does not link it. If it is still a regular file, `entry` holds it as it is now, and the receiver plans it as a file of its own, as for `Replan`. Otherwise `failed` holds the name, which fails. |
 | `LinksChecked` | sender to receiver | The link check is over. The receiver makes the other links, then sends `SessionDone`. |
-| `SessionDone` | receiver to sender | The session's totals, errors and deletions, and what the sender's listing held (`listed`): a sender that resumed from the receiver's stored plan listed nothing itself and reports these counts. |
+| `SessionDone` | receiver to sender | The session's totals (`files_placed`, `placed_size`, `bytes_received`, `created`), errors and deletions (`deleted_paths`, `would_delete_paths`, capped, with counts of the rest), and what the sender's listing held (`listed`): a sender that resumed from the receiver's stored plan listed nothing itself and reports these counts. |
 | `Error` | either | The session failed on this side, with `INTERNAL` and why; it ends the session. |
 
 Every message on the control stream is a `Control` frame with exactly one of
@@ -303,7 +306,7 @@ it against the chunk's hash like any other. How the receiver chooses and uses ba
 A `Heartbeat` means "I am busy". A side sends one every 500 ms in which it made
 progress: hashing, writing, finalizing, deleting, or traffic. It carries what
 the other side cannot otherwise see: the directory this side's walk is in,
-the bytes its planner found up to date, and its deletion count. An idle side sends none,
+the bytes its planner found up to date, and its deletion count (`deleted_count`). An idle side sends none,
 so a stuck side still times out. The receiver sends none after `SessionDone`,
 which is the last message on its control stream. A receiver that resumes its stored plan sends
 one extra `Heartbeat` before its first request, with `listed`, the totals of

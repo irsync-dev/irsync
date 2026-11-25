@@ -399,21 +399,25 @@ mod tests {
             }),
             Msg::Ack(v1::FileAck {
                 file_id: 3,
-                status: 1,
+                status: 2,
                 message: "bad".into(),
                 matched: 10,
             }),
+            Msg::SourceError(v1::SourceError {
+                file_id: 3,
+                message: "unreadable".into(),
+            }),
             Msg::Done(v1::SessionDone {
-                files: 1,
-                bytes: 2,
+                files_placed: 1,
+                bytes_received: 2,
                 errors: vec![path_error(), path_error()],
-                deleted: vec![b"a".to_vec(), b"b".to_vec()],
-                would_delete: vec![b"c".to_vec()],
+                deleted_paths: vec![b"a".to_vec(), b"b".to_vec()],
+                would_delete_paths: vec![b"c".to_vec()],
                 max_delete_reached: true,
                 deleted_omitted: 3,
                 would_delete_omitted: 4,
                 created: 5,
-                transferred_size: 6,
+                placed_size: 6,
                 listed: totals(),
             }),
             Msg::Error(v1::Error {
@@ -427,7 +431,7 @@ mod tests {
             Msg::Heartbeat(v1::Heartbeat {
                 walking: Some(Vec::new()),
                 skipped_bytes: 1,
-                deleted: 2,
+                deleted_count: 2,
                 delete_total: 3,
                 listed: totals(),
                 listed_settled: 4,
@@ -527,10 +531,11 @@ mod tests {
                 inplace: true,
                 append: 2,
                 name: b"n".to_vec(),
+                recursive: false,
+                dirs: true,
                 preserve: Some(sync_request::Preserve {
                     links: true,
                     hard_links: true,
-                    dirs: true,
                     ..Default::default()
                 }),
                 filters: vec![
@@ -545,7 +550,7 @@ mod tests {
                 ],
                 partial_dir: b".partial".to_vec(),
                 numeric_ids: true,
-                no_local_reuse: true,
+                no_rename_detection: true,
                 fsync: true,
                 paranoid: true,
                 single_file: true,
