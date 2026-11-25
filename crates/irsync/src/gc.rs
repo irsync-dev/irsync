@@ -14,7 +14,7 @@ use prost::Message;
 use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::fs::temp_name::is_part_name;
-use crate::index::IndexHandle;
+use crate::index::{now_secs, IndexHandle};
 use crate::scan::WalkOpts;
 
 /// What a [`gc`] run removed (or, on a dry run, would remove).
@@ -101,12 +101,6 @@ fn remove_part(root: &Path, rel: &RelPath, cutoff: i64, dry_run: bool) -> io::Re
     }
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
-
 /// The `others` (export or index roots) strictly inside `root`, relative
 /// to it, sorted. An export's GC leaves those subtrees to their own index
 /// (the home exported automatically holds every export below it).
@@ -160,7 +154,7 @@ pub async fn gc_skipping(
 ) -> io::Result<GcReport> {
     let skip = skip.to_vec();
     let skipped = move |p: &RelPath| skip.iter().any(|s| is_under(p, s));
-    let cutoff = unix_now().saturating_sub(older_than.as_secs().min(i64::MAX as u64) as i64);
+    let cutoff = crate::index::cutoff(older_than);
 
     // Orphan candidates: stale `.part` files on disk (the walk never follows symlinks).
     let (mut rx, summary) = crate::scan::walk(
@@ -295,7 +289,7 @@ pub async fn gc_skipping(
             prune_entries(&mut ix, &root, &seen, &walk_errors, &skipped, dry_run)?;
         report.errors.extend(walk_errors);
         if !dry_run {
-            ix.set_last_gc_at(unix_now()).map_err(io_err)?;
+            ix.set_last_gc_at(now_secs()).map_err(io_err)?;
         }
         Ok(report)
     })
@@ -385,7 +379,7 @@ pub async fn gc_if_due_skipping(
     let ix = index.clone();
     let due = tokio::task::spawn_blocking(move || -> io::Result<bool> {
         let ix = ix.lock().map_err(|_| io_err("index lock poisoned"))?;
-        let (last, now) = (ix.last_gc_at().map_err(io_err)?, unix_now());
+        let (last, now) = (ix.last_gc_at().map_err(io_err)?, now_secs());
         // Records that went stale since the last walk: one stale at that
         // walk already was looked at, and kept (younger than `older_than`,
         // or still referenced); it must not make every run walk again.

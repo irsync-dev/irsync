@@ -737,14 +737,17 @@ pub struct Index {
     file: PathBuf,
 }
 
-fn now() -> i64 {
+/// Seconds since the Unix epoch, as the index stores times (0 if the
+/// clock is set before it).
+pub(crate) fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-fn cutoff(age: Duration) -> i64 {
-    now().saturating_sub(age.as_secs().min(i64::MAX as u64) as i64)
+/// The time `age` ago, in [`now_secs`]'s seconds.
+pub(crate) fn cutoff(age: Duration) -> i64 {
+    now_secs().saturating_sub(age.as_secs().min(i64::MAX as u64) as i64)
 }
 
 /// The canonical path an index for `root` is keyed by. A root that does not

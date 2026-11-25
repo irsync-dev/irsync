@@ -22,7 +22,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// Persist the partial record after this many newly verified chunks...
 const PERSIST_EVERY_CHUNKS: u32 = 64;
@@ -140,13 +140,6 @@ fn index_err(e: crate::index::IndexError) -> io::Error {
     io::Error::other(e)
 }
 
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 /// Validates `expected`'s records as tiling `[0, size)` exactly (they came
 /// off the wire) and copies them for the writer.
 fn native_chunks(expected: &FileDigest) -> io::Result<Vec<ChunkRecord>> {
@@ -166,7 +159,7 @@ fn native_chunks(expected: &FileDigest) -> io::Result<Vec<ChunkRecord>> {
             )));
         }
         // Chunks are buffered whole: never more than the chunker's maximum.
-        if c.len > MAX_CHUNK_LEN {
+        if c.len > irsync_proto::chunk::CHUNK_PARAMS.max {
             return Err(invalid(format!("chunk of {} bytes exceeds 1 MiB", c.len)));
         }
         next += u64::from(c.len);
@@ -272,9 +265,6 @@ pub fn discard_part(
         .remove_partial(rel)
         .map_err(io::Error::other)
 }
-
-/// The largest chunk a peer's `ChunkList` may describe (FastCDC's maximum).
-pub const MAX_CHUNK_LEN: u32 = 1024 * 1024;
 
 /// The error message when another writer holds the `.part` (`WouldBlock`).
 pub const PART_BUSY: &str = "part file busy";
@@ -1184,7 +1174,7 @@ impl FileWriter {
                     length: u64::from(n),
                 })
                 .collect(),
-            updated_at: now_secs(),
+            updated_at: crate::index::now_secs(),
         }
     }
 

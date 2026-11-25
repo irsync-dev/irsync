@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use iroh::endpoint::{RecvStream, SendStream};
 use irsync_proto::chunk::FileDigest;
@@ -836,12 +836,6 @@ fn list_single(
     sum
 }
 
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
-
 /// Keeps the session row in the index current, writing at most every 2 s.
 /// A resumed session continues from its stored record; a finished session's
 /// row is deleted, so the next run with the same key starts fresh.
@@ -862,7 +856,7 @@ pub(super) struct Persister {
 impl Persister {
     /// Continues the session's stored record (if any) and writes the row right away.
     pub async fn start(ctx: &Ctx) -> Persister {
-        let now = now_secs();
+        let now = crate::index::now_secs();
         let mut rec = ctx.record.clone().unwrap_or_else(|| SessionRecord {
             id: ctx.session_id,
             key: ctx.key.clone(),
@@ -1034,7 +1028,7 @@ impl Persister {
     }
 
     pub async fn flush(&mut self) {
-        self.rec.updated_at = now_secs();
+        self.rec.updated_at = crate::index::now_secs();
         let row = self.rec.to_row();
         let index = self.index.clone();
         let res = tokio::task::spawn_blocking(move || {
