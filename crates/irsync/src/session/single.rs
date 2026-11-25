@@ -7,14 +7,12 @@ use std::time::Duration;
 
 use anyhow::Context;
 use iroh::endpoint::Connection;
-use irsync_proto::v1::{hello, hello_reply, path_info, Hello, Probe};
-use irsync_proto::PROTOCOL_VERSION;
+use irsync_proto::v1::{hello, hello_reply, path_info, Probe};
 
 use irsync_proto::v1::{error::Code, SyncRequest};
 
 use super::engine::{prepare_root, read_hello_reply, Missing, TransportError};
 use super::SyncHello;
-use crate::build::BuildInfo;
 use crate::fs::paths::RelPath;
 use crate::net::frame::write_msg_tapped;
 use crate::net::tap::{ConnTap, StreamKind as TapStream};
@@ -207,14 +205,9 @@ pub async fn probe(
     path: &[u8],
     timeout: Option<Duration>,
 ) -> anyhow::Result<path_info::Kind> {
-    let hello = Hello {
-        protocol_version: PROTOCOL_VERSION,
-        build: Some(BuildInfo::current().to_wire()),
-        request: Some(hello::Request::Probe(Probe {
-            path: path.to_vec(),
-        })),
-        ..Hello::default()
-    };
+    let hello = super::hello(hello::Request::Probe(Probe {
+        path: path.to_vec(),
+    }));
     let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
     let tap = ConnTap::of(conn).stream(TapStream::Control, u64::from(send.id()));
     write_msg_tapped(&mut send, &hello, &tap)

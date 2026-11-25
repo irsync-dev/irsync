@@ -25,7 +25,7 @@ mod sender;
 pub mod single;
 
 pub use events::{Busy, Event, EventBus, Party, SessionSummary};
-pub use hello::SyncHello;
+pub use hello::{hello, SyncHello};
 pub use hooks::*;
 pub use key::SessionKey;
 pub use outcome::Outcome;

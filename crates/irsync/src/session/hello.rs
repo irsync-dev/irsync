@@ -74,3 +74,14 @@ impl From<SyncHello> for Hello {
         h.to_hello()
     }
 }
+
+/// A `Hello` from this build asking for `request`: this protocol version,
+/// this build's info and no trace context.
+pub fn hello(request: hello::Request) -> Hello {
+    Hello {
+        protocol_version: PROTOCOL_VERSION,
+        build: Some(crate::build::BuildInfo::current().to_wire()),
+        request: Some(request),
+        ..Hello::default()
+    }
+}

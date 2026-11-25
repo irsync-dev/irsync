@@ -23,7 +23,7 @@ use irsync_proto::config as pb;
 use irsync_proto::v1::{
     admin_reply, admin_request, change::Op, error::Code, hello, hello_reply, read, AdminReply,
     AdminRequest, Change, ClientAdd, ClientRemove, ClientRename, ClientSet, Commit, ExportAdd,
-    ExportRemove, GrantAdd, GrantRemove, Hello, OpenAdmin, Read, ReadConfig, ReadView, View,
+    ExportRemove, GrantAdd, GrantRemove, OpenAdmin, Read, ReadConfig, ReadView, View,
 };
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
@@ -222,12 +222,7 @@ async fn converse(
 ) -> anyhow::Result<RemoteOutcome> {
     let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
     let tap = ConnTap::of(conn).stream(StreamKind::Control, u64::from(send.id()));
-    let hello = Hello {
-        protocol_version: PROTOCOL_VERSION,
-        build: Some(irsync::build::BuildInfo::current().to_wire()),
-        request: Some(hello::Request::Admin(OpenAdmin {})),
-        ..Hello::default()
-    };
+    let hello = irsync::session::hello(hello::Request::Admin(OpenAdmin {}));
     let (what, requests) = match req {
         RemoteRequest::Change(change) => (
             None,

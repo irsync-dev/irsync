@@ -11,10 +11,8 @@ use std::time::Instant;
 
 use anyhow::{bail, Context};
 use iroh::EndpointAddr;
-use irsync_proto::v1::{hello, ExportEntry, Hello, ListExports, SyncRequest};
-use irsync_proto::PROTOCOL_VERSION;
+use irsync_proto::v1::{hello, ExportEntry, ListExports, SyncRequest};
 
-use crate::build::BuildInfo;
 use crate::config::settings::PqKeyExchange;
 use crate::filter::FilterSet;
 use crate::fs::paths::escape_text;
@@ -355,12 +353,7 @@ pub async fn list_exports(
 }
 
 async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<Vec<ExportEntry>> {
-    let hello = Hello {
-        protocol_version: PROTOCOL_VERSION,
-        build: Some(BuildInfo::current().to_wire()),
-        request: Some(hello::Request::ListExports(ListExports {})),
-        ..Hello::default()
-    };
+    let hello = crate::session::hello(hello::Request::ListExports(ListExports {}));
     let client = c.endpoint.id();
     let conn = dial(c).await?;
     let entries = crate::session::engine::list_exports(&conn, hello)
