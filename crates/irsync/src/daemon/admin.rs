@@ -387,8 +387,15 @@ async fn close_with(
     write_msg(send, &AdminReply { msg: Some(refused) }).await?;
     send.finish()?;
     tap.finished();
-    // Wait (bounded) for the peer to read it before closing the connection.
-    let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
+    // An acknowledgement is not a read: a peer that is slow to read loses
+    // what it has not read yet once the connection closes. So wait
+    // (bounded) for the peer to close it, as `irsync remote` does once it
+    // has read the answer.
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        let _ = send.stopped().await;
+        conn.closed().await;
+    })
+    .await;
     conn.close(2u32.into(), b"rejected");
     Ok(())
 }

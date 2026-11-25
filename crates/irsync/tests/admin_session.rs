@@ -222,6 +222,7 @@ async fn closing_without_commit_changes_nothing() {
     s.send.finish().unwrap();
     s.assert_closed().await;
     assert_eq!(std::fs::read(&path).unwrap(), before, "the file changed");
+    drop(s);
     stop(d).await;
 }
 
@@ -238,6 +239,7 @@ async fn a_client_without_admin_is_refused() {
     let mut s = Session::open(&d, &client).await;
     assert_not_allowed(s.reply().await);
     s.assert_closed().await;
+    drop(s);
     stop(d).await;
 }
 
@@ -319,6 +321,7 @@ async fn losing_admin_mid_session() {
     .await;
     assert_not_allowed(s.reply().await);
     s.assert_closed().await;
+    drop(s);
     stop(d).await;
 }
 
@@ -390,6 +393,7 @@ async fn an_oversized_request_ends_the_session() {
     }
     s.assert_closed().await;
     assert_eq!(std::fs::read(&path).unwrap(), before, "the file changed");
+    drop(s);
     stop(d).await;
 }
 
