@@ -4,7 +4,7 @@
 
 use super::{id_bytes, id_of, ManageError};
 use crate::config::names::valid_alias;
-use crate::config::settings::{PqKeyExchange, RelayMode};
+use crate::config::settings::{PqKeyExchange, RelayMode, Spelled};
 use crate::config::writer;
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
@@ -69,10 +69,7 @@ pub fn server_add(
         h.relay = Some(r.as_str().to_string());
     }
     if let Some(m) = flags.relay_mode {
-        h.relay_mode = Some(match m {
-            RelayMode::Default => pb::RelayMode::Default,
-            RelayMode::Disabled => pb::RelayMode::Disabled,
-        } as i32);
+        h.relay_mode = Some(m.to_message());
     }
     if let Some(a) = &flags.address {
         h.address = a.iter().map(|a| entry(&a.to_string())).collect();
@@ -94,10 +91,7 @@ pub fn server_add(
         h.mdns = Some(m);
     }
     if let Some(p) = flags.pq_key_exchange {
-        h.pq_key_exchange = Some(match p {
-            PqKeyExchange::Prefer => pb::PqKeyExchange::Prefer,
-            PqKeyExchange::Require => pb::PqKeyExchange::Require,
-        } as i32);
+        h.pq_key_exchange = Some(p.to_message());
     }
     if let Some(s) = &flags.ssh {
         h.ssh = Some(s.clone());

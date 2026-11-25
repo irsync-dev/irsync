@@ -5,7 +5,9 @@
 use super::{id_bytes, ManageError};
 use crate::authz::Access;
 use crate::config::clients::RIGHTS;
-use crate::config::settings::{OtlpProtocol, RelayMode, Settings};
+use crate::config::settings::{
+    Congestion, OtlpProtocol, PqKeyExchange, RelayMode, Settings, Spelled,
+};
 use crate::config::{duration, reader, writer};
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
@@ -169,13 +171,9 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["client", "dht"] | ["client", "mdns"] | ["client", "ssh_install"] => {
             one("true".to_string())
         }
-        ["client", "relay_mode"] => one("default".to_string()),
-        ["client", "congestion"] => one(crate::config::settings::Congestion::default()
-            .as_str()
-            .into()),
-        ["client", "pq_key_exchange"] => one(crate::config::settings::PqKeyExchange::default()
-            .as_str()
-            .into()),
+        ["client", "relay_mode"] => one(RelayMode::default().as_str().to_string()),
+        ["client", "congestion"] => one(Congestion::default().as_str().into()),
+        ["client", "pq_key_exchange"] => one(PqKeyExchange::default().as_str().into()),
         ["state_dir"] => one(as_written(&s.state_dir)),
         ["daemon", "identity"] => one(as_written(&s.daemon.identity)),
         ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),
@@ -187,11 +185,7 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         }
         ["daemon", "listen"] => Some(s.daemon.listen.iter().map(|a| a.to_string()).collect()),
         ["daemon", "portmap"] => one(s.daemon.portmap.to_string()),
-        ["daemon", "relay_mode"] => one(match s.daemon.relay_mode {
-            RelayMode::Default => "default",
-            RelayMode::Disabled => "disabled",
-        }
-        .to_string()),
+        ["daemon", "relay_mode"] => one(s.daemon.relay_mode.as_str().to_string()),
         ["daemon", "congestion"] => one(s.daemon.congestion.as_str().to_string()),
         ["daemon", "pq_key_exchange"] => one(s.daemon.pq_key_exchange.as_str().to_string()),
         ["daemon", "discovery", "dht"] => one(s.daemon.discovery.dht.to_string()),
@@ -376,10 +370,8 @@ enum Field<'a> {
     Url(&'a mut Option<String>),
     /// An id's 32 bytes; empty is unset.
     Id(&'a mut Vec<u8>),
-    RelayMode(&'a mut Option<i32>),
-    Congestion(&'a mut Option<i32>),
-    PqKeyExchange(&'a mut Option<i32>),
-    OtlpProtocol(&'a mut Option<i32>),
+    /// An enum key, with its spellings.
+    Spelled(&'a mut Option<i32>, Spelling),
     /// A client's right: `rw` or `ro`.
     Right(&'a mut Option<i32>),
     /// A string array and whether its key is in the file.
@@ -387,6 +379,21 @@ enum Field<'a> {
     Addresses(&'a mut Vec<pb::Entry>, &'a mut bool),
     /// An export's path; "" is unset.
     ExportPath(&'a mut String),
+}
+
+/// How an enum key is spelled: [`Spelled`] for one type, as plain
+/// functions.
+#[derive(Clone, Copy)]
+struct Spelling {
+    show: fn(i32) -> Option<&'static str>,
+    parse: fn(&str) -> Result<i32, String>,
+}
+
+fn spelling<T: Spelled>() -> Spelling {
+    Spelling {
+        show: writer::spelled::<T>,
+        parse: |s| s.parse::<T>().map(T::to_message),
+    }
 }
 
 /// A key's field with the comments of its table.
@@ -492,9 +499,9 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "ssh_install" => Bool(&mut c.ssh_install),
                 "mdns" => Bool(&mut c.mdns),
                 "relay" => Url(&mut c.relay),
-                "relay_mode" => RelayMode(&mut c.relay_mode),
-                "congestion" => Congestion(&mut c.congestion),
-                "pq_key_exchange" => PqKeyExchange(&mut c.pq_key_exchange),
+                "relay_mode" => Spelled(&mut c.relay_mode, spelling::<RelayMode>()),
+                "congestion" => Spelled(&mut c.congestion, spelling::<Congestion>()),
+                "pq_key_exchange" => Spelled(&mut c.pq_key_exchange, spelling::<PqKeyExchange>()),
                 _ => return None,
             };
             (f, &mut c.key_comments)
@@ -520,9 +527,9 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "listen" => Addresses(&mut d.listen, &mut d.listen_set),
                 "portmap" => Bool(&mut d.portmap),
                 "relay" => Url(&mut d.relay),
-                "relay_mode" => RelayMode(&mut d.relay_mode),
-                "congestion" => Congestion(&mut d.congestion),
-                "pq_key_exchange" => PqKeyExchange(&mut d.pq_key_exchange),
+                "relay_mode" => Spelled(&mut d.relay_mode, spelling::<RelayMode>()),
+                "congestion" => Spelled(&mut d.congestion, spelling::<Congestion>()),
+                "pq_key_exchange" => Spelled(&mut d.pq_key_exchange, spelling::<PqKeyExchange>()),
                 "debug_addr" => Text(&mut d.debug_addr),
                 "allow_all_paths" => Bool(&mut d.allow_all_paths),
                 "allow_root" => Bool(&mut d.allow_root),
@@ -534,7 +541,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let t = table(&mut msg.telemetry, create)?;
             let f = match *key {
                 "otlp_endpoint" => Url(&mut t.otlp_endpoint),
-                "otlp_protocol" => OtlpProtocol(&mut t.otlp_protocol),
+                "otlp_protocol" => Spelled(&mut t.otlp_protocol, spelling::<OtlpProtocol>()),
                 _ => return None,
             };
             (f, &mut t.key_comments)
@@ -544,9 +551,9 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let f = match *key {
                 "endpoint_id" => Id(&mut h.endpoint_id),
                 "relay" => Url(&mut h.relay),
-                "relay_mode" => RelayMode(&mut h.relay_mode),
-                "congestion" => Congestion(&mut h.congestion),
-                "pq_key_exchange" => PqKeyExchange(&mut h.pq_key_exchange),
+                "relay_mode" => Spelled(&mut h.relay_mode, spelling::<RelayMode>()),
+                "congestion" => Spelled(&mut h.congestion, spelling::<Congestion>()),
+                "pq_key_exchange" => Spelled(&mut h.pq_key_exchange, spelling::<PqKeyExchange>()),
                 "address" => Addresses(&mut h.address, &mut h.address_set),
                 "parallel" => Int(&mut h.parallel),
                 "reconnect" => Duration(&mut h.reconnect),
@@ -829,10 +836,7 @@ fn shown(field: &Field) -> Option<Shown> {
         Field::Duration(v) => v.as_ref().map(|d| text(&writer::duration_text(d))),
         Field::Text(v) | Field::Url(v) => v.as_deref().map(text),
         Field::Id(v) => (!v.is_empty()).then(|| text(&writer::id(v))),
-        Field::RelayMode(v) => v.and_then(writer::relay_mode).map(text),
-        Field::Congestion(v) => v.and_then(writer::congestion).map(text),
-        Field::PqKeyExchange(v) => v.and_then(writer::pq_key_exchange).map(text),
-        Field::OtlpProtocol(v) => v.and_then(writer::otlp_protocol).map(text),
+        Field::Spelled(v, s) => v.and_then(s.show).map(text),
         Field::Right(v) => v.and_then(Access::from_message).map(|a| text(a.as_str())),
         Field::List(v, set) | Field::Addresses(v, set) => list(v, **set),
         Field::ExportPath(p) => (!p.is_empty()).then(|| text(p)),
@@ -847,11 +851,7 @@ fn clear(field: Field) -> bool {
         Field::Duration(v) => v.take().is_some(),
         Field::Text(v) | Field::Url(v) => v.take().is_some(),
         Field::Id(v) => !std::mem::take(v).is_empty(),
-        Field::RelayMode(v)
-        | Field::Congestion(v)
-        | Field::PqKeyExchange(v)
-        | Field::OtlpProtocol(v)
-        | Field::Right(v) => v.take().is_some(),
+        Field::Spelled(v, _) | Field::Right(v) => v.take().is_some(),
         Field::List(v, set) | Field::Addresses(v, set) => {
             let was = *set || !v.is_empty();
             v.clear();
@@ -872,21 +872,7 @@ fn entries(values: Vec<String>) -> Vec<pb::Entry> {
         .collect()
 }
 
-/// One of two spellings of an enum key, in serde's words when it is
-/// neither, as loading the file said it.
-fn variant(s: &str, a: (&str, i32), b: (&str, i32)) -> Result<i32, String> {
-    match s {
-        _ if s == a.0 => Ok(a.1),
-        _ if s == b.0 => Ok(b.1),
-        _ => Err(format!(
-            "unknown variant `{s}`, expected `{}` or `{}`",
-            a.0, b.0
-        )),
-    }
-}
-
-/// An integer key holds a `u32`; the message for one out of range, in
-/// serde's words, as loading the file said it.
+/// An integer key holds a `u32`; the message for one out of range.
 fn uint(n: i64) -> Result<u32, String> {
     u32::try_from(n).map_err(|_| format!("invalid value: integer `{n}`, expected u32"))
 }
@@ -915,34 +901,7 @@ fn assign(field: Field, value: Value) -> Result<(), String> {
             let id = crate::identity::parse_endpoint_id(&s).map_err(|e| e.to_string())?;
             *f = id_bytes(id);
         }
-        (Field::RelayMode(f), Value::Text(s)) => {
-            *f = Some(variant(
-                &s,
-                ("default", pb::RelayMode::Default as i32),
-                ("disabled", pb::RelayMode::Disabled as i32),
-            )?);
-        }
-        (Field::Congestion(f), Value::Text(s)) => {
-            *f = Some(variant(
-                &s,
-                ("bbr", pb::Congestion::Bbr as i32),
-                ("cubic", pb::Congestion::Cubic as i32),
-            )?);
-        }
-        (Field::PqKeyExchange(f), Value::Text(s)) => {
-            *f = Some(variant(
-                &s,
-                ("prefer", pb::PqKeyExchange::Prefer as i32),
-                ("require", pb::PqKeyExchange::Require as i32),
-            )?);
-        }
-        (Field::OtlpProtocol(f), Value::Text(s)) => {
-            *f = Some(variant(
-                &s,
-                ("grpc", pb::OtlpProtocol::Grpc as i32),
-                ("http", pb::OtlpProtocol::Http as i32),
-            )?);
-        }
+        (Field::Spelled(f, spelling), Value::Text(s)) => *f = Some((spelling.parse)(&s)?),
         (Field::Right(f), Value::Text(s)) => {
             let access = Access::parse(&s).ok_or("expected \"rw\" or \"ro\"")?;
             *f = Some(pb::Access::from(access) as i32);

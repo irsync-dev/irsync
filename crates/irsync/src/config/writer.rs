@@ -8,6 +8,7 @@
 
 use super::clients::RIGHTS;
 use super::duration;
+use super::settings::{Congestion, OtlpProtocol, PqKeyExchange, RelayMode, Spelled};
 use crate::authz::Access;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
@@ -105,11 +106,11 @@ fn client_table(c: &pb::Client) -> Keys<'_> {
     k.bool("ssh_install", c.ssh_install);
     k.bool("mdns", c.mdns);
     k.string("relay", c.relay.as_deref());
-    k.string("relay_mode", c.relay_mode.and_then(relay_mode));
-    k.string("congestion", c.congestion.and_then(congestion));
+    k.string("relay_mode", c.relay_mode.and_then(spelled::<RelayMode>));
+    k.string("congestion", c.congestion.and_then(spelled::<Congestion>));
     k.string(
         "pq_key_exchange",
-        c.pq_key_exchange.and_then(pq_key_exchange),
+        c.pq_key_exchange.and_then(spelled::<PqKeyExchange>),
     );
     k
 }
@@ -129,11 +130,11 @@ fn daemon(d: &pb::Daemon) -> Keys<'_> {
     k.array("listen", &d.listen, d.listen_set);
     k.bool("portmap", d.portmap);
     k.string("relay", d.relay.as_deref());
-    k.string("relay_mode", d.relay_mode.and_then(relay_mode));
-    k.string("congestion", d.congestion.and_then(congestion));
+    k.string("relay_mode", d.relay_mode.and_then(spelled::<RelayMode>));
+    k.string("congestion", d.congestion.and_then(spelled::<Congestion>));
     k.string(
         "pq_key_exchange",
-        d.pq_key_exchange.and_then(pq_key_exchange),
+        d.pq_key_exchange.and_then(spelled::<PqKeyExchange>),
     );
     k.string("debug_addr", d.debug_addr.as_deref());
     k.bool("allow_all_paths", d.allow_all_paths);
@@ -152,7 +153,10 @@ fn discovery(d: &pb::Discovery) -> Keys<'_> {
 fn telemetry(t: &pb::Telemetry) -> Keys<'_> {
     let mut k = Keys::new(&t.key_comments);
     k.string("otlp_endpoint", t.otlp_endpoint.as_deref());
-    k.string("otlp_protocol", t.otlp_protocol.and_then(otlp_protocol));
+    k.string(
+        "otlp_protocol",
+        t.otlp_protocol.and_then(spelled::<OtlpProtocol>),
+    );
     k
 }
 
@@ -160,11 +164,11 @@ fn server(s: &pb::ServerEntry) -> Keys<'_> {
     let mut k = Keys::new(&s.key_comments);
     k.string("endpoint_id", non_empty(&s.endpoint_id).map(id).as_deref());
     k.string("relay", s.relay.as_deref());
-    k.string("relay_mode", s.relay_mode.and_then(relay_mode));
-    k.string("congestion", s.congestion.and_then(congestion));
+    k.string("relay_mode", s.relay_mode.and_then(spelled::<RelayMode>));
+    k.string("congestion", s.congestion.and_then(spelled::<Congestion>));
     k.string(
         "pq_key_exchange",
-        s.pq_key_exchange.and_then(pq_key_exchange),
+        s.pq_key_exchange.and_then(spelled::<PqKeyExchange>),
     );
     k.array("address", &s.address, s.address_set);
     k.int("parallel", s.parallel);
@@ -325,34 +329,8 @@ pub(crate) fn duration_text(d: &prost_types::Duration) -> String {
     duration::format(Duration::new(secs, nanos))
 }
 
-pub(crate) fn relay_mode(m: i32) -> Option<&'static str> {
-    match pb::RelayMode::try_from(m).ok()? {
-        pb::RelayMode::Default => Some("default"),
-        pb::RelayMode::Disabled => Some("disabled"),
-        pb::RelayMode::Unspecified => None,
-    }
-}
-
-pub(crate) fn congestion(c: i32) -> Option<&'static str> {
-    match pb::Congestion::try_from(c).ok()? {
-        pb::Congestion::Bbr => Some("bbr"),
-        pb::Congestion::Cubic => Some("cubic"),
-        pb::Congestion::Unspecified => None,
-    }
-}
-
-pub(crate) fn pq_key_exchange(p: i32) -> Option<&'static str> {
-    match pb::PqKeyExchange::try_from(p).ok()? {
-        pb::PqKeyExchange::Prefer => Some("prefer"),
-        pb::PqKeyExchange::Require => Some("require"),
-        pb::PqKeyExchange::Unspecified => None,
-    }
-}
-
-pub(crate) fn otlp_protocol(p: i32) -> Option<&'static str> {
-    match pb::OtlpProtocol::try_from(p).ok()? {
-        pb::OtlpProtocol::Grpc => Some("grpc"),
-        pb::OtlpProtocol::Http => Some("http"),
-        pb::OtlpProtocol::Unspecified => None,
-    }
+/// An enum key's value as the file spells it; `None` for a number no
+/// value has.
+pub(crate) fn spelled<T: Spelled>(n: i32) -> Option<&'static str> {
+    T::from_message(n).ok().map(T::as_str)
 }

@@ -3,7 +3,7 @@
 use super::names::{invalid_name, valid_alias};
 use super::settings::{addresses_from, duration_from, url_from};
 use super::{endpoint_id_from, file_error, ConfigError};
-use crate::config::settings::{Congestion, PqKeyExchange, RelayMode};
+use crate::config::settings::{Congestion, PqKeyExchange, RelayMode, Spelled};
 use crate::net::addr::HostPort;
 use iroh::EndpointId;
 use irsync_proto::config as pb;

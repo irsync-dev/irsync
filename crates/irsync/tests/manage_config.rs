@@ -866,10 +866,7 @@ fn set_refuses_what_the_message_cannot_hold_and_changes_nothing() {
     }
     assert_eq!(m, pb::Config::default());
     let e = set(&mut m, &p("client.relay_mode"), Value::Text("bogus".into())).unwrap_err();
-    assert_eq!(
-        e.to_string(),
-        "unknown variant `bogus`, expected `default` or `disabled`"
-    );
+    assert_eq!(e.to_string(), "\"bogus\": expected default or disabled");
 }
 
 #[test]

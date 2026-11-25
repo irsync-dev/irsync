@@ -21,14 +21,6 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("line {line}: unknown keyword {keyword:?}")]
-    UnknownKeyword { line: usize, keyword: String },
-    #[error("line {line}: bad value for {keyword}: {message}")]
-    BadValue {
-        line: usize,
-        keyword: String,
-        message: String,
-    },
     #[error("bad duration {0:?}: expected <number>[s|m|h|d]")]
     BadDuration(String),
     #[error("{}", match line {

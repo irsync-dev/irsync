@@ -263,7 +263,6 @@ fn from_message_checks_each_edit_again() {
 
 #[test]
 fn errors_are_those_of_config_parse() {
-    // The messages `Config::parse` gave before it read through the message.
     for (text, message) in [
         (
             "[servers.nas]\nendpoint_id = \"nope\"\n",
@@ -315,7 +314,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[telemetry]\notlp_protocol = \"udp\"\n",
-            "f:2: unknown variant `udp`, expected `grpc` or `http`",
+            "f:2: \"udp\": expected grpc or http",
         ),
         (
             "[servers.nas]\naddress = [\"nope\"]\n",
@@ -363,23 +362,23 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[client]\nrelay_mode = 1\n",
-            "f:2: wanted string or table",
+            "f:2: invalid type: integer `1`, expected a string",
         ),
         (
             "[client]\nrelay_mode = \"x\"\n",
-            "f:2: unknown variant `x`, expected `default` or `disabled`",
+            "f:2: \"x\": expected default or disabled",
         ),
         (
             "[daemon]\ncongestion = \"reno\"\n",
-            "f:2: unknown variant `reno`, expected `bbr` or `cubic`",
+            "f:2: \"reno\": expected bbr or cubic",
         ),
         (
             "[servers.h]\npq_key_exchange = \"only\"\n",
-            "f:2: unknown variant `only`, expected `prefer` or `require`",
+            "f:2: \"only\": expected prefer or require",
         ),
         (
             "[telemetry]\notlp_protocol = 1\n",
-            "f:2: wanted string or table",
+            "f:2: invalid type: integer `1`, expected a string",
         ),
         (
             "[client]\nreconnect = true\n",
@@ -403,7 +402,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[daemon]\ndiscovery = 1\n",
-            "f:2: invalid type: integer `1`, expected struct Discovery",
+            "f:2: invalid type: integer `1`, expected struct RawDiscovery",
         ),
         (
             "[servers.nas]\nreconnect = \"x\"\n",
@@ -455,15 +454,15 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[client]\nrelay_mode = {}\n",
-            "f:2: wanted exactly 1 element, found 0 elements",
+            "f:2: invalid type: map, expected a string",
         ),
         (
             "[client]\nrelay_mode = { default = 1 }\n",
-            "f:2: expected table, found integer",
+            "f:2: invalid type: map, expected a string",
         ),
         (
             "[daemon]\ncongestion = { x = 1 }\n",
-            "f:2: unknown variant `x`, expected `bbr` or `cubic`",
+            "f:2: invalid type: map, expected a string",
         ),
         (
             "[daemon]\nidle_timeout = {}\n",

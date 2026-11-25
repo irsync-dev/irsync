@@ -689,7 +689,7 @@ pub struct ServerAddArgs {
     pub relay: Option<String>,
     /// `disabled`: reach this server directly only, never through a relay;
     /// `default`: relays as usual (default: the client settings').
-    #[arg(long, value_name = "default|disabled", value_parser = parse_relay_mode)]
+    #[arg(long, value_name = "default|disabled")]
     pub relay_mode: Option<crate::config::settings::RelayMode>,
     /// Dial the server at this `ip:port`, `[ipv6]:port` or `host:port`
     /// directly, with relay and lookups off (repeatable; replaces the
@@ -729,15 +729,6 @@ fn validate_duration(s: &str) -> Result<String, String> {
     duration::parse(s)
         .map(|_| s.to_string())
         .map_err(|e| e.to_string())
-}
-
-fn parse_relay_mode(s: &str) -> Result<crate::config::settings::RelayMode, String> {
-    use crate::config::settings::RelayMode;
-    match s {
-        "default" => Ok(RelayMode::Default),
-        "disabled" => Ok(RelayMode::Disabled),
-        other => Err(format!("{other:?} is not `default` or `disabled`")),
-    }
 }
 
 /// Whether an rsync `--info` list (`flist0,progress2`) turns progress on.

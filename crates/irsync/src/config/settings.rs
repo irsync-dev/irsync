@@ -8,12 +8,78 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use url::Url;
 
+/// An enum key of the config file: its values as the file spells them
+/// and as the message numbers them. [`spelled!`] writes each spelling
+/// once; the reader, the writer and `irsync config set` all go through it.
+pub trait Spelled: Copy + std::str::FromStr<Err = String> {
+    /// The value as the file spells it.
+    fn as_str(self) -> &'static str;
+    /// The value as the message holds it.
+    fn to_message(self) -> i32;
+    /// A value of the message; an error for a number no value has.
+    fn from_message(n: i32) -> Result<Self, String>;
+
+    /// The value of the message, if set.
+    fn from_optional(n: Option<i32>) -> Result<Option<Self>, String> {
+        n.map(Self::from_message).transpose()
+    }
+}
+
+/// `"a or b"`, `"a, b or c"`: the spellings a value may take.
+fn alternatives(spellings: &[&str]) -> String {
+    match spellings {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
+/// Implements [`Spelled`] and `FromStr` for `$T`, whose message enum is
+/// `pb::$pb` with variants of the same names; `$key` names the key in
+/// errors.
+macro_rules! spelled {
+    ($T:ident, $pb:ident, $key:literal, $($V:ident => $s:literal),+ $(,)?) => {
+        impl Spelled for $T {
+            fn as_str(self) -> &'static str {
+                match self {
+                    $($T::$V => $s),+
+                }
+            }
+
+            fn to_message(self) -> i32 {
+                (match self {
+                    $($T::$V => pb::$pb::$V),+
+                }) as i32
+            }
+
+            fn from_message(n: i32) -> Result<$T, String> {
+                match pb::$pb::try_from(n) {
+                    $(Ok(pb::$pb::$V) => Ok($T::$V),)+
+                    _ => Err(format!(concat!($key, ": unknown value {}"), n)),
+                }
+            }
+        }
+
+        impl std::str::FromStr for $T {
+            type Err = String;
+            fn from_str(s: &str) -> Result<$T, String> {
+                match s {
+                    $($s => Ok($T::$V),)+
+                    _ => Err(format!("{s:?}: expected {}", alternatives(&[$($s),+]))),
+                }
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RelayMode {
     #[default]
     Default,
     Disabled,
 }
+
+spelled!(RelayMode, RelayMode, "relay_mode", Default => "default", Disabled => "disabled");
 
 /// The congestion controller of the side that sends: the client's for a
 /// push, the daemon's for a pull. BBR keeps the bottleneck's queue short
@@ -27,15 +93,7 @@ pub enum Congestion {
     Cubic,
 }
 
-impl Congestion {
-    /// The name the config files use.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Congestion::Bbr => "bbr",
-            Congestion::Cubic => "cubic",
-        }
-    }
-}
+spelled!(Congestion, Congestion, "congestion", Bbr => "bbr", Cubic => "cubic");
 
 /// Whether a connection must have used the post-quantum hybrid key
 /// exchange (`X25519MLKEM768`). Every endpoint offers it first either way;
@@ -50,26 +108,7 @@ pub enum PqKeyExchange {
     Require,
 }
 
-impl PqKeyExchange {
-    /// The name the config files use.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            PqKeyExchange::Prefer => "prefer",
-            PqKeyExchange::Require => "require",
-        }
-    }
-}
-
-impl std::str::FromStr for PqKeyExchange {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s {
-            "prefer" => Ok(PqKeyExchange::Prefer),
-            "require" => Ok(PqKeyExchange::Require),
-            _ => Err(format!("{s:?}: expected prefer or require")),
-        }
-    }
-}
+spelled!(PqKeyExchange, PqKeyExchange, "pq_key_exchange", Prefer => "prefer", Require => "require");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {
@@ -204,15 +243,9 @@ impl OtlpProtocol {
     /// The protocol when neither the config file nor the environment
     /// names one.
     pub const DEFAULT: OtlpProtocol = OtlpProtocol::Http;
-
-    /// The name the config files use.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OtlpProtocol::Grpc => "grpc",
-            OtlpProtocol::Http => "http",
-        }
-    }
 }
+
+spelled!(OtlpProtocol, OtlpProtocol, "otlp_protocol", Grpc => "grpc", Http => "http");
 
 /// `[telemetry]`: OTLP export, for either side.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -270,61 +303,6 @@ impl Default for Settings {
             client: ClientSettings::default(),
             daemon: DaemonSettings::default(),
             telemetry: TelemetrySettings::default(),
-        }
-    }
-}
-
-impl RelayMode {
-    fn from_message(n: i32) -> Result<RelayMode, String> {
-        match pb::RelayMode::try_from(n) {
-            Ok(pb::RelayMode::Default) => Ok(RelayMode::Default),
-            Ok(pb::RelayMode::Disabled) => Ok(RelayMode::Disabled),
-            _ => Err(format!("relay_mode: unknown value {n}")),
-        }
-    }
-
-    /// `n` of the message, if set.
-    pub(crate) fn from_optional(n: Option<i32>) -> Result<Option<RelayMode>, String> {
-        n.map(RelayMode::from_message).transpose()
-    }
-}
-
-impl Congestion {
-    fn from_message(n: i32) -> Result<Congestion, String> {
-        match pb::Congestion::try_from(n) {
-            Ok(pb::Congestion::Bbr) => Ok(Congestion::Bbr),
-            Ok(pb::Congestion::Cubic) => Ok(Congestion::Cubic),
-            _ => Err(format!("congestion: unknown value {n}")),
-        }
-    }
-
-    /// `n` of the message, if set.
-    pub(crate) fn from_optional(n: Option<i32>) -> Result<Option<Congestion>, String> {
-        n.map(Congestion::from_message).transpose()
-    }
-}
-
-impl PqKeyExchange {
-    fn from_message(n: i32) -> Result<PqKeyExchange, String> {
-        match pb::PqKeyExchange::try_from(n) {
-            Ok(pb::PqKeyExchange::Prefer) => Ok(PqKeyExchange::Prefer),
-            Ok(pb::PqKeyExchange::Require) => Ok(PqKeyExchange::Require),
-            _ => Err(format!("pq_key_exchange: unknown value {n}")),
-        }
-    }
-
-    /// `n` of the message, if set.
-    pub(crate) fn from_optional(n: Option<i32>) -> Result<Option<PqKeyExchange>, String> {
-        n.map(PqKeyExchange::from_message).transpose()
-    }
-}
-
-impl OtlpProtocol {
-    fn from_message(n: i32) -> Result<OtlpProtocol, String> {
-        match pb::OtlpProtocol::try_from(n) {
-            Ok(pb::OtlpProtocol::Grpc) => Ok(OtlpProtocol::Grpc),
-            Ok(pb::OtlpProtocol::Http) => Ok(OtlpProtocol::Http),
-            _ => Err(format!("otlp_protocol: unknown value {n}")),
         }
     }
 }
@@ -408,10 +386,7 @@ impl TelemetrySettings {
     fn from_message(t: &pb::Telemetry) -> Result<TelemetrySettings, String> {
         Ok(TelemetrySettings {
             otlp_endpoint: url_from(t.otlp_endpoint.as_deref())?,
-            otlp_protocol: t
-                .otlp_protocol
-                .map(OtlpProtocol::from_message)
-                .transpose()?,
+            otlp_protocol: OtlpProtocol::from_optional(t.otlp_protocol)?,
         })
     }
 }

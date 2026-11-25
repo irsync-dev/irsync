@@ -9,23 +9,23 @@
 use super::clients::{Right, RIGHTS};
 use super::exports::{name_problem, not_absolute};
 use super::names::{invalid_name, valid_alias};
-use super::settings::{listen_problem, parse_debug_addr};
+use super::settings::{
+    listen_problem, parse_debug_addr, Congestion, OtlpProtocol, PqKeyExchange, RelayMode, Spelled,
+};
 use super::{duration, expand_tilde, line_of, ConfigError};
 use crate::authz::Access;
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
 use serde::{Deserialize, Deserializer};
-use spelled::{Congestion, OtlpProtocol, PqKeyExchange, RelayMode};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use toml::Spanned;
 use url::Url;
 
-// The serde shapes of the file. Field names and their order are those of
-// the structs `Config::parse` once read into, so that serde's messages (an
-// unknown field names the expected ones) stay the same.
+// The serde shapes of the file. Each field is a key, in the order the
+// writer writes them.
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,9 +56,9 @@ struct RawClient {
     ssh_install: Option<bool>,
     mdns: Option<bool>,
     relay: Option<UrlText>,
-    relay_mode: Option<RelayMode>,
-    congestion: Option<Congestion>,
-    pq_key_exchange: Option<PqKeyExchange>,
+    relay_mode: Option<Text<RelayMode>>,
+    congestion: Option<Text<Congestion>>,
+    pq_key_exchange: Option<Text<PqKeyExchange>>,
 }
 
 #[derive(Deserialize)]
@@ -74,9 +74,9 @@ struct RawDaemon {
     listen: Option<Vec<HostPort>>,
     portmap: Option<bool>,
     relay: Option<UrlText>,
-    relay_mode: Option<RelayMode>,
-    congestion: Option<Congestion>,
-    pq_key_exchange: Option<PqKeyExchange>,
+    relay_mode: Option<Text<RelayMode>>,
+    congestion: Option<Text<Congestion>>,
+    pq_key_exchange: Option<Text<PqKeyExchange>>,
     discovery: Option<RawDiscovery>,
     #[serde(default, deserialize_with = "de_opt_debug_addr")]
     debug_addr: Option<String>,
@@ -84,9 +84,8 @@ struct RawDaemon {
     allow_root: Option<bool>,
 }
 
-// Named as the typed struct was: serde's messages name it.
 #[derive(Deserialize)]
-#[serde(expecting = "struct Discovery", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 struct RawDiscovery {
     dht: Option<bool>,
     dns: Option<bool>,
@@ -97,7 +96,7 @@ struct RawDiscovery {
 #[serde(deny_unknown_fields)]
 struct RawTelemetry {
     otlp_endpoint: Option<UrlText>,
-    otlp_protocol: Option<OtlpProtocol>,
+    otlp_protocol: Option<Text<OtlpProtocol>>,
 }
 
 #[derive(Deserialize)]
@@ -105,9 +104,9 @@ struct RawTelemetry {
 struct RawServer {
     endpoint_id: Option<Spanned<String>>,
     relay: Option<UrlText>,
-    relay_mode: Option<RelayMode>,
-    congestion: Option<Congestion>,
-    pq_key_exchange: Option<PqKeyExchange>,
+    relay_mode: Option<Text<RelayMode>>,
+    congestion: Option<Text<Congestion>>,
+    pq_key_exchange: Option<Text<PqKeyExchange>>,
     address: Option<Vec<HostPort>>,
     parallel: Option<u32>,
     #[serde(default, deserialize_with = "de_opt_duration")]
@@ -151,42 +150,22 @@ struct RawExport {
     ro: Option<Vec<String>>,
 }
 
-/// The enums as the file spells them. Named as the typed enums are, should
-/// serde name them in a message.
-mod spelled {
-    use serde::Deserialize;
+/// An enum key's value, read with its one spelling ([`Spelled`]).
+struct Text<T>(T);
 
-    #[derive(Clone, Copy, Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    pub(super) enum RelayMode {
-        Default,
-        Disabled,
-    }
-
-    #[derive(Clone, Copy, Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    pub(super) enum Congestion {
-        Bbr,
-        Cubic,
-    }
-
-    #[derive(Clone, Copy, Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    pub(super) enum PqKeyExchange {
-        Prefer,
-        Require,
-    }
-
-    #[derive(Clone, Copy, Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    pub(super) enum OtlpProtocol {
-        Grpc,
-        Http,
+impl<'de, T: Spelled> Deserialize<'de> for Text<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Text<T>, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map(Text).map_err(serde::de::Error::custom)
     }
 }
 
-/// A URL as written, once it parses. Its serde messages are those of
-/// `Url`'s own `Deserialize`, which the file was once read with.
+/// The message's number for an enum key's value.
+fn number<T: Spelled>(t: Text<T>) -> i32 {
+    t.0.to_message()
+}
+
+/// A URL as written, once it parses.
 struct UrlText(String);
 
 impl<'de> Deserialize<'de> for UrlText {
@@ -208,7 +187,6 @@ impl<'de> Deserialize<'de> for UrlText {
 
 /// A duration: whole seconds, or text such as `"90m"`.
 fn de_opt_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
-    // `Raw` is named in serde's message for a value of neither kind.
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Raw {
@@ -365,9 +343,9 @@ fn client(r: RawClient) -> pb::Client {
         ssh_install: r.ssh_install,
         mdns: r.mdns,
         relay: r.relay.map(|u| u.0),
-        relay_mode: r.relay_mode.map(relay_mode),
-        congestion: r.congestion.map(congestion),
-        pq_key_exchange: r.pq_key_exchange.map(pq_key_exchange),
+        relay_mode: r.relay_mode.map(number),
+        congestion: r.congestion.map(number),
+        pq_key_exchange: r.pq_key_exchange.map(number),
         ..Default::default()
     }
 }
@@ -383,9 +361,9 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
         listen_set,
         portmap: r.portmap,
         relay: r.relay.map(|u| u.0),
-        relay_mode: r.relay_mode.map(relay_mode),
-        congestion: r.congestion.map(congestion),
-        pq_key_exchange: r.pq_key_exchange.map(pq_key_exchange),
+        relay_mode: r.relay_mode.map(number),
+        congestion: r.congestion.map(number),
+        pq_key_exchange: r.pq_key_exchange.map(number),
         discovery: r.discovery.map(|d| pb::Discovery {
             dht: d.dht,
             dns: d.dns,
@@ -402,12 +380,7 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
 fn telemetry(r: RawTelemetry) -> pb::Telemetry {
     pb::Telemetry {
         otlp_endpoint: r.otlp_endpoint.map(|u| u.0),
-        otlp_protocol: r.otlp_protocol.map(|p| {
-            (match p {
-                OtlpProtocol::Grpc => pb::OtlpProtocol::Grpc,
-                OtlpProtocol::Http => pb::OtlpProtocol::Http,
-            }) as i32
-        }),
+        otlp_protocol: r.otlp_protocol.map(number),
         ..Default::default()
     }
 }
@@ -451,9 +424,9 @@ fn servers(
             name,
             endpoint_id,
             relay: r.relay.map(|u| u.0),
-            relay_mode: r.relay_mode.map(relay_mode),
-            congestion: r.congestion.map(congestion),
-            pq_key_exchange: r.pq_key_exchange.map(pq_key_exchange),
+            relay_mode: r.relay_mode.map(number),
+            congestion: r.congestion.map(number),
+            pq_key_exchange: r.pq_key_exchange.map(number),
             address,
             address_set,
             parallel: r.parallel,
@@ -516,8 +489,7 @@ fn clients(
 }
 
 /// Validates every `[exports.NAME]`: reserved names, the export schema,
-/// absolute paths. In name order, as the old parse checked them; the entries
-/// keep the order of the file.
+/// absolute paths. In name order; the entries keep the order of the file.
 fn exports(
     raw: BTreeMap<String, Spanned<toml::Value>>,
     at: &impl Fn(usize, String) -> ConfigError,
@@ -589,25 +561,4 @@ fn addresses(values: Option<Vec<HostPort>>) -> (Vec<pb::Entry>, bool) {
 /// A path from a TOML string, which is always UTF-8.
 fn path_text(p: PathBuf) -> String {
     p.to_string_lossy().into_owned()
-}
-
-fn relay_mode(m: RelayMode) -> i32 {
-    (match m {
-        RelayMode::Default => pb::RelayMode::Default,
-        RelayMode::Disabled => pb::RelayMode::Disabled,
-    }) as i32
-}
-
-fn congestion(c: Congestion) -> i32 {
-    (match c {
-        Congestion::Bbr => pb::Congestion::Bbr,
-        Congestion::Cubic => pb::Congestion::Cubic,
-    }) as i32
-}
-
-fn pq_key_exchange(p: PqKeyExchange) -> i32 {
-    (match p {
-        PqKeyExchange::Prefer => pb::PqKeyExchange::Prefer,
-        PqKeyExchange::Require => pb::PqKeyExchange::Require,
-    }) as i32
 }
