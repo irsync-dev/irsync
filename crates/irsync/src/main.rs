@@ -351,11 +351,13 @@ const CLIENT_GC_AGE: std::time::Duration = irsync::config::settings::DORMANT_SES
 const CLIENT_GC_STALE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
-    let result = (|| -> anyhow::Result<()> {
+    let result = (|| -> anyhow::Result<usize> {
         let dir = Config::load(&file_paths(files))?.settings.state_dir;
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let (mut parts, mut sessions, mut entries) = (0usize, 0u32, 0usize);
+            // What could not be read or removed: the exit code is 23 then.
+            let mut errors = 0usize;
             let Ok(rd) = std::fs::read_dir(dir.join("index")) else {
                 if !log.quiet {
                     println!(
@@ -363,7 +365,7 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                         verb(dry_run)
                     );
                 }
-                return Ok(());
+                return Ok(0);
             };
             let mut files: Vec<PathBuf> = rd
                 .filter_map(|e| e.ok().map(|e| e.path()))
@@ -389,14 +391,20 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                             }
                         }
                         Ok(false) => eprintln!("irsync: {}: in use, kept", file.display()),
-                        Err(e) => eprintln!("irsync: {}: {e}", file.display()),
+                        Err(e) => {
+                            errors += 1;
+                            eprintln!("irsync: {}: {e}", file.display());
+                        }
                     }
                     continue;
                 }
                 match Index::root_of_file(&file) {
                     Ok(Some(r)) => roots.push(r),
                     Ok(None) => {}
-                    Err(e) => eprintln!("irsync: {}: {e}", file.display()),
+                    Err(e) => {
+                        errors += 1;
+                        eprintln!("irsync: {}: {e}", file.display());
+                    }
                 }
             }
             for root in &roots {
@@ -406,6 +414,7 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                 let index = match Index::open(&dir, &root) {
                     Ok(i) => i.into_handle(),
                     Err(e) => {
+                        errors += 1;
                         eprintln!("irsync: {}: {e}", root.display());
                         continue;
                     }
@@ -421,11 +430,15 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                         for (p, msg) in &r.errors {
                             eprintln!("irsync: {}: {msg}", root.join(p.to_os()).display());
                         }
+                        errors += r.errors.len();
                         parts += r.parts_removed.len();
                         sessions += r.sessions_removed;
                         entries += r.entries_removed;
                     }
-                    Err(e) => eprintln!("irsync: {}: {e}", root.display()),
+                    Err(e) => {
+                        errors += 1;
+                        eprintln!("irsync: {}: {e}", root.display());
+                    }
                 }
             }
             if !log.quiet {
@@ -440,11 +453,13 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                     verb(dry_run)
                 );
             }
-            Ok(())
+            Ok(errors)
         })
     })();
     match result {
-        Ok(()) => 0,
+        Ok(0) => 0,
+        // Some of it could not be done, as `index` says for its files.
+        Ok(_) => 23,
         Err(e) => {
             eprintln!("irsync gc: {e:#}");
             1

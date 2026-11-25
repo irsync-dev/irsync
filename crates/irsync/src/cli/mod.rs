@@ -351,7 +351,8 @@ pub enum Command {
     /// days under every local root irsync has synced, the index entries of
     /// files that are gone, and index files an older irsync left; prints
     /// the paths removed and a count. A sync does the same for its own root
-    /// at most daily.
+    /// at most daily. Exits 23 when something could not be read or
+    /// removed.
     Gc {
         /// List what would be removed without removing anything.
         #[arg(short = 'n', long)]

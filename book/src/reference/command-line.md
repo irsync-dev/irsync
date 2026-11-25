@@ -479,5 +479,6 @@ uses the same codes; the export listing, `irsync HOST:`, exits 0 or 1.
 
 The other commands exit 0 on success and 1 on an error, with these
 additions: `irsync index` and `irsync export update` exit 23 when a file could
-not be read or a directory could not be listed, and `irsync config get` exits
+not be read or a directory could not be listed, `irsync gc` exits 23 when
+something could not be read or removed (it goes on with the rest), and `irsync config get` exits
 1 for a key that is not set and has no default.
