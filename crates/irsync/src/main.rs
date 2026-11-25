@@ -783,7 +783,7 @@ fn client_key(
 ) -> anyhow::Result<iroh::SecretKey> {
     let (secret, source) = client_identity(explicit, settings, pass)?;
     if let KeySource::Generated(path) = &source {
-        eprintln!("generated identity {}", path.display());
+        eprintln!("irsync: generated identity {}", path.display());
         eprintln!("{}", irsync::identity::public_key_line(&secret, "irsync"));
         eprintln!("{}", secret.public());
     }
@@ -2186,7 +2186,7 @@ fn identity_of(
     let (secret, generated) = load_or_generate(path, pass, comment)
         .with_context(|| format!("identity {}", path.display()))?;
     if generated {
-        eprintln!("generated identity {}", path.display());
+        eprintln!("irsync: generated identity {}", path.display());
     }
     Ok(secret)
 }
@@ -2330,7 +2330,7 @@ fn print_client_identity(
 ) -> anyhow::Result<()> {
     let (secret, source) = client_identity(explicit, settings, pass)?;
     if let KeySource::Generated(p) = &source {
-        eprintln!("generated identity {}", p.display());
+        eprintln!("irsync: generated identity {}", p.display());
     }
     print_identity(&secret, IdRole::Client);
     Ok(())
@@ -2429,7 +2429,7 @@ fn run_show(f: &FilesArgs) -> i32 {
             );
             let (client, source) = client_identity(f.identity.as_deref(), settings, &pass)?;
             if let KeySource::Generated(p) = &source {
-                eprintln!("generated identity {}", p.display());
+                eprintln!("irsync: generated identity {}", p.display());
             }
             let client_line = irsync::identity::public_key_line(&client, "irsync");
             // Read-only, like `id show`: the daemon's key is never made here.

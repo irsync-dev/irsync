@@ -208,7 +208,7 @@ fn cli_init_twice_exits_2() {
     assert_eq!(out.status.code(), Some(2));
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.starts_with("error: ") && e.contains("already exists") && e.contains("fileset update"),
+        e.starts_with("fileset: ") && e.contains("already exists") && e.contains("fileset update"),
         "{e}"
     );
 }
@@ -225,7 +225,7 @@ fn cli_init_nested_manifest_exits_2() {
     assert_eq!(out.status.code(), Some(2));
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.starts_with("error: ")
+        e.starts_with("fileset: ")
             && e.contains("nested manifest at sub/.fileset.sqlite")
             && e.contains("not supported"),
         "{e}"
@@ -245,7 +245,7 @@ fn cli_init_inside_fileset_exits_2() {
     assert_eq!(out.status.code(), Some(2));
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.starts_with("error: ")
+        e.starts_with("fileset: ")
             && e.contains("inside the fileset")
             && e.contains(".fileset.sqlite")
             && e.contains("not supported"),
@@ -265,7 +265,7 @@ fn cli_update_missing_manifest_exits_2() {
     assert_eq!(out.status.code(), Some(2));
     let e = String::from_utf8_lossy(&out.stderr);
     assert!(
-        e.starts_with("error: ") && e.contains("no manifest") && e.contains("fileset init"),
+        e.starts_with("fileset: ") && e.contains("no manifest") && e.contains("fileset init"),
         "{e}"
     );
     assert!(!t.join(".fileset.sqlite").exists());
@@ -832,7 +832,7 @@ fn cli_verbose_with_closed_stdout_exits_2() {
         let out = verbose_with_closed_stdout(verb);
         let e = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(2), "{verb}: {:?} {e}", out.status);
-        assert!(e.contains("error: "), "{verb}: {e}");
+        assert!(e.contains("fileset: "), "{verb}: {e}");
         assert!(!e.contains("panicked"), "{verb}: {e}");
     }
 }

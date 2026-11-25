@@ -16,7 +16,7 @@ forwarding, dynamic DNS or SSH tunnel.
 
 You write no configuration file by hand. Each machine generates its key the
 first time a command needs it and says so on stderr:
-`generated identity <path>`.
+`irsync: generated identity <path>`.
 
 ## The quick way: over ssh
 
