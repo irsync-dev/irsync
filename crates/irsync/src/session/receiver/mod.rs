@@ -1,5 +1,5 @@
 //! The receiver role: walks its own tree and feeds both listings to the
-//! planner (`planner.rs`), which merge-joins them, decides per path
+//! planner ([`planner`]), which merge-joins them, decides per path
 //! (rsync-generator style) and applies directories, symlinks, specials and
 //! metadata. The regular files it requests with `PlanItem` are opened as verified `.part` writers when their
 //! chunk list arrives, filled from local copies and data streams, and
@@ -10,6 +10,12 @@
 //! Deletions (`--delete*`) run here too: before the transfers (asked for by
 //! the planner once both listings have ended) or after them, before the
 //! directory metadata pass. A dry run plans and reports but changes nothing.
+//!
+//! The parts: [`planner`] (the merge-join and the per-path decisions),
+//! [`file_io`] (opening, filling and finalizing `.part` writers, and routing
+//! data streams into them), `delete` (the deletion passes), `links` (hard
+//! links, placed last) and `resume` (restarting from a stored plan). The
+//! `.part` writer itself is [`crate::recv`].
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -39,14 +45,6 @@ use super::limits::{
 };
 use super::listing_stream::ListingOut;
 use super::parts::{self, Assembled, Assembly, ListBudget};
-use super::planner::apply_metadata_beneath;
-use super::planner::{
-    inflight_cap, parent_of, plan, replan, Deferred, Itemize, Linked, Planned, PlannerReport, Prior,
-};
-use super::recv_io::{
-    accept_streams, commit, copy_local_chunks, offer_bases, open_writer, sender_idx,
-    settle_identical, verify, Fill, Opened, Route, Routes,
-};
 use super::Outcome;
 use crate::delete::DeletePass;
 use crate::filter::FilterSet;
@@ -55,14 +53,21 @@ use crate::options::DeleteMode;
 use crate::recv::{FileWriter, FinalizeError, Verified};
 use crate::telemetry::meter::Counter;
 use crate::telemetry::PhaseKind;
-pub(super) use recv_delete::capped_paths;
+pub(super) use delete::capped_paths;
+use file_io::{
+    accept_streams, commit, copy_local_chunks, offer_bases, open_writer, sender_idx,
+    settle_identical, verify, Fill, Opened, Route, Routes,
+};
+use planner::apply_metadata_beneath;
+use planner::{
+    inflight_cap, parent_of, plan, replan, Deferred, Itemize, Linked, Planned, PlannerReport, Prior,
+};
 
-#[path = "recv_delete.rs"]
-mod recv_delete;
-#[path = "recv_links.rs"]
-mod recv_links;
-#[path = "recv_resume.rs"]
-mod recv_resume;
+mod delete;
+pub(super) mod file_io;
+mod links;
+pub(super) mod planner;
+mod resume;
 
 /// How long to wait for the sender to close its end after `SessionDone`.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -73,7 +78,7 @@ pub(super) const MAX_REREQUESTS: u32 = 3;
 /// Chunk lists a sender starts per file and connection: the first list,
 /// and per retry a `WithdrawChunkList` and the new list (see
 /// `SenderRole::retry`).
-const MAX_LIST_STARTS: u32 = 1 + 2 * super::sender_role::MAX_RETRIES;
+const MAX_LIST_STARTS: u32 = 1 + 2 * super::sender::MAX_RETRIES;
 /// How long a failed session waits for its own file tasks to stop.
 const TASK_DRAIN: Duration = Duration::from_secs(10);
 

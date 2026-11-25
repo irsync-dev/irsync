@@ -8,6 +8,8 @@
 //!
 //! Per-file state lives only while a file is in flight: it is dropped at its
 //! final ack or when the sender gives up on it.
+//!
+//! The data streams themselves are opened and filled by [`crate::send`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
@@ -37,7 +39,7 @@ use super::limits::{
 };
 use super::listing_stream::ListingOut;
 use super::parts::{records_at_most, split, ListCredit, ListStat, PART_RECORDS};
-use super::planner::MAX_INFLIGHT;
+use super::receiver::planner::MAX_INFLIGHT;
 use super::Outcome;
 use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict as FilterVerdict};

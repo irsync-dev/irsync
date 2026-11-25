@@ -34,8 +34,8 @@ use super::limits::{out_ceiling, LISTING_QUEUE};
 use super::listing_stream::{self, ListingSink};
 use super::single::{is_one_component, SingleFile};
 use super::{
-    receiver, sender_role, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey,
-    SessionRecord, SideHooks, SyncHello, HASH_WORKERS,
+    receiver, sender, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey, SessionRecord,
+    SideHooks, SyncHello, HASH_WORKERS,
 };
 use crate::filter::FilterSet;
 use crate::fs::meta::ApplyOpts;
@@ -1530,7 +1530,7 @@ async fn run_role(
     let sampler = crate::telemetry::enabled()
         .then(|| crate::telemetry::sampler::spawn(&ctx.meter, ctx.conn.clone()));
     let res = if sends {
-        sender_role::run(
+        sender::run(
             ctx.clone(),
             out.clone(),
             listing_out,

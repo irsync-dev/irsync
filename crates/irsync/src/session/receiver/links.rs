@@ -9,7 +9,7 @@ use irsync_proto::v1::{
 };
 
 use super::super::engine::blocking;
-use super::super::planner::{place_hardlink, Linked};
+use super::planner::{place_hardlink, Linked};
 use super::{LinkCheck, Receiver};
 use crate::fs::paths::RelPath;
 

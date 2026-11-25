@@ -60,7 +60,7 @@ pub(super) enum Ev {
     ProtocolError(String),
     /// Role-specific task completion.
     Recv(super::receiver::Done),
-    Send(super::sender_role::Done),
+    Send(super::sender::Done),
 }
 
 /// Handle the stream readers post peer events with: a frame waits while the

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use irsync_proto::v1::{control::Msg, plan_item::Action, PlanItem, SessionPlan};
 
 use super::super::engine::blocking;
-use super::super::planner::{mkdir_replacing, Deferred, DirEntry, PlannerReport};
+use super::planner::{mkdir_replacing, Deferred, DirEntry, PlannerReport};
 use super::Receiver;
 use crate::fs::paths::RelPath;
 
