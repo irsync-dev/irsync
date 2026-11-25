@@ -386,13 +386,6 @@ mod tests {
 
     fn control_variants() -> Vec<Msg> {
         vec![
-            Msg::Listing(v1::ListingEntry {
-                entry: Some(entry()),
-            }),
-            Msg::ListingEnd(v1::ListingEnd {
-                incomplete: true,
-                count: 300,
-            }),
             Msg::Plan(v1::PlanItem {
                 file_id: 1,
                 path: b"p".to_vec(),
@@ -478,7 +471,6 @@ mod tests {
                 weak: vec![1, 0xdead_beef],
                 strong: vec![9; 16],
             }),
-            Msg::ListingError(path_error()),
             Msg::ListRoom(v1::ListRoom { records: 64 }),
             Msg::MayPlace(v1::MayPlace { file_id: 6, gen: 1 }),
             Msg::PlaceVerdict(v1::PlaceVerdict {
@@ -688,6 +680,19 @@ mod tests {
             }
             .encode_to_vec(),
         ));
+        for frame in [
+            v1::listing_frame::Frame::Entry(entry()),
+            v1::listing_frame::Frame::Error(path_error()),
+            v1::listing_frame::Frame::End(v1::ListingEnd {
+                incomplete: true,
+                count: 300,
+            }),
+        ] {
+            cases.push((
+                "irsync.v1.ListingFrame",
+                v1::ListingFrame { frame: Some(frame) }.encode_to_vec(),
+            ));
+        }
         for msg in control_variants() {
             cases.push((
                 "irsync.v1.Control",
@@ -909,10 +914,9 @@ mod tests {
     #[test]
     fn every_truncation_still_adds_up() {
         let bytes = v1::Control {
-            msg: Some(Msg::ChunkListPart(match &control_variants()[9] {
-                Msg::ChunkListPart(p) => p.clone(),
-                _ => unreachable!(),
-            })),
+            msg: control_variants()
+                .into_iter()
+                .find(|m| matches!(m, Msg::ChunkListPart(_))),
         }
         .encode_to_vec();
         let d = desc("irsync.v1.Control");

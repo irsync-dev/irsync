@@ -560,6 +560,7 @@ pub struct DaemonHooks {
     pub basis_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub send_tasks_peak: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub tamper_frames: Option<FrameHook>,
+    pub tamper_listing: Option<ListingFrameHook>,
     pub close_quiet: Option<Duration>,
     pub close_timeout: Option<Duration>,
     pub stop_reading_after_done: bool,
@@ -934,11 +935,14 @@ pub struct SideHooks {
     /// `ListingEnd` (a lister that stops short).
     #[cfg(feature = "test-hooks")]
     pub cut_listing_after: Option<usize>,
-    /// Both roles: every outgoing frame of the control and listing streams
-    /// passes through this; the frames it returns go out instead (a test
-    /// drops, duplicates, alters or injects frames).
+    /// Both roles: every outgoing frame of the control stream passes
+    /// through this; the frames it returns go out instead (a test drops,
+    /// duplicates, alters or injects frames).
     #[cfg(feature = "test-hooks")]
     pub tamper_frames: Option<FrameHook>,
+    /// Both roles: as `tamper_frames`, for the listing stream.
+    #[cfg(feature = "test-hooks")]
+    pub tamper_listing: Option<ListingFrameHook>,
     /// Receiver: counts the `NeedChunks` re-requests it sends.
     #[cfg(feature = "test-hooks")]
     pub rerequests: Option<Arc<std::sync::atomic::AtomicU64>>,
@@ -988,40 +992,41 @@ impl PartsFault {
     }
 }
 
-/// The stream a frame goes out on (see [`SideHooks::tamper_frames`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamKind {
-    Control,
-    Listing,
-}
-
-/// Test hook: the frames to send in place of one outgoing frame (see
-/// [`SideHooks`]).
+/// Test hook: the frames to send in place of one outgoing control frame
+/// (see [`SideHooks`]).
 #[cfg(feature = "test-hooks")]
 pub type FrameHook = Arc<
-    dyn Fn(StreamKind, irsync_proto::v1::control::Msg) -> Vec<irsync_proto::v1::control::Msg>
+    dyn Fn(irsync_proto::v1::control::Msg) -> Vec<irsync_proto::v1::control::Msg> + Send + Sync,
+>;
+
+/// Test hook: the frames to send in place of one outgoing listing frame
+/// (see [`SideHooks`]).
+#[cfg(feature = "test-hooks")]
+pub type ListingFrameHook = Arc<
+    dyn Fn(irsync_proto::v1::listing_frame::Frame) -> Vec<irsync_proto::v1::listing_frame::Frame>
         + Send
         + Sync,
 >;
 
-/// [`SideHooks::tamper_frames`] as the stream writers carry it; empty (and
-/// a no-op) without test hooks.
+/// [`SideHooks::tamper_frames`] and [`SideHooks::tamper_listing`] as the
+/// stream writers carry them; empty (and a no-op) without test hooks.
 #[derive(Clone, Default)]
 pub(crate) struct Tamper {
     #[cfg(feature = "test-hooks")]
-    hook: Option<FrameHook>,
+    control: Option<FrameHook>,
+    #[cfg(feature = "test-hooks")]
+    listing: Option<ListingFrameHook>,
 }
 
 impl Tamper {
-    /// The frames to send in place of `msg` on a `kind` stream.
+    /// The frames to send in place of `msg` on the control stream.
     #[cfg(feature = "test-hooks")]
     pub(crate) fn frames(
         &self,
-        kind: StreamKind,
         msg: irsync_proto::v1::control::Msg,
     ) -> impl Iterator<Item = irsync_proto::v1::control::Msg> {
-        match &self.hook {
-            Some(h) => h(kind, msg),
+        match &self.control {
+            Some(h) => h(msg),
             None => vec![msg],
         }
         .into_iter()
@@ -1030,10 +1035,30 @@ impl Tamper {
     #[cfg(not(feature = "test-hooks"))]
     pub(crate) fn frames(
         &self,
-        _kind: StreamKind,
         msg: irsync_proto::v1::control::Msg,
     ) -> impl Iterator<Item = irsync_proto::v1::control::Msg> {
         std::iter::once(msg)
+    }
+
+    /// The frames to send in place of `frame` on the listing stream.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn listing_frames(
+        &self,
+        frame: irsync_proto::v1::listing_frame::Frame,
+    ) -> impl Iterator<Item = irsync_proto::v1::listing_frame::Frame> {
+        match &self.listing {
+            Some(h) => h(frame),
+            None => vec![frame],
+        }
+        .into_iter()
+    }
+
+    #[cfg(not(feature = "test-hooks"))]
+    pub(crate) fn listing_frames(
+        &self,
+        frame: irsync_proto::v1::listing_frame::Frame,
+    ) -> impl Iterator<Item = irsync_proto::v1::listing_frame::Frame> {
+        std::iter::once(frame)
     }
 }
 
@@ -1083,11 +1108,13 @@ impl SideHooks {
         false
     }
 
-    /// The `tamper_frames` hook for the stream writers.
+    /// The `tamper_frames` and `tamper_listing` hooks for the stream writers.
     pub(crate) fn tamper(&self) -> Tamper {
         Tamper {
             #[cfg(feature = "test-hooks")]
-            hook: self.tamper_frames.clone(),
+            control: self.tamper_frames.clone(),
+            #[cfg(feature = "test-hooks")]
+            listing: self.tamper_listing.clone(),
         }
     }
 

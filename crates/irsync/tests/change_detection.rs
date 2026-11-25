@@ -16,7 +16,7 @@ use irsync::fs::paths::RelPath;
 use irsync::hasher::HashHook;
 use irsync::platform::write_all_at;
 use irsync::session::reconnect::ReconnectOpts;
-use irsync::session::{FirstChunkHook, FrameHook, PartsFault, SideHooks, StreamKind};
+use irsync::session::{FirstChunkHook, FrameHook, PartsFault, SideHooks};
 use irsync_proto::v1::control::Msg;
 
 const KIB: usize = 1024;
@@ -256,8 +256,8 @@ fn head_after_first_chunk(src: PathBuf, fired: Arc<AtomicU32>) -> FirstChunkHook
 /// first 256 KiB of the source's `x.bin` (the only file), as a writer would
 /// right after the sender hashed it.
 fn head_before_may_place(src: PathBuf, asked: Arc<AtomicU32>) -> FrameHook {
-    Arc::new(move |kind, m| {
-        if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+    Arc::new(move |m| {
+        if matches!(m, Msg::MayPlace(_)) {
             let n = asked.fetch_add(1, Ordering::SeqCst) + 1;
             rewrite_head(&src.join("x.bin"), 300 + n, 10 + n);
         }
@@ -574,8 +574,8 @@ async fn paranoid_append_catches_a_same_size_tail_rewrite() {
         let asked = Arc::new(AtomicU32::new(0));
         let hook: FrameHook = {
             let (src, asked) = (src.clone(), asked.clone());
-            Arc::new(move |kind, m| {
-                if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+            Arc::new(move |m| {
+                if matches!(m, Msg::MayPlace(_)) {
                     let n = asked.fetch_add(1, Ordering::SeqCst) + 1;
                     let f = fs::File::options().write(true).open(&src).unwrap();
                     write_all_at(&f, &data(64 * KIB, 400 + n), (4 * MIB + 128 * KIB) as u64)
@@ -879,8 +879,8 @@ async fn vanished_and_failed_exits_23() {
         let src = h.src(flow).join("x.bin");
         let hook: FrameHook = {
             let asked = asked.clone();
-            Arc::new(move |kind, m| {
-                if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+            Arc::new(move |m| {
+                if matches!(m, Msg::MayPlace(_)) {
                     let n = asked.fetch_add(1, Ordering::SeqCst) + 1;
                     rewrite_head(&src, 500 + n, 20 + n);
                 }
@@ -919,8 +919,8 @@ async fn paranoid_recheck_second_change_exits_23() {
         let y = h.src(flow).join("y.txt");
         let hook: FrameHook = {
             let asked = asked.clone();
-            Arc::new(move |kind, m| {
-                if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+            Arc::new(move |m| {
+                if matches!(m, Msg::MayPlace(_)) {
                     let n = asked.fetch_add(1, Ordering::SeqCst) + 1;
                     fs::write(&y, format!("y, rewrite {n} before a MayPlace\n")).unwrap();
                     fs::File::options()
@@ -991,8 +991,8 @@ async fn paranoid_resumed_session_settles() {
 
 /// Counts the control frames of the kinds `count` names that a side sends.
 fn frame_counter(count: fn(&Msg) -> bool, n: Arc<AtomicU32>) -> FrameHook {
-    Arc::new(move |kind, m| {
-        if kind == StreamKind::Control && count(&m) {
+    Arc::new(move |m| {
+        if count(&m) {
             n.fetch_add(1, Ordering::SeqCst);
         }
         vec![m]
@@ -1093,14 +1093,12 @@ async fn paranoid_unchanged_tree_sends_no_replan() {
         let (replans, settled) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
         let mut local = h.local_side();
         let (r, s) = (replans.clone(), settled.clone());
-        local.hooks.tamper_frames = Some(Arc::new(move |kind, m| {
-            if kind == StreamKind::Control {
-                match m {
-                    Msg::Replan(_) => r.fetch_add(1, Ordering::SeqCst),
-                    Msg::Settled(_) => s.fetch_add(1, Ordering::SeqCst),
-                    _ => 0,
-                };
-            }
+        local.hooks.tamper_frames = Some(Arc::new(move |m| {
+            match m {
+                Msg::Replan(_) => r.fetch_add(1, Ordering::SeqCst),
+                Msg::Settled(_) => s.fetch_add(1, Ordering::SeqCst),
+                _ => 0,
+            };
             vec![m]
         }));
         let opts = opts_with(&["--paranoid"]);
@@ -1155,8 +1153,8 @@ async fn paranoid_delete_runs_after_the_replanned_files() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let hook: FrameHook = {
             let (z, seen) = (z.clone(), seen.clone());
-            Arc::new(move |kind, m| {
-                if kind == StreamKind::Control && matches!(m, Msg::MayPlace(_)) {
+            Arc::new(move |m| {
+                if matches!(m, Msg::MayPlace(_)) {
                     seen.lock().unwrap().push(z.exists());
                 }
                 vec![m]

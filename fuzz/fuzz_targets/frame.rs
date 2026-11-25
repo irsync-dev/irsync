@@ -12,7 +12,7 @@ use irsync::delta::{Basis, Op};
 use irsync::net::frame::{read_body, MAX_FRAME};
 use irsync_proto::v1::{
     control, AdminReply, AdminRequest, Control, DataChunk, DataStreamHeader, Hello, HelloReply,
-    ListingStreamHeader,
+    ListingFrame, ListingStreamHeader,
 };
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
@@ -38,6 +38,7 @@ fn body(b: &[u8]) {
     round_trip::<AdminRequest>(b);
     round_trip::<AdminReply>(b);
     round_trip::<ListingStreamHeader>(b);
+    round_trip::<ListingFrame>(b);
     round_trip::<DataStreamHeader>(b);
     if let Some(c) = round_trip::<DataChunk>(b) {
         // What the receiver does next with a chunk's operations.

@@ -24,10 +24,11 @@ message Record {
     irsync.v1.HelloReply hello_reply = 21;
     irsync.v1.Control control = 22;
     irsync.v1.ListingStreamHeader listing_stream_header = 23;
-    irsync.v1.DataStreamHeader data_stream_header = 24;
-    irsync.v1.DataChunk data_chunk = 25;
-    irsync.v1.AdminRequest admin_request = 26;
-    irsync.v1.AdminReply admin_reply = 27;
+    irsync.v1.ListingFrame listing_frame = 24;
+    irsync.v1.DataStreamHeader data_stream_header = 25;
+    irsync.v1.DataChunk data_chunk = 26;
+    irsync.v1.AdminRequest admin_request = 27;
+    irsync.v1.AdminReply admin_reply = 28;
     StreamEvent stream_event = 40;
     PathChange path_change = 41;
   }

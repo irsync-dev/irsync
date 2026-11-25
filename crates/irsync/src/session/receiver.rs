@@ -20,9 +20,9 @@ use std::time::Duration;
 
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, plan_item::Action, ChunkListPart, FileAck,
-    FileEntry, Itemized, ListRoom, ListingEnd, MayPlace, NeedChunks, PathError, PlaceVerdict,
-    PlanEntry, PlanItem, Replan, SessionDone, Settle, Settled, SourceStat,
+    control::Msg, file_ack::Status, file_entry::Kind, listing_frame::Frame, plan_item::Action,
+    ChunkListPart, FileAck, FileEntry, Itemized, ListRoom, ListingEnd, MayPlace, NeedChunks,
+    PathError, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone, Settle, Settled, SourceStat,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -1421,7 +1421,7 @@ impl Receiver {
             Ev::Ctrl(Msg::Ack(a)) if a.status == Status::SourceError as i32 => {
                 self.on_source_error(a.file_id, a.message).await
             }
-            Ev::Ctrl(Msg::ListingEnd(e)) => {
+            Ev::PeerListingEnd(e) => {
                 if e.incomplete {
                     tracing::warn!("the sender's listing is incomplete");
                 }
@@ -1640,7 +1640,7 @@ pub(super) async fn run(
         if ctx.opts.dry_run && root_missing {
             // A dry run does not create the root: there is nothing to list.
             drop(local_tx);
-            listing_out.send_first(Msg::ListingEnd(ListingEnd {
+            listing_out.send_first(Frame::End(ListingEnd {
                 incomplete: false,
                 count: 0,
             }));

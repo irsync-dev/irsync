@@ -6,29 +6,33 @@ import "irsync/v1/common.proto";
 
 // A session uses two bidirectional streams, both opened by the client right
 // after HelloAck. The control stream (the one that carried Hello) carries
-// every Control frame except the listing's. The listing stream carries each
-// side's listing, both directions: ListingEntry and ListingError (`listing`,
-// `listing_error`) frames in path order, then one ListingEnd, then the end
-// of that half. A side that does not list (a receiver resuming a complete
-// plan) ends its half without a frame.
+// Control frames. The listing stream carries each side's listing, both
+// directions: ListingFrame frames, entries and errors in path order, then
+// one `end`, then the end of that half. A side that does not list (a
+// receiver resuming a complete plan) ends its half without a frame.
 
 // The first frame of the client's half of the listing stream, before any
-// Control frame: the session (from HelloAck) the stream belongs to.
+// ListingFrame: the session (from HelloAck) the stream belongs to.
 message ListingStreamHeader {
   bytes session_id = 1;
 }
-message ListingEntry {
-  FileEntry entry = 1;
-} // path order ascending
-// `count`: the ListingEntry frames sent before it.
+// One frame of a side's listing.
+message ListingFrame {
+  oneof frame {
+    FileEntry entry = 1; // in path order, ascending
+    // A gap in the listing, sent in path order where the missing entries
+    // would have been: a directory that could not be read (right after its
+    // own entry) or an entry that could not be stat'ed. The listing goes
+    // on; `end` then says incomplete.
+    PathError error = 2;
+    ListingEnd end = 3; // the last frame
+  }
+}
+// `count`: the entries sent before it.
 message ListingEnd {
   bool incomplete = 1;
   uint64 count = 2;
 }
-// A gap in the listing (`listing_error`, a PathError), sent in path order
-// where the missing entries would have been: a directory that could not be
-// read (right after its own entry) or an entry that could not be stat'ed.
-// The listing goes on; ListingEnd then says incomplete.
 message PlanItem { // receiver -> sender
   uint64 file_id = 1;
   bytes path = 2;
@@ -257,30 +261,27 @@ message Heartbeat {
   // none of which finishes it, still moves the session on.
   uint64 received_bytes = 7;
 }
+// Every frame on the control stream after the handshake.
 message Control {
-  reserved 4; // ChunkList, one frame per list (never shipped)
   oneof msg {
-    ListingEntry listing = 1;
-    ListingEnd listing_end = 2;
-    PlanItem plan = 3;
+    PlanItem plan = 1;
+    ChunkListPart chunk_list_part = 2;
+    ListRoom list_room = 3;
+    ChunkBasis chunk_basis = 4;
     NeedChunks need = 5;
-    FileAck ack = 6;
-    SessionDone done = 7;
-    Error error = 8;
+    MayPlace may_place = 6;
+    PlaceVerdict place_verdict = 7;
+    FileAck ack = 8;
     Itemized itemized = 9;
     Heartbeat heartbeat = 10;
-    ChunkListPart chunk_list_part = 11;
-    ChunkBasis chunk_basis = 12;
-    PathError listing_error = 13;
-    ListRoom list_room = 14;
-    MayPlace may_place = 15;
-    PlaceVerdict place_verdict = 16;
-    Replan replan = 17;
-    Settle settle = 18;
-    Settled settled = 19;
-    CheckLink check_link = 20;
-    CheckLinksEnd check_links_end = 21;
-    Unlinked unlinked = 22;
-    LinksChecked links_checked = 23;
+    Settle settle = 11;
+    Replan replan = 12;
+    Settled settled = 13;
+    CheckLink check_link = 14;
+    CheckLinksEnd check_links_end = 15;
+    Unlinked unlinked = 16;
+    LinksChecked links_checked = 17;
+    SessionDone done = 18;
+    Error error = 19; // a fatal error; the session ends
   }
 }

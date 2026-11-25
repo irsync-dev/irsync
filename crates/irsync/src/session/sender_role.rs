@@ -2092,7 +2092,7 @@ pub(super) async fn run(
         };
         if let Listing::Undecided(_) = s.listing {
             match &ev {
-                Ev::PeerListing | Ev::Ctrl(Msg::ListingEnd(_)) => s.decide(true),
+                Ev::PeerListing | Ev::PeerListingEnd(_) => s.decide(true),
                 // A resumed plan with nothing left to request asks for the
                 // final re-check first.
                 Ev::Ctrl(
@@ -2155,7 +2155,7 @@ pub(super) async fn run(
                 .lists
                 .grant(r.records)
                 .map_err(|e| anyhow::anyhow!("protocol error: list room beyond the budget: {e}")),
-            Ev::Ctrl(Msg::ListingEnd(e)) => {
+            Ev::PeerListingEnd(e) => {
                 if e.incomplete {
                     let msg = "the receiver's listing is incomplete".to_string();
                     tracing::warn!("{msg}");

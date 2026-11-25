@@ -1378,6 +1378,7 @@ async fn serve_daemon_inner(
                 h.basis_peak = p.basis_peak;
                 h.send_tasks_peak = p.send_tasks_peak;
                 h.tamper_frames = p.tamper_frames;
+                h.tamper_listing = p.tamper_listing;
                 h.close_quiet = p.close_quiet;
                 h.close_timeout = p.close_timeout;
                 h.stop_reading_after_done = p.stop_reading_after_done;

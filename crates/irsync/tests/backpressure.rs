@@ -13,10 +13,11 @@ use std::time::Duration;
 use common::{archive_opts, assert_trees_equal, with_stream_window, Flow, Harness};
 use irsync::cli::DeleteMode;
 use irsync::session::reconnect::ReconnectOpts;
-use irsync::session::{PartsFault, StreamKind};
+use irsync::session::PartsFault;
 use irsync_proto::v1::control::Msg;
 use irsync_proto::v1::file_entry::Kind;
-use irsync_proto::v1::{ChunkBasis, FileEntry, ListingEntry, PlanItem};
+use irsync_proto::v1::listing_frame::Frame;
+use irsync_proto::v1::{ChunkBasis, FileEntry, PlanItem, Replan};
 
 const MIB: usize = 1024 * 1024;
 
@@ -100,35 +101,6 @@ fn twenty_files(root: &Path) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_listing_frame_on_the_control_stream_fails_the_session() {
-    within60(async {
-        let h = Harness::new().await;
-        fs::write(h.local.path().join("a"), b"a").unwrap();
-        let mut local = h.local_side();
-        let first = AtomicBool::new(true);
-        local.hooks.tamper_frames = Some(Arc::new(move |kind, msg| match (kind, msg) {
-            (StreamKind::Control, m @ Msg::Heartbeat(_)) if first.swap(false, SeqCst) => {
-                let entry = FileEntry {
-                    path: b"zz".to_vec(),
-                    kind: Kind::Regular as i32,
-                    size: 1,
-                    ..FileEntry::default()
-                };
-                vec![m, Msg::Listing(ListingEntry { entry: Some(entry) })]
-            }
-            (_, m) => vec![m],
-        }));
-        let err = h
-            .run_side(&archive_opts(), Flow::Push, local)
-            .await
-            .expect_err("a listing frame on the control stream was accepted");
-        assert!(format!("{err:#}").contains("protocol error"), "{err:#}");
-        assert!(!h.export.path().join("zz").exists());
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_listing_cut_short_fails_instead_of_planning_deletions() {
     within60(async {
         for mode in [DeleteMode::Before, DeleteMode::During, DeleteMode::After] {
@@ -144,9 +116,9 @@ async fn a_listing_cut_short_fails_instead_of_planning_deletions() {
             let mut opts = archive_opts();
             opts.delete = mode;
             let mut local = h.local_side();
-            local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-                (StreamKind::Listing, Msg::ListingEnd(_)) => vec![],
-                (_, m) => vec![m],
+            local.hooks.tamper_listing = Some(Arc::new(|f| match f {
+                Frame::End(_) => vec![],
+                f => vec![f],
             }));
             match h.run_side(&opts, Flow::Push, local).await {
                 Err(_) => {}
@@ -343,7 +315,7 @@ async fn a_peer_flooding_heartbeats_is_throttled_not_fatal() {
         let peak = Arc::new(AtomicUsize::new(0));
         h.daemon.hooks.lock().unwrap().peer_events_peak = Some(peak.clone());
         let mut local = h.local_side();
-        local.hooks.tamper_frames = Some(Arc::new(|_, msg| match msg {
+        local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
             m @ Msg::Heartbeat(_) => vec![m; 2000],
             m => vec![m],
         }));
@@ -379,7 +351,7 @@ async fn a_peer_flooding_acks_fills_the_queue_and_is_throttled() {
         let flooded = Arc::new(AtomicUsize::new(0));
         let mut local = h.local_side();
         let f = flooded.clone();
-        local.hooks.tamper_frames = Some(Arc::new(move |_, msg| match msg {
+        local.hooks.tamper_frames = Some(Arc::new(move |msg| match msg {
             m @ Msg::Ack(_) if f.fetch_add(1, SeqCst) < 2 => vec![m; 1500],
             m => vec![m],
         }));
@@ -656,8 +628,8 @@ async fn bases_above_the_budget_fail_the_session() {
         h.daemon.hooks.lock().unwrap().basis_budget = Some(64 * 1024);
         let mut local = h.local_side();
         local.hooks.basis_budget = Some(64 * 1024);
-        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-            (StreamKind::Control, Msg::ChunkBasis(b)) => (0..10_000u32)
+        local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
+            Msg::ChunkBasis(b) => (0..10_000u32)
                 .map(|k| {
                     Msg::ChunkBasis(ChunkBasis {
                         chunk_idx: b.chunk_idx.wrapping_add(k),
@@ -665,7 +637,7 @@ async fn bases_above_the_budget_fail_the_session() {
                     })
                 })
                 .collect(),
-            (_, m) => vec![m],
+            m => vec![m],
         }));
         let err = h
             .run_side(&archive_opts(), flow, local)
@@ -785,13 +757,13 @@ async fn a_chunk_list_beyond_the_room_fails_the_session() {
         let mut local = h.local_side();
         local.hooks.list_budget = Some(LIST_ROOM);
         local.hooks.chunk_list_part_records = Some(3);
-        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-            (StreamKind::Control, Msg::ChunkListPart(mut p)) => {
+        local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
+            Msg::ChunkListPart(mut p) => {
                 // Every part: they must agree for the list to look sound.
                 p.total = LIST_ROOM as u32 + 1;
                 vec![Msg::ChunkListPart(p)]
             }
-            (_, m) => vec![m],
+            m => vec![m],
         }));
         let err = h
             .run_side(&archive_opts(), flow, local)
@@ -812,12 +784,12 @@ async fn a_chunk_list_for_an_unplanned_file_fails_the_session() {
         let h = Harness::new().await;
         fs::write(h.src(flow).join("f.bin"), data(MIB, 8)).unwrap();
         let mut local = h.local_side();
-        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-            (StreamKind::Control, Msg::ChunkListPart(mut p)) => {
+        local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
+            Msg::ChunkListPart(mut p) => {
                 p.file_id += 1000;
                 vec![Msg::ChunkListPart(p)]
             }
-            (_, m) => vec![m],
+            m => vec![m],
         }));
         let err = h
             .run_side(&archive_opts(), flow, local)
@@ -922,22 +894,21 @@ async fn more_plans_than_the_window_fail_the_session() {
         fs::write(h.src(flow).join("z"), data(4096, 1)).unwrap();
         let first = AtomicBool::new(true);
         let local = h.local_side();
-        h.daemon.hooks.lock().unwrap().tamper_frames =
-            Some(Arc::new(move |kind, msg| match (kind, msg) {
-                (StreamKind::Control, Msg::Plan(p)) if first.swap(false, SeqCst) => {
-                    assert_eq!(p.path, b"z", "only z is planned");
-                    std::iter::once(Msg::Plan(p.clone()))
-                        .chain((0..5000u64).map(|k| {
-                            Msg::Plan(PlanItem {
-                                file_id: p.file_id + 1_000_000 * (k + 1),
-                                path: format!("s{k:04}").into_bytes(),
-                                ..p.clone()
-                            })
-                        }))
-                        .collect()
-                }
-                (_, m) => vec![m],
-            }));
+        h.daemon.hooks.lock().unwrap().tamper_frames = Some(Arc::new(move |msg| match msg {
+            Msg::Plan(p) if first.swap(false, SeqCst) => {
+                assert_eq!(p.path, b"z", "only z is planned");
+                std::iter::once(Msg::Plan(p.clone()))
+                    .chain((0..5000u64).map(|k| {
+                        Msg::Plan(PlanItem {
+                            file_id: p.file_id + 1_000_000 * (k + 1),
+                            path: format!("s{k:04}").into_bytes(),
+                            ..p.clone()
+                        })
+                    }))
+                    .collect()
+            }
+            m => vec![m],
+        }));
         let err = h
             .run_side(&archive_opts(), flow, local)
             .await
@@ -953,11 +924,10 @@ async fn more_plans_than_the_window_fail_the_session() {
 /// the first one goes out as `first` makes it (a test adds plans around it).
 fn tamper_first_plan(h: &Harness, first: impl Fn(PlanItem) -> Vec<Msg> + Send + Sync + 'static) {
     let once = AtomicBool::new(true);
-    h.daemon.hooks.lock().unwrap().tamper_frames =
-        Some(Arc::new(move |kind, msg| match (kind, msg) {
-            (StreamKind::Control, Msg::Plan(p)) if once.swap(false, SeqCst) => first(p),
-            (_, m) => vec![m],
-        }));
+    h.daemon.hooks.lock().unwrap().tamper_frames = Some(Arc::new(move |msg| match msg {
+        Msg::Plan(p) if once.swap(false, SeqCst) => first(p),
+        m => vec![m],
+    }));
 }
 
 /// A receiver that asks for a path the sender never listed (under a fresh
@@ -1027,14 +997,13 @@ async fn list_room_beyond_the_budget_fails_the_session() {
         for i in 0..3 {
             fs::write(h.src(flow).join(format!("f{i}")), data(MIB, 30 + i)).unwrap();
         }
-        h.daemon.hooks.lock().unwrap().tamper_frames =
-            Some(Arc::new(|kind, msg| match (kind, msg) {
-                (StreamKind::Control, Msg::ListRoom(mut r)) => {
-                    r.records += 1;
-                    vec![Msg::ListRoom(r)]
-                }
-                (_, m) => vec![m],
-            }));
+        h.daemon.hooks.lock().unwrap().tamper_frames = Some(Arc::new(|msg| match msg {
+            Msg::ListRoom(mut r) => {
+                r.records += 1;
+                vec![Msg::ListRoom(r)]
+            }
+            m => vec![m],
+        }));
         let err = h
             .run_side(&archive_opts(), flow, h.local_side())
             .await
@@ -1058,8 +1027,8 @@ async fn a_chunk_list_started_too_often_fails_the_session() {
         let h = Harness::new().await;
         fs::write(h.src(flow).join("f.bin"), data(MIB, 40)).unwrap();
         let mut local = h.local_side();
-        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-            (StreamKind::Control, Msg::ChunkListPart(p)) if p.first == 0 && p.total > 0 => {
+        local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
+            Msg::ChunkListPart(p) if p.first == 0 && p.total > 0 => {
                 let empty = irsync_proto::v1::ChunkListPart {
                     file_id: p.file_id,
                     ..Default::default()
@@ -1068,7 +1037,7 @@ async fn a_chunk_list_started_too_often_fails_the_session() {
                 v.push(Msg::ChunkListPart(p));
                 v
             }
-            (_, m) => vec![m],
+            m => vec![m],
         }));
         let err = h
             .run_side(&archive_opts(), flow, local)
@@ -1135,11 +1104,11 @@ async fn repeated_needs_do_not_multiply_sends() {
         h.daemon.hooks.lock().unwrap().send_tasks_peak = Some(peak.clone());
         let mut local = h.local_side();
         local.hooks.max_inflight = Some(8);
-        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-            (StreamKind::Control, Msg::Need(n)) if !n.chunk_idx.is_empty() => {
+        local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
+            Msg::Need(n) if !n.chunk_idx.is_empty() => {
                 vec![Msg::Need(n); 500]
             }
-            (_, m) => vec![m],
+            m => vec![m],
         }));
         let opts = archive_opts();
         let out = h
@@ -1177,11 +1146,11 @@ async fn duplicate_streams_stopped_mid_write_are_not_failures() {
             .unwrap();
         }
         let mut local = h.local_side();
-        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-            (StreamKind::Control, Msg::Need(n)) if !n.chunk_idx.is_empty() => {
+        local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
+            Msg::Need(n) if !n.chunk_idx.is_empty() => {
                 vec![Msg::Need(n); 20]
             }
-            (_, m) => vec![m],
+            m => vec![m],
         }));
         let opts = archive_opts();
         let out = h
@@ -1232,12 +1201,12 @@ async fn a_listing_count_mismatch_fails_the_session() {
         let h = Harness::new().await;
         fs::write(h.local.path().join("a"), b"a").unwrap();
         let mut local = h.local_side();
-        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-            (StreamKind::Listing, Msg::ListingEnd(mut e)) => {
+        local.hooks.tamper_listing = Some(Arc::new(|f| match f {
+            Frame::End(mut e) => {
                 e.count += 1;
-                vec![Msg::ListingEnd(e)]
+                vec![Frame::End(e)]
             }
-            (_, m) => vec![m],
+            f => vec![f],
         }));
         let err = h
             .run_side(&archive_opts(), Flow::Push, local)
@@ -1260,10 +1229,7 @@ async fn a_listing_that_ends_without_a_frame_fails_the_session() {
         let h = Harness::new().await;
         fs::write(h.local.path().join("a"), b"a").unwrap();
         let mut local = h.local_side();
-        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-            (StreamKind::Listing, _) => vec![],
-            (_, m) => vec![m],
-        }));
+        local.hooks.tamper_listing = Some(Arc::new(|_| vec![]));
         let err = h
             .run_side(&archive_opts(), Flow::Push, local)
             .await
@@ -1394,8 +1360,8 @@ async fn the_daemon_stops_waiting_for_a_writer_the_client_does_not_read() {
             d.close_quiet = Some(Duration::from_secs(2));
             // As above: not the fixed 10 s for the client to close.
             d.close_timeout = Some(Duration::from_secs(1));
-            d.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-                (StreamKind::Control, m @ Msg::Done(_)) => {
+            d.tamper_frames = Some(Arc::new(|msg| match msg {
+                m @ Msg::Done(_) => {
                     let tail = Msg::Itemized(irsync_proto::v1::Itemized {
                         path: vec![b'x'; 3600],
                         code: ".d..p......".into(),
@@ -1404,7 +1370,7 @@ async fn the_daemon_stops_waiting_for_a_writer_the_client_does_not_read() {
                     v.push(m);
                     v
                 }
-                (_, m) => vec![m],
+                m => vec![m],
             }));
         }
         let mut local = h.local_side();
@@ -1449,8 +1415,8 @@ async fn the_client_stops_waiting_for_a_writer_the_daemon_does_not_read() {
         }
         let mut local = h.local_side();
         local.hooks.close_quiet = Some(Duration::from_secs(2));
-        local.hooks.tamper_frames = Some(Arc::new(|kind, msg| match (kind, msg) {
-            (StreamKind::Control, m @ Msg::Done(_)) => {
+        local.hooks.tamper_frames = Some(Arc::new(|msg| match msg {
+            m @ Msg::Done(_) => {
                 let tail = Msg::Itemized(irsync_proto::v1::Itemized {
                     path: vec![b'x'; 3600],
                     code: ".d..p......".into(),
@@ -1459,7 +1425,7 @@ async fn the_client_stops_waiting_for_a_writer_the_daemon_does_not_read() {
                 v.extend(std::iter::repeat_n(tail, 8000));
                 v
             }
-            (_, m) => vec![m],
+            m => vec![m],
         }));
         let started = std::time::Instant::now();
         let out = h
@@ -1479,7 +1445,7 @@ async fn the_client_stops_waiting_for_a_writer_the_daemon_does_not_read() {
 
 /// A sender whose lister stops short (five frames, no `ListingEnd`), as
 /// one that fails mid-listing, and which then fails for good (the client's
-/// first `PlanItem` comes behind a listing frame on the control stream):
+/// first `PlanItem` comes behind a `Replan`, which only a sender sends):
 /// the client must report the daemon's error, never the transport error of
 /// a listing cut short, which would be retried.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1491,22 +1457,28 @@ async fn a_sender_whose_listing_ends_short_reports_its_own_error() {
         h.daemon.hooks.lock().unwrap().cut_listing_after = Some(5);
         let mut local = h.local_side();
         let first = AtomicBool::new(true);
-        local.hooks.tamper_frames = Some(Arc::new(move |kind, msg| match (kind, msg) {
-            (StreamKind::Control, m @ Msg::Plan(_)) if first.swap(false, SeqCst) => {
+        local.hooks.tamper_frames = Some(Arc::new(move |msg| match msg {
+            m @ Msg::Plan(_) if first.swap(false, SeqCst) => {
                 let entry = FileEntry {
                     path: b"zz".to_vec(),
                     kind: Kind::Regular as i32,
                     ..FileEntry::default()
                 };
-                vec![Msg::Listing(ListingEntry { entry: Some(entry) }), m]
+                vec![
+                    Msg::Replan(Replan {
+                        path: b"zz".to_vec(),
+                        entry: Some(entry),
+                    }),
+                    m,
+                ]
             }
-            (_, m) => vec![m],
+            m => vec![m],
         }));
         let (out, _) = h
             .run_reconnect(&archive_opts(), flow, no_reconnect(), local)
             .await;
         let err = format!("{:#}", out.expect_err("a broken protocol was accepted"));
-        assert!(err.contains("listing frame on the control stream"), "{err}");
+        assert!(err.contains("unexpected Replan from the receiver"), "{err}");
     })
     .await;
 }
@@ -1534,21 +1506,27 @@ async fn a_sender_failing_before_its_listing_reports_its_own_error() {
         for i in 0..50 {
             let mut local = h.local_side();
             let first = AtomicBool::new(true);
-            local.hooks.tamper_frames = Some(Arc::new(move |kind, msg| match (kind, msg) {
-                (StreamKind::Control, m) if first.swap(false, SeqCst) => {
+            local.hooks.tamper_frames = Some(Arc::new(move |msg| match msg {
+                m if first.swap(false, SeqCst) => {
                     let entry = FileEntry {
                         path: b"zz".to_vec(),
                         kind: Kind::Regular as i32,
                         ..FileEntry::default()
                     };
-                    vec![Msg::Listing(ListingEntry { entry: Some(entry) }), m]
+                    vec![
+                        Msg::Replan(Replan {
+                            path: b"zz".to_vec(),
+                            entry: Some(entry),
+                        }),
+                        m,
+                    ]
                 }
-                (_, m) => vec![m],
+                m => vec![m],
             }));
             let (out, _) = h.run_reconnect(&opts, flow, no_reconnect(), local).await;
             let err = format!("{:#}", out.expect_err("a broken protocol was accepted"));
             assert!(
-                err.contains("listing frame on the control stream"),
+                err.contains("unexpected Replan from the receiver"),
                 "run {i}: {err}"
             );
         }

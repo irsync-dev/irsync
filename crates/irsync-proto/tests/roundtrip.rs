@@ -110,23 +110,11 @@ fn hello_reply_arms_stay_apart() {
 fn control_oneof_roundtrips() {
     use irsync_proto::v1::{
         control::Msg, file_ack::Status, plan_item::Action, ChunkBasis, ChunkListPart, ChunkRecord,
-        Control, Error, FileAck, FileEntry, Hash, ListingEnd, ListingEntry, MayPlace, NeedChunks,
-        PlaceVerdict, PlanItem, SessionDone,
+        Control, Error, FileAck, Hash, MayPlace, NeedChunks, PlaceVerdict, PlanItem, SessionDone,
     };
     use prost::Message;
     let h = |b: u8| Hash { bytes: vec![b; 32] };
     let msgs = vec![
-        Msg::Listing(ListingEntry {
-            entry: Some(FileEntry {
-                path: b"dir/\xff\xfe".to_vec(),
-                size: 42,
-                ..Default::default()
-            }),
-        }),
-        Msg::ListingEnd(ListingEnd {
-            incomplete: true,
-            count: 9,
-        }),
         Msg::Plan(PlanItem {
             file_id: 3,
             path: b"a/\xff".to_vec(),
@@ -228,6 +216,34 @@ fn control_oneof_roundtrips() {
         let c = Control { msg: Some(m) };
         let back = Control::decode(c.encode_to_vec().as_slice()).unwrap();
         assert_eq!(back, c);
+    }
+}
+
+#[test]
+fn listing_frame_oneof_roundtrips() {
+    use irsync_proto::v1::{listing_frame::Frame, FileEntry, ListingEnd, ListingFrame, PathError};
+    use prost::Message;
+    let frames = [
+        Frame::Entry(FileEntry {
+            path: b"dir/\xff\xfe".to_vec(),
+            size: 42,
+            ..Default::default()
+        }),
+        Frame::Error(PathError {
+            path: b"dir".to_vec(),
+            message: "unreadable".into(),
+        }),
+        Frame::End(ListingEnd {
+            incomplete: true,
+            count: 9,
+        }),
+    ];
+    for f in frames {
+        let m = ListingFrame { frame: Some(f) };
+        assert_eq!(
+            ListingFrame::decode(m.encode_to_vec().as_slice()).unwrap(),
+            m
+        );
     }
 }
 

@@ -64,14 +64,15 @@ A session uses two bidirectional streams, both opened by the client, and many
 unidirectional ones.
 
 - **The control stream** is the first bidirectional stream. It carries `Hello`
-  and the `HelloReply`, then every `Control` frame except the listing's.
+  and the `HelloReply`, then `Control` frames.
 - **The listing stream** is the second. The client opens it right after
   `HelloAck` and starts it with a `ListingStreamHeader` naming the session.
-  Each half then carries one side's listing: `ListingEntry` frames in path
-  order, a `ListingError` wherever entries are missing (a directory that could
-  not be read, right after its own entry; an entry that could not be stat'ed),
-  one `ListingEnd` with the count and an `incomplete` flag, and the end of the
-  half. A side that does not list, a receiver resuming a complete plan, ends
+  Each half then carries one side's listing as `ListingFrame`s: an `entry`
+  (a `FileEntry`) per path, in path order; an `error` (a `PathError`)
+  wherever entries are missing (a directory that could not be read, right
+  after its own entry; an entry that could not be stat'ed); one `end` (a
+  `ListingEnd`, with the count of entries and an `incomplete` flag); and the
+  end of the half. A side that does not list, a receiver resuming a complete plan, ends
   its half without a frame. The listing has its own stream so that a planner
   that stops taking it, while it waits for files in flight to finish, stalls
   only the listing and never the frames that finish those files.

@@ -452,10 +452,8 @@ async fn links_to_files_placed_before_a_drop_are_checked() {
         let checks = Arc::new(AtomicU32::new(0));
         let counter: irsync::session::FrameHook = {
             let checks = checks.clone();
-            Arc::new(move |kind, m| {
-                if kind == irsync::session::StreamKind::Control
-                    && matches!(m, irsync_proto::v1::control::Msg::CheckLink(_))
-                {
+            Arc::new(move |m| {
+                if matches!(m, irsync_proto::v1::control::Msg::CheckLink(_)) {
                     checks.fetch_add(1, Ordering::SeqCst);
                 }
                 vec![m]
@@ -510,10 +508,8 @@ async fn links_to_files_placed_during_a_drop_are_checked() {
         let checks = Arc::new(AtomicU32::new(0));
         let counter: irsync::session::FrameHook = {
             let checks = checks.clone();
-            Arc::new(move |kind, m| {
-                if kind == irsync::session::StreamKind::Control
-                    && matches!(m, irsync_proto::v1::control::Msg::CheckLink(_))
-                {
+            Arc::new(move |m| {
+                if matches!(m, irsync_proto::v1::control::Msg::CheckLink(_)) {
                     checks.fetch_add(1, Ordering::SeqCst);
                 }
                 vec![m]

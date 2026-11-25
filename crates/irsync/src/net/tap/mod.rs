@@ -17,7 +17,7 @@ use iroh::EndpointId;
 use irsync_proto::capture::v1::{record, stream_event, Direction, PathChange, Record, StreamEvent};
 use irsync_proto::v1::{
     control, AdminReply, AdminRequest, Control, DataChunk, DataStreamHeader, Hello, HelloReply,
-    ListingStreamHeader,
+    ListingFrame, ListingStreamHeader,
 };
 
 mod capture;
@@ -51,6 +51,7 @@ wire_msg! {
     Hello => Hello,
     HelloReply => HelloReply,
     ListingStreamHeader => ListingStreamHeader,
+    ListingFrame => ListingFrame,
     DataChunk => DataChunk,
     AdminRequest => AdminRequest,
     AdminReply => AdminReply,

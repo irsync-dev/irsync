@@ -33,35 +33,55 @@ fn control_heartbeat_golden_bytes() {
 
 #[test]
 fn control_list_room_golden_bytes() {
-    // list_room = 14, records = 1 (varint 300)
+    // list_room = 3, records = 1 (varint 300)
     let room = enc(Msg::ListRoom(ListRoom { records: 300 }));
-    assert_eq!(room, [0x72, 0x03, 0x08, 0xAC, 0x02]);
+    assert_eq!(room, [0x1A, 0x03, 0x08, 0xAC, 0x02]);
 }
 
 #[test]
 fn control_may_place_golden_bytes() {
-    // may_place = 15, file_id = 1 (varint 300), gen = 2
+    // may_place = 6, file_id = 1 (varint 300), gen = 2
     let m = enc(Msg::MayPlace(MayPlace {
         file_id: 300,
         gen: 2,
     }));
-    assert_eq!(m, [0x7A, 0x05, 0x08, 0xAC, 0x02, 0x10, 0x02]);
+    assert_eq!(m, [0x32, 0x05, 0x08, 0xAC, 0x02, 0x10, 0x02]);
 }
 
 #[test]
 fn control_place_verdict_golden_bytes() {
-    // place_verdict = 16 (two-byte tag), file_id = 1, changed = 2, gen = 3
+    // place_verdict = 7, file_id = 1, changed = 2, gen = 3
     let v = enc(Msg::PlaceVerdict(PlaceVerdict {
         file_id: 7,
         changed: true,
         gen: 4,
     }));
-    assert_eq!(v, [0x82, 0x01, 0x06, 0x08, 0x07, 0x10, 0x01, 0x18, 0x04]);
+    assert_eq!(v, [0x3A, 0x06, 0x08, 0x07, 0x10, 0x01, 0x18, 0x04]);
+}
+
+#[test]
+fn control_links_checked_golden_bytes() {
+    // links_checked = 17 (two-byte tag), empty
+    let l = enc(Msg::LinksChecked(irsync_proto::v1::LinksChecked {}));
+    assert_eq!(l, [0x8A, 0x01, 0x00]);
+}
+
+#[test]
+fn listing_frame_golden_bytes() {
+    use irsync_proto::v1::{listing_frame::Frame, ListingEnd, ListingFrame};
+    // end = 3, incomplete = 1, count = 2
+    let f = ListingFrame {
+        frame: Some(Frame::End(ListingEnd {
+            incomplete: true,
+            count: 5,
+        })),
+    };
+    assert_eq!(f.encode_to_vec(), [0x1A, 0x04, 0x08, 0x01, 0x10, 0x05]);
 }
 
 #[test]
 fn control_chunk_list_part_golden_bytes() {
-    // chunk_list_part = 11, with a nested Hash and a nested ChunkRecord
+    // chunk_list_part = 2, with a nested Hash and a nested ChunkRecord
     let part = enc(Msg::ChunkListPart(ChunkListPart {
         file_id: 1,
         size: 2,
@@ -90,7 +110,7 @@ fn control_chunk_list_part_golden_bytes() {
     assert_eq!(
         part,
         [
-            0x5A, 0x31, 0x08, 0x01, 0x10, 0x02, 0x1A, 0x04, 0x0A, 0x02, 0xAB, 0xAB, 0x20, 0x03,
+            0x12, 0x31, 0x08, 0x01, 0x10, 0x02, 0x1A, 0x04, 0x0A, 0x02, 0xAB, 0xAB, 0x20, 0x03,
             0x32, 0x09, 0x08, 0x04, 0x10, 0x05, 0x1A, 0x03, 0x0A, 0x01, 0xCD, 0x38, 0x01, 0x40,
             0x06, 0x48, 0x07, 0x50, 0x08, 0x58, 0x09, 0x60, 0x0A, 0x6A, 0x01, 0x75, 0x72, 0x01,
             0x67, 0x78, 0x0B, 0x80, 0x01, 0x0C, 0x88, 0x01, 0x0D
