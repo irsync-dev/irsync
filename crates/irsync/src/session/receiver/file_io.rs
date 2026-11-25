@@ -1536,10 +1536,9 @@ fn account(ctx: &Ctx, route: &Route, bytes: &AtomicU64, wire: u64) {
     ctx.progress.store(true, Ordering::Relaxed);
     ctx.busy.received.fetch_add(wire, Ordering::Relaxed);
     ctx.activity.fetch_add(1, Ordering::Relaxed);
-    ctx.hooks
-        .bus
+    ctx.bus
         .emit(crate::session::Event::FileBytes(route.path.clone(), wire));
-    ctx.hooks.bus.emit(crate::session::Event::Bytes(wire));
+    ctx.bus.emit(crate::session::Event::Bytes(wire));
     ctx.meter.add(Counter::BytesLiteral, wire);
     let _total = bytes.fetch_add(wire, Ordering::Relaxed) + wire;
     #[cfg(feature = "test-hooks")]

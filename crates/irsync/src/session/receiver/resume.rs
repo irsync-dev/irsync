@@ -74,7 +74,7 @@ impl Receiver {
         // how much of that needs nothing more: all but the files requested.
         if let Some(listed) = &plan.listed {
             let settled = listed.total_size.saturating_sub(open_bytes);
-            self.ctx.hooks.bus.emit_listed(
+            self.ctx.bus.emit_listed(
                 super::super::Party::Peer,
                 &crate::scan::ListStats::from_wire(listed),
                 settled,

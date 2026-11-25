@@ -90,7 +90,7 @@ async fn touched_source_is_a_metadata_only_update() {
         let log: irsync::session::EventLog = Arc::default();
         let mut local = h.local_side();
         local.hooks.events = Some(log.clone());
-        let mut rx = local.hooks.bus.subscribe();
+        let mut rx = local.bus.subscribe();
         let out = h.run_side(&opts, flow, local).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
 
@@ -172,7 +172,7 @@ async fn checksum_against_a_cold_index_reads_once_and_changes_nothing() {
         let log: irsync::session::EventLog = Arc::default();
         let mut local = Harness::side_for(h.local.path(), fresh_state.path());
         local.hooks.events = Some(log.clone());
-        let mut rx = local.hooks.bus.subscribe();
+        let mut rx = local.bus.subscribe();
         let out = h.run_side(&checksum_opts(), flow, local).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
 

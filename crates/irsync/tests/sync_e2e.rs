@@ -572,7 +572,7 @@ async fn events_during_sync(flow: Flow) {
     let h = Harness::new().await;
     mixed_tree(h.src(flow));
     let local = h.local_side();
-    let mut rx = local.hooks.bus.subscribe();
+    let mut rx = local.bus.subscribe();
     let (out, _) = h
         .run_reconnect(&opts, flow, ReconnectOpts::default(), local)
         .await;

@@ -1,5 +1,5 @@
 //! Test hooks: what a test build can make a session do, or see it do.
-//! In a normal build `SideHooks` is empty but for the event bus.
+//! In a normal build `SideHooks` is empty.
 
 #[cfg(feature = "test-hooks")]
 use std::path::PathBuf;
@@ -9,7 +9,6 @@ use std::time::Duration;
 #[cfg(feature = "test-hooks")]
 use iroh::endpoint::Connection;
 
-use super::EventBus;
 use crate::fs::paths::RelPath;
 
 /// Test hook: closes the connection (code 99) once the daemon's data bytes
@@ -131,11 +130,9 @@ pub type FirstChunkHook =
 pub type PathHook =
     Arc<dyn Fn(&RelPath) -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
 
-/// Test-only hooks (plus the event bus); the hooks are empty in normal builds.
+/// Test-only hooks; empty in normal builds.
 #[derive(Clone, Default)]
 pub struct SideHooks {
-    /// Progress events for the user interface.
-    pub bus: EventBus,
     #[cfg(feature = "test-hooks")]
     pub on_first_chunk_sent: Option<FirstChunkHook>,
     /// Where this side writes its file report, in preference to the

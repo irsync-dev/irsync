@@ -385,6 +385,8 @@ pub(super) struct Ctx {
     pub privs: Privs,
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub hooks: SideHooks,
+    /// Progress events for the user interface.
+    pub bus: super::EventBus,
 }
 
 impl Ctx {
@@ -742,7 +744,7 @@ pub(super) async fn run_client_inner(
     let index = local.index.metered(meter.clone());
     // Every file this side actually reads is reported on the bus.
     let on_hash: HashProgress = {
-        let bus = local.hooks.bus.clone();
+        let bus = local.bus.clone();
         Arc::new(move |p, e| match e {
             HashEvent::Start { size } => bus.emit(super::Event::FileHashing(p.clone(), size)),
             HashEvent::Done => bus.emit(super::Event::FileHashed(p.clone())),
@@ -819,6 +821,7 @@ pub(super) async fn run_client_inner(
         opts: RoleOpts::client(opts),
         privs: Privs::current(),
         hooks: local.hooks,
+        bus: local.bus,
     };
     run_role(
         Arc::new(ctx),
@@ -1392,6 +1395,7 @@ async fn serve_daemon_inner(
             }
             h
         },
+        bus: super::EventBus::default(),
     };
     run_role(
         Arc::new(ctx),
@@ -1505,6 +1509,7 @@ async fn run_role(
         (!sends && !ctx.opts.numeric_ids).then(crate::fs::ids::IdMap::new),
         peer_ev_tx.clone(),
         &ctx.hooks,
+        ctx.bus.clone(),
         ctx.activity.clone(),
         scan.clone(),
         listing_tap,
@@ -1512,7 +1517,7 @@ async fn run_role(
     let reader = control::spawn_reader(
         recv,
         peer_ev_tx,
-        ctx.hooks.bus.clone(),
+        ctx.bus.clone(),
         ctx.activity.clone(),
         ctx.progress.clone(),
         scan,
@@ -1926,6 +1931,7 @@ pub(super) async fn test_ctx() -> TestCtx {
         },
         privs: Privs::current(),
         hooks: SideHooks::default(),
+        bus: super::EventBus::default(),
     };
     TestCtx {
         ctx: Arc::new(ctx),

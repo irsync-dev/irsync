@@ -59,7 +59,7 @@ async fn try_run_with(
 ) -> (anyhow::Result<Outcome>, Vec<Event>) {
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     let local = h.local_side();
-    let mut rx = local.hooks.bus.subscribe();
+    let mut rx = local.bus.subscribe();
     let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
     let collector = tokio::spawn(async move {
         let mut events = Vec::new();

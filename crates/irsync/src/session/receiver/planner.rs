@@ -417,7 +417,6 @@ impl Planner {
         let msg = msg.into();
         tracing::info!(?path, error = %msg, "receiver");
         self.ctx
-            .hooks
             .bus
             .emit(crate::session::Event::Failed(path.clone(), msg.clone()));
         self.report.errors.push((path.clone(), msg));
@@ -433,7 +432,6 @@ impl Planner {
             return;
         }
         self.ctx
-            .hooks
             .bus
             .emit(crate::session::Event::Skipped(path.clone(), size));
         self.ctx
@@ -606,7 +604,7 @@ impl Planner {
                         }))
                         .await;
                 }
-                let bus = &self.ctx.hooks.bus;
+                let bus = &self.ctx.bus;
                 bus.emit(crate::session::Event::Itemized(path.clone(), code));
                 // rsync -n -v lists what would be transferred.
                 if self.ctx.opts.dry_run

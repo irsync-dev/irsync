@@ -253,9 +253,7 @@ fn emit_itemized(ctx: &Ctx, out: &Out, path: &RelPath, code: String) {
             code: code.clone(),
         }));
     }
-    ctx.hooks
-        .bus
-        .emit(super::Event::Itemized(path.clone(), code));
+    ctx.bus.emit(super::Event::Itemized(path.clone(), code));
 }
 
 struct Receiver {
@@ -437,7 +435,6 @@ impl Receiver {
                 let msg = format!("re-planning: {e}");
                 tracing::info!(?path, error = %msg, "receiver");
                 self.ctx
-                    .hooks
                     .bus
                     .emit(super::Event::Failed(path.clone(), msg.clone()));
                 self.errors.push((path, msg));
@@ -459,7 +456,6 @@ impl Receiver {
             // a frame it cannot pace.
             if let Some(code) = again.itemize {
                 self.ctx
-                    .hooks
                     .bus
                     .emit(super::Event::Itemized(path.clone(), code));
             }
@@ -755,7 +751,6 @@ impl Receiver {
         self.release_list(file_id);
         tracing::info!(path = ?f.path, error = %msg, "file failed");
         self.ctx
-            .hooks
             .bus
             .emit(super::Event::Failed(f.path.clone(), msg.clone()));
         self.failed.insert(f.path.clone());
@@ -1131,7 +1126,6 @@ impl Receiver {
                 f.digest = Some(digest);
                 f.identical = true;
                 self.ctx
-                    .hooks
                     .bus
                     .emit(super::Event::Skipped(f.path.clone(), f.entry.size));
                 self.ctx
@@ -1162,7 +1156,6 @@ impl Receiver {
             emit_itemized(&self.ctx, &self.out, &f.path, i.planned);
         }
         self.ctx
-            .hooks
             .bus
             .emit(super::Event::FileOpened(f.path.clone(), f.entry.size));
         let Fill {
@@ -1183,7 +1176,7 @@ impl Receiver {
             .filter_map(|&i| digest.chunks.get(i as usize))
             .map(|c| c.len as u64)
             .sum();
-        self.ctx.hooks.bus.emit(super::Event::FileMatched(
+        self.ctx.bus.emit(super::Event::FileMatched(
             f.path.clone(),
             digest.size.saturating_sub(needed),
         ));
@@ -1412,7 +1405,7 @@ impl Receiver {
                 if !f.identical {
                     super::record_file(&self.ctx.meter, f.started, size);
                     self.transferred_size += size;
-                    self.ctx.hooks.bus.emit(super::Event::FileDone(path, size));
+                    self.ctx.bus.emit(super::Event::FileDone(path, size));
                     self.files_done += 1;
                 }
                 // What this session did not take from the sender: local
@@ -1707,7 +1700,7 @@ pub(super) async fn run(
                     hard_links: false,
                     recursive: ctx.opts.preserve.recursive,
                     dirs: ctx.opts.preserve.dirs,
-                    bus: Some(ctx.hooks.bus.clone()),
+                    bus: Some(ctx.bus.clone()),
                     cold: Some(ctx.cold.clone()),
                     busy: Some(ctx.busy.clone()),
                     activity: Some(ctx.activity.clone()),

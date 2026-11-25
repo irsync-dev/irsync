@@ -202,13 +202,14 @@ pub(super) fn spawn_listing_reader(
     ids: Option<IdMap>,
     events: PeerTx,
     hooks: &SideHooks,
+    bus: crate::session::EventBus,
     activity: Arc<AtomicU64>,
     scan: Arc<PeerScan>,
     tap: StreamTap,
 ) -> JoinHandle<()> {
     let hooks = hooks.clone();
     tokio::spawn(
-        read_listing(recv, sink, ids, events, hooks, activity, scan, tap)
+        read_listing(recv, sink, ids, events, hooks, bus, activity, scan, tap)
             .instrument(tracing::Span::current()),
     )
 }
@@ -239,12 +240,14 @@ fn out_of_order(path: &RelPath, last: &RelPath) -> Ev {
 
 /// The reader's loop; see [`spawn_listing_reader`].
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
 async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
     mut recv: R,
     sink: ListingSink,
     mut ids: Option<IdMap>,
     events: PeerTx,
     hooks: SideHooks,
+    bus: crate::session::EventBus,
     activity: Arc<AtomicU64>,
     scan: Arc<PeerScan>,
     tap: StreamTap,
@@ -329,7 +332,7 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
                 }
                 let seen = scan.count(&e);
                 if seen.files().is_multiple_of(1000) {
-                    hooks.bus.emit(Event::Scanned {
+                    bus.emit(Event::Scanned {
                         party: Party::Peer,
                         entries: seen.files(),
                         bytes: seen.total_size,
@@ -368,7 +371,7 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
             }
             Frame::End(e) => {
                 let seen = scan.seen();
-                hooks.bus.emit(Event::Total {
+                bus.emit(Event::Total {
                     party: Party::Peer,
                     files: seen.reg,
                     bytes: seen.total_size,
@@ -413,6 +416,7 @@ mod tests {
                 None,
                 tx,
                 SideHooks::default(),
+                crate::session::EventBus::default(),
                 Arc::default(),
                 Arc::default(),
                 StreamTap::off(),

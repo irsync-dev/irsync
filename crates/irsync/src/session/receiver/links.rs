@@ -175,7 +175,6 @@ impl Receiver {
                 Ok(()) => {
                     self.persist.done(file_id);
                     self.ctx
-                        .hooks
                         .bus
                         .emit(crate::session::Event::Hardlinked(path, target));
                 }
@@ -183,7 +182,6 @@ impl Receiver {
                     tracing::info!(?path, error = %e, "hard link failed");
                     let msg = format!("hard link: {e}");
                     self.ctx
-                        .hooks
                         .bus
                         .emit(crate::session::Event::Failed(path.clone(), msg.clone()));
                     self.errors.push((path, msg));

@@ -26,7 +26,7 @@ impl Receiver {
         pass.set_activity(self.ctx.activity.clone());
         pass.set_meter(self.ctx.meter.clone());
         let busy = self.ctx.busy.clone();
-        let bus = self.ctx.hooks.bus.clone();
+        let bus = self.ctx.bus.clone();
         // Progress counts the session's deletions so far; a pass during the
         // run (`--delete-during`) has no total, the final pass gives it.
         let is_final = pass.mode() != DeleteMode::During || self.report.is_some();
@@ -59,7 +59,7 @@ impl Receiver {
                     // Its row would offer chunks nothing holds any more.
                     self.ctx.index().queue_forget(self.ctx.key(p));
                     self.ctx.hooks.event("delete", p);
-                    let bus = &self.ctx.hooks.bus;
+                    let bus = &self.ctx.bus;
                     bus.emit(crate::session::Event::Itemized(
                         p.clone(),
                         crate::plan::DELETING.into(),
@@ -71,7 +71,6 @@ impl Receiver {
                 self.errors.extend(rep.errors);
                 for p in &rep.would_delete {
                     self.ctx
-                        .hooks
                         .bus
                         .emit(crate::session::Event::WouldDelete(p.clone()));
                 }

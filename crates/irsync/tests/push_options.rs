@@ -90,7 +90,7 @@ async fn dry_run_verbose_push_lists_files() {
         let h = Harness::new().await;
         fs::write(h.local.path().join("new.txt"), b"x").unwrap();
         let local = h.local_side();
-        let mut rx = local.hooks.bus.subscribe();
+        let mut rx = local.bus.subscribe();
         let out = h
             .run_side(&opts(&["-n", "-v"]), Flow::Push, local)
             .await

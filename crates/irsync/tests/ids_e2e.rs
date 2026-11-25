@@ -56,7 +56,7 @@ async fn peer_ids_are_mapped_by_name_unless_numeric_ids() {
                     Vec::new()
                 }
             }));
-            let mut rx = local.hooks.bus.subscribe();
+            let mut rx = local.bus.subscribe();
             let out = h.run_side(&opts(extra), Flow::Push, local).await.unwrap();
             assert!(out.errors.is_empty(), "{extra:?}: {:?}", out.errors);
             let mut codes = Vec::new();

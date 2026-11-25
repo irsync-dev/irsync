@@ -534,7 +534,7 @@ async fn attempts(
     span: &tracing::Span,
     mut on_state: impl FnMut(ConnState),
 ) -> anyhow::Result<Outcome> {
-    let bus = local.hooks.bus.clone();
+    let bus = local.bus.clone();
     // How the latest connection was made, for the outcome.
     let kind = std::sync::Arc::new(std::sync::Mutex::new(None));
     // The attempt's `connect` phase, open until the connection reports its path.

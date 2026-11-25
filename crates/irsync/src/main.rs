@@ -1301,7 +1301,7 @@ async fn session(
     if let Some(name) = single {
         side = side.with_single(name);
     }
-    side.hooks.bus = bus.clone();
+    side.bus = bus.clone();
     #[cfg(feature = "test-hooks")]
     {
         side.hooks.no_change_checks = irsync::session::no_change_checks_from_env();

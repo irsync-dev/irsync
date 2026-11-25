@@ -60,6 +60,8 @@ pub struct LocalSide {
     pub hasher: Arc<Hasher>,
     pub filters: Arc<FilterSet>,
     pub hooks: SideHooks,
+    /// Progress events for the user interface.
+    pub bus: EventBus,
     /// A single-file session: this side's name for the file, in `root`.
     pub single: Option<Vec<u8>>,
 }
@@ -79,6 +81,7 @@ impl LocalSide {
             hasher,
             filters,
             hooks: SideHooks::default(),
+            bus: EventBus::default(),
             single: None,
         }
     }
