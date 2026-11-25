@@ -501,9 +501,10 @@ pub struct RemoteExportArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum RemoteExportCmd {
-    /// Export a directory of the server. Quote a path that starts with ~,
-    /// so the shell leaves it for the server: `'photos:~/Photos'`.
-    Add(ExportAddArgs),
+    /// Export a directory of the server, or change the path of an export
+    /// and turn the flags given on. Quote a path that starts with ~, so the
+    /// shell leaves it for the server: `'photos:~/Photos'`.
+    Add(RemoteExportAddArgs),
     /// Stop exporting a directory, with its grants.
     Remove {
         /// The export's name.
@@ -652,8 +653,26 @@ pub struct ExportArgs {
 #[derive(Debug, Subcommand)]
 pub enum ExportCmd {
     /// Export a directory from this machine's daemon and print the
-    /// daemon's id.
+    /// daemon's id. For an existing name, change its path and turn the
+    /// flags given on; its other settings and its grants stay.
     Add(ExportAddArgs),
+    /// Set an export's settings: read_only, index_at_start and fsync,
+    /// each true or false.
+    Set {
+        /// The export's name.
+        name: String,
+        /// A setting and its value, such as `read_only=true`.
+        #[arg(required = true, value_name = "KEY=VALUE")]
+        settings: Vec<String>,
+    },
+    /// Rename an export. Its path, settings and grants stay; clients
+    /// then name it by the new name in HOST:PATH.
+    Rename {
+        /// The current name.
+        old: String,
+        /// The new name.
+        new: String,
+    },
     /// Stop exporting a directory, with its grants.
     Remove {
         /// The export's name.
@@ -835,6 +854,24 @@ pub struct PairArgs {
 #[derive(Debug, clap::Args)]
 pub struct ExportAddArgs {
     /// `NAME:PATH`, or a directory named by its final component.
+    pub target: String,
+    /// Refuse pushes into the export from every client (`read_only`).
+    #[arg(long)]
+    pub read_only: bool,
+    /// Hash the export's files into its index whenever the daemon starts,
+    /// so files irsync did not place are reused from the first session on.
+    #[arg(long)]
+    pub index_at_start: bool,
+    /// Flush each file pushed into the export to disk before it is put in
+    /// place, whatever the client asks (`fsync`).
+    #[arg(long)]
+    pub fsync: bool,
+}
+
+/// `remote SERVER export add`: the flags the admin service carries.
+#[derive(Debug, clap::Args)]
+pub struct RemoteExportAddArgs {
+    /// `NAME:PATH`; PATH absolute or starting with `~`.
     pub target: String,
     /// Refuse pushes into the export from every client (`read_only`).
     #[arg(long)]

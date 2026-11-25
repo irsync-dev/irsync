@@ -117,8 +117,13 @@ fn apply_one(
         Op::ExportAdd(a) => {
             let (name, written) = exports::parse_remote_target(&a.target, home)?;
             let written = Path::new(&written);
-            exports::add_export(msg, &name, written, a.read_only, a.index_at_start)?;
-            Ok(exports::added_line(&name, written, path))
+            let flags = exports::ExportFlags {
+                read_only: a.read_only,
+                index_at_start: a.index_at_start,
+                fsync: false,
+            };
+            let old = exports::add_export(msg, &name, written, flags)?;
+            Ok(exports::added_line(&name, written, old.as_deref(), path))
         }
         Op::ExportRemove(r) => {
             exports::remove_export(msg, &r.name)?;

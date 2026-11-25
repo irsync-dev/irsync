@@ -2,8 +2,8 @@
 
 These commands read and edit the config file, `~/.config/irsync/irsync.toml`
 (see [Configuration](configuration.md)). There are four nouns, `server`,
-`client`, `export` and `grant`, each with `add`, `remove` and `list` (`server`
-and `client` also `rename`); `id` for the identities; `config` for any key by its dotted
+`client`, `export` and `grant`, each with `add`, `remove` and `list` (`server`,
+`client` and `export` also `rename`, `client` and `export` also `set`); `id` for the identities; `config` for any key by its dotted
 path; and `show` for an overview.
 
 A noun on its own runs its `list`: `irsync server`, `irsync client`, `irsync export`,
@@ -48,13 +48,13 @@ the how-to "Manage a server from your client". It needs
 
 | Remote | Not remote |
 | --- | --- |
-| `export list`, `add`, `remove` | `config set`, `config unset` |
-| `grant list`, `add`, `remove` | `id` |
-| `client list`, `add`, `remove`, `rename`, `set` | `server` |
-| `show`, `config get`, `config list` | |
+| `export list`, `add`, `remove` | `export set`, `export rename` |
+| `grant list`, `add`, `remove` | `config set`, `config unset` |
+| `client list`, `add`, `remove`, `rename`, `set` | `id` |
+| `show`, `config get`, `config list` | `server` |
 
 A remote `export add` takes an absolute path or one that starts with `~`,
-quoted so that your shell leaves it alone. A client cannot remove or lower its
+quoted so that your shell leaves it alone. It has no `--fsync`. A client cannot remove or lower its
 own `admin` right this way.
 
 A running daemon picks up `client`, `export` and `grant` changes on its next
@@ -93,8 +93,10 @@ entries.
 
 | Command | Effect |
 | --- | --- |
-| `irsync export add NAME:PATH [--read-only] [--index-at-start]` | Export a directory under `NAME`. Prints the daemon's `EndpointId` on stdout, generating the daemon's key if it does not exist yet. |
-| `irsync export add PATH [--read-only] [--index-at-start]` | The same, named after the directory's last component. |
+| `irsync export add NAME:PATH [--read-only] [--index-at-start] [--fsync]` | Export a directory under `NAME`. For an existing name, change its path and turn the flags given on; its other settings and its grants stay. Prints the daemon's `EndpointId` on stdout, generating the daemon's key if it does not exist yet. |
+| `irsync export add PATH [--read-only] [--index-at-start] [--fsync]` | The same, named after the directory's last component. |
+| `irsync export set NAME KEY=VALUE...` | Set an export's settings. `KEY` is `read_only`, `index_at_start` or `fsync`, and `VALUE` is `true` or `false`. Give several pairs to change them together: if one is wrong, nothing changes. Prints the export's settings afterwards. |
+| `irsync export rename OLD NEW` | Rename an export. Its path, settings and grants stay, and so does its place in the file. Refused, with nothing changed, when `OLD` is no export, `NEW` is not a valid export name or `NEW` is an export already. Clients then name it `NEW` in `HOST:PATH`. |
 | `irsync export remove NAME` | Stop exporting a directory. Its grants go with it. |
 | `irsync export list` | One block per export: `NAME: PATH`, then `read_only`, `index_at_start` and `fsync` when set, then its grant lines. |
 
@@ -103,8 +105,11 @@ leading `~` (`irsync export add home:~` exports the home directory), and
 requires an existing directory. The text before the first `:` is a name only
 when it has no `/`. `--read-only` sets `read_only`, which refuses pushes from
 everyone; `--index-at-start` sets `index_at_start`, which hashes the export's
-files into its index whenever the daemon starts. To hash them once, now, run
-`irsync index --export NAME`. See [Seed the index](../how-to/seed-the-index.md).
+files into its index whenever the daemon starts; `--fsync` sets `fsync`, which
+flushes every file pushed into the export to disk. A flag left out leaves the
+setting alone; to turn one off, use `irsync export set NAME KEY=false`. To
+hash the files once, now, run `irsync index --export NAME`. See
+[Seed the index](../how-to/seed-the-index.md).
 
 ## grant
 

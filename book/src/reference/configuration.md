@@ -306,9 +306,9 @@ be `all`, `all_exports`, `all_paths` or `admin`. Those words are reserved.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `path` | required | The directory, an absolute path; `~` is expanded. |
-| `read_only` | `false` | Refuse pushes from everyone, even from peers under `rw`. |
-| `index_at_start` | `false` | Hash the files already in the export into its index whenever the daemon starts, so files `irsync` did not place are reused. `irsync index --export NAME` does the same once. |
-| `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. |
+| `read_only` | `false` | Refuse pushes from everyone, even from peers under `rw`. Flag: `irsync export add --read-only`. |
+| `index_at_start` | `false` | Hash the files already in the export into its index whenever the daemon starts, so files `irsync` did not place are reused. `irsync index --export NAME` does the same once. Flag: `irsync export add --index-at-start`. |
+| `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. Flag: `irsync export add --fsync`. |
 | `rw` | `[]` | Peers with read-write access: client names or `EndpointId`s. |
 | `ro` | `[]` | Peers with read-only access. |
 | `auto` | `false` | Marks an automatic export, one the daemon made for a client with `all_paths`; see [Rights on a client](#rights-on-a-client). |

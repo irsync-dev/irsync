@@ -2330,6 +2330,56 @@ fn server_and_client_rename_take_their_grants_in_the_file() {
     );
 }
 
+/// `export add` on an existing name updates it, as `server add` and
+/// `client add` do; `export set` and `export rename` change one export.
+#[test]
+fn export_add_updates_and_set_and_rename_change_an_export() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    for dir in ["p", "q"] {
+        std::fs::create_dir_all(home.join(dir)).unwrap();
+    }
+    let ok = |args: &[&str]| {
+        let o = irsync(&home, args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let at = |dir: &str| format!("photos:{}", home.join(dir).display());
+    ok(&["export", "add", &at("p"), "--read-only"]);
+    let err = ok(&["export", "add", &at("q"), "--fsync"]);
+    assert!(err.contains("updated export photos ("), "{err}");
+    let get = |key: &str| {
+        let o = irsync(&home, &["config", "get", &format!("exports.photos.{key}")]);
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    assert_eq!(get("path"), home.join("q").display().to_string());
+    assert_eq!(
+        (get("read_only"), get("fsync")),
+        ("true".into(), "true".into())
+    );
+    let err = ok(&[
+        "export",
+        "set",
+        "photos",
+        "read_only=false",
+        "index_at_start=true",
+    ]);
+    assert!(
+        err.contains("photos: read_only=false index_at_start=true fsync=true"),
+        "{err}"
+    );
+    ok(&["export", "rename", "photos", "pics"]);
+    let o = irsync(&home, &["export", "list"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.starts_with("pics: "), "{out}");
+    let o = irsync(&home, &["export", "set", "photos", "fsync=false"]);
+    assert_eq!(o.status.code(), Some(1));
+}
+
 /// `-q` leaves out the lines that say what a management command did; what
 /// it is run for (a list, an id) and errors still print.
 #[test]

@@ -1,5 +1,5 @@
-//! Edits of the exports in the config message for `export add` and
-//! `export remove`, and the reading of an `export add` target. The edits
+//! Edits of the exports in the config message for `export add`, `set`,
+//! `rename` and `remove`, and the reading of an `export add` target. The edits
 //! are pure on a message; loading and saving belong to the caller.
 
 use super::ManageError;
@@ -9,27 +9,143 @@ use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::path::{Component, Path, PathBuf};
 
-/// Add export `name` with `path` and the flags that are true, last.
+/// The flags `export add` turns on. One that is false is left as it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExportFlags {
+    pub read_only: bool,
+    pub index_at_start: bool,
+    pub fsync: bool,
+}
+
+/// The settings `export set` changes, each `true` or `false`.
+pub const SETTINGS: [&str; 3] = ["read_only", "index_at_start", "fsync"];
+
+/// The value of setting `key` (one of [`SETTINGS`]) of `e`.
+fn setting<'a>(e: &'a mut pb::Export, key: &str) -> &'a mut Option<bool> {
+    match key {
+        "read_only" => &mut e.read_only,
+        "index_at_start" => &mut e.index_at_start,
+        "fsync" => &mut e.fsync,
+        _ => unreachable!("not an export setting: {key}"),
+    }
+}
+
+/// Add export `name` at `path` with `flags`, last; for a name that is an
+/// export already, set its path and turn `flags` on, keeping its other
+/// settings and its grants. The path it had before, for an existing
+/// export.
 pub fn add_export(
     msg: &mut pb::Config,
     name: &str,
     path: &Path,
-    read_only: bool,
-    index_at_start: bool,
-) -> Result<(), ManageError> {
+    flags: ExportFlags,
+) -> Result<Option<String>, ManageError> {
     if RESERVED.contains(&name) {
         return Err(ManageError::Reserved(name.to_string()));
     }
-    if msg.exports.iter().any(|e| e.name == name) {
-        return Err(ManageError::Exists(name.to_string()));
+    let path = path.to_string_lossy().into_owned();
+    let on = |set: bool| set.then_some(true);
+    if let Some(e) = msg.exports.iter_mut().find(|e| e.name == name) {
+        let old = std::mem::replace(&mut e.path, path);
+        for (key, set) in [
+            ("read_only", flags.read_only),
+            ("index_at_start", flags.index_at_start),
+            ("fsync", flags.fsync),
+        ] {
+            if set {
+                *setting(e, key) = Some(true);
+            }
+        }
+        return Ok(Some(old));
     }
     msg.exports.push(pb::Export {
         name: name.to_string(),
-        path: path.to_string_lossy().into_owned(),
-        read_only: read_only.then_some(true),
-        index_at_start: index_at_start.then_some(true),
+        path,
+        read_only: on(flags.read_only),
+        index_at_start: on(flags.index_at_start),
+        fsync: on(flags.fsync),
         ..Default::default()
     });
+    Ok(None)
+}
+
+/// One `KEY=VALUE` of `export set`: a key of [`SETTINGS`] and `true`
+/// or `false`.
+pub fn parse_setting(s: &str) -> Result<(&'static str, bool), ManageError> {
+    let keys = || SETTINGS.join(", ");
+    let Some((key, value)) = s.split_once('=') else {
+        return Err(ManageError::BadValue(format!(
+            "{s:?} is not KEY=VALUE (keys: {})",
+            keys()
+        )));
+    };
+    let Some(key) = SETTINGS.into_iter().find(|k| *k == key) else {
+        return Err(ManageError::BadValue(format!(
+            "{key:?} is not a setting of an export (settings: {})",
+            keys()
+        )));
+    };
+    match value {
+        "true" => Ok((key, true)),
+        "false" => Ok((key, false)),
+        _ => Err(ManageError::BadValue(format!(
+            "{key} must be \"true\" or \"false\", not {value:?}"
+        ))),
+    }
+}
+
+/// Set the settings of export `name`; `false` removes the key, the
+/// default. `NotFound` for a name that is no export; `msg` is then
+/// unchanged.
+pub fn export_set(
+    msg: &mut pb::Config,
+    name: &str,
+    settings: &[(&str, bool)],
+) -> Result<(), ManageError> {
+    let e = msg
+        .exports
+        .iter_mut()
+        .find(|e| e.name == name)
+        .ok_or_else(|| ManageError::NotFound(name.to_string()))?;
+    for (key, value) in settings {
+        *setting(e, key) = value.then_some(true);
+    }
+    Ok(())
+}
+
+/// What `export set` reports: `NAME: read_only=… index_at_start=…
+/// fsync=…`.
+pub fn set_line(msg: &pb::Config, name: &str) -> Option<String> {
+    let mut e = msg.exports.iter().find(|e| e.name == name)?.clone();
+    let words: Vec<String> = SETTINGS
+        .iter()
+        .map(|k| format!("{k}={}", setting(&mut e, k).unwrap_or(false)))
+        .collect();
+    Some(format!("{name}: {}", words.join(" ")))
+}
+
+/// Rename export `old` to `new`. It keeps its place, path, settings and
+/// grants. Refused when `old` is no export, `new` is not a valid export
+/// name, or `new` is an export already.
+pub fn rename_export(msg: &mut pb::Config, old: &str, new: &str) -> Result<(), ManageError> {
+    if !msg.exports.iter().any(|e| e.name == old) {
+        return Err(ManageError::NotFound(old.to_string()));
+    }
+    if RESERVED.contains(&new) {
+        return Err(ManageError::Reserved(new.to_string()));
+    }
+    if crate::config::exports::name_problem(new).is_some() {
+        return Err(ManageError::BadName(new.to_string()));
+    }
+    if msg.exports.iter().any(|e| e.name == new) {
+        return Err(ManageError::Exists(new.to_string()));
+    }
+    let e = msg
+        .exports
+        .iter_mut()
+        .find(|e| e.name == old)
+        .expect("checked above");
+    e.name = new.to_string();
     Ok(())
 }
 
@@ -178,13 +294,29 @@ pub fn parse_remote_target(
     Ok((name, written))
 }
 
-/// What `export add` reports once the export is saved.
-pub fn added_line(name: &str, path: &Path, config: &Path) -> String {
-    format!(
-        "added export {name} ({}) to {}",
-        path.display(),
-        config.display()
-    )
+/// What `export add` reports once the export is saved; `old`: the path
+/// an existing export had.
+pub fn added_line(name: &str, path: &Path, old: Option<&str>, config: &Path) -> String {
+    match old {
+        None => format!(
+            "added export {name} ({}) to {}",
+            path.display(),
+            config.display()
+        ),
+        Some(old) if Path::new(old) == path => {
+            format!("updated export {name} ({old}) in {}", config.display())
+        }
+        Some(old) => format!(
+            "updated export {name} ({old} -> {}) in {}",
+            path.display(),
+            config.display()
+        ),
+    }
+}
+
+/// What `export rename` reports.
+pub fn renamed_line(old: &str, new: &str, config: &Path) -> String {
+    format!("renamed export {old} to {new} in {}", config.display())
 }
 
 /// What `export remove` reports once the export is gone.

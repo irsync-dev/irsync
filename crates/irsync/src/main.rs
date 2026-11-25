@@ -1801,7 +1801,12 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                     .with_context(|| format!("identity {}", daemon_key.display()))?;
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                manage::exports::add_export(&mut msg, &name, &path, a.read_only, a.index_at_start)?;
+                let flags = manage::exports::ExportFlags {
+                    read_only: a.read_only,
+                    index_at_start: a.index_at_start,
+                    fsync: a.fsync,
+                };
+                let old = manage::exports::add_export(&mut msg, &name, &path, flags)?;
                 // The daemon identity comes first: when it cannot be had, the
                 // export is not added either.
                 let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
@@ -1809,7 +1814,7 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 say!(
                     log,
                     "{}",
-                    manage::exports::added_line(&name, &path, &paths.config)
+                    manage::exports::added_line(&name, &path, old.as_deref(), &paths.config)
                 );
                 println!("{}", secret.public());
                 Ok(())
@@ -1827,6 +1832,43 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                     log,
                     "{}",
                     manage::exports::removed_line(name, &paths.config)
+                );
+                Ok(())
+            })(),
+        ),
+        ExportCmd::Set { name, settings } => finish(
+            "export set",
+            (|| {
+                // Every pair is read before anything changes.
+                let settings: Vec<_> = settings
+                    .iter()
+                    .map(|s| manage::exports::parse_setting(s))
+                    .collect::<Result<_, _>>()?;
+                load_first(&paths)?;
+                let mut lock = manage::lock_config(&paths.config)?;
+                let mut msg = lock.load()?;
+                manage::exports::export_set(&mut msg, name, &settings)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                lock.save(&mut msg)?;
+                if let Some(line) = manage::exports::set_line(&msg, name) {
+                    say!(log, "{line}");
+                }
+                Ok(())
+            })(),
+        ),
+        ExportCmd::Rename { old, new } => finish(
+            "export rename",
+            (|| {
+                load_first(&paths)?;
+                let mut lock = manage::lock_config(&paths.config)?;
+                let mut msg = lock.load()?;
+                manage::exports::rename_export(&mut msg, old, new)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                lock.save(&mut msg)?;
+                say!(
+                    log,
+                    "{}",
+                    manage::exports::renamed_line(old, new, &paths.config)
                 );
                 Ok(())
             })(),
