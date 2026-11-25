@@ -383,9 +383,6 @@ pub enum Command {
         /// Turn the daemon's DHT publishing off (`[daemon.discovery] dht`).
         #[arg(long)]
         no_dht: bool,
-        /// Nothing was installed this run (`--no-install`).
-        #[arg(long, hide = true)]
-        keep_old: bool,
         /// Start the daemon in the background, not as a user service.
         #[arg(long)]
         no_service: bool,

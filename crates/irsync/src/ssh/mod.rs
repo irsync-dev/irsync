@@ -2,7 +2,6 @@
 
 pub mod client;
 pub mod installer;
-pub mod legacy;
 pub mod onboard;
 pub mod pair;
 pub mod payload;

@@ -69,9 +69,7 @@ installs on the server the same files as `install.sh`: `irsync` and
 under `~/.local/share/man`. All five come along when `pair` sends release
 files; when it sends the client's own files, `fileset` and the manual pages
 come only if they sit beside the client's `irsync`. It replaces an `irsync` there when the client runs a
-different build. It does not touch an `irsync` installed elsewhere. It does not
-use `~/.local/share/irsync/bin` any more (see
-[Run the daemon](../how-to/run-the-daemon.md#service-files-from-an-older-irsync)).
+different build. It does not touch an `irsync` installed elsewhere.
 Over ssh it then runs `irsync
 ssh-setup`, a hidden command that grants the client, makes the daemon's key
 when it is missing and starts the daemon, as a user service when it can: `~/.config/systemd/user/irsync.service` on Linux or `~/Library/LaunchAgents/org.irsync.daemon.plist` on macOS, each marked "Written by irsync pair". The server's config, keys and state

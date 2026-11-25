@@ -647,7 +647,7 @@ fn ipv6_without_a_server_name_changes_nothing() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("host name"), "{err}");
     assert_eq!(w.ssh_calls(), 1, "the probe only");
-    assert!(!w.server.path().join(".local/share/irsync").exists());
+    assert!(!w.server.path().join(".local/bin/irsync").exists());
     assert_eq!(w.client_config(), "");
 }
 
@@ -1465,15 +1465,14 @@ fn pair_through_a_root_account_is_refused() {
     assert!(probe(&w.server.path().join("xdg/irsync")).is_none());
 }
 
-/// Where irsync's ssh install put its binary before it used the
-/// installer's place, relative to the server HOME.
-const OLD_BIN: &str = ".local/share/irsync/bin/irsync";
+/// A copy of irsync that is not the one `pair` installs, relative to the
+/// server HOME: its daemon is not `ssh-setup`'s own.
+const OTHER_BIN: &str = "other/bin/irsync";
 
-/// A daemon started from the old install path; killed when dropped, if
-/// `ssh-setup` has not stopped it already.
-struct OldDaemon(std::process::Child);
+/// A daemon started from [`OTHER_BIN`]; killed when dropped.
+struct OtherDaemon(std::process::Child);
 
-impl Drop for OldDaemon {
+impl Drop for OtherDaemon {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
@@ -1481,25 +1480,16 @@ impl Drop for OldDaemon {
 }
 
 impl World {
-    fn old_bin(&self) -> PathBuf {
-        self.server.path().join(OLD_BIN)
-    }
-
-    /// Puts a copy of this build at the old install path. A copy, not a
-    /// link: the daemon records the path it runs from with links resolved.
-    fn plant_old_bin(&self) {
-        let old = self.old_bin();
-        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
-        std::fs::copy(env!("CARGO_BIN_EXE_irsync"), &old).unwrap();
-    }
-
-    /// Starts `daemon -vv` from the old install path, as an older ssh
-    /// install left it, and waits until it holds the lock.
-    fn start_old_daemon(&self) -> OldDaemon {
-        self.plant_old_bin();
+    /// Starts `daemon -vv` from a copy of this build at [`OTHER_BIN`], and
+    /// waits until it holds the lock. A copy, not a link: the daemon
+    /// records the path it runs from with links resolved.
+    fn start_other_daemon(&self) -> OtherDaemon {
+        let other = self.server.path().join(OTHER_BIN);
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_irsync"), &other).unwrap();
         let mut tries = 0;
         let child = loop {
-            let spawned = Command::new(self.old_bin())
+            let spawned = Command::new(&other)
                 .args(["daemon", "-vv"])
                 .env("HOME", self.server.path())
                 .env("XDG_STATE_HOME", self.server.path().join("xdg"))
@@ -1520,32 +1510,17 @@ impl World {
                 r => break r.unwrap(),
             }
         };
-        let mut d = OldDaemon(child);
+        let mut d = OtherDaemon(child);
         let state = self.server.path().join("xdg/irsync");
         let deadline = Instant::now() + Duration::from_secs(30);
         while !probe(&state).is_some_and(|i| i.pid == d.0.id()) {
             if let Some(status) = d.0.try_wait().unwrap() {
-                panic!("the old daemon exited ({status})");
+                panic!("the other daemon exited ({status})");
             }
-            assert!(Instant::now() < deadline, "the old daemon did not start");
+            assert!(Instant::now() < deadline, "the other daemon did not start");
             std::thread::sleep(Duration::from_millis(20));
         }
         d
-    }
-
-    /// The executable of the daemon holding the server's lock, with links
-    /// resolved (macOS records the path it was started as).
-    fn lock_exe(&self) -> PathBuf {
-        probe(&self.server.path().join("xdg/irsync"))
-            .expect("a running daemon")
-            .exe
-            .canonicalize()
-            .unwrap()
-    }
-
-    /// `rel` under the server HOME, with links resolved.
-    fn server_real(&self, rel: &str) -> PathBuf {
-        self.server.path().canonicalize().unwrap().join(rel)
     }
 
     /// Gives the client `all_paths = "rw"` on the server before any daemon
@@ -1557,55 +1532,6 @@ impl World {
         let id = client_id(self.client.path());
         common::set_all_paths(self.server.path(), &id, Some(Access::ReadWrite));
     }
-}
-
-/// A daemon from the old install path, with no service file naming it, is
-/// irsync's own: it is restarted from the new path, and the old binary and
-/// its directory go.
-#[test]
-fn old_daemon_is_moved_to_the_new_path() {
-    let w = World::new();
-    let _old = w.start_old_daemon();
-    let dest = w.server.path().join("dest");
-    let err = w.pair("myserver");
-    assert!(err.contains("irsync:   restarted the daemon"), "{err}");
-    assert_eq!(w.lock_exe(), w.server_real(".local/bin/irsync"));
-    assert!(!w.old_bin().exists());
-    assert!(!w.old_bin().parent().unwrap().exists());
-    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
-    same_tree(w.src.path(), &dest);
-}
-
-/// A systemd unit still starts the old binary: its daemon and the binary
-/// are left alone, and the client is told to change the unit.
-#[test]
-fn service_file_keeps_the_old_binary_and_daemon() {
-    let w = World::new();
-    w.grant_client();
-    let unit = w.server.path().join(".config/systemd/user/irsync.service");
-    std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
-    std::fs::write(
-        &unit,
-        "[Service]\nExecStart=%h/.local/share/irsync/bin/irsync daemon -vv\n",
-    )
-    .unwrap();
-    let old = w.start_old_daemon();
-    let dest = w.server.path().join("dest");
-    let err = w.pair("myserver");
-    let info = probe(&w.server.path().join("xdg/irsync")).expect("a running daemon");
-    assert_eq!(info.pid, old.0.id(), "{err}");
-    assert_eq!(w.lock_exe(), w.server_real(OLD_BIN));
-    assert!(w.old_bin().exists());
-    assert!(err
-        .lines()
-        .any(|l| l.contains("~/.config/systemd/user/irsync.service still starts irsync")),);
-    assert!(
-        err.lines()
-            .any(|l| l.contains("Change the path in that file to ~/.local/bin/irsync")),
-        "{err}"
-    );
-    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
-    same_tree(w.src.path(), &dest);
 }
 
 /// Whether process `pid` is still there.
@@ -1839,53 +1765,14 @@ fn pair_leaves_a_foreign_daemon_without_a_service() {
     w.service = true;
     w.grant_client();
     let unit = w.unit();
-    let text = "[Service]\nExecStart=%h/.local/share/irsync/bin/irsync daemon -vv\n";
+    let text = "[Service]\nExecStart=%h/other/bin/irsync daemon -vv\n";
     std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
     std::fs::write(&unit, text).unwrap();
-    let old = w.start_old_daemon();
+    let other = w.start_other_daemon();
     let err = w.pair("myserver");
-    assert_eq!(w.lock_pid(), old.0.id(), "{err}");
+    assert_eq!(w.lock_pid(), other.0.id(), "{err}");
     assert_eq!(std::fs::read_to_string(&unit).unwrap(), text);
     let log = w.service_log();
     assert!(!log.contains("enable"), "{log}");
     assert!(!err.contains("user service"), "{err}");
-}
-
-/// An old binary that nothing runs goes, with its empty directory.
-#[test]
-fn stale_old_binary_without_a_daemon_is_removed() {
-    let w = World::new();
-    let old = w.old_bin();
-    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
-    std::fs::write(&old, "old irsync\n").unwrap();
-    let dest = w.server.path().join("dest");
-    let err = w.pair("myserver");
-    assert!(!old.exists(), "{err}");
-    assert!(!old.parent().unwrap().exists());
-    // Only the bin directory goes.
-    assert!(w.server.path().join(".local/share/irsync").exists());
-    ok(&w.irsync(&["-a", &w.src_arg(), &format!("myserver:{}", dest.display())]));
-    same_tree(w.src.path(), &dest);
-}
-
-/// `--no-install` deletes nothing; a daemon from the old path is still
-/// moved to the new one.
-#[test]
-fn no_install_keeps_the_old_binary() {
-    let w = World::new();
-    let dest = w.server.path().join("dest");
-    let target = format!("myserver:{}", dest.display());
-    w.pair("myserver");
-    w.kill_daemon();
-    let _old = w.start_old_daemon();
-    std::fs::write(w.src.path().join("a.txt"), "changed\n").unwrap();
-    let err = ok(&w.irsync_bare(&["pair", "--no-install", "myserver"]));
-    assert!(err.contains("irsync:   restarted the daemon"), "{err}");
-    assert_eq!(w.lock_exe(), w.server_real(".local/bin/irsync"));
-    assert!(w.old_bin().exists());
-    ok(&w.irsync(&["-a", &w.src_arg(), &target]));
-    assert_eq!(
-        std::fs::read_to_string(dest.join("a.txt")).unwrap(),
-        "changed\n"
-    );
 }

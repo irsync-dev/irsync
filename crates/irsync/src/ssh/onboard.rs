@@ -8,7 +8,7 @@ use iroh::EndpointId;
 use super::client::{client_host_name, ensure_installed, probe, run_setup, Install, Rsh};
 use super::payload::Contents;
 use super::service::ServiceOutcome;
-use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport};
+use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
 use crate::build::LONG_VERSION;
 use crate::config::names::valid_alias;
 use crate::config::paths::Paths;
@@ -410,24 +410,6 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
     if let Some(line) = service_line(&r.service, &r.log) {
         out.push(line);
     }
-    for file in &r.stale_services {
-        out.push(format!(
-            "  warning: {} still starts irsync from ~/.local/share/irsync/bin.",
-            home_tilde(file)
-        ));
-        out.push(
-            "    That copy is no longer updated. Change the path in that file to \
-             ~/.local/bin/irsync, then restart the service."
-                .into(),
-        );
-    }
-    match &r.old_bin {
-        OldBin::Removed => out.push("  removed the old copy in ~/.local/share/irsync/bin".into()),
-        OldBin::RemoveFailed(e) => out.push(format!(
-            "  warning: could not remove the old copy in ~/.local/share/irsync/bin: {e}"
-        )),
-        OldBin::Absent | OldBin::Kept => {}
-    }
     for a in &o.saved {
         let alias = &a.alias;
         match a.previous_id {
@@ -726,8 +708,6 @@ mod tests {
                 log: PathBuf::from("/s/daemon.log"),
                 relay: None,
                 addrs: Vec::new(),
-                stale_services: Vec::new(),
-                old_bin: OldBin::Absent,
                 // Says nothing, so each test adds only the lines it checks.
                 service: ServiceOutcome::NotTouched,
             },
@@ -802,59 +782,6 @@ mod tests {
             let s = summary(&o);
             assert!(s.contains(&want), "{want}\n{s:#?}");
         }
-    }
-
-    #[test]
-    fn warns_per_stale_service_file() {
-        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
-        o.report.stale_services = vec![
-            PathBuf::from("/home/u/.config/systemd/user/irsync.service"),
-            PathBuf::from("/home/u/Library/LaunchAgents/org.irsync.daemon.plist"),
-        ];
-        let s = summary(&o);
-        for file in [
-            "/home/u/.config/systemd/user/irsync.service",
-            "/home/u/Library/LaunchAgents/org.irsync.daemon.plist",
-        ] {
-            let shown = file.replace("/home/u", "~");
-            let l = at(
-                &s,
-                &format!("  warning: {shown} still starts irsync from ~/.local/share/irsync/bin."),
-            );
-            assert_eq!(
-                s[l + 1],
-                "    That copy is no longer updated. Change the path in that file to ~/.local/bin/irsync, then restart the service."
-            );
-        }
-    }
-
-    #[test]
-    fn says_when_the_old_copy_was_removed() {
-        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
-        o.report.old_bin = OldBin::Removed;
-        at(
-            &summary(&o),
-            "  removed the old copy in ~/.local/share/irsync/bin",
-        );
-    }
-
-    #[test]
-    fn says_when_the_old_copy_could_not_be_removed() {
-        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
-        o.report.old_bin = OldBin::RemoveFailed("permission denied".into());
-        at(
-            &summary(&o),
-            "  warning: could not remove the old copy in ~/.local/share/irsync/bin: permission denied",
-        );
-    }
-
-    #[test]
-    fn kept_old_copy_says_nothing_extra() {
-        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
-        let before = summary(&o);
-        o.report.old_bin = OldBin::Kept;
-        assert_eq!(summary(&o), before);
-        assert!(!before.join("\n").contains("old copy"));
     }
 
     #[test]

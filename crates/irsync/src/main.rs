@@ -95,14 +95,12 @@ fn main() {
             client_name_hex,
             recheck,
             no_dht,
-            keep_old,
             no_service,
         }) => std::process::exit(run_ssh_setup(
             client,
             client_name_hex,
             *recheck,
             *no_dht,
-            *keep_old,
             *no_service,
             files,
         )),
@@ -1751,7 +1749,6 @@ fn run_ssh_setup(
     client_name_hex: &str,
     recheck: bool,
     no_dht: bool,
-    keep_old: bool,
     no_service: bool,
     files: &FilesArgs,
 ) -> i32 {
@@ -1781,15 +1778,7 @@ fn run_ssh_setup(
             }
             let name =
                 irsync::ssh::client::decode_name(client_name_hex).context("--client-name-hex")?;
-            irsync::ssh::setup::run(
-                &file_paths(files),
-                id,
-                &name,
-                recheck,
-                no_dht,
-                keep_old,
-                no_service,
-            )
+            irsync::ssh::setup::run(&file_paths(files), id, &name, recheck, no_dht, no_service)
         });
     match result {
         Ok(report) => {

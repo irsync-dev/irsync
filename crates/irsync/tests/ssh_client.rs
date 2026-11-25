@@ -224,7 +224,6 @@ fn install_lands_in_local_bin_with_no_leftovers() {
     assert_ne!(mode_of(&dst.metadata().unwrap()) & 0o111, 0);
     assert_eq!(std::fs::read(&dst).unwrap(), this_binary());
     assert_no_work_dir(&f);
-    assert!(!f.home.join(".local/share/irsync").exists());
     // The installer's own messages reach ssh's stderr.
     let err = std::fs::read_to_string(&f.err).unwrap();
     assert!(err.contains("irsync: installed irsync"), "{err}");
@@ -671,7 +670,7 @@ fn client_name_travels_as_hex() {
     let fixed = format!("\"$HOME/{REMOTE_BIN}\" ssh-setup --client {id} --client-name-hex ");
     let rest = cmd.strip_prefix(&fixed).unwrap_or_else(|| panic!("{cmd}"));
     let (hex, flags) = rest.split_once(' ').unwrap();
-    assert_eq!(flags, "--recheck --no-dht --keep-old --no-service");
+    assert_eq!(flags, "--recheck --no-dht --no-service");
     assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{hex}");
     assert_eq!(decode_name(hex).unwrap(), nasty);
     assert!(setup_command(id, "myclient", SetupFlags::default()).ends_with(" 6d79636c69656e74"));
