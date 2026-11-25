@@ -7,7 +7,7 @@ use irsync::manage::exports::{
     add_auto_export, add_export, export_set, parse_setting, remove_export, rename_export, set_line,
     ExportFlags,
 };
-use irsync::manage::{ManageError, PeerSpec};
+use irsync::manage::{ClientSpec, ManageError};
 use irsync_proto::config as pb;
 use std::path::Path;
 
@@ -302,7 +302,7 @@ fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
     let c = irsync::config::file::Config::parse("", Path::new("h")).unwrap();
     let line = irsync::identity::public_key_line(&iroh::SecretKey::from_bytes(&[7; 32]), "x");
     let key = line.rsplit_once(' ').unwrap().0;
-    let r = PeerSpec::parse(&format!("{key} {INJECTED}"), &c.clients, &c.servers);
+    let r = ClientSpec::parse(&format!("{key} {INJECTED}"), &c.clients, &c.servers);
     assert!(matches!(r, Err(ManageError::BadComment(_))), "{r:?}");
     let msg = r.unwrap_err().to_string();
     assert!(msg.contains("control characters"), "{msg}");
@@ -311,7 +311,7 @@ fn peer_spec_refuses_a_key_line_whose_comment_has_a_newline() {
     let f = d.path().join("k.pub");
     std::fs::write(&f, format!("{key} a\x07b\n")).unwrap();
     assert!(matches!(
-        PeerSpec::parse(f.to_str().unwrap(), &c.clients, &c.servers),
+        ClientSpec::parse(f.to_str().unwrap(), &c.clients, &c.servers),
         Err(ManageError::BadComment(_))
     ));
 }

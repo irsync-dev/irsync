@@ -3,7 +3,7 @@
 use crate::identity::parse_endpoint_id;
 
 /// A name is non-empty, has no `:` or `/`, is not itself an EndpointId,
-/// and is neither `all` nor `*` (the words that mean every peer).
+/// and is neither `all` nor `*` (the words that mean every client).
 pub fn valid_alias(s: &str) -> bool {
     !s.is_empty()
         && !s.contains([':', '/'])

@@ -999,10 +999,10 @@ fn servers_and_clients_build_the_typed_view() {
     assert_eq!(c.clients.get("nas").unwrap().client_id, id(2));
     assert_eq!(c.clients.alias_of(&id(2)), Some("nas"));
     assert_eq!(c.clients.alias_of(&id(1)), None);
-    assert_eq!(c.clients.resolve_peer("nas").unwrap(), id(2));
-    assert_eq!(c.clients.resolve_peer(&id(3).to_string()).unwrap(), id(3));
+    assert_eq!(c.clients.resolve_client("nas").unwrap(), id(2));
+    assert_eq!(c.clients.resolve_client(&id(3).to_string()).unwrap(), id(3));
     assert_eq!(
-        c.clients.resolve_peer("zed").unwrap_err().to_string(),
+        c.clients.resolve_client("zed").unwrap_err().to_string(),
         "unknown client \"zed\" (and not an EndpointId); clients are defined in irsync.toml"
     );
 }

@@ -306,11 +306,11 @@ be `all`, `all_exports`, `all_paths` or `admin`. Those words are reserved.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `path` | required | The directory, an absolute path; `~` is expanded. |
-| `read_only` | `false` | Refuse pushes from everyone, even from peers under `rw`. Flag: `irsync export add --read-only`. |
+| `read_only` | `false` | Refuse pushes from everyone, even from clients under `rw`. Flag: `irsync export add --read-only`. |
 | `index_at_start` | `false` | Hash the files already in the export into its index whenever the daemon starts, so files `irsync` did not place are reused. `irsync index --export NAME` does the same once. Flag: `irsync export add --index-at-start`. |
 | `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. Flag: `irsync export add --fsync`. |
-| `rw` | `[]` | Peers with read-write access: client names or `EndpointId`s. |
-| `ro` | `[]` | Peers with read-only access. |
+| `rw` | `[]` | Clients with read-write access: client names or `EndpointId`s. |
+| `ro` | `[]` | Clients with read-only access. |
 | `auto` | `false` | Marks an automatic export, one the daemon made for a client with `all_paths`; see [Rights on a client](#rights-on-a-client). |
 
 ### Rights on a client
@@ -344,14 +344,14 @@ Access through an automatic export is always the client's current
 `all_paths` level, whatever the export file says. Lowering `all_paths`, or
 removing it, or setting `daemon.allow_all_paths = false`, applies at once,
 also to the automatic exports already made. The exports themselves stay in
-the file. To share such a directory with other peers, delete its `auto = true`
+the file. To share such a directory with other clients, delete its `auto = true`
 line: it is then an ordinary export.
 
 How grants combine:
 
 - A key that no entry names is rejected before any protocol message is read.
   There is no open access.
-- A peer's entry in an export's own table decides its access to that export;
+- A client's entry in an export's own table decides its access to that export;
   without one, its `all_exports` does. An export's `ro` entry therefore limits
   a client whose `all_exports` is `"rw"`.
 - Within one table, `rw` wins over `ro`. A client written under two names
@@ -359,7 +359,7 @@ How grants combine:
 - `read_only` caps everyone at read-only.
 - An entry that names no client and is no `EndpointId` matches nobody; the
   daemon logs a warning for it. A server's name is no client name.
-- Whenever `irsync` saves the file, it writes a peer by its `[clients]` name:
+- Whenever `irsync` saves the file, it writes a client by its `[clients]` name:
   an `EndpointId` in a grant list that has a client becomes that name, also
   one that was already in the file. With two clients for one `EndpointId` it
   writes the first in alphabetical order. An entry named twice is kept once.

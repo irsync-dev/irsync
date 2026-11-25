@@ -39,7 +39,7 @@ impl Grants {
 
     /// The access this key has to `export`, named `name`: its own entry,
     /// else its `all_exports`, except that `all_exports` never reaches an
-    /// automatic export; those belong to the peer they were made for.
+    /// automatic export; those belong to the client they were made for.
     pub fn access_to(&self, name: &str, export: &Export) -> Option<Access> {
         match self.exports.get(name) {
             Some(a) => Some(*a),
@@ -114,7 +114,7 @@ impl Snapshot {
             let lists = [(&e.rw, Access::ReadWrite), (&e.ro, Access::ReadOnly)];
             for (list, access) in lists {
                 for entry in list {
-                    let Ok(id) = clients.resolve_peer(entry) else {
+                    let Ok(id) = clients.resolve_client(entry) else {
                         tracing::warn!(entry = %entry, export = %name, "grant entry matches nobody");
                         continue;
                     };
@@ -178,14 +178,14 @@ pub trait Authorizer: Send + Sync {
     /// The current exports and grants. Errors fail closed.
     fn snapshot(&self) -> Result<Snapshot, AuthzError>;
 
-    /// Makes sure an export `peer` may use contains `root` (a canonical
+    /// Makes sure an export `client` may use contains `root` (a canonical
     /// absolute directory): when none does, adds an automatic export of
-    /// `root` that lists `peer` with `access`, seen by the next
+    /// `root` that lists `client` with `access`, seen by the next
     /// [`Authorizer::snapshot`].
     fn add_auto_export(
         &self,
         root: &Path,
-        peer: EndpointId,
+        client: EndpointId,
         access: Access,
     ) -> Result<(), AuthzError>;
 
@@ -217,9 +217,9 @@ pub(crate) fn lock_config_waiting(path: &Path) -> Result<crate::manage::ConfigLo
     }
 }
 
-/// True when an export `peer` may use in `snap` already contains `root`.
-fn covered(snap: &Snapshot, root: &Path, peer: &EndpointId) -> bool {
-    crate::resolve::containing(root, &snap.exports, &snap.grants(peer), None).is_some()
+/// True when an export `client` may use in `snap` already contains `root`.
+fn covered(snap: &Snapshot, root: &Path, client: &EndpointId) -> bool {
+    crate::resolve::containing(root, &snap.exports, &snap.grants(client), None).is_some()
 }
 
 /// Reads the config afresh on every
@@ -252,21 +252,21 @@ impl Authorizer for FileAuthorizer {
     fn add_auto_export(
         &self,
         root: &Path,
-        peer: EndpointId,
+        client: EndpointId,
         access: Access,
     ) -> Result<(), AuthzError> {
         use crate::manage::exports;
         let mut lock = lock_config_waiting(&self.paths.config)?;
-        if covered(&self.snapshot()?, root, &peer) {
+        if covered(&self.snapshot()?, root, &client) {
             return Ok(());
         }
         let mut msg = lock.load()?;
-        let name = exports::add_auto_export(&mut msg, root, peer, access)?;
+        let name = exports::add_auto_export(&mut msg, root, client, access)?;
         lock.save(&mut msg)?;
         tracing::info!(
             export = %name,
             path = %root.display(),
-            peer = %peer.fmt_short(),
+            client = %client.fmt_short(),
             "added automatic export"
         );
         Ok(())
@@ -325,15 +325,15 @@ impl Authorizer for MemoryAuthorizer {
     fn add_auto_export(
         &self,
         root: &Path,
-        peer: EndpointId,
+        client: EndpointId,
         access: Access,
     ) -> Result<(), AuthzError> {
         let mut snap = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
-        if covered(&snap, root, &peer) {
+        if covered(&snap, root, &client) {
             return Ok(());
         }
         let name = crate::manage::exports::unique_auto_name(root, |n| snap.exports.contains_key(n));
-        let listed = vec![peer.to_string()];
+        let listed = vec![client.to_string()];
         let (rw, ro) = match access {
             Access::ReadWrite => (listed, Vec::new()),
             Access::ReadOnly => (Vec::new(), listed),
@@ -348,7 +348,7 @@ impl Authorizer for MemoryAuthorizer {
             ro,
         };
         snap.exports.insert(name.clone(), export);
-        let grants = snap.grants.entry(peer).or_default();
+        let grants = snap.grants.entry(client).or_default();
         grants.exports.insert(name, access);
         Ok(())
     }

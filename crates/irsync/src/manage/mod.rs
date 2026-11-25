@@ -117,7 +117,7 @@ fn read_file(path: &Path) -> Result<pb::Config, ManageError> {
 
 /// Save the config file, refusing a message that would not load; takes
 /// and releases the file's lock (see [`lock_config`]). Like
-/// [`ConfigLock::save`], it first writes peers by their aliases.
+/// [`ConfigLock::save`], it first writes clients by their names.
 /// The file is read under the lock first, so a file that does not load
 /// is not written over.
 pub fn save_config(path: &Path, msg: &mut pb::Config) -> Result<(), ManageError> {
@@ -213,7 +213,7 @@ pub fn lock_config(path: &Path) -> Result<ConfigLock, ManageError> {
 
 /// Changes the config file `config` under its lock: loads it, runs
 /// `change` on it and saves the result. Returns what `change` returned and
-/// the message as saved (a save writes peers by their names, see
+/// the message as saved (a save writes clients by their names, see
 /// [`ConfigLock::save`]). An error from `change` names the file (`in
 /// PATH: ...`), and nothing is saved then.
 pub fn edit<T, E: Into<anyhow::Error>>(
@@ -253,7 +253,7 @@ impl ConfigLock {
 
     /// Writes `msg` over the file, in the writer's form and the current
     /// layout (`config_version` [`CONFIG_VERSION`]), and releases the
-    /// lock. Peers that the clients have a name for are written by it
+    /// lock. Clients that have a name are written by it
     /// first (see [`canonicalize_doc`]), so every save leaves the file in
     /// one form. A message that would not load is refused and the file
     /// left as it was.
@@ -271,7 +271,7 @@ impl ConfigLock {
         file.write_all(writer::write(msg).as_bytes()).map_err(io)?;
         file.sync_all().map_err(io)?;
         // The mode the config has, so a save never opens up a file its
-        // owner closed; 0600 for a new one, since it names exports, peers
+        // owner closed; 0600 for a new one, since it names exports, clients
         // and grants.
         crate::platform::set_saved_permissions(&self.lock, &self.path).map_err(io)?;
         std::fs::rename(&self.lock, &self.path).map_err(io)?;
@@ -291,7 +291,7 @@ impl Drop for ConfigLock {
 
 /// How a command-line "who" argument is understood.
 #[derive(Debug, Clone)]
-pub enum PeerSpec {
+pub enum ClientSpec {
     Alias(String),
     Id {
         id: EndpointId,
@@ -299,35 +299,39 @@ pub enum PeerSpec {
     },
 }
 
-impl PeerSpec {
+impl ClientSpec {
     /// `who` as a client name of `clients`, a public key (a line or a
     /// `.pub` file) or an EndpointId. A name that only `servers` has is
     /// refused: grants name clients.
-    pub fn parse(who: &str, clients: &Clients, servers: &Servers) -> Result<PeerSpec, ManageError> {
+    pub fn parse(
+        who: &str,
+        clients: &Clients,
+        servers: &Servers,
+    ) -> Result<ClientSpec, ManageError> {
         Self::parse_with(who, clients, servers, true)
     }
 
-    /// As [`PeerSpec::parse`], without reading a file: for a `who` sent by
+    /// As [`ClientSpec::parse`], without reading a file: for a `who` sent by
     /// a remote client, which names nothing on this machine's disk.
     pub(crate) fn parse_text(
         who: &str,
         clients: &Clients,
         servers: &Servers,
-    ) -> Result<PeerSpec, ManageError> {
+    ) -> Result<ClientSpec, ManageError> {
         Self::parse_with(who, clients, servers, false)
     }
 
-    /// The `who` of `grant remove`: text that names no known peer (a name
+    /// The `who` of `grant remove`: text that names no known client (a name
     /// no longer in the clients table, or a server's) still matches grant
     /// entries literally, so `parsed` failing for that reason is the text
     /// itself.
     pub(crate) fn or_literal(
         who: &str,
-        parsed: Result<PeerSpec, ManageError>,
-    ) -> Result<PeerSpec, ManageError> {
+        parsed: Result<ClientSpec, ManageError>,
+    ) -> Result<ClientSpec, ManageError> {
         match parsed {
-            Err(ManageError::Config(ConfigError::BadPeer(_)) | ManageError::NotAClient(_)) => {
-                Ok(PeerSpec::Alias(who.to_string()))
+            Err(ManageError::Config(ConfigError::BadClient(_)) | ManageError::NotAClient(_)) => {
+                Ok(ClientSpec::Alias(who.to_string()))
             }
             other => other,
         }
@@ -338,17 +342,17 @@ impl PeerSpec {
         clients: &Clients,
         servers: &Servers,
         files: bool,
-    ) -> Result<PeerSpec, ManageError> {
+    ) -> Result<ClientSpec, ManageError> {
         if who == "all" || who == "*" {
             return Err(ManageError::NoOpenAccess);
         }
         if clients.get(who).is_some() {
-            return Ok(PeerSpec::Alias(who.to_string()));
+            return Ok(ClientSpec::Alias(who.to_string()));
         }
         if servers.get(who).is_some() {
             return Err(ManageError::NotAClient(who.to_string()));
         }
-        let bad = || ManageError::Config(ConfigError::BadPeer(who.to_string()));
+        let bad = || ManageError::Config(ConfigError::BadClient(who.to_string()));
         if files {
             if let Ok(text) = std::fs::read_to_string(who) {
                 if let Some(line) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
@@ -363,14 +367,14 @@ impl PeerSpec {
             return Self::from_key(&pk)?.ok_or_else(bad);
         }
         if let Ok(id) = parse_endpoint_id(who) {
-            return Ok(PeerSpec::Id { id, comment: None });
+            return Ok(ClientSpec::Id { id, comment: None });
         }
         Err(bad())
     }
 
     /// `None` when the key is not Ed25519; an error when its comment is
     /// not one line of printable text.
-    fn from_key(pk: &ssh_key::PublicKey) -> Result<Option<PeerSpec>, ManageError> {
+    fn from_key(pk: &ssh_key::PublicKey) -> Result<Option<ClientSpec>, ManageError> {
         // A comment is bytes. One from a pasted line is always UTF-8, since
         // the line was text; the error is there in case a key ever reaches
         // this from somewhere else.
@@ -387,25 +391,25 @@ impl PeerSpec {
         } else {
             Some(comment.to_string())
         };
-        Ok(Some(PeerSpec::Id { id, comment }))
+        Ok(Some(ClientSpec::Id { id, comment }))
     }
 
-    /// What a save writes for this peer: the name, also for an id that
+    /// What a save writes for this client: the name, also for an id that
     /// `clients` has a name for; else the id in hex.
     pub fn written(&self, clients: &Clients) -> String {
         match self {
-            PeerSpec::Id { id, .. } => clients
+            ClientSpec::Id { id, .. } => clients
                 .alias_of(id)
                 .map_or_else(|| id.to_string(), str::to_string),
-            PeerSpec::Alias(a) => a.clone(),
+            ClientSpec::Alias(a) => a.clone(),
         }
     }
 
     /// The text stored in a config entry: the alias, or the id in hex.
     pub fn entry(&self) -> String {
         match self {
-            PeerSpec::Alias(a) => a.clone(),
-            PeerSpec::Id { id, .. } => id.to_string(),
+            ClientSpec::Alias(a) => a.clone(),
+            ClientSpec::Id { id, .. } => id.to_string(),
         }
     }
 }

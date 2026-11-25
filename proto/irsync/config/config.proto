@@ -105,7 +105,7 @@ message ServerEntry {
   bool ssh_aliases_set = 19;
 }
 
-// A peer that grants name.
+// A client that grants name.
 message ClientEntry {
   Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
   string name = 4;

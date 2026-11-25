@@ -191,13 +191,13 @@ pub(crate) fn unique_auto_name(path: &Path, taken: impl Fn(&str) -> bool) -> Str
     name
 }
 
-/// Add an automatic export of `path` that lists `peer` under `ro` for
+/// Add an automatic export of `path` that lists `client` under `ro` for
 /// read-only `access`, else under `rw`; the name it got (`-2`, `-3`, ...
 /// when the name is taken).
 pub fn add_auto_export(
     msg: &mut pb::Config,
     path: &Path,
-    peer: EndpointId,
+    client: EndpointId,
     access: Access,
 ) -> Result<String, ManageError> {
     let name = unique_auto_name(path, |n| msg.exports.iter().any(|e| e.name == n));
@@ -208,7 +208,7 @@ pub fn add_auto_export(
         ..Default::default()
     };
     let listed = vec![pb::Entry {
-        value: peer.to_string(),
+        value: client.to_string(),
         comment: None,
     }];
     match access {

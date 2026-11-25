@@ -51,7 +51,7 @@ landed. Items the final review's fix wave closed are not listed.
 
 - [ ] `grant list WHO` still shows `immediate: rw` and auto-export lines when
       `daemon.immediate = false`, although the daemon ignores them
-      (`list_peer` builds its snapshot with immediate on). Over-reports, never
+      (`list_client` builds its snapshot with immediate on). Over-reports, never
       under-reports.
 - [ ] The "no exports defined" startup warning is skipped when `[immediate]`
       has entries, even if `daemon.immediate = false`.

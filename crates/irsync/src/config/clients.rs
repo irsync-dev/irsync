@@ -1,4 +1,4 @@
-//! The `[clients]` table of `irsync.toml`: names for the peers that
+//! The `[clients]` table of `irsync.toml`: names for the clients that
 //! grants are given to.
 
 use super::access::Access;
@@ -167,7 +167,7 @@ impl Clients {
     }
 
     /// A name first, then a literal EndpointId.
-    pub fn resolve_peer(&self, s: &str) -> Result<EndpointId, ConfigError> {
+    pub fn resolve_client(&self, s: &str) -> Result<EndpointId, ConfigError> {
         if let Some(e) = self.get(s) {
             return Ok(e.client_id);
         }

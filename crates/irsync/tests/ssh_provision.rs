@@ -503,7 +503,7 @@ fn a_server_of_the_same_name_is_no_obstacle() {
     assert_eq!((c.servers.entries.len(), c.clients.entries.len()), (1, 1));
     let t: toml::Table = write(&doc).parse().unwrap();
     assert_eq!(t["clients"]["desktop"]["all_paths"].as_str(), Some("rw"));
-    assert_eq!(c.clients.resolve_peer("desktop").unwrap(), id(2));
+    assert_eq!(c.clients.resolve_client("desktop").unwrap(), id(2));
 }
 
 /// A name that grants already name is a peer someone named by hand: a

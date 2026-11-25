@@ -1054,7 +1054,7 @@ fn grant_remove_with_a_star_points_at_all() {
         assert_eq!(o.status.code(), Some(1), "{args:?}");
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(
-            err.contains("\"*\" names no peer") && err.contains(hint),
+            err.contains("\"*\" names no client") && err.contains(hint),
             "{args:?}: {err}"
         );
     }

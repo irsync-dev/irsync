@@ -1209,7 +1209,7 @@ fn grant_list_text(
     if let Some(block) = manage::grants::list_export(exports, clients, t) {
         return Ok(block);
     }
-    let Ok(id) = clients.resolve_peer(t) else {
+    let Ok(id) = clients.resolve_client(t) else {
         bail!("{t:?} is not an export, a client in {place} or an EndpointId");
     };
     let label = if clients.get(t).is_some() {
@@ -1217,7 +1217,7 @@ fn grant_list_text(
     } else {
         id.to_string()
     };
-    Ok(manage::grants::list_peer(
+    Ok(manage::grants::list_client(
         exports,
         clients,
         allow_all_paths,

@@ -4,7 +4,7 @@
 //! `grant list` read the typed config.
 
 use super::show::grant_lines;
-use super::{check_comment, ManageError, PeerSpec};
+use super::{check_comment, ClientSpec, ManageError};
 use crate::authz::{Access, Snapshot};
 use crate::config::clients::{Clients, Right, RIGHTS};
 use crate::config::exports::Exports;
@@ -136,15 +136,15 @@ fn target<'a>(msg: &'a mut pb::Config, export: &str) -> Result<Lists<'a>, Manage
 }
 
 /// The id `who` stands for, when it has one.
-fn who_id(who: &PeerSpec, resolve: Resolve) -> Option<EndpointId> {
+fn who_id(who: &ClientSpec, resolve: Resolve) -> Option<EndpointId> {
     match who {
-        PeerSpec::Id { id, .. } => Some(*id),
-        PeerSpec::Alias(a) => resolve(a),
+        ClientSpec::Id { id, .. } => Some(*id),
+        ClientSpec::Alias(a) => resolve(a),
     }
 }
 
 /// A grant entry names `who` by the same text or by the same id.
-fn entry_matches(text: &str, who: &PeerSpec, id: Option<EndpointId>, resolve: Resolve) -> bool {
+fn entry_matches(text: &str, who: &ClientSpec, id: Option<EndpointId>, resolve: Resolve) -> bool {
     if text == who.entry() {
         return true;
     }
@@ -157,9 +157,9 @@ fn entry_matches(text: &str, who: &PeerSpec, id: Option<EndpointId>, resolve: Re
 /// The entry `who` is granted by: its text, and a public key's comment
 /// `c` at the end of its line as `# c`. Refused for a comment that would
 /// not stay on one line.
-fn grant_entry(who: &PeerSpec) -> Result<pb::Entry, ManageError> {
+fn grant_entry(who: &ClientSpec) -> Result<pb::Entry, ManageError> {
     let comment = match who {
-        PeerSpec::Id {
+        ClientSpec::Id {
             comment: Some(c), ..
         } => {
             check_comment(c)?;
@@ -253,7 +253,7 @@ pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
 }
 
 /// Grant `who` access to `export`: read-only or
-/// read-write. Any earlier grant of the same peer there, under either
+/// read-write. Any earlier grant of the same client there, under either
 /// spelling, is replaced; the new entry goes last. An earlier entry of the
 /// same text moves there with its comments (the key's comment, when given,
 /// replaces the rest of its line); one of another spelling leaves only the
@@ -261,7 +261,7 @@ pub fn rename_named(msg: &mut pb::Config, old: &str, new: &str) -> usize {
 pub fn grant_add(
     msg: &mut pb::Config,
     export: &str,
-    who: &PeerSpec,
+    who: &ClientSpec,
     ro: bool,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<(), ManageError> {
@@ -298,12 +298,12 @@ pub(crate) fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError
     Ok(())
 }
 
-/// Refuses what `grant remove EXPORT WHO` does not take: `*` for a peer
+/// Refuses what `grant remove EXPORT WHO` does not take: `*` for a client
 /// (`all` is everyone).
 pub(crate) fn check_remove(export: &str, who: &str) -> Result<(), ManageError> {
     if who == "*" {
         return Err(ManageError::BadValue(format!(
-            "\"*\" names no peer: irsync grant remove {export} all removes every grant {}",
+            "\"*\" names no client: irsync grant remove {export} all removes every grant {}",
             if export == "all" {
                 "in the file".to_string()
             } else {
@@ -315,7 +315,7 @@ pub(crate) fn check_remove(export: &str, who: &str) -> Result<(), ManageError> {
 }
 
 /// What `grant add` reports once the grant is saved.
-pub fn added_line(who: &PeerSpec, clients: &Clients, export: &str, ro: bool) -> String {
+pub fn added_line(who: &ClientSpec, clients: &Clients, export: &str, ro: bool) -> String {
     let mode = if ro { "ro" } else { "rw" };
     format!("{}: {mode} on {export}", who.written(clients))
 }
@@ -326,7 +326,7 @@ pub(crate) fn removed_line(n: usize) -> String {
 }
 
 /// Removes the grants of `who` (`None`: everyone) from both lists.
-fn remove_in(lists: &mut Lists, who: Option<&PeerSpec>, resolve: Resolve) -> usize {
+fn remove_in(lists: &mut Lists, who: Option<&ClientSpec>, resolve: Resolve) -> usize {
     match who {
         None => lists.remove_where(&|_| true),
         Some(w) => {
@@ -342,7 +342,7 @@ fn remove_in(lists: &mut Lists, who: Option<&PeerSpec>, resolve: Resolve) -> usi
 pub fn grant_remove(
     msg: &mut pb::Config,
     export: Option<&str>,
-    who: Option<&PeerSpec>,
+    who: Option<&ClientSpec>,
     resolve: &dyn Fn(&str) -> Option<EndpointId>,
 ) -> Result<usize, ManageError> {
     let n = match export {
@@ -373,7 +373,7 @@ pub fn grant_remove(
 pub(crate) fn rights_still_held(
     clients: &Clients,
     export: Option<&str>,
-    who: Option<&PeerSpec>,
+    who: Option<&ClientSpec>,
     resolve: Resolve,
 ) -> Vec<String> {
     let id = who.and_then(|w| who_id(w, resolve));
@@ -451,7 +451,7 @@ pub fn list_export(exports: &Exports, clients: &Clients, name: &str) -> Option<S
 /// access comes from `all_exports` rather than the export's own entry,
 /// ` (read_only export)` when a read-write grant is capped by the export's
 /// `read_only` flag.
-pub fn list_peer(
+pub fn list_client(
     exports: &Exports,
     clients: &Clients,
     allow_all_paths: bool,
@@ -497,7 +497,7 @@ pub fn add(paths: &Paths, export: &str, who: &str, ro: bool) -> anyhow::Result<S
     let Config {
         servers, clients, ..
     } = Config::load(paths)?;
-    let spec = PeerSpec::parse(who, &clients, &servers)?;
+    let spec = ClientSpec::parse(who, &clients, &servers)?;
     let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
     super::edit(&paths.config, |msg| {
         grant_add(msg, export, &spec, ro, &resolve)
@@ -505,7 +505,7 @@ pub fn add(paths: &Paths, export: &str, who: &str, ro: bool) -> anyhow::Result<S
     Ok(added_line(&spec, &clients, export, ro))
 }
 
-/// A `grant remove` that failed: the error, and the rights the peer still
+/// A `grant remove` that failed: the error, and the access the client still
 /// holds otherwise, which say why (empty when the grants were not looked
 /// at yet).
 #[derive(Debug)]
@@ -524,7 +524,7 @@ impl<E: Into<anyhow::Error>> From<E> for RemoveFailed {
 }
 
 /// `grant remove EXPORT WHO` (either may be `all`); the lines to say: how
-/// many grants went, then the rights the peer still holds otherwise.
+/// many grants went, then the access the client still holds otherwise.
 pub fn remove(paths: &Paths, export: &str, who: &str) -> Result<Vec<String>, RemoveFailed> {
     let Config {
         servers, clients, ..
@@ -534,7 +534,7 @@ pub fn remove(paths: &Paths, export: &str, who: &str) -> Result<Vec<String>, Rem
     let export = (export != "all").then_some(export);
     let who = (who != "all").then_some(who);
     let spec = who
-        .map(|w| PeerSpec::or_literal(w, PeerSpec::parse(w, &clients, &servers)))
+        .map(|w| ClientSpec::or_literal(w, ClientSpec::parse(w, &clients, &servers)))
         .transpose()?;
     let mut lock = super::lock_config(&paths.config)?;
     let mut msg = lock.load()?;

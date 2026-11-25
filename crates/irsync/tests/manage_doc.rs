@@ -1,6 +1,6 @@
 use irsync::config::reader;
 use irsync::config::writer::write;
-use irsync::manage::{load_message, lock_config, save_config, ManageError, PeerSpec};
+use irsync::manage::{load_message, lock_config, save_config, ClientSpec, ManageError};
 use irsync_proto::config as pb;
 use std::path::Path;
 
@@ -150,10 +150,10 @@ fn peer_spec_forms() {
     .unwrap();
     let hosts = (&c.clients, &c.servers);
     assert!(
-        matches!(PeerSpec::parse("laptop", hosts.0, hosts.1).unwrap(), PeerSpec::Alias(ref a) if a == "laptop")
+        matches!(ClientSpec::parse("laptop", hosts.0, hosts.1).unwrap(), ClientSpec::Alias(ref a) if a == "laptop")
     );
     assert!(
-        matches!(PeerSpec::parse(&id(2).to_string(), hosts.0, hosts.1).unwrap(), PeerSpec::Id { id: got, .. } if got == id(2))
+        matches!(ClientSpec::parse(&id(2).to_string(), hosts.0, hosts.1).unwrap(), ClientSpec::Id { id: got, .. } if got == id(2))
     );
     let mut rng = ssh_key::rand_core::UnwrapErr(ssh_key::getrandom::SysRng);
     let key = ssh_key::PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519).unwrap();
@@ -162,39 +162,41 @@ fn peer_spec_forms() {
     let line = pk.to_openssh().unwrap();
     let want = irsync::identity::endpoint_id_of_public_key(&pk).unwrap();
     assert!(
-        matches!(PeerSpec::parse(&line, hosts.0, hosts.1).unwrap(), PeerSpec::Id { id, comment: Some(ref c) } if id == want && c == "mike@laptop")
+        matches!(ClientSpec::parse(&line, hosts.0, hosts.1).unwrap(), ClientSpec::Id { id, comment: Some(ref c) } if id == want && c == "mike@laptop")
     );
     let d = tempfile::tempdir().unwrap();
     std::fs::write(d.path().join("k.pub"), &line).unwrap();
     assert!(matches!(
-        PeerSpec::parse(d.path().join("k.pub").to_str().unwrap(), hosts.0, hosts.1).unwrap(),
-        PeerSpec::Id {
+        ClientSpec::parse(d.path().join("k.pub").to_str().unwrap(), hosts.0, hosts.1).unwrap(),
+        ClientSpec::Id {
             comment: Some(_),
             ..
         }
     ));
     assert!(matches!(
-        PeerSpec::parse("all", hosts.0, hosts.1),
+        ClientSpec::parse("all", hosts.0, hosts.1),
         Err(ManageError::NoOpenAccess)
     ));
     assert!(matches!(
-        PeerSpec::parse("*", hosts.0, hosts.1),
+        ClientSpec::parse("*", hosts.0, hosts.1),
         Err(ManageError::NoOpenAccess)
     ));
-    assert!(PeerSpec::parse("nobody", hosts.0, hosts.1).is_err());
+    assert!(ClientSpec::parse("nobody", hosts.0, hosts.1).is_err());
     // Grants name clients: a server's name is refused, with what to do.
-    let e = PeerSpec::parse("nas", hosts.0, hosts.1).unwrap_err();
+    let e = ClientSpec::parse("nas", hosts.0, hosts.1).unwrap_err();
     assert!(matches!(e, ManageError::NotAClient(_)), "{e:?}");
     assert_eq!(
         e.to_string(),
         "\"nas\" is a server here, not a client; to grant that machine, add it as a client: irsync client add nas ID"
     );
     assert_eq!(
-        PeerSpec::parse("laptop", hosts.0, hosts.1).unwrap().entry(),
+        ClientSpec::parse("laptop", hosts.0, hosts.1)
+            .unwrap()
+            .entry(),
         "laptop"
     );
     assert_eq!(
-        PeerSpec::parse(&id(2).to_string(), hosts.0, hosts.1)
+        ClientSpec::parse(&id(2).to_string(), hosts.0, hosts.1)
             .unwrap()
             .entry(),
         id(2).to_string()
@@ -323,13 +325,13 @@ fn written_is_the_alias_of_an_id_that_has_one() {
         Path::new("h"),
     )
     .unwrap();
-    let spec = |n| PeerSpec::Id {
+    let spec = |n| ClientSpec::Id {
         id: id(n),
         comment: None,
     };
     assert_eq!(spec(1).written(&hosts), "amy");
     assert_eq!(spec(2).written(&hosts), id(2).to_string());
-    assert_eq!(PeerSpec::Alias("zed".into()).written(&hosts), "zed");
+    assert_eq!(ClientSpec::Alias("zed".into()).written(&hosts), "zed");
 }
 
 /// A save keeps the mode the file has, so it never opens up a config its
