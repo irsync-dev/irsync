@@ -6,10 +6,10 @@
 //! comment where [`super::comments`] reads it back from. It writes only
 //! what the message sets.
 
+use super::access::Access;
 use super::clients::RIGHTS;
 use super::duration;
 use super::settings::{Congestion, OtlpProtocol, PqKeyExchange, Spelled};
-use crate::authz::Access;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
 use std::time::Duration;

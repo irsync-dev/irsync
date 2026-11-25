@@ -6,6 +6,7 @@
 //! nothing more: a key that is not in the file stays unset, defaults are
 //! applied later, and paths stay as written (`~` is not expanded).
 
+use super::access::Access;
 use super::clients::{Right, RIGHTS};
 use super::exports::{name_problem, not_absolute};
 use super::names::{invalid_name, valid_alias};
@@ -15,7 +16,6 @@ use super::settings::{
     Relay, Spelled,
 };
 use super::{duration, expand_tilde, keys, line_of, ConfigError};
-use crate::authz::Access;
 use crate::identity::parse_endpoint_id;
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
