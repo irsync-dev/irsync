@@ -15,6 +15,7 @@ pub mod delta;
 pub mod file_report;
 pub mod filter;
 pub mod fs;
+pub mod gc;
 pub mod hasher;
 pub mod identity;
 pub mod index;

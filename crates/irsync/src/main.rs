@@ -430,7 +430,7 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
             }
             for root in &roots {
                 // A root inside this one has its own index: leave it to that.
-                let skip = irsync::daemon::nested_roots(root, roots.iter().map(PathBuf::as_path));
+                let skip = irsync::gc::nested_roots(root, roots.iter().map(PathBuf::as_path));
                 let root = root.clone();
                 let index = match Index::open(&dir, &root) {
                     Ok(i) => i.into_handle(),
@@ -440,8 +440,7 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                         continue;
                     }
                 };
-                match irsync::daemon::gc_skipping(index, &root, CLIENT_GC_AGE, dry_run, &skip).await
-                {
+                match irsync::gc::gc_skipping(index, &root, CLIENT_GC_AGE, dry_run, &skip).await {
                     Ok(r) => {
                         for p in &r.parts_removed {
                             if !log.quiet {
@@ -1287,8 +1286,7 @@ async fn session(
     if !dry_run && single.is_none() {
         // Housekeeping for this root, at most daily unless partial records
         // have gone stale (an hour untouched) since; never fatal.
-        match irsync::daemon::gc_if_due(index.clone(), &root, CLIENT_GC_AGE, CLIENT_GC_STALE).await
-        {
+        match irsync::gc::gc_if_due(index.clone(), &root, CLIENT_GC_AGE, CLIENT_GC_STALE).await {
             Ok(Some(r)) => tracing::debug!(
                 parts_removed = r.parts_removed.len(),
                 sessions_removed = r.sessions_removed,
