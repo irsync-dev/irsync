@@ -60,14 +60,15 @@ pub fn export_blocks(exports: &Exports, clients: &Clients) -> String {
 /// The report: the config file, identities (`client` is the id and the
 /// public key line), servers and clients (`server_lines` and
 /// `client_lines`, what `server list` and `client list` print) and
-/// exports, each section under its name.
+/// exports, each section under its name. `daemon` is none when this
+/// machine has no daemon key.
 pub fn report(
     paths: &Paths,
     config: &Config,
     server_lines: &[String],
     client_lines: &[String],
     client: (&EndpointId, &str),
-    daemon: &EndpointId,
+    daemon: Option<&EndpointId>,
 ) -> String {
     let clients = &config.clients;
     let exports = &config.exports;
@@ -81,7 +82,12 @@ pub fn report(
         }
     }
     out.push_str("exports:\n");
-    let _ = writeln!(out, "daemon identity: {daemon}");
+    match daemon {
+        Some(id) => {
+            let _ = writeln!(out, "daemon identity: {id}");
+        }
+        None => out.push_str("daemon identity: none (irsync id generate --daemon makes one)\n"),
+    }
     out.push_str(&export_blocks(exports, clients));
     out
 }

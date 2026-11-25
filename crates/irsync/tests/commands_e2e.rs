@@ -244,6 +244,27 @@ fn id_show_on_a_server_points_at_the_daemon_id() {
     }
 }
 
+/// `show` is read-only for the daemon's key, like `id show`: without
+/// one it says so and makes none.
+#[test]
+fn show_never_creates_the_daemon_identity() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let o = irsync(&home, &["show"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("daemon identity: none"), "{out}");
+    assert!(!home.join(".config/irsync/daemon_ed25519").exists());
+    assert!(irsync(&home, &["id", "generate", "--daemon"])
+        .status
+        .success());
+    let o = irsync(&home, &["id", "show", "--daemon"]);
+    let daemon = String::from_utf8(o.stdout).unwrap();
+    let daemon = daemon.lines().last().unwrap();
+    let out = String::from_utf8(irsync(&home, &["show"]).stdout).unwrap();
+    assert!(out.contains(&format!("daemon identity: {daemon}")), "{out}");
+}
+
 #[test]
 fn id_show_uses_the_ssh_key_until_an_irsync_key_exists() {
     let d = tempfile::tempdir().unwrap();
