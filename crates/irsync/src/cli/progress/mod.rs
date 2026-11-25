@@ -128,12 +128,6 @@ pub fn human(n: u64) -> String {
     n.to_string()
 }
 
-/// `h:mm:ss`.
-pub fn clock(d: Duration) -> String {
-    let s = d.as_secs();
-    format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
-}
-
 /// `1,234,567`, as rsync prints numbers in `--stats`.
 pub(super) fn commas(n: u64) -> String {
     let s = n.to_string();

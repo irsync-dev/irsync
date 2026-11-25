@@ -1,6 +1,5 @@
 //! Wall and busy time per span name, as histograms for `/debug/timing`.
 
-use crate::cli::progress::summary::{ms, short_dur};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
@@ -10,6 +9,36 @@ use tracing::{Id, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
+
+/// `h:mm:ss`.
+pub fn clock(d: Duration) -> String {
+    let s = d.as_secs();
+    format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+}
+
+/// `0.4s`, `21.0s`, `2:47`, `1:02:03`.
+pub fn short_dur(d: Duration) -> String {
+    let secs = d.as_secs_f64();
+    if (secs * 10.0).round() < 600.0 {
+        return format!("{:.1}s", secs);
+    }
+    let whole = if secs < 60.0 { 60 } else { d.as_secs() };
+    if whole >= 3600 {
+        clock(Duration::from_secs(whole))
+    } else {
+        format!("{}:{:02}", whole / 60, whole % 60)
+    }
+}
+
+/// `0.4ms`, `12ms`.
+pub fn ms(d: Duration) -> String {
+    let v = d.as_secs_f64() * 1000.0;
+    if v < 10.0 {
+        format!("{v:.1}ms")
+    } else {
+        format!("{v:.0}ms")
+    }
+}
 
 /// Wall times in 64 log2 buckets of nanoseconds, plus count, sum and max.
 #[derive(Clone)]
@@ -171,6 +200,19 @@ where
 mod tests {
     use super::*;
     use tracing_subscriber::layer::SubscriberExt;
+
+    fn secs(s: f64) -> Duration {
+        Duration::from_secs_f64(s)
+    }
+
+    #[test]
+    fn short_dur_forms() {
+        assert_eq!(short_dur(secs(0.4)), "0.4s");
+        assert_eq!(short_dur(secs(59.94)), "59.9s");
+        assert_eq!(short_dur(secs(59.97)), "1:00");
+        assert_eq!(short_dur(secs(167.0)), "2:47");
+        assert_eq!(short_dur(secs(3723.0)), "1:02:03");
+    }
 
     #[test]
     fn quantiles_never_exceed_the_max() {

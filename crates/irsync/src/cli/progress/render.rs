@@ -10,10 +10,11 @@ use std::time::{Duration, Instant};
 use console::Style;
 
 use super::state::{DeletePhase, Live, Row, RowState, Walk};
-use super::{clock, commas, conn_label, human, shown};
+use super::{commas, conn_label, human, shown};
 use crate::fs::paths::RelPath;
 use crate::session::reconnect::ConnState;
 use crate::session::Party;
+use crate::telemetry::timing::clock;
 
 /// Cells in the bars on the `transfer` and `delete` lines.
 const PHASE_BAR: usize = 30;

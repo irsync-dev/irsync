@@ -618,7 +618,7 @@ fn summary(index: usize, of: usize) -> Event {
 }
 
 fn session_end(index: usize, of: usize, failed: bool) -> Event {
-    use irsync::cli::progress::summary::SessionSummary;
+    use irsync::session::SessionSummary;
     Event::SessionEnd(Arc::new(SessionSummary {
         failed,
         index,

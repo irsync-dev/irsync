@@ -599,6 +599,33 @@ pub enum Party {
     Peer,
 }
 
+/// One finished (or failed) session, for the `-vv` summary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionSummary {
+    /// 0-based position among the run's sources, and their count.
+    pub index: usize,
+    pub of: usize,
+    /// `"push"` or `"pull"`.
+    pub verb: &'static str,
+    /// The operands as typed.
+    pub from: String,
+    pub to: String,
+    pub reconnects: u32,
+    /// How the last connection was made; `None` if it never was.
+    pub conn: Option<reconnect::ConnState>,
+    /// The key exchange group of the last connection (`X25519MLKEM768`).
+    pub key_exchange: Option<String>,
+    pub usage: crate::telemetry::meter::Usage,
+    pub files_transferred: u64,
+    pub files_hashed: u64,
+    /// The session's QUIC bytes, as in the `sent`/`received` trailer.
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    /// The session ended with an error (files that failed in a session
+    /// that ran to its end do not count).
+    pub failed: bool,
+}
+
 /// Something worth telling the user about, emitted as a session runs.
 /// Events are best-effort: a slow reporter loses some (`Lagged`), and the
 /// final [`Outcome`] is authoritative for totals.
@@ -666,7 +693,7 @@ pub enum Event {
         to: String,
     },
     /// A session (one source) ended, well or not: where its time went.
-    SessionEnd(std::sync::Arc<crate::cli::progress::summary::SessionSummary>),
+    SessionEnd(std::sync::Arc<SessionSummary>),
     Conn(reconnect::ConnState),
     Deleted(RelPath),
     /// `--dry-run`: this path would be deleted.

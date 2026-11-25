@@ -11,7 +11,6 @@ use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use irsync::build::BuildInfo;
 use irsync::cli::progress::render::Geometry;
 use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
-use irsync::cli::progress::summary::SessionSummary;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
     Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, ExportArgs, ExportCmd,
@@ -42,6 +41,7 @@ use irsync::session::reconnect::{
 use irsync::session::single::{
     is_one_component, place_file, source_is_single, split_last, PlaceError,
 };
+use irsync::session::SessionSummary;
 use irsync::session::{
     resolve_roots, Event, EventBus, LocalSide, Outcome, Party, SyncHello, HASH_WORKERS,
 };
