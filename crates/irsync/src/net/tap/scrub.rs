@@ -220,7 +220,6 @@ mod tests {
             total: n as u32,
             chunks: (0..n)
                 .map(|i| ChunkRecord {
-                    offset: i as u64 * 65_536,
                     len: 65_536,
                     hash: Some(Hash {
                         bytes: vec![i as u8; 32],
@@ -289,7 +288,7 @@ mod tests {
         // The first entries stay, and the record is not cut much shorter
         // than it has to be.
         assert_eq!(p.chunks.len() as u32 + t.dropped_entries, 32_768);
-        assert_eq!(p.chunks[0].offset, 0);
+        assert_eq!(p.chunks[0].hash.as_ref().unwrap().bytes, vec![0; 32]);
         assert!(r.encoded_len() > 262_144 - 1024);
     }
 

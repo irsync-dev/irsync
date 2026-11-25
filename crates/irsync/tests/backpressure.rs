@@ -1463,13 +1463,7 @@ async fn a_sender_whose_listing_ends_short_reports_its_own_error() {
                     kind: Kind::Regular as i32,
                     ..FileEntry::default()
                 };
-                vec![
-                    Msg::Replan(Replan {
-                        path: b"zz".to_vec(),
-                        entry: Some(entry),
-                    }),
-                    m,
-                ]
+                vec![Msg::Replan(Replan { entry: Some(entry) }), m]
             }
             m => vec![m],
         }));
@@ -1512,13 +1506,7 @@ async fn a_sender_failing_before_its_listing_reports_its_own_error() {
                         kind: Kind::Regular as i32,
                         ..FileEntry::default()
                     };
-                    vec![
-                        Msg::Replan(Replan {
-                            path: b"zz".to_vec(),
-                            entry: Some(entry),
-                        }),
-                        m,
-                    ]
+                    vec![Msg::Replan(Replan { entry: Some(entry) }), m]
                 }
                 m => vec![m],
             }));

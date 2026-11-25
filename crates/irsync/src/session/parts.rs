@@ -15,7 +15,7 @@ use irsync_proto::chunk::{ChunkRecord, FileDigest, CHUNK_PARAMS};
 use irsync_proto::v1::{control::Msg, ChunkListMore, ChunkListStart, Hash, SourceStat};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// Records per part: about 1.6 MiB on the wire, a tenth of a control frame.
+/// Records per part: about 1.4 MiB on the wire, a tenth of a control frame.
 pub(super) const PART_RECORDS: usize = 32 * 1024;
 
 /// Most chunks a list may announce (`total`): bounds what a receiver holds
@@ -93,15 +93,19 @@ pub(super) struct Assembly {
     digest: FileDigest,
     stat: ListStat,
     total: usize,
+    /// Where the next record starts.
+    next: u64,
 }
 
 /// Starts the file's assembly slot over with `s` (a re-digested file comes
-/// as a new list). `Ok(Some)` is the list when `s` holds all of it, with
-/// the stat it was hashed under; `Ok(None)` means more parts are due; `Err`
-/// names what was wrong (the slot is then cleared).
+/// as a new list), whose first record is at `from`: 0, or an `APPEND`
+/// tail's `append_from`. `Ok(Some)` is the list when `s` holds all of it,
+/// with the stat it was hashed under; `Ok(None)` means more parts are due;
+/// `Err` names what was wrong (the slot is then cleared).
 pub(super) fn start(
     slot: &mut Option<Assembly>,
     s: ChunkListStart,
+    from: u64,
 ) -> Result<Option<Assembled>, String> {
     *slot = None;
     let total = s.total as usize;
@@ -143,6 +147,7 @@ pub(super) fn start(
             group: s.group,
         },
         total,
+        next: from,
     });
     finish(slot, s.chunks)
 }
@@ -186,7 +191,8 @@ fn finish(
             ));
         }
         for c in chunks {
-            let c = ChunkRecord::try_from(c).map_err(|e| format!("bad record: {e}"))?;
+            let c = ChunkRecord::from_wire(c, a.next).map_err(|e| format!("bad record: {e}"))?;
+            a.next = c.end();
             a.digest.chunks.push(c);
         }
         Ok(a.digest.chunks.len() == a.total)
@@ -415,7 +421,7 @@ mod tests {
 
     fn feed(slot: &mut Option<Assembly>, m: Msg) -> Result<Option<Assembled>, String> {
         match m {
-            Msg::ChunkListStart(s) => start(slot, s),
+            Msg::ChunkListStart(s) => start(slot, s, 0),
             Msg::ChunkListMore(m) => more(slot, m),
             m => panic!("not a part: {m:?}"),
         }
@@ -500,11 +506,10 @@ mod tests {
                 m => panic!("{m:?}"),
             };
             assert!(chunks.len() <= 4);
-            records.extend(
-                chunks
-                    .iter()
-                    .map(|c| ChunkRecord::try_from(c.clone()).unwrap()),
-            );
+            for c in chunks {
+                let at = records.last().map_or(0, ChunkRecord::end);
+                records.push(ChunkRecord::from_wire(c.clone(), at).unwrap());
+            }
         }
         assert_eq!(records, d.chunks);
     }
@@ -526,6 +531,25 @@ mod tests {
         assert_eq!(cl.size, d.size);
         assert_eq!(cl.hash, d.hash);
         assert_eq!(cl.chunks, d.chunks);
+    }
+
+    #[test]
+    fn a_tail_list_starts_where_the_tail_does() {
+        let d = digest(3);
+        let mut slot = None;
+        let mut out = None;
+        for p in parts(&d, 2, false) {
+            out = match p {
+                Msg::ChunkListStart(s) => start(&mut slot, s, 1000),
+                Msg::ChunkListMore(m) => more(&mut slot, m),
+                m => panic!("{m:?}"),
+            }
+            .unwrap();
+        }
+        let (got, _) = out.expect("complete");
+        let offsets: Vec<u64> = got.chunks.iter().map(|c| c.offset).collect();
+        let want: Vec<u64> = d.chunks.iter().map(|c| c.offset + 1000).collect();
+        assert_eq!(offsets, want);
     }
 
     #[test]

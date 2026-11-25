@@ -28,7 +28,6 @@ async fn two_local_endpoints_exchange_hello() {
         let ack = HelloAck {
             session_id: vec![7; 16],
             resumed: false,
-            protocol_version: hello.protocol_version,
             build: None,
             single_name: vec![],
         };
@@ -64,7 +63,6 @@ async fn two_local_endpoints_exchange_hello() {
         .is_none());
 
     assert_eq!(ack.session_id, vec![7; 16]);
-    assert_eq!(ack.protocol_version, PROTOCOL_VERSION);
     assert_eq!(within(responder).await.unwrap(), hello);
 
     client.close(0u32.into(), b"done");

@@ -167,9 +167,8 @@ message PathInfo {
 message HelloAck {
   bytes session_id = 1;
   bool resumed = 2;
-  uint32 protocol_version = 3;
-  BuildInfo build = 4; // the daemon's build, logged by the client
-  bytes single_name = 5; // push: the daemon's name for the file (the wire name)
+  BuildInfo build = 3; // the daemon's build, logged by the client
+  bytes single_name = 4; // push: the daemon's name for the file (the wire name)
 }
 // The admin session is open: AdminRequest frames may follow.
 message AdminReady {}
@@ -195,10 +194,11 @@ message Error {
   Code code = 1;
   string message = 2;
 }
+// One chunk of a chunk list. Its offset is the sum of the lengths before
+// it, from the start of the list: 0, or for an APPEND tail `append_from`.
 message ChunkRecord {
-  uint64 offset = 1;
-  uint32 len = 2;
-  Hash hash = 3;
+  uint32 len = 1;
+  Hash hash = 2;
 }
 
 // A listing entry, and a row of each side's index. The listing sends every

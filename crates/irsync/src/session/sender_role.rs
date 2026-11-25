@@ -18,9 +18,9 @@ use std::time::Duration;
 use anyhow::bail;
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{
-    control::Msg, file_ack::Status, file_entry::Kind, CheckLink, ChunkBasis, FileAck, LinksChecked,
-    MayPlace, NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone, Settled,
-    SourceStat, Unlinked, WithdrawChunkList,
+    control::Msg, file_ack::Status, file_entry::Kind, unlinked, CheckLink, ChunkBasis, FileAck,
+    LinksChecked, MayPlace, NeedChunks, PlaceVerdict, PlanEntry, PlanItem, Replan, SessionDone,
+    Settled, SourceStat, Unlinked, WithdrawChunkList,
 };
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 use tokio::task::JoinHandle;
@@ -1798,7 +1798,6 @@ async fn recheck(
                         .unwrap_or_else(|e| e.into_inner())
                         .insert(path.clone());
                     out.send_paced(Msg::Replan(Replan {
-                        path: path.as_bytes().to_vec(),
                         entry: Some(wire_entry(*entry)),
                     }))
                     .await;
@@ -1902,11 +1901,12 @@ async fn check_links(
                     crate::fs::paths::escape_path(path.as_bytes())
                 );
             }
-            out.send_paced(Msg::Unlinked(Unlinked {
-                path: path.as_bytes().to_vec(),
-                entry: entry.map(wire_entry),
-            }))
-            .await;
+            let name = match entry {
+                Some(e) => unlinked::Name::Entry(wire_entry(e)),
+                None => unlinked::Name::Failed(path.as_bytes().to_vec()),
+            };
+            out.send_paced(Msg::Unlinked(Unlinked { name: Some(name) }))
+                .await;
         }
     }
     out.send_paced(Msg::LinksChecked(LinksChecked {})).await;

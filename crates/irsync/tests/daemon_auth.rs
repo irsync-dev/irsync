@@ -196,7 +196,6 @@ async fn authorized_key_gets_hello_ack() {
         Ok(HelloAckOrError::Ack(a)) => {
             assert_eq!(a.session_id.len(), 16);
             assert!(!a.resumed);
-            assert_eq!(a.protocol_version, PROTOCOL_VERSION);
         }
         _ => panic!("expected HelloAck"),
     }

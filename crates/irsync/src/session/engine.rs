@@ -25,7 +25,6 @@ use irsync_proto::v1::{
     error::Code, hello_reply, Error, ExportEntry, FileEntry, Hello, HelloAck, HelloReply,
     SyncRequest,
 };
-use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 use tokio::sync::mpsc;
 use tracing::Instrument;
@@ -1198,7 +1197,6 @@ async fn serve_daemon_inner(
             reply: Some(hello_reply::Reply::Ack(HelloAck {
                 session_id: session_id.to_vec(),
                 resumed,
-                protocol_version: PROTOCOL_VERSION,
                 build: Some(BuildInfo::current().to_wire()),
                 single_name: single
                     .as_ref()

@@ -119,13 +119,12 @@ message PlaceVerdict {
 // lists nothing: only the files sent on this connection).
 message Settle {}
 // sender -> receiver, after Settle: a listed regular file that differs from
-// the stat it was listed (or last hashed) under, with its entry as it is
-// now. The receiver plans it again as it plans a listed file, under a new
+// the stat it was listed (or last hashed) under: its entry as it is now,
+// with its path. The receiver plans it again as it plans a listed file, under a new
 // file id above every id the session used; a file already placed stays
 // placed. One per path at most; only before Settled.
 message Replan {
-  bytes path = 1;
-  FileEntry entry = 2;
+  FileEntry entry = 1;
 }
 // sender -> receiver, after its Replans: the re-check is over. `vanished`:
 // listed files gone, or no longer regular files (capped as
@@ -152,14 +151,17 @@ message CheckLink {
 }
 message CheckLinksEnd {}
 // sender -> receiver, after CheckLinksEnd: a CheckLink `path` that is no
-// longer the file it names in `want`. The receiver does not link it. With
-// `entry` (a regular file the walk would list, as it is now) the receiver
-// plans it as a file of its own, as for a Replan, and the sender admits its
-// PlanItem with its retry used. Without (gone, or not such a file) the name
-// fails. Then LinksChecked ends the check.
+// longer the file it names in `want`. The receiver does not link it. Then
+// LinksChecked ends the check.
 message Unlinked {
-  bytes path = 1;
-  FileEntry entry = 2;
+  oneof name {
+    // Still a regular file the walk would list: the name as it is now (its
+    // path in the entry). The receiver plans it as a file of its own, as
+    // for a Replan, and the sender admits its PlanItem with its retry used.
+    FileEntry entry = 1;
+    // Gone, or not such a file: the name, which fails.
+    bytes failed = 2;
+  }
 }
 message LinksChecked {}
 message NeedChunks {

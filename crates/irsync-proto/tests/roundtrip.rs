@@ -147,12 +147,10 @@ fn control_oneof_roundtrips() {
             group: "users".into(),
             chunks: vec![
                 ChunkRecord {
-                    offset: 0,
                     len: 1024,
                     hash: Some(h(1)),
                 },
                 ChunkRecord {
-                    offset: 1024,
                     len: 1024,
                     hash: Some(h(2)),
                 },
@@ -162,7 +160,6 @@ fn control_oneof_roundtrips() {
             file_id: 3,
             first: 2,
             chunks: vec![ChunkRecord {
-                offset: 2048,
                 len: 1024,
                 hash: Some(h(3)),
             }],

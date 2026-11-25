@@ -26,12 +26,12 @@ pub(super) const PEER_EVENTS: usize = 1024;
 /// link stalls the task instead of growing the queue.
 pub(super) const OUT_BUDGET: usize = 4 * 1024 * 1024;
 
-/// The most bytes one chunk record takes in a chunk list part: its offset
-/// (a varint of at most 10 bytes) and length (at most 5), each with a tag
-/// byte, its 32-byte hash in a nested `Hash` (with tag and length, 36
-/// bytes), and the record's own tag and length (2). A typical record is a
-/// few bytes shorter (offsets below 2^42 take 6 bytes).
-const RECORD_WIRE: usize = 11 + 6 + 36 + 2;
+/// The most bytes one chunk record takes in a chunk list part: its length
+/// (a varint of at most 5 bytes) with a tag byte, its 32-byte hash in a
+/// nested `Hash` (with tag and length, 36 bytes), and the record's own tag
+/// and length (2). A typical record is a few bytes shorter (a length below
+/// 2^21 takes 3 bytes).
+const RECORD_WIRE: usize = 6 + 36 + 2;
 
 /// The most bytes one chunk index takes in a `NeedChunks`: a packed varint
 /// below [`MAX_LIST_CHUNKS`] (2^24), so at most 4 bytes.
@@ -147,7 +147,7 @@ fn honest_out(list_budget: u64, sends: bool) -> usize {
 /// Bytes of control frames queued for the writer and not yet written past
 /// which the peer counts as not reading its control stream, and the
 /// session fails: twice what an honest session can queue (see
-/// [`honest_out`]), about 2.0 GB for a sender and 850 MB for a receiver
+/// [`honest_out`]), about 1.65 GB for a sender and 850 MB for a receiver
 /// with the defaults. Below it, a peer that stops reading while freeing
 /// slots or room with frames of its own (so this side keeps replying)
 /// costs no more than that; it ends at once, without waiting for the idle
@@ -438,7 +438,6 @@ mod tests {
         use prost::Message as _;
         let len = |m: Msg| Control { msg: Some(m) }.encoded_len();
         let record = irsync_proto::v1::ChunkRecord {
-            offset: u64::MAX,
             len: u32::MAX,
             hash: Some(Hash {
                 bytes: vec![0xff; 32],
@@ -553,7 +552,7 @@ mod tests {
         assert_eq!(sender, 2 * honest_out(LIST_BUDGET, true));
         assert_eq!(receiver, 2 * honest_out(LIST_BUDGET, false));
         // The figures the documentation gives.
-        assert!((1_950_000_000..2_050_000_000).contains(&sender), "{sender}");
+        assert!((1_600_000_000..1_700_000_000).contains(&sender), "{sender}");
         assert!((800_000_000..900_000_000).contains(&receiver), "{receiver}");
     }
 

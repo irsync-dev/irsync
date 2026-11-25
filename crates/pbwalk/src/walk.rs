@@ -442,12 +442,10 @@ mod tests {
                 group: "g".into(),
                 chunks: vec![
                     v1::ChunkRecord {
-                        offset: 0,
                         len: 3,
                         hash: hash(2),
                     },
                     v1::ChunkRecord {
-                        offset: 3,
                         len: 2,
                         hash: hash(4),
                     },
@@ -457,7 +455,6 @@ mod tests {
                 file_id: 4,
                 first: 2,
                 chunks: vec![v1::ChunkRecord {
-                    offset: 5,
                     len: 1,
                     hash: hash(5),
                 }],
@@ -479,7 +476,6 @@ mod tests {
                 gen: 1,
             }),
             Msg::Replan(v1::Replan {
-                path: b"r".to_vec(),
                 entry: Some(entry()),
             }),
             Msg::Settle(v1::Settle {}),
@@ -494,8 +490,10 @@ mod tests {
             }),
             Msg::CheckLinksEnd(v1::CheckLinksEnd {}),
             Msg::Unlinked(v1::Unlinked {
-                path: b"u".to_vec(),
-                entry: Some(entry()),
+                name: Some(v1::unlinked::Name::Entry(entry())),
+            }),
+            Msg::Unlinked(v1::Unlinked {
+                name: Some(v1::unlinked::Name::Failed(b"u".to_vec())),
             }),
             Msg::LinksChecked(v1::LinksChecked {}),
         ]
@@ -566,7 +564,6 @@ mod tests {
                     reply: Some(v1::hello_reply::Reply::Ack(v1::HelloAck {
                         session_id: vec![1; 16],
                         resumed: true,
-                        protocol_version: 5,
                         build: Some(v1::BuildInfo {
                             version: "2".into(),
                             commit: "unknown".into(),

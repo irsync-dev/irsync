@@ -1459,8 +1459,6 @@ mod tests {
                     file_id: 1,
                     path: b"a/\xff".to_vec(),
                     action: Action::Delta as i32,
-                    size: 9,
-                    whole_hash: None,
                     entry: None,
                     append_from: 0,
                 }],

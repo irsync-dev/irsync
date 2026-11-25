@@ -18,7 +18,7 @@ version is refused with `VERSION_MISMATCH`.
 | Item | Value |
 | --- | --- |
 | ALPN | `irsync/1` |
-| `PROTOCOL_VERSION` | `8`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
+| `PROTOCOL_VERSION` | `8`, carried in `Hello.protocol_version` |
 | Framing | A protobuf varint length (at most 4 bytes for `MAX_FRAME`), then that many bytes of one protobuf message: protobuf's standard length-delimited form |
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
@@ -147,8 +147,8 @@ A `SyncRequest` holds:
   pull); on a push the client paces itself. Absent or 0 means no limit.
 
 A push or a pull is answered with `ack`: a `HelloAck` with the session id,
-whether the session was resumed, its protocol version, the daemon's
-`BuildInfo` and, on a single-file push, `single_name`. Each side logs the
+whether the session was resumed, the daemon's `BuildInfo` and, on a
+single-file push, `single_name`. Each side logs the
 other's build at info level once the session is up.
 
 `list_exports` is answered with `exports`: the exports this key may use with
@@ -219,11 +219,11 @@ export.
 | `Itemized` | receiver to sender | One rsync `-i` line, for a client that pushes with `-i`. |
 | `Heartbeat` | either | This side is busy; see below. |
 | `Settle` | receiver to sender | With `--paranoid` (not on a dry run), once, in place of the first `SessionDone`: every path is planned and no file is in flight. The sender stats every file it listed again. |
-| `Replan` | sender to receiver | After `Settle`: a listed file that changed since it was listed or last hashed, with its entry as it is now. The receiver plans it again, under a new file id. |
+| `Replan` | sender to receiver | After `Settle`: a listed file that changed since it was listed or last hashed: its entry as it is now, path included. The receiver plans it again, under a new file id. |
 | `Settled` | sender to receiver | The re-check is over: the listed files that vanished, and those it could not stat. The receiver sends `SessionDone` once the re-planned files are done. |
 | `CheckLink` | receiver to sender | With `-H` (not on a dry run), once every path is planned, no file is in flight and the re-check (if any) is over: one per hard link about to be made to a file sent in this session, on this connection or an earlier one. It carries the name and the stat its target was hashed under. |
 | `CheckLinksEnd` | receiver to sender | The last `CheckLink` has been sent. With `-H` it is always sent, even with no links to check, before `SessionDone`. |
-| `Unlinked` | sender to receiver | A name that is no longer exactly the file its target was hashed as: its stat differs (inode, size, times, mode, owner or group), or it is gone or no longer a regular file the walk would list. The receiver does not link it. If it is still a regular file, `entry` holds it as it is now, and the receiver plans it as a file of its own, as for `Replan`. Otherwise that name fails. |
+| `Unlinked` | sender to receiver | A name that is no longer exactly the file its target was hashed as: its stat differs (inode, size, times, mode, owner or group), or it is gone or no longer a regular file the walk would list. The receiver does not link it. If it is still a regular file, `entry` holds it as it is now, and the receiver plans it as a file of its own, as for `Replan`. Otherwise `failed` holds the name, which fails. |
 | `LinksChecked` | sender to receiver | The link check is over. The receiver makes the other links, then sends `SessionDone`. |
 | `SessionDone` | receiver to sender | The session's totals, errors and deletions, and what the sender's listing held (`listed`): a sender that resumed from the receiver's stored plan listed nothing itself and reports these counts. |
 | `Error` | either | The session failed on this side, with `INTERNAL` and why; it ends the session. |
@@ -240,7 +240,9 @@ frames, in order, each with at most 32,768 records; an empty file's list is
 one `ChunkListStart` without records. The start carries the file id, the
 total record count, the whole-file hash and the stat the file was hashed
 under; each `ChunkListMore` carries the file id and the index of its first
-record. The list is complete once `total` records have come. The receiver
+record. A `ChunkRecord` is a length and a hash: its offset is the sum of the
+lengths before it, from 0, or from `append_from` for an `APPEND` tail. The
+list is complete once `total` records have come. The receiver
 reassembles them and fails the file when a sequence skips or announces more
 records than 2^24 or than the size allows at the minimum chunk length. The
 stat (`SourceStat`) is the size, mtime, change time, inode, mode, uid and

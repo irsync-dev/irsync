@@ -379,7 +379,6 @@ mod tests {
         v1::HelloReply {
             reply: Some(v1::hello_reply::Reply::Ack(v1::HelloAck {
                 session_id: vec![7; 16],
-                protocol_version: 5,
                 ..Default::default()
             })),
         }
@@ -1006,7 +1005,6 @@ mod tests {
         let ack = v1::HelloReply {
             reply: Some(v1::hello_reply::Reply::Ack(v1::HelloAck {
                 session_id: vec![7; 16],
-                protocol_version: 5,
                 build: Some(v1::BuildInfo {
                     version: "0.1.0".into(),
                     commit: "abc".into(),

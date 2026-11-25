@@ -190,6 +190,9 @@ struct RFile {
     path: RelPath,
     entry: FileEntry,
     action: Action,
+    /// `APPEND`: the trusted prefix, where the sender's list starts; 0
+    /// otherwise.
+    append_from: u64,
     /// `DELTA`: the planner's early hash of the old file, handed to the
     /// first `open_writer` so it waits instead of reading the file again,
     /// and the itemize line, emitted once the chunk list is resolved.
@@ -393,11 +396,11 @@ impl Receiver {
         if self.settling != Settling::Asked {
             anyhow::bail!("protocol error: Replan outside the final re-check");
         }
-        let Ok(path) = RelPath::new(&r.path) else {
-            anyhow::bail!("protocol error: Replan with an invalid path");
-        };
         let Some(entry) = r.entry.filter(|e| e.kind() == Kind::Regular) else {
             anyhow::bail!("protocol error: Replan without a regular file's entry");
+        };
+        let Ok(path) = RelPath::new(&entry.path) else {
+            anyhow::bail!("protocol error: Replan with an invalid path");
         };
         if !self.regular.contains(&path) || self.failed.contains(&path) {
             tracing::debug!(
@@ -464,8 +467,6 @@ impl Receiver {
             file_id,
             path: path.as_bytes().to_vec(),
             action: action as i32,
-            size: entry.size,
-            whole_hash: entry.whole_hash.clone(),
             entry: Some(entry.clone()),
             append_from,
         });
@@ -592,7 +593,7 @@ impl Receiver {
         file_id: u64,
         path: RelPath,
         entry: FileEntry,
-        action: Action,
+        (action, append_from): (Action, u64),
         deferred: Deferred,
         slot: Option<tokio::sync::OwnedSemaphorePermit>,
     ) {
@@ -615,6 +616,11 @@ impl Receiver {
                 path,
                 entry,
                 action,
+                append_from: if action == Action::Append {
+                    append_from
+                } else {
+                    0
+                },
                 deferred,
                 identical: false,
                 gen: 0,
@@ -824,7 +830,7 @@ impl Receiver {
         };
         self.ctx.hooks.event("part", &f.path);
         f.lists += 1;
-        let assembled = parts::start(&mut f.assembly, s);
+        let assembled = parts::start(&mut f.assembly, s, f.append_from);
         self.on_assembled(file_id, assembled).await;
         Ok(())
     }
@@ -989,8 +995,6 @@ impl Receiver {
                     file_id: p.file_id,
                     path: p.path.as_bytes().to_vec(),
                     action: p.action as i32,
-                    size: p.entry.size,
-                    whole_hash: p.entry.whole_hash.clone(),
                     entry: Some(p.entry.clone()),
                     append_from: p.append_from,
                 });
@@ -999,7 +1003,7 @@ impl Receiver {
                     p.file_id,
                     p.path.clone(),
                     p.entry,
-                    p.action,
+                    (p.action, p.append_from),
                     p.deferred,
                     Some(p.slot),
                 );
