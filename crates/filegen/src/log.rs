@@ -2,7 +2,7 @@
 //! and per-kind statistics.
 
 use crate::caps::Caps;
-use crate::escape::{escape, unescape};
+use crate::escape::{log_escape, log_unescape};
 use crate::kind::OpKind;
 use crate::platform::{self, FileKind, Platform, Stat};
 use serde::{Deserialize, Serialize};
@@ -204,7 +204,7 @@ fn fmt_ts(ts: jiff::Timestamp) -> String {
 }
 
 fn quoted(bytes: &[u8]) -> String {
-    format!("\"{}\"", escape(bytes))
+    format!("\"{}\"", log_escape(bytes))
 }
 
 fn path_bytes(p: &Path) -> Vec<u8> {
@@ -403,7 +403,7 @@ fn fields(line: &str) -> Option<Vec<(&str, Vec<u8>)>> {
                     _ => j += 1,
                 }
             }
-            out.push((key, unescape(line.get(start..j)?).ok()?));
+            out.push((key, log_unescape(line.get(start..j)?).ok()?));
             i = j + 1;
         } else {
             let end = line[i..].find(' ').map_or(b.len(), |n| i + n);

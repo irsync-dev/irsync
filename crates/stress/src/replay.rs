@@ -17,7 +17,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use ::filegen::cli::{Cli, Command};
-use ::filegen::escape::escape;
+use ::filegen::escape::log_escape;
 use ::filegen::kind::OpKind;
 use ::filegen::log::{PostStat, StepLine};
 use ::filegen::model::Model;
@@ -343,7 +343,7 @@ fn kind_char_ok(kind: EntryKind, c: char) -> bool {
 }
 
 fn show(rel: &[u8]) -> String {
-    escape(rel)
+    log_escape(rel)
 }
 
 fn show_post(p: &Option<PostStat>) -> String {

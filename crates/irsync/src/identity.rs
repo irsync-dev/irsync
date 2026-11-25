@@ -1,4 +1,6 @@
-//! Node identities derived from OpenSSH Ed25519 keys.
+//! Endpoint identities: the Ed25519 secret key an endpoint holds, kept in
+//! an OpenSSH key file, and the `EndpointId` (its public key) others know
+//! it by.
 
 use iroh::{EndpointId, SecretKey};
 use ssh_key::getrandom::SysRng;

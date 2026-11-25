@@ -1,10 +1,10 @@
-//! Reads the capture files `write` makes: little-endian pcapng with one
+//! Reads the capture files [`pcapng`](crate::pcapng) makes: little-endian pcapng with one
 //! exported-PDU interface, one packet at a time.
 
 use std::io::Read;
 use std::net::Ipv6Addr;
 
-use crate::write::{TAG_DST_PORT, TAG_END, TAG_IPV6_DST, TAG_IPV6_SRC, TAG_SRC_PORT};
+use crate::pcapng::{TAG_DST_PORT, TAG_END, TAG_IPV6_DST, TAG_IPV6_SRC, TAG_SRC_PORT};
 use crate::LINKTYPE_WIRESHARK_UPPER_PDU;
 
 /// The largest block the reader accepts; a larger one is malformed.
@@ -293,23 +293,23 @@ impl<R: Read> Iterator for Reader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::write;
+    use crate::pcapng;
 
     const A: Ipv6Addr = Ipv6Addr::new(0xfd69, 0x7273, 0, 0, 0, 0, 0, 1);
     const B: Ipv6Addr = Ipv6Addr::new(0xfd69, 0x7273, 0, 0, 0, 1, 0, 0);
 
     fn file(packets: &[(u64, Vec<u8>)]) -> Vec<u8> {
-        let mut out = write::section_header();
-        out.extend(write::interface(LINKTYPE_WIRESHARK_UPPER_PDU, 0));
+        let mut out = pcapng::section_header();
+        out.extend(pcapng::interface(LINKTYPE_WIRESHARK_UPPER_PDU, 0));
         for (ts, pdu) in packets {
-            out.extend(write::packet(*ts, pdu));
+            out.extend(pcapng::packet(*ts, pdu));
         }
         out
     }
 
     #[test]
     fn reads_back_what_the_writer_wrote() {
-        let pdu = write::exported_pdu("x", A, B, 7, 9, b"body");
+        let pdu = pcapng::exported_pdu("x", A, B, 7, 9, b"body");
         let got: Vec<_> = Reader::new(&file(&[(5, pdu)])[..])
             .unwrap()
             .map(Result::unwrap)
@@ -327,16 +327,16 @@ mod tests {
     #[test]
     fn every_cut_point_is_truncated_or_clean() {
         let pdus = [
-            write::exported_pdu("x", A, B, 1, 2, b"one"),
-            write::exported_pdu("x", B, A, 3, 4, b"second"),
+            pcapng::exported_pdu("x", A, B, 1, 2, b"one"),
+            pcapng::exported_pdu("x", B, A, 3, 4, b"second"),
         ];
         let whole = file(&[(1, pdus[0].clone()), (1 << 40, pdus[1].clone())]);
         let mut boundaries = vec![0];
         for len in [
-            write::section_header().len(),
-            write::interface(252, 0).len(),
-            write::packet(1, &pdus[0]).len(),
-            write::packet(1, &pdus[1]).len(),
+            pcapng::section_header().len(),
+            pcapng::interface(252, 0).len(),
+            pcapng::packet(1, &pdus[0]).len(),
+            pcapng::packet(1, &pdus[1]).len(),
         ] {
             boundaries.push(boundaries.last().unwrap() + len);
         }
@@ -386,16 +386,16 @@ mod tests {
 
     #[test]
     fn other_link_type_is_refused() {
-        let mut f = write::section_header();
-        f.extend(write::interface(1, 0));
+        let mut f = pcapng::section_header();
+        f.extend(pcapng::interface(1, 0));
         assert!(matches!(Reader::new(&f[..]), Err(Error::LinkType(1))));
     }
 
     #[test]
     fn a_second_interface_with_another_link_type_is_refused() {
-        let pdu = write::exported_pdu("x", A, B, 1, 2, b"b");
+        let pdu = pcapng::exported_pdu("x", A, B, 1, 2, b"b");
         let mut f = file(&[(1, pdu)]);
-        f.extend(write::interface(1, 0));
+        f.extend(pcapng::interface(1, 0));
         let items: Vec<_> = Reader::new(&f[..]).unwrap().collect();
         assert_eq!(items.len(), 2);
         assert!(items[0].is_ok());
@@ -404,10 +404,10 @@ mod tests {
 
     #[test]
     fn unknown_block_types_are_skipped() {
-        let pdu = write::exported_pdu("x", A, B, 1, 2, b"b");
+        let pdu = pcapng::exported_pdu("x", A, B, 1, 2, b"b");
         let mut f = file(&[(1, pdu.clone())]);
         f.extend(block5());
-        f.extend(write::packet(2, &pdu));
+        f.extend(pcapng::packet(2, &pdu));
         let got: Vec<_> = Reader::new(&f[..]).unwrap().map(Result::unwrap).collect();
         assert_eq!(got.iter().map(|p| p.ts_micros).collect::<Vec<_>>(), [1, 2]);
     }
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn absurd_block_length_is_malformed() {
-        let mut f = write::section_header();
+        let mut f = pcapng::section_header();
         f.extend_from_slice(&1u32.to_le_bytes());
         f.extend_from_slice(&0xffff_fff0_u32.to_le_bytes());
         assert!(matches!(Reader::new(&f[..]), Err(Error::Malformed(_))));
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn a_file_must_start_with_a_section_header() {
-        let f = write::interface(LINKTYPE_WIRESHARK_UPPER_PDU, 0);
+        let f = pcapng::interface(LINKTYPE_WIRESHARK_UPPER_PDU, 0);
         let err = Reader::new(&f[..]).err().unwrap();
         assert!(
             matches!(
@@ -506,8 +506,8 @@ mod tests {
 
     #[test]
     fn a_packet_block_of_1_mib_is_read() {
-        let pdu = write::exported_pdu("x", A, B, 1, 2, b"b");
-        let mut block = write::packet(1, &pdu);
+        let pdu = pcapng::exported_pdu("x", A, B, 1, 2, b"b");
+        let mut block = pcapng::packet(1, &pdu);
         // Grow the block to exactly 1 MiB with padding after the packet.
         let total = MAX_PACKET_BLOCK as u32;
         let pad = MAX_PACKET_BLOCK - block.len();
@@ -551,13 +551,13 @@ mod tests {
 
     #[test]
     fn a_2_mib_unknown_block_is_skipped() {
-        let pdu = write::exported_pdu("x", A, B, 1, 2, b"b");
+        let pdu = pcapng::exported_pdu("x", A, B, 1, 2, b"b");
         let mut f = file(&[(1, pdu.clone())]);
         let total: u32 = 2 << 20;
         f.extend(block_head(5, total));
         f.extend(vec![7; total as usize - 12]);
         f.extend_from_slice(&total.to_le_bytes());
-        f.extend(write::packet(2, &pdu));
+        f.extend(pcapng::packet(2, &pdu));
         let got: Vec<_> = Reader::new(Limited { data: &f[..] })
             .unwrap()
             .map(Result::unwrap)

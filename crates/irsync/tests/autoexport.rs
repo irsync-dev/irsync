@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use irsync::authz::{Access, Authorizer, FileAuthorizer};
-use irsync::autoexport::{auto_root, check_root, AutoRootError};
+use irsync::autoexport::{auto_export_dir, check_root, AutoExportError};
 use irsync::config::paths::Paths;
 
 /// A `state_dir` line for a config in `dir`: adding an automatic export
@@ -20,26 +20,32 @@ fn state_line(dir: &Path) -> String {
 }
 
 #[test]
-fn auto_root_dir_is_itself() {
+fn auto_export_dir_dir_is_itself() {
     let tmp = tempfile::tempdir().unwrap();
-    assert_eq!(auto_root(tmp.path(), false, false).unwrap(), tmp.path());
-    assert_eq!(auto_root(tmp.path(), true, false).unwrap(), tmp.path());
+    assert_eq!(
+        auto_export_dir(tmp.path(), false, false).unwrap(),
+        tmp.path()
+    );
+    assert_eq!(
+        auto_export_dir(tmp.path(), true, false).unwrap(),
+        tmp.path()
+    );
 }
 
 #[test]
-fn auto_root_file_uses_parent() {
+fn auto_export_dir_file_uses_parent() {
     let tmp = tempfile::tempdir().unwrap();
     let file = tmp.path().join("hostname");
     std::fs::write(&file, b"x").unwrap();
-    assert_eq!(auto_root(&file, false, false).unwrap(), tmp.path());
-    assert_eq!(auto_root(&file, true, false).unwrap(), tmp.path());
+    assert_eq!(auto_export_dir(&file, false, false).unwrap(), tmp.path());
+    assert_eq!(auto_export_dir(&file, true, false).unwrap(), tmp.path());
 }
 
 #[test]
-fn auto_root_missing_push_creates_dir() {
+fn auto_export_dir_missing_push_creates_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let new = tmp.path().join("new");
-    assert_eq!(auto_root(&new, true, false).unwrap(), new);
+    assert_eq!(auto_export_dir(&new, true, false).unwrap(), new);
     assert!(new.is_dir(), "the push target was not created");
 }
 
@@ -47,7 +53,10 @@ fn auto_root_missing_push_creates_dir() {
 fn missing_file_dest_exports_parent_and_creates_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let new = tmp.path().join("new.iso");
-    assert_eq!(auto_root(&new, true, true), Ok(tmp.path().to_path_buf()));
+    assert_eq!(
+        auto_export_dir(&new, true, true),
+        Ok(tmp.path().to_path_buf())
+    );
     assert!(!new.exists());
 }
 
@@ -55,32 +64,35 @@ fn missing_file_dest_exports_parent_and_creates_nothing() {
 fn existing_dir_with_file_dest_is_itself() {
     let tmp = tempfile::tempdir().unwrap();
     assert_eq!(
-        auto_root(tmp.path(), true, true),
+        auto_export_dir(tmp.path(), true, true),
         Ok(tmp.path().to_path_buf())
     );
 }
 
 #[test]
-fn auto_root_is_never_the_filesystem_root() {
+fn auto_export_dir_is_never_the_filesystem_root() {
     assert_eq!(
-        auto_root(Path::new("/"), false, false),
-        Err(AutoRootError::Root)
+        auto_export_dir(Path::new("/"), false, false),
+        Err(AutoExportError::Root)
     );
     assert_eq!(
-        auto_root(Path::new("/"), true, false),
-        Err(AutoRootError::Root)
+        auto_export_dir(Path::new("/"), true, false),
+        Err(AutoExportError::Root)
     );
-    assert_eq!(check_root(Path::new("/")), Err(AutoRootError::Root));
+    assert_eq!(check_root(Path::new("/")), Err(AutoExportError::Root));
 }
 
 #[test]
 #[cfg(unix)]
-fn auto_root_refuses_non_utf8_before_creating() {
+fn auto_export_dir_refuses_non_utf8_before_creating() {
     let tmp = tempfile::tempdir().unwrap();
     let bad = tmp
         .path()
         .join(irsync::platform::testutil::name_from_bytes(b"caf\xe9"));
-    assert_eq!(auto_root(&bad, true, false), Err(AutoRootError::NotUtf8));
+    assert_eq!(
+        auto_export_dir(&bad, true, false),
+        Err(AutoExportError::NotUtf8)
+    );
     assert!(!bad.exists(), "a refused root was created");
 }
 
@@ -127,26 +139,32 @@ fn file_authorizer_waits_for_the_config_lock() {
 }
 
 #[test]
-fn auto_root_missing_pull_is_not_found() {
+fn auto_export_dir_missing_pull_is_not_found() {
     let tmp = tempfile::tempdir().unwrap();
     assert_eq!(
-        auto_root(&tmp.path().join("nope"), false, false),
-        Err(AutoRootError::NotFound)
+        auto_export_dir(&tmp.path().join("nope"), false, false),
+        Err(AutoExportError::NotFound)
     );
 }
 
 #[test]
-fn auto_root_missing_parent_is_not_found() {
+fn auto_export_dir_missing_parent_is_not_found() {
     let tmp = tempfile::tempdir().unwrap();
     let deep = tmp.path().join("no/such");
-    assert_eq!(auto_root(&deep, true, false), Err(AutoRootError::NotFound));
-    assert_eq!(auto_root(&deep, false, false), Err(AutoRootError::NotFound));
+    assert_eq!(
+        auto_export_dir(&deep, true, false),
+        Err(AutoExportError::NotFound)
+    );
+    assert_eq!(
+        auto_export_dir(&deep, false, false),
+        Err(AutoExportError::NotFound)
+    );
     // A parent that is a file is no directory to export either.
     let file = tmp.path().join("f");
     std::fs::write(&file, b"x").unwrap();
     assert_eq!(
-        auto_root(&file.join("x"), true, false),
-        Err(AutoRootError::NotFound)
+        auto_export_dir(&file.join("x"), true, false),
+        Err(AutoExportError::NotFound)
     );
 }
 

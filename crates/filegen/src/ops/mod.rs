@@ -142,7 +142,7 @@ pub fn new_path(ctx: &OpCtx, dir: NodeId, name: &[u8]) -> PathBuf {
     // As in `Model::abs_path`: a drawn name is always a stored name, so
     // one the platform cannot name is a bug in filegen.
     let os = platform::bytes_to_os(name).unwrap_or_else(|e| {
-        panic!("cannot name {}: {e}", crate::escape::escape(name));
+        panic!("cannot name {}: {e}", crate::escape::log_escape(name));
     });
     ctx.model.abs_path(ctx.root, dir).join(os)
 }

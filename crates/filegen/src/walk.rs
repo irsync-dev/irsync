@@ -372,7 +372,7 @@ mod tests {
         let id = m.resolve(b"\xff\xfe").unwrap();
         assert_eq!(m.node(id).kind, NodeKind::File);
         assert_eq!(m.node(id).size, 2);
-        let key = crate::escape::escape(b"\xff\xfe");
+        let key = crate::escape::log_escape(b"\xff\xfe");
         assert!(m.has_folded_name(m.root(), &key));
     }
 }

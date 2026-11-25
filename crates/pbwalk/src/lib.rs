@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use anyhow::{bail, Context as _};
 use prost_reflect::MessageDescriptor;
 
-pub use account::{raw, unwrap, Entry, Kind, Prefix};
+pub use account::{raw, unwrap_envelope, Entry, Kind, Prefix};
 pub use clap::Parser;
 pub use schema::Schema;
 pub use walk::{own_bytes, walk, Field, Sizes, Value, MAX_DEPTH};
@@ -164,7 +164,7 @@ pub fn run(
 /// that are.
 fn check_header_field(wrapper: &MessageDescriptor, name: &str) -> anyhow::Result<()> {
     // The header fields are those `header_value` knows on an empty record.
-    let empty = unwrap(wrapper, &[], Prefix::None);
+    let empty = unwrap_envelope(wrapper, &[], Prefix::None);
     if empty.header_value(wrapper, name).is_some() {
         return Ok(());
     }
@@ -269,7 +269,7 @@ impl Pass<'_> {
             let entry = if self.args.no_unwrap {
                 raw(self.wrapper, &packet.body)
             } else {
-                unwrap(self.wrapper, &packet.body, self.args.prefix)
+                unwrap_envelope(self.wrapper, &packet.body, self.args.prefix)
             };
             if !self.passes(&entry, summary.packets) {
                 continue;
@@ -343,14 +343,14 @@ mod tests {
 
     /// [`capture`] for packets given as their bytes.
     fn capture_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
-        let mut f = pbcap::write::section_header();
-        f.extend(pbcap::write::interface(
+        let mut f = pbcap::pcapng::section_header();
+        f.extend(pbcap::pcapng::interface(
             pbcap::LINKTYPE_WIRESHARK_UPPER_PDU,
             0,
         ));
         for (i, body) in bodies.iter().enumerate() {
-            let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, body);
-            f.extend(pbcap::write::packet(1_000_000 + i as u64 * 12_345, &pdu));
+            let pdu = pbcap::pcapng::exported_pdu("irsync", A, B, 1, 1, body);
+            f.extend(pbcap::pcapng::packet(1_000_000 + i as u64 * 12_345, &pdu));
         }
         f
     }
@@ -769,10 +769,10 @@ mod tests {
     #[test]
     fn undecodable_body_is_a_mismatch() {
         let mut out = Vec::new();
-        let mut f = pbcap::write::section_header();
-        f.extend(pbcap::write::interface(252, 0));
-        let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, &[0xff; 8]);
-        f.extend(pbcap::write::packet(1, &pdu));
+        let mut f = pbcap::pcapng::section_header();
+        f.extend(pbcap::pcapng::interface(252, 0));
+        let pdu = pbcap::pcapng::exported_pdu("irsync", A, B, 1, 1, &[0xff; 8]);
+        f.extend(pbcap::pcapng::packet(1, &pdu));
         let s = run(&args(&[]), &f[..], &mut out).unwrap();
         assert_eq!(s.mismatches, 1);
         let out = String::from_utf8(out).unwrap();
@@ -790,9 +790,9 @@ mod tests {
     fn truncated_file_lists_what_it_read() {
         let records = [hello_record(1, 1), hello_record(2, 2), hello_record(1, 1)];
         let whole = capture(&records);
-        let last = pbcap::write::packet(
+        let last = pbcap::pcapng::packet(
             0,
-            &pbcap::write::exported_pdu("irsync", A, B, 1, 1, &records[2].encode_to_vec()),
+            &pbcap::pcapng::exported_pdu("irsync", A, B, 1, 1, &records[2].encode_to_vec()),
         )
         .len();
         let cut = &whole[..whole.len() - last / 2];
@@ -875,10 +875,10 @@ mod tests {
         }
         .encode_to_vec();
         body.extend_from_slice(&[0xfa, 0x01, 5, 1, 2, 3, 4, 5]);
-        let mut f = pbcap::write::section_header();
-        f.extend(pbcap::write::interface(252, 0));
-        let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, &body);
-        f.extend(pbcap::write::packet(1, &pdu));
+        let mut f = pbcap::pcapng::section_header();
+        f.extend(pbcap::pcapng::interface(252, 0));
+        let pdu = pbcap::pcapng::exported_pdu("irsync", A, B, 1, 1, &body);
+        f.extend(pbcap::pcapng::packet(1, &pdu));
         let (s, out) = run_on(&[], &f);
         assert_eq!((s.messages, s.wire_bytes, s.mismatches), (1, 5, 0));
         assert!(out.contains("5 bytes, type not in the protos"), "{out}");
@@ -901,8 +901,8 @@ mod tests {
         // Field 31, 5 bytes: a type these protos do not have.
         body.extend_from_slice(&[0xfa, 0x01, 5, 1, 2, 3, 4, 5]);
         let mut f = capture(&[]);
-        let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, &body);
-        f.extend(pbcap::write::packet(1, &pdu));
+        let pdu = pbcap::pcapng::exported_pdu("irsync", A, B, 1, 1, &body);
+        f.extend(pbcap::pcapng::packet(1, &pdu));
         let (s, out) = run_on(&["--totals-only"], &f);
         assert_eq!((s.wire_bytes, s.mismatches), (15, 0));
         let fields = out.split("By field").nth(1).expect(&out);
@@ -937,8 +937,8 @@ mod tests {
 
     #[test]
     fn tcpdump_capture_is_refused() {
-        let mut f = pbcap::write::section_header();
-        f.extend(pbcap::write::interface(1, 0));
+        let mut f = pbcap::pcapng::section_header();
+        f.extend(pbcap::pcapng::interface(1, 0));
         let mut out = Vec::new();
         let err = run(&args(&[]), &f[..], &mut out).unwrap_err();
         assert!(format!("{err:#}").contains("link type 1"), "{err:#}");
@@ -1126,9 +1126,9 @@ mod tests {
         // truncated_file_lists_what_it_read.
         let records = [hello_record(1, 1), hello_record(2, 2)];
         let whole = capture(&records);
-        let last = pbcap::write::packet(
+        let last = pbcap::pcapng::packet(
             0,
-            &pbcap::write::exported_pdu("irsync", A, B, 1, 1, &records[1].encode_to_vec()),
+            &pbcap::pcapng::exported_pdu("irsync", A, B, 1, 1, &records[1].encode_to_vec()),
         )
         .len();
         let cut = &whole[..whole.len() - last / 2];

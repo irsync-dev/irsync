@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum AutoRootError {
+pub enum AutoExportError {
     /// Neither the path nor (for a push) its parent is there to export.
     #[error("no such file or directory")]
     NotFound,
@@ -29,12 +29,16 @@ pub enum AutoRootError {
 /// missing `abs` is the file to be written, so its parent directory is
 /// exported and nothing is created; the parent must be a directory. The
 /// root must pass [`check_root`], before anything is created.
-pub fn auto_root(abs: &Path, push: bool, file_dest: bool) -> Result<PathBuf, AutoRootError> {
+pub fn auto_export_dir(
+    abs: &Path,
+    push: bool,
+    file_dest: bool,
+) -> Result<PathBuf, AutoExportError> {
     let parent = || {
         let p = abs
             .parent()
             .filter(|p| p.is_dir())
-            .ok_or(AutoRootError::NotFound)?;
+            .ok_or(AutoExportError::NotFound)?;
         check_root(p)?;
         Ok(p.to_path_buf())
     };
@@ -47,30 +51,30 @@ pub fn auto_root(abs: &Path, push: bool, file_dest: bool) -> Result<PathBuf, Aut
         Err(_) if push && file_dest => parent(),
         Err(_) if push => {
             if !abs.parent().is_some_and(Path::is_dir) {
-                return Err(AutoRootError::NotFound);
+                return Err(AutoExportError::NotFound);
             }
             check_root(abs)?;
             match std::fs::create_dir(abs) {
                 Ok(()) => Ok(abs.to_path_buf()),
                 // Created meanwhile by another connection.
                 Err(_) if abs.is_dir() => Ok(abs.to_path_buf()),
-                Err(e) => Err(AutoRootError::Create {
+                Err(e) => Err(AutoExportError::Create {
                     path: abs.to_path_buf(),
                     error: e.to_string(),
                 }),
             }
         }
-        Err(_) => Err(AutoRootError::NotFound),
+        Err(_) => Err(AutoExportError::NotFound),
     }
 }
 
 /// Refuses `/` and a path that is not UTF-8 as an automatic export.
-pub fn check_root(root: &Path) -> Result<(), AutoRootError> {
+pub fn check_root(root: &Path) -> Result<(), AutoExportError> {
     if root.parent().is_none() {
-        return Err(AutoRootError::Root);
+        return Err(AutoExportError::Root);
     }
     if root.to_str().is_none() {
-        return Err(AutoRootError::NotUtf8);
+        return Err(AutoExportError::NotUtf8);
     }
     Ok(())
 }

@@ -20,7 +20,7 @@ use tracing::warn;
 
 use super::scrub::{fit, scrub};
 use crate::platform::{Create, Open};
-use pbcap::write as pcapng;
+use pbcap::pcapng;
 
 /// The largest record we write: Wireshark's 256 KiB packet limit, less room
 /// for the exported-PDU tags and the packet block around it.

@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Access, Authorizer, AuthzError, FileAuthorizer, Permissions, Snapshot};
-use crate::autoexport::{auto_root, check_root, AutoRootError};
+use crate::autoexport::{auto_export_dir, check_root, AutoExportError};
 use crate::config::exports::Export;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
@@ -860,7 +860,7 @@ fn validate<'a>(
 }
 
 /// For a key with `all_paths`, whose path no export it may use contains:
-/// adds an automatic export for the path ([`auto_root`]) that lists the
+/// adds an automatic export for the path ([`auto_export_dir`]) that lists the
 /// key with its `all_paths` level, and returns a snapshot that has it,
 /// with the path made canonical to resolve against it. A push by a key
 /// whose `all_paths` is `ro` is refused first, so nothing is created for
@@ -892,7 +892,7 @@ async fn serve_all_paths(
         Ok(None) => return Err(no_access(t.path)),
         Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),
     };
-    // Before `auto_root`, which makes a missing push target. The reply is
+    // Before `auto_export_dir`, which makes a missing push target. The reply is
     // the one for a push into a read-only export.
     if push && !level.permits(true) {
         return Err(read_only());
@@ -909,7 +909,7 @@ async fn serve_all_paths(
 
 /// The blocking part of [`serve_all_paths`] for `abs`, the resolved form
 /// of `path` (as typed, for messages); the export lists `id` with
-/// `level`. `file_dest`: see [`auto_root`].
+/// `level`. `file_dest`: see [`auto_export_dir`].
 fn add_auto_export(
     shared: &Shared,
     abs: PathBuf,
@@ -919,16 +919,16 @@ fn add_auto_export(
     level: Access,
     path: &[u8],
 ) -> Result<(Snapshot, PathBuf), (Code, String)> {
-    let refuse = |e: AutoRootError| match e {
-        AutoRootError::NotFound => (
+    let refuse = |e: AutoExportError| match e {
+        AutoExportError::NotFound => (
             Code::BadPath,
             format!("no such file or directory: {}", escape_path(path)),
         ),
         e => (Code::BadPath, e.to_string()),
     };
-    let root = auto_root(&abs, push, file_dest).map_err(refuse)?;
+    let root = auto_export_dir(&abs, push, file_dest).map_err(refuse)?;
     // A symlink may lead to `/` or to a name that is not UTF-8.
-    let canonical = std::fs::canonicalize(&root).map_err(|_| refuse(AutoRootError::NotFound))?;
+    let canonical = std::fs::canonicalize(&root).map_err(|_| refuse(AutoExportError::NotFound))?;
     check_root(&canonical).map_err(refuse)?;
     let abs = match abs.strip_prefix(&root) {
         Ok(rest) if !rest.as_os_str().is_empty() => canonical.join(rest),

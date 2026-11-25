@@ -103,7 +103,11 @@ impl Entry<'_> {
 }
 
 /// One packet, unwrapped by the envelope rules.
-pub fn unwrap<'a>(wrapper: &MessageDescriptor, body: &'a [u8], prefix: Prefix) -> Entry<'a> {
+pub fn unwrap_envelope<'a>(
+    wrapper: &MessageDescriptor,
+    body: &'a [u8],
+    prefix: Prefix,
+) -> Entry<'a> {
     let walked = walk(wrapper, body);
     let mut problems = Vec::new();
 
@@ -392,7 +396,7 @@ mod tests {
     fn plain_message() {
         let n = hello_len();
         let body = hello_record(n as u32, None);
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!((e.kind, e.type_name.as_str()), (Kind::Message, "Hello"));
         assert_eq!((e.present, e.wire_len, e.prefix), (n, n, 1));
         assert_eq!(e.direction, Some(pbcap::v1::Direction::Sent));
@@ -425,7 +429,7 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!(e.type_name, "DataChunk");
         assert_eq!((e.cut_content, e.cut_pieces), (262_144, 1));
         assert_eq!(e.cut_other, 262_163 - 262_144 - e.present);
@@ -444,7 +448,7 @@ mod tests {
                 content: Vec::new(),
             }),
         );
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!((e.cut_other, e.dropped_entries, e.cut_content), (30, 7, 0));
         assert_eq!(e.unexplained, 0);
         assert!(e.adds_up() && e.mismatch.is_none());
@@ -458,7 +462,7 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!((e.kind, e.type_name.as_str()), (Kind::Message, ""));
         assert_eq!((e.present, e.not_captured, e.wire_len), (0, 500, 500));
         assert_eq!(e.prefix, 2);
@@ -470,7 +474,7 @@ mod tests {
     fn unexplained_gap() {
         let n = hello_len();
         let body = hello_record(n as u32 + 9, None);
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!(e.unexplained, 9);
         assert_eq!((e.cut_content, e.cut_other), (0, 0));
         assert!(e.adds_up() && e.mismatch.is_none());
@@ -487,7 +491,7 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!((e.kind, e.type_name.as_str()), (Kind::Event, "StreamEvent"));
         assert_eq!((e.present, e.wire_len, e.prefix), (0, 0, 0));
         assert_eq!(e.fields[0].name.as_deref(), Some("kind"));
@@ -501,7 +505,7 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!((e.kind, e.type_name.as_str()), (Kind::Event, ""));
         assert!(e.fields.is_empty());
         assert_eq!((e.wire_len, e.prefix), (0, 0));
@@ -512,7 +516,7 @@ mod tests {
     fn encoded_len_too_small_is_a_mismatch() {
         let n = hello_len();
         let body = hello_record(n as u32 - 1, None);
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert!(e.mismatch.is_some());
         assert_eq!((e.unexplained, e.cut_other, e.cut_content), (0, 0, 0));
         assert!(!e.adds_up());
@@ -532,7 +536,7 @@ mod tests {
                 }],
             }),
         );
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert!(e.mismatch.is_some());
         assert_eq!((e.cut_content, e.cut_pieces, e.cut_other), (0, 0, 0));
         assert!(!e.adds_up());
@@ -544,7 +548,7 @@ mod tests {
         let mut body = hello_record(n as u32, None);
         // data_chunk (field 28), empty.
         body.extend_from_slice(&[0xe2, 0x01, 0x00]);
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!(e.type_name, "Hello");
         assert_eq!(
             e.mismatch.as_deref(),
@@ -569,7 +573,7 @@ mod tests {
     fn unknown_payload_is_shown_as_its_number() {
         // field 31, length-delimited, 5 bytes: a message these protos lack.
         let body = record_with(5, &[0xfa, 0x01, 5, 1, 2, 3, 4, 5]);
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!((e.kind, e.type_name.as_str()), (Kind::Message, "#31"));
         assert_eq!((e.present, e.wire_len, e.not_captured), (5, 5, 0));
         assert_eq!(e.fields.len(), 1);
@@ -583,7 +587,7 @@ mod tests {
     fn unknown_field_from_40_up_is_an_event() {
         // field 45, length-delimited, 2 bytes.
         let body = record_with(0, &[0xea, 0x02, 2, 8, 1]);
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!((e.kind, e.type_name.as_str()), (Kind::Event, "#45"));
         assert_eq!((e.present, e.wire_len, e.prefix), (0, 0, 0));
         assert!(e.adds_up() && e.mismatch.is_none());
@@ -594,7 +598,7 @@ mod tests {
         let n = hello_len();
         let mut body = hello_record(n as u32, None);
         body.extend_from_slice(&[0xfa, 0x01, 1, 0]);
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!(e.type_name, "Hello");
         assert!(e.mismatch.is_some());
     }
@@ -603,7 +607,7 @@ mod tests {
     fn varint_from_20_up_is_a_mismatch() {
         // field 21 (hello_ack) as a varint.
         let body = record_with(0, &[0xa8, 0x01, 7]);
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert!(e.mismatch.is_some());
         assert!(e.fields.is_empty());
         assert_eq!(e.type_name, "");
@@ -612,7 +616,7 @@ mod tests {
     #[test]
     fn garbage_body_is_a_mismatch() {
         let body = [0xff; 8];
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert!(e.mismatch.is_some());
         assert_eq!(
             (e.cut_content, e.cut_other, e.unexplained, e.not_captured),
@@ -625,7 +629,7 @@ mod tests {
         let n = hello_len();
         let mut body = hello_record(n as u32, None);
         body.extend_from_slice(&[0xff; 3]);
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         let why = e.mismatch.unwrap();
         assert!(
             why.contains("the record ends in bytes that do not parse"),
@@ -645,7 +649,7 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert_eq!((e.kind, e.wire_len, e.prefix), (Kind::Event, 0, 0));
         assert_eq!(
             e.mismatch.as_deref(),
@@ -666,7 +670,7 @@ mod tests {
         let pool = prost_reflect::DescriptorPool::from_file_descriptor_set(fds).unwrap();
         let w = pool.get_message_by_name("W").unwrap();
         // nums (field 20), packed: 1, 2.
-        let e = unwrap(&w, &[0xa2, 0x01, 2, 1, 2], Prefix::Varint);
+        let e = unwrap_envelope(&w, &[0xa2, 0x01, 2, 1, 2], Prefix::Varint);
         assert_eq!(
             e.mismatch.as_deref(),
             Some("field 20 is numbered as a message but is a packed repeated field")
@@ -677,7 +681,7 @@ mod tests {
     fn prefix_none_counts_no_prefix() {
         let n = hello_len();
         let body = hello_record(n as u32, None);
-        let e = unwrap(&wrapper(), &body, Prefix::None);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::None);
         assert_eq!((e.prefix, e.wire_len), (0, n));
         assert!(e.adds_up());
     }
@@ -691,7 +695,7 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        let e = unwrap(&wrapper(), &body, Prefix::Varint);
+        let e = unwrap_envelope(&wrapper(), &body, Prefix::Varint);
         assert!(e.header.contains(&("session_id".into(), "ab01".into())));
         assert!(e.header.contains(&("file_id".into(), "0".into())));
     }
@@ -704,7 +708,7 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        let e = unwrap(&w, &body, Prefix::Varint);
+        let e = unwrap_envelope(&w, &body, Prefix::Varint);
         assert_eq!(
             e.header_value(&w, "side").as_deref(),
             Some("SIDE_DAEMON(2)")
