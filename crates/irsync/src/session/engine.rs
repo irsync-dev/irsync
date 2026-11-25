@@ -34,8 +34,8 @@ use super::limits::{out_ceiling, LISTING_QUEUE};
 use super::listing_stream::{self, ListingSink};
 use super::single::{is_one_component, SingleFile};
 use super::{
-    receiver, sender, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey, SessionRecord,
-    SideHooks, SyncHello, HASH_WORKERS,
+    receiver, sender, DaemonSessions, IndexScope, LocalSide, Outcome, SessionClaim, SessionKey,
+    SessionRecord, SideHooks, SyncHello, HASH_WORKERS,
 };
 use crate::data_stream::DEFAULT_PARALLEL;
 use crate::filter::FilterSet;
@@ -1133,12 +1133,14 @@ fn hashers(
     )
 }
 
-/// The body of [`serve_daemon`]; `session` is its `session` span.
+/// The body of [`serve_daemon`]; `session` is its `session` span: the
+/// handshake ([`accept_session`]), the role's context ([`daemon_ctx`]),
+/// then the role.
 #[allow(clippy::too_many_arguments)]
 async fn serve_daemon_inner(
     conn: Connection,
     mut send: SendStream,
-    recv: RecvStream,
+    mut recv: RecvStream,
     tap: StreamTap,
     place: Place,
     hello: SyncHello,
@@ -1146,18 +1148,62 @@ async fn serve_daemon_inner(
     shared: DaemonSessions,
     session: &tracing::Span,
 ) -> anyhow::Result<Outcome> {
+    let (granted, _claim, listing) = accept_session(
+        &conn, &mut send, &mut recv, &tap, &place, &hello, &index, &shared, session,
+    )
+    .await?;
+    let sends = hello.direction == Direction::DaemonSends;
+    let ctx = daemon_ctx(conn, place, &hello.req, sends, index, &shared, granted);
+    run_role(
+        Arc::new(ctx),
+        (send, recv, tap),
+        listing,
+        sends,
+        Side::Daemon,
+    )
+    .await
+}
+
+/// The session a daemon's handshake settled on.
+struct Granted {
+    /// The session root, checked below the export root.
+    root: PathBuf,
+    session_id: [u8; 16],
+    key: Vec<u8>,
+    /// The stored record of a resumed session.
+    record: Option<SessionRecord>,
+    resumed: bool,
+}
+
+/// The daemon's handshake: checks the request and the session root, claims
+/// a new session or the stored one the client resumes, answers `HelloAck`
+/// and accepts the listing stream. A request it cannot serve is refused
+/// (see [`refuse`]). The claim is to be held while the session runs.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
+async fn accept_session(
+    conn: &Connection,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    tap: &StreamTap,
+    place: &Place,
+    hello: &SyncHello,
+    index: &IndexHandle,
+    shared: &DaemonSessions,
+    session: &tracing::Span,
+) -> anyhow::Result<(Granted, SessionClaim, (SendStream, RecvStream, StreamTap))> {
     let Place {
         root: export_root,
         export: export_name,
         rel,
-        fsync: export_fsync,
         single,
+        ..
     } = place;
     let handshake = phase(
         PhaseKind::Handshake,
         Side::Daemon,
         role_of(Side::Daemon, hello.direction),
-        Some(&export_name),
+        Some(export_name),
     );
     let (direction, req) = (hello.direction, &hello.req);
     // The daemon sends when the client receives.
@@ -1174,12 +1220,12 @@ async fn serve_daemon_inner(
             "bad partial-dir {:?}: must be a relative path inside the destination",
             String::from_utf8_lossy(&req.partial_dir)
         );
-        return refuse(&conn, &mut send, &tap, Code::BadPath, msg).await;
+        return refuse(conn, send, tap, Code::BadPath, msg).await;
     }
     // The rules come from the peer: checked before they are compiled, so
     // their size is bounded by more than the frame.
     if let Err(msg) = crate::filter::check_limits(req.filters.iter().map(|r| &r.pattern[..])) {
-        return refuse(&conn, &mut send, &tap, Code::BadRequest, msg).await;
+        return refuse(conn, send, tap, Code::BadRequest, msg).await;
     }
     let prepared = {
         let (m, r) = (export_root.clone(), rel.clone());
@@ -1189,16 +1235,15 @@ async fn serve_daemon_inner(
         Ok(r) => r,
         Err(e) => {
             let msg = format!("bad session path: {e}");
-            return refuse(&conn, &mut send, &tap, Code::BadPath, msg).await;
+            return refuse(conn, send, tap, Code::BadPath, msg).await;
         }
     };
     let remote = conn.remote_id();
-    let key =
-        SessionKey::for_daemon(remote, &export_name, &rel, &hello, single.as_ref()).into_bytes();
-    let (session_id, record, _claim) = if req.session_id.is_empty() {
+    let key = SessionKey::for_daemon(remote, export_name, rel, hello, single.as_ref()).into_bytes();
+    let (session_id, record, claim) = if req.session_id.is_empty() {
         let mut id = [0u8; 16];
         getrandom::fill(&mut id).expect("the system's random source");
-        let claim = shared.registry.claim(id, &conn).await?;
+        let claim = shared.registry.claim(id, conn).await?;
         (id, None, claim)
     } else {
         // Only the key that created a session may resume it, and only for
@@ -1206,25 +1251,25 @@ async fn serve_daemon_inner(
         let owned = |rec: &SessionRecord| rec.plan.remote_id == remote.as_bytes();
         let id = <[u8; 16]>::try_from(req.session_id.as_slice()).ok();
         let found = match id {
-            Some(id) => load_record(&index, id, &key).await.filter(owned),
+            Some(id) => load_record(index, id, &key).await.filter(owned),
             None => None,
         };
         let Some(id) = id.filter(|_| found.is_some()) else {
             let msg = "unknown session".to_string();
-            return refuse(&conn, &mut send, &tap, Code::BadSession, msg).await;
+            return refuse(conn, send, tap, Code::BadSession, msg).await;
         };
         // Stop an older connection still hosting it, then reload what it saved.
-        let claim = shared.registry.claim(id, &conn).await?;
-        let Some(rec) = load_record(&index, id, &key).await.filter(owned) else {
+        let claim = shared.registry.claim(id, conn).await?;
+        let Some(rec) = load_record(index, id, &key).await.filter(owned) else {
             let msg = "session finished".to_string();
-            return refuse(&conn, &mut send, &tap, Code::BadSession, msg).await;
+            return refuse(conn, send, tap, Code::BadSession, msg).await;
         };
         (id, Some(rec), claim)
     };
     let resumed = record.is_some();
-    ConnTap::of(&conn).set_session(&session_id);
+    ConnTap::of(conn).set_session(&session_id);
     write_msg_tapped(
-        &mut send,
+        send,
         &HelloReply {
             reply: Some(hello_reply::Reply::Ack(HelloAck {
                 session_id: session_id.to_vec(),
@@ -1236,7 +1281,7 @@ async fn serve_daemon_inner(
                     .unwrap_or_default(),
             })),
         },
-        &tap,
+        tap,
     )
     .await?;
     drop(handshake);
@@ -1244,11 +1289,10 @@ async fn serve_daemon_inner(
     session.record("resumed", resumed);
     #[cfg(feature = "test-hooks")]
     if shared.fault.as_ref().is_some_and(|f| f.drops_after_ack()) {
-        let mut recv = recv;
         let mut byte = [0u8; 1];
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            tokio::io::AsyncReadExt::read(&mut recv, &mut byte),
+            tokio::io::AsyncReadExt::read(recv, &mut byte),
         )
         .await;
         tracing::warn!("fault injection: dropping the connection after HelloAck");
@@ -1261,19 +1305,22 @@ async fn serve_daemon_inner(
         conn.closed().await;
         bail!("fault injection: stalled");
     }
-    let listing =
-        match tokio::time::timeout(HELLO_TIMEOUT, listing_stream::accept(&conn, &session_id)).await
-        {
-            Ok(Ok(l)) => l,
-            Ok(Err(e)) => {
-                conn.close(2u32.into(), b"rejected");
-                return Err(e);
-            }
-            Err(_) => {
-                conn.close(2u32.into(), b"hello timeout");
-                bail!("timed out waiting for the listing stream");
-            }
-        };
+    let listing = match tokio::time::timeout(
+        HELLO_TIMEOUT,
+        listing_stream::accept(conn, &session_id),
+    )
+    .await
+    {
+        Ok(Ok(l)) => l,
+        Ok(Err(e)) => {
+            conn.close(2u32.into(), b"rejected");
+            return Err(e);
+        }
+        Err(_) => {
+            conn.close(2u32.into(), b"hello timeout");
+            bail!("timed out waiting for the listing stream");
+        }
+    };
     let peer_build = BuildInfo::from_wire(hello.build.as_ref());
     tracing::info!(
         session = %control::hex(&session_id),
@@ -1287,6 +1334,42 @@ async fn serve_daemon_inner(
         peer_dirty = %peer_build.dirty_label(),
         "session started"
     );
+    let granted = Granted {
+        root,
+        session_id,
+        key,
+        record,
+        resumed,
+    };
+    Ok((granted, claim, listing))
+}
+
+/// The role's context for a daemon session: its hashers, its options from
+/// the client's request and the export, and its hooks.
+fn daemon_ctx(
+    conn: Connection,
+    place: Place,
+    req: &SyncRequest,
+    sends: bool,
+    index: IndexHandle,
+    shared: &DaemonSessions,
+    granted: Granted,
+) -> Ctx {
+    let Place {
+        root: export_root,
+        export: export_name,
+        rel,
+        fsync: export_fsync,
+        single,
+    } = place;
+    let Granted {
+        root,
+        session_id,
+        key,
+        record,
+        resumed,
+    } = granted;
+    let remote = conn.remote_id();
     // The export's index is opened for the export root: hash and key paths
     // from there, so rows stay export-relative whatever the session path.
     // Local work (hashing, writing, finalizing) bumps the same marker the
@@ -1314,7 +1397,7 @@ async fn serve_daemon_inner(
         Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS).with_force(req.checksum);
     let (hasher, forced, verify) =
         hashers(main, &index, &export_root, &activity, &meter, None, &hooks);
-    let ctx = Ctx {
+    Ctx {
         conn,
         session_id,
         key,
@@ -1366,26 +1449,18 @@ async fn serve_daemon_inner(
         privs: Privs::current(),
         hooks,
         bus: super::EventBus::default(),
-    };
-    run_role(
-        Arc::new(ctx),
-        (send, recv, tap),
-        listing,
-        sends,
-        Side::Daemon,
-    )
-    .await
+    }
 }
 
 /// Answers `Hello` with an `Error`, waits (bounded) until the client has it,
 /// and closes the connection.
-async fn refuse(
+async fn refuse<T>(
     conn: &Connection,
     send: &mut SendStream,
     tap: &StreamTap,
     code: Code,
     msg: String,
-) -> anyhow::Result<Outcome> {
+) -> anyhow::Result<T> {
     tracing::info!(peer = %conn.remote_id().fmt_short(), ?code, %msg, "refusing session");
     let refusal = HelloReply {
         reply: Some(hello_reply::Reply::Error(Error {
