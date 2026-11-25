@@ -6,6 +6,7 @@
 //! its EndpointId, and its daemon must be running.
 
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{bail, Context};
 use irsync::authz::Access;
@@ -27,6 +28,9 @@ use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 
 use crate::Connected;
+
+/// How long [`converse`] waits for the server's answer.
+const REPLY_WAIT: Duration = Duration::from_secs(60);
 
 /// What one call asks the server.
 pub enum RemoteRequest {
@@ -249,7 +253,13 @@ async fn converse(
         Ok::<(), anyhow::Error>(())
     }
     .await;
-    let body = match read_body(&mut recv).await {
+    let Ok(read) = tokio::time::timeout(REPLY_WAIT, read_body(&mut recv)).await else {
+        bail!(
+            "{server} did not answer within {} seconds",
+            REPLY_WAIT.as_secs()
+        );
+    };
+    let body = match read {
         Ok(Some(body)) => body,
         read => {
             sent.context("sending the request")?;
@@ -259,11 +269,17 @@ async fn converse(
             }
         }
     };
-    let msg = match AdminReply::decode(&body[..]) {
+    decode_reply(server, &body, what)
+}
+
+/// The outcome of the reply `body` to a request; `what` says which
+/// (`None`: a change, `Some(false)`: a view, `Some(true)`: config lines).
+fn decode_reply(server: &str, body: &[u8], what: Option<bool>) -> anyhow::Result<RemoteOutcome> {
+    let msg = match AdminReply::decode(body) {
         Ok(AdminReply { msg: Some(m) }) => m,
         // A daemon that does not know the admin service answers with a
         // plain Error, which does not decode as a reply.
-        _ => match Error::decode(&body[..]) {
+        _ => match Error::decode(body) {
             Ok(e) => admin_reply::Msg::Refused(e),
             Err(_) => bail!("malformed reply from {server}"),
         },
@@ -440,6 +456,21 @@ mod tests {
             e.to_string(),
             "myserver runs an older irsync without remote admin: update it there"
         );
+    }
+
+    /// The bytes an older daemon sends, decoded as a reply is.
+    #[test]
+    fn an_older_daemons_version_error_decodes_to_update_it() {
+        for what in [None, Some(false), Some(true)] {
+            let body = version_error(PROTOCOL_VERSION - 1).encode_to_vec();
+            let Err(e) = decode_reply("myserver", &body, what) else {
+                panic!("a version error decoded as an answer");
+            };
+            assert_eq!(
+                e.to_string(),
+                "myserver runs an older irsync without remote admin: update it there"
+            );
+        }
     }
 
     #[test]

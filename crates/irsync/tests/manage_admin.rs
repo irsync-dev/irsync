@@ -319,7 +319,7 @@ fn view_lists_exports_and_clients_with_rights() {
         id(2),
         id(3)
     ));
-    let v = view(&m, id(9), true);
+    let v = view(&m, id(9), true, None);
     assert_eq!(v.daemon_id, id(9).as_bytes().to_vec());
     assert!(v.allow_all_paths);
     assert_eq!(
@@ -361,6 +361,23 @@ fn view_lists_exports_and_clients_with_rights() {
             },
         ]
     );
+}
+
+#[test]
+fn view_expands_a_tilde_path_with_the_daemons_home() {
+    let m = msg("[exports.home]\npath = \"~\"\n[exports.photos]\npath = \"~/Photos\"\n");
+    let paths = |home: Option<&Path>| -> Vec<String> {
+        view(&m, id(9), false, home)
+            .exports
+            .into_iter()
+            .map(|e| e.path)
+            .collect()
+    };
+    assert_eq!(
+        paths(Some(Path::new("/srv/daemon"))),
+        ["/srv/daemon", "/srv/daemon/Photos"]
+    );
+    assert_eq!(paths(None), ["~", "~/Photos"]);
 }
 
 #[test]

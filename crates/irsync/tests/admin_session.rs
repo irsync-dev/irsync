@@ -12,7 +12,7 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::Endpoint;
 use irsync::authz::{FileAuthorizer, LOCK_WAIT};
 use irsync::config::paths::Paths;
-use irsync::daemon::ADMIN_MAX_CHANGES;
+use irsync::daemon::{ADMIN_MAX_CHANGES, ADMIN_MAX_PENDING, ADMIN_MAX_REQUEST};
 use irsync::net::frame::{read_msg, write_msg};
 use irsync_proto::v1::{
     admin_reply, admin_request, change::Op, error::Code, hello::Direction, read, AdminReply,
@@ -322,6 +322,9 @@ async fn losing_admin_mid_session() {
     stop(d).await;
 }
 
+/// One change too many drops the whole transaction: the changes after it
+/// are discarded too, none gets a reply, and its COMMIT is the NACK. The
+/// next transaction starts clean.
 #[tokio::test]
 async fn too_many_changes_drop_the_transaction() {
     let (_tmp, dir) = temp_dir();
@@ -329,15 +332,112 @@ async fn too_many_changes_drop_the_transaction() {
     let (d, path) = spawn_from_file(&dir, &laptop(client.id(), "admin = \"rw\"\n")).await;
     let before = std::fs::read(&path).unwrap();
     let mut s = Session::open(&d, &client).await;
-    for i in 0..=ADMIN_MAX_CHANGES {
+    for i in 0..150 {
         s.change(export_add(&format!("e{i}"), &dir.join("photos")))
             .await;
     }
-    let n = nack(s.reply().await.expect("a NACK for one change too many"));
+    let n = nack(s.commit().await);
     assert_eq!(n.change, 0, "{}", n.reason);
-    assert!(n.reason.contains("100"), "{}", n.reason);
-    assert!(ack(s.commit().await).is_empty());
+    assert!(n.reason.contains("at most 100"), "{}", n.reason);
     assert_eq!(std::fs::read(&path).unwrap(), before, "the file changed");
+    s.change(export_add("photos", &dir.join("photos"))).await;
+    assert_eq!(ack(s.commit().await).len(), 1);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("[exports.photos]"), "{text}");
+    assert!(!text.contains("[exports.e1"), "{text}");
+    stop(d).await;
+}
+
+/// The changes of one transaction may hold at most `ADMIN_MAX_PENDING`
+/// bytes; past that it is dropped like one with too many changes.
+#[tokio::test]
+async fn a_transaction_too_large_is_dropped() {
+    let (_tmp, dir) = temp_dir();
+    let client = client_endpoint().await;
+    let (d, path) = spawn_from_file(&dir, &laptop(client.id(), "admin = \"rw\"\n")).await;
+    let before = std::fs::read(&path).unwrap();
+    let mut s = Session::open(&d, &client).await;
+    let long = dir.join("x".repeat(60 * 1024));
+    let n = ADMIN_MAX_PENDING / (60 * 1024) + 1;
+    assert!(n < ADMIN_MAX_CHANGES);
+    for i in 0..n {
+        s.change(export_add(&format!("e{i}"), &long)).await;
+    }
+    let n = nack(s.commit().await);
+    assert_eq!(n.change, 0, "{}", n.reason);
+    assert!(n.reason.contains("too large"), "{}", n.reason);
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the file changed");
+    s.change(export_add("photos", &dir.join("photos"))).await;
+    assert_eq!(ack(s.commit().await).len(), 1);
+    stop(d).await;
+}
+
+/// A single request over `ADMIN_MAX_REQUEST` ends the session.
+#[tokio::test]
+async fn an_oversized_request_ends_the_session() {
+    let (_tmp, dir) = temp_dir();
+    let client = client_endpoint().await;
+    let (d, path) = spawn_from_file(&dir, &laptop(client.id(), "admin = \"rw\"\n")).await;
+    let before = std::fs::read(&path).unwrap();
+    let mut s = Session::open(&d, &client).await;
+    let long = dir.join("x".repeat(ADMIN_MAX_REQUEST));
+    s.change(export_add("big", &long)).await;
+    match s.reply().await {
+        Some(admin_reply::Msg::Refused(e)) => {
+            assert!(e.message.contains("too large"), "{}", e.message);
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    s.assert_closed().await;
+    assert_eq!(std::fs::read(&path).unwrap(), before, "the file changed");
+    stop(d).await;
+}
+
+/// Two admins commit at the same time, each its own export: both are
+/// applied, the second on top of the first.
+#[tokio::test]
+async fn two_admins_commit_at_once() {
+    let (_tmp, dir) = temp_dir();
+    std::fs::create_dir(dir.join("music")).unwrap();
+    let (one, two) = (client_endpoint().await, client_endpoint().await);
+    let config = format!(
+        "{}\n[clients.desk]\nclient_id = \"{}\"\nadmin = \"rw\"\n",
+        laptop(one.id(), "admin = \"rw\"\n"),
+        two.id()
+    );
+    let (d, path) = spawn_from_file(&dir, &config).await;
+    let mut a = Session::open(&d, &one).await;
+    let mut b = Session::open(&d, &two).await;
+    a.change(export_add("photos", &dir.join("photos"))).await;
+    b.change(export_add("music", &dir.join("music"))).await;
+    let (ra, rb) = tokio::join!(a.commit(), b.commit());
+    assert_eq!(ack(ra).len(), 1);
+    assert_eq!(ack(rb).len(), 1);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("[exports.photos]"), "{text}");
+    assert!(text.contains("[exports.music]"), "{text}");
+    stop(d).await;
+}
+
+/// A client without `admin = "rw"` is told `not allowed` at once, even
+/// while the config is locked: the right is checked before the lock.
+#[tokio::test]
+async fn a_read_only_admin_is_not_allowed_even_while_locked() {
+    let (_tmp, dir) = temp_dir();
+    let client = client_endpoint().await;
+    let (d, path) = spawn_from_file(&dir, &laptop(client.id(), "admin = \"ro\"\n")).await;
+    let lock = irsync::manage::lock_config(&path).unwrap();
+    let mut s = Session::open(&d, &client).await;
+    s.change(export_add("photos", &dir.join("photos"))).await;
+    let start = std::time::Instant::now();
+    let n = nack(s.commit().await);
+    assert_eq!((n.change, n.reason.as_str()), (0, "not allowed"));
+    assert!(
+        start.elapsed() < LOCK_WAIT,
+        "answered after {:?}",
+        start.elapsed()
+    );
+    drop(lock);
     stop(d).await;
 }
 

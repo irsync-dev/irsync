@@ -8,7 +8,6 @@
 use super::{clients, config, exports, grants, typed, ManageError, PeerSpec};
 use crate::authz::Access;
 use crate::config::clients::{Clients, RIGHTS};
-use crate::config::expand_tilde;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use irsync_proto::v1;
@@ -97,7 +96,7 @@ pub fn apply(
         results.push(line);
     }
     let kept = admin_names(&work, path, &who.id);
-    if mine.is_empty() || !mine.iter().all(|n| kept.contains(n)) {
+    if !mine.iter().all(|n| kept.contains(n)) {
         return Err(whole(OWN_ADMIN));
     }
     *msg = work;
@@ -186,10 +185,15 @@ fn apply_one(
 }
 
 /// What a read of the exports and clients answers: the daemon's id, its
-/// `allow_all_paths`, each export (its path with `~` expanded, as
-/// `export list` prints it) and each client with the rights it has, in
-/// file order.
-pub fn view(msg: &pb::Config, daemon_id: EndpointId, allow_all_paths: bool) -> v1::View {
+/// `allow_all_paths`, each export (its path with `~` expanded to the
+/// daemon's `home`, as `export list` prints it; left as written with no
+/// home) and each client with the rights it has, in file order.
+pub fn view(
+    msg: &pb::Config,
+    daemon_id: EndpointId,
+    allow_all_paths: bool,
+    home: Option<&Path>,
+) -> v1::View {
     let values = |list: &[pb::Entry]| list.iter().map(|e| e.value.clone()).collect();
     v1::View {
         daemon_id: daemon_id.as_bytes().to_vec(),
@@ -199,7 +203,7 @@ pub fn view(msg: &pb::Config, daemon_id: EndpointId, allow_all_paths: bool) -> v
             .iter()
             .map(|e| v1::ExportView {
                 name: e.name.clone(),
-                path: expand_tilde(&e.path).to_string_lossy().into_owned(),
+                path: under(&e.path, home),
                 read_only: e.read_only.unwrap_or(false),
                 warm_index: e.warm_index.unwrap_or(false),
                 fsync: e.fsync.unwrap_or(false),
@@ -220,6 +224,20 @@ pub fn view(msg: &pb::Config, daemon_id: EndpointId, allow_all_paths: bool) -> v
                     .collect(),
             })
             .collect(),
+    }
+}
+
+/// `p` with a leading `~` as `home`; as written when there is no home.
+fn under(p: &str, home: Option<&Path>) -> String {
+    let rest = if p == "~" {
+        Some("")
+    } else {
+        p.strip_prefix("~/")
+    };
+    match (rest, home) {
+        (Some(""), Some(h)) => h.to_string_lossy().into_owned(),
+        (Some(rest), Some(h)) => h.join(rest).to_string_lossy().into_owned(),
+        _ => p.to_string(),
     }
 }
 

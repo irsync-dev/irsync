@@ -46,7 +46,7 @@ use irsync_proto::v1::SessionPlan;
 use prost::Message;
 
 mod admin;
-pub use admin::{ADMIN_IDLE, ADMIN_MAX_CHANGES};
+pub use admin::{ADMIN_IDLE, ADMIN_MAX_CHANGES, ADMIN_MAX_PENDING, ADMIN_MAX_REQUEST};
 
 /// How often each export is garbage-collected, and the delay before the first
 /// run (so startup stays quick).

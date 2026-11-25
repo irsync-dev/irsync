@@ -1047,6 +1047,8 @@ pub fn set_admin(home: &std::path::Path, id: &str, access: Option<irsync::authz:
     set_right(home, id, irsync::config::clients::Right::Admin, access);
 }
 
+/// Runs the built binary, as the server's owner would, so the save sees
+/// the test's HOME and state dir and never the developer's own.
 fn set_right(
     home: &std::path::Path,
     id: &str,
@@ -1054,20 +1056,29 @@ fn set_right(
     access: Option<irsync::authz::Access>,
 ) {
     let path = home.join(".config/irsync/irsync.toml");
-    let mut lock = irsync::manage::lock_config(&path).unwrap();
-    let mut msg = lock.load().unwrap();
-    let id = irsync::identity::parse_endpoint_id(id).unwrap();
-    let name = match msg
+    // Reading does not look for a daemon; only the save does.
+    let msg = irsync::manage::load_message(&path).unwrap();
+    let parsed = irsync::identity::parse_endpoint_id(id).unwrap();
+    let known = msg
         .clients
         .iter()
-        .find(|c| irsync::manage::id_of(&c.client_id) == Some(id))
-    {
-        Some(c) => c.name.clone(),
+        .find(|c| irsync::manage::id_of(&c.client_id) == Some(parsed))
+        .map(|c| c.name.clone());
+    let run = |args: &[&str]| {
+        let o = irsync_bin(home, args);
+        assert!(
+            o.status.success(),
+            "irsync {args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    };
+    let name = match known {
+        Some(name) => name,
         None => {
-            irsync::manage::clients::client_add(&mut msg, "granted", id).unwrap();
+            run(&["client", "add", "granted", id]);
             "granted".to_string()
         }
     };
-    irsync::manage::clients::client_set(&mut msg, &name, &[(right, access)]).unwrap();
-    lock.save(&mut msg).unwrap();
+    let value = access.map_or("none", irsync::authz::Access::as_str);
+    run(&["client", "set", &name, &format!("{}={value}", right.key())]);
 }

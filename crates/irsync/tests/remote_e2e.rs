@@ -250,3 +250,60 @@ fn remote_config_get_show_and_the_help() {
     }
     let _ = &s.client_id;
 }
+
+/// A stub daemon that speaks the protocol version before this one answers
+/// the ADMIN Hello as an older irsync does, with a plain version error:
+/// `irsync remote` tells the user to update the server.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_daemon_is_told_to_update() {
+    use irsync::net::frame::{read_msg, write_msg};
+    use irsync_proto::v1::{error::Code, Error, Hello};
+    use irsync_proto::PROTOCOL_VERSION;
+
+    let stub = common::loopback_endpoint().await;
+    let stub_id = stub.id().to_string();
+    let port = common::addr_of(&stub).ip_addrs().next().unwrap().port();
+    let serve = tokio::spawn(async move {
+        let conn = stub.accept().await.unwrap().await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        let hello: Hello = read_msg(&mut recv).await.unwrap().unwrap();
+        let older = PROTOCOL_VERSION - 1;
+        let e = Error {
+            code: Code::VersionMismatch as i32,
+            message: format!(
+                "protocol version {} unsupported (daemon speaks {older})",
+                hello.protocol_version
+            ),
+        };
+        write_msg(&mut send, &e).await.unwrap();
+        send.finish().unwrap();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send.stopped()).await;
+        conn.closed().await;
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let client = dir.path().join("client/home");
+    std::fs::create_dir_all(&client).unwrap();
+    let o = tokio::task::spawn_blocking(move || {
+        ok(
+            &client,
+            &[
+                "server",
+                "add",
+                "myserver",
+                &stub_id,
+                "--address",
+                &format!("127.0.0.1:{port}"),
+            ],
+        );
+        irsync(&client, &["remote", "myserver", "show"])
+    })
+    .await
+    .unwrap();
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("myserver runs an older irsync without remote admin: update it there"),
+        "{}",
+        stderr(&o)
+    );
+    serve.abort();
+}

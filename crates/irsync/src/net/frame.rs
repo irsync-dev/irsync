@@ -42,6 +42,23 @@ where
     w.write_all(&buf).await
 }
 
+/// A frame longer than the reader takes. It is the inner error of the
+/// [`io::ErrorKind::InvalidData`] that [`read_body`] and [`read_body_max`]
+/// return for it; [`FrameTooLarge::of`] finds it.
+#[derive(Debug, thiserror::Error)]
+#[error("frame of {len} bytes exceeds {max}")]
+pub struct FrameTooLarge {
+    pub len: u64,
+    pub max: usize,
+}
+
+impl FrameTooLarge {
+    /// The [`FrameTooLarge`] inside `e`, if that is what `e` is.
+    pub fn of(e: &io::Error) -> Option<&FrameTooLarge> {
+        e.get_ref()?.downcast_ref()
+    }
+}
+
 /// Reads one frame and returns its body, undecoded.
 ///
 /// Returns `Ok(None)` on a clean end of stream before any byte of a new frame.
@@ -49,6 +66,17 @@ where
 /// overlong prefix or a length over [`MAX_FRAME`] is
 /// [`io::ErrorKind::InvalidData`].
 pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Option<Vec<u8>>> {
+    read_body_max(r, MAX_FRAME).await
+}
+
+/// [`read_body`] for frames of at most `max` bytes (itself at most
+/// [`MAX_FRAME`]); a longer one is the error [`FrameTooLarge`], and its
+/// body is left unread.
+pub async fn read_body_max<R: AsyncRead + Unpin>(
+    r: &mut R,
+    max: usize,
+) -> io::Result<Option<Vec<u8>>> {
+    let max = max.min(MAX_FRAME);
     let mut len: u64 = 0;
     for i in 0..4 {
         let mut b = [0u8; 1];
@@ -63,7 +91,7 @@ pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Option<Vec
         }
         len |= u64::from(b[0] & 0x7f) << (7 * i);
         if b[0] & 0x80 == 0 {
-            return read_sized(r, len).await.map(Some);
+            return read_sized(r, len, max).await.map(Some);
         }
     }
     // Four bytes hold 28 bits, enough for MAX_FRAME; a fifth is never needed.
@@ -73,11 +101,11 @@ pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Option<Vec
     ))
 }
 
-async fn read_sized<R: AsyncRead + Unpin>(r: &mut R, len: u64) -> io::Result<Vec<u8>> {
-    if len > MAX_FRAME as u64 {
+async fn read_sized<R: AsyncRead + Unpin>(r: &mut R, len: u64, max: usize) -> io::Result<Vec<u8>> {
+    if len > max as u64 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("frame of {len} bytes exceeds {MAX_FRAME}"),
+            FrameTooLarge { len, max },
         ));
     }
     let len = len as usize;
@@ -101,6 +129,20 @@ where
     R: AsyncRead + Unpin,
 {
     match read_body(r).await? {
+        None => Ok(None),
+        Some(body) => M::decode(body.as_slice())
+            .map(Some)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+    }
+}
+
+/// [`read_msg`] for frames of at most `max` bytes; see [`read_body_max`].
+pub async fn read_msg_max<M, R>(r: &mut R, max: usize) -> io::Result<Option<M>>
+where
+    M: prost::Message + Default,
+    R: AsyncRead + Unpin,
+{
+    match read_body_max(r, max).await? {
         None => Ok(None),
         Some(body) => M::decode(body.as_slice())
             .map(Some)
