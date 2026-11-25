@@ -20,6 +20,8 @@ jiff = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]
+# Only for the profile names irsync parses, checked against ours.
+irsync = { path = "../irsync", default-features = false, features = ["netsim"] }
 tempfile = { workspace = true }
 nix = { workspace = true, features = ["signal"] }
 
