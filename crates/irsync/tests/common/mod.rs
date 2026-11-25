@@ -367,7 +367,7 @@ pub async fn spawn_daemon_with_state(
     authz: std::sync::Arc<dyn irsync::authz::Authorizer>,
     state: tempfile::TempDir,
 ) -> DaemonHandle {
-    // A home of its own: a relative path or an immediate push resolves
+    // A home of its own: a relative path or an `all_paths` push resolves
     // there, never in the real home.
     let home = tempfile::tempdir().unwrap();
     let mut d = spawn_daemon_full(authz, state, Some(home.path().to_path_buf())).await;

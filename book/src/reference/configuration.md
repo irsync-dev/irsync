@@ -300,7 +300,7 @@ The `OTEL_EXPORTER_OTLP_*` environment variables take precedence.
 
 `[exports.NAME]` shares a directory under `NAME`. The name is the first
 segment of a `HOST:PATH`, so it may not be empty or contain `/`, and it may not
-be `all`, `immediate`, `all_exports`, `all_paths` or `admin`. Those words are reserved.
+be `all`, `all_exports`, `all_paths` or `admin`. Those words are reserved.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

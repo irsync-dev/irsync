@@ -7,10 +7,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Names that cannot be export names: `all` is the word `grant remove all
-/// WHO` uses for every export, `all_exports`, `all_paths` and `admin` are the
-/// rights `grant list` lists by those names, and `immediate` once named
-/// grants to any path.
-pub const RESERVED: [&str; 5] = ["all", "all_exports", "all_paths", "admin", "immediate"];
+/// WHO` uses for every export, and `all_exports`, `all_paths` and `admin` are
+/// the rights `grant list` lists by those names.
+pub const RESERVED: [&str; 4] = ["all", "all_exports", "all_paths", "admin"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Export {
@@ -37,10 +36,6 @@ pub struct Exports {
 /// The message for a reserved export name.
 pub fn reserved(name: &str) -> String {
     let why = match name {
-        "immediate" => {
-            "it used to name grants to any path; use irsync client set NAME all_paths=rw"
-                .to_string()
-        }
         "all_exports" | "all_paths" | "admin" => {
             format!("`irsync grant list {name}` lists the clients with that right")
         }

@@ -37,11 +37,10 @@ message Config {
   Client client = 8;
   Daemon daemon = 9;
   Telemetry telemetry = 10;
-  repeated Export exports = 12;
-  optional uint32 config_version = 15;
-  repeated ServerEntry servers = 16;
-  repeated ClientEntry clients = 17;
-  reserved 13, 14;
+  repeated Export exports = 11;
+  optional uint32 config_version = 12;
+  repeated ServerEntry servers = 13;
+  repeated ClientEntry clients = 14;
 }
 
 message Client {
@@ -73,9 +72,8 @@ message Daemon {
   optional PqKeyExchange pq_key_exchange = 14;
   Discovery discovery = 15;
   optional string debug_addr = 16;
-  optional bool allow_root = 18;
-  optional bool allow_all_paths = 19;
-  reserved 17;
+  optional bool allow_root = 17;
+  optional bool allow_all_paths = 18;
 }
 
 message Discovery {

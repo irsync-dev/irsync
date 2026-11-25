@@ -107,7 +107,7 @@ everyone; `--warm-index` sets `warm_index`.
 
 | Command | Effect |
 | --- | --- |
-| `irsync grant add EXPORT WHO [--ro]` | Grant `WHO` read-write access to `EXPORT`, or read-only access with `--ro`. An earlier grant of the same peer there is replaced. For every export or any path, use `irsync client set`; `grant add all` and `grant add immediate` are refused, with a hint. |
+| `irsync grant add EXPORT WHO [--ro]` | Grant `WHO` read-write access to `EXPORT`, or read-only access with `--ro`. An earlier grant of the same peer there is replaced. For every export or any path, use `irsync client set`; `grant add all` is refused, with a hint. |
 | `irsync grant remove EXPORT WHO` | Remove `WHO`'s grant on `EXPORT`. `irsync grant remove all WHO` removes `WHO` from every export's own list. It leaves their `all_exports`, `all_paths` and `admin` alone, and says so when `WHO` still has one; those go with `irsync client set`. `irsync grant remove EXPORT all` empties an export's grants. |
 | `irsync grant list` | Every grant: an `all_exports:` block, an `all_paths:` block, an `admin:` block (the clients that hold each right), then one block per export. |
 | `irsync grant list EXPORT` | One export's grants. `all_exports`, `all_paths` and `admin` list the clients that hold that right. |
@@ -121,7 +121,7 @@ line, or the path of a `.pub` file holding one. A key's comment is kept as a
 TOML comment at the end of the entry's line. Removing the grant removes that
 comment; comment lines above it stay. A peer that `[clients]` has a name for is stored
 by that name, however it was named. A server name is not a `WHO`. There is no open access: `all` and `*` are
-refused as `WHO` in `grant add`. The words `all`, `immediate`, `all_exports`, `all_paths` and `admin` are reserved: no export has one of them as its name.
+refused as `WHO` in `grant add`. The words `all`, `all_exports`, `all_paths` and `admin` are reserved: no export has one of them as its name.
 
 ## id
 

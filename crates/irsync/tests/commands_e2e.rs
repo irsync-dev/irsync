@@ -2837,35 +2837,21 @@ fn grant_remove_names_the_rights_the_client_still_holds() {
 }
 
 #[test]
-fn grant_add_all_and_immediate_point_to_client_set() {
+fn grant_add_all_points_to_client_set() {
     let d = tempfile::tempdir().unwrap();
     let (home, file) = home_with(&d, "");
     ok(&home, &["client", "add", "laptop", &peer_id(5)]);
     let before = std::fs::read(&file).unwrap();
-    for (args, hint) in [
-        (
-            ["grant", "add", "all", "laptop"],
-            "irsync client set NAME all_exports=rw",
-        ),
-        (
-            ["grant", "add", "immediate", "laptop"],
-            "irsync client set NAME all_paths=rw",
-        ),
-    ] {
-        let o = irsync(&home, &args);
-        let err = String::from_utf8_lossy(&o.stderr);
-        assert!(!o.status.success() && err.contains(hint), "{args:?}: {err}");
-    }
+    let o = irsync(&home, &["grant", "add", "all", "laptop"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        !o.status.success() && err.contains("irsync client set NAME all_exports=rw"),
+        "{err}"
+    );
     let o = irsync(&home, &["grant", "add", "all", "laptop", "--ro"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success() && err.contains("irsync client set NAME all_exports=ro"),
-        "{err}"
-    );
-    let o = irsync(&home, &["grant", "remove", "immediate", "laptop"]);
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        !o.status.success() && err.contains("irsync client set NAME all_paths=none"),
         "{err}"
     );
     assert_eq!(std::fs::read(&file).unwrap(), before);

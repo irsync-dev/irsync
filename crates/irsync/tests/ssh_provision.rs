@@ -174,7 +174,6 @@ fn fresh_home_generates_grants_starts() {
     assert_eq!(r.log, home.state().join("daemon.log"));
     let doc = read_config(&home);
     // The client is saved under its host name, with all_paths = "rw".
-    assert!(!doc.contains_key("immediate"));
     assert_eq!(doc["clients"]["myclient"]["all_paths"].as_str(), Some("rw"));
     assert_eq!(
         doc["clients"]["myclient"]["client_id"].as_str().unwrap(),
@@ -537,7 +536,6 @@ fn grants_the_name() {
     assert!(t["clients"]["myclient"].get("endpoint_id").is_none());
     assert!(!t.contains_key("servers"));
     assert_eq!(t["clients"]["myclient"]["all_paths"].as_str(), Some("rw"));
-    assert!(!t.contains_key("immediate"));
 }
 
 /// Whatever a client calls itself, the config stays valid TOML and the

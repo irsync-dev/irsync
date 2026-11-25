@@ -764,7 +764,6 @@ fn odd_shapes_are_refused_by_the_reader() {
         "all = 5\n".to_string(),
         "exports = \"x\"\n".to_string(),
         "[exports]\np = 1\n".to_string(),
-        "immediate = []\n".to_string(),
         "[[all]]\nrw = []\n".to_string(),
     ] {
         assert!(reader::read(&body, Path::new("f")).is_err(), "{body:?}");

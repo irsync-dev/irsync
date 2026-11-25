@@ -1,5 +1,5 @@
-//! Where the daemon puts the automatic export for a path an immediate
-//! client reached.
+//! Where the daemon puts the automatic export for a path a client with
+//! `all_paths` reached.
 
 use std::path::Path;
 use std::time::Duration;
