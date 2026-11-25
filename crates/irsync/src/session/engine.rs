@@ -163,8 +163,7 @@ impl RoleOpts {
     }
 
     /// The daemon's options come from `Hello`: the client's preserve flags
-    /// (`-l -p -t -g -o -D -H -S`; everything, from a client that sent none)
-    /// and, only when the daemon `receives` (the client pushes, which already
+    /// (`-l -p -t -g -o -D -H -S`) and, only when the daemon `receives` (the client pushes, which already
     /// requires write access to a writable export), the receiver-side
     /// options (deletion, dry run, `-u`, `-c`, itemize, inplace, fsync,
     /// append, local reuse). `--bwlimit` and `--paranoid`'s extra hashing
@@ -177,33 +176,21 @@ impl RoleOpts {
             WireDeleteMode::DeleteDuring => DeleteMode::During,
             WireDeleteMode::DeleteAfter => DeleteMode::After,
         };
-        let preserve = match &hello.preserve {
-            Some(p) => Preserve {
-                recursive: p.recursive,
-                dirs: p.dirs,
-                links: p.links,
-                perms: p.perms,
-                times: p.times,
-                group: p.group,
-                owner: p.owner,
-                devices: p.devices,
-                specials: p.specials,
-                hard_links: p.hard_links,
-                sparse: p.sparse,
-            },
-            None => Preserve {
-                recursive: true,
-                dirs: false,
-                links: true,
-                perms: true,
-                times: true,
-                group: true,
-                owner: true,
-                devices: true,
-                specials: true,
-                hard_links: true,
-                sparse: true,
-            },
+        // The daemon refuses a session Hello without them (see
+        // `daemon::validate`).
+        let p = hello.preserve.unwrap_or_default();
+        let preserve = Preserve {
+            recursive: p.recursive,
+            dirs: p.dirs,
+            links: p.links,
+            perms: p.perms,
+            times: p.times,
+            group: p.group,
+            owner: p.owner,
+            devices: p.devices,
+            specials: p.specials,
+            hard_links: p.hard_links,
+            sparse: p.sparse,
         };
         RoleOpts {
             preserve,

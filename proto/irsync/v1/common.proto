@@ -61,8 +61,8 @@ message Hello {
   // which the daemon joins to the resolved path (rsync's rule). Else empty.
   bytes name = 21;
   // The client's -l -p -t -g -o -D -H -S: what a receiving daemon applies
-  // and what a sending daemon lists as hard links. Absent (an older client):
-  // the daemon preserves everything it can.
+  // and what a sending daemon lists as hard links. Required for a push or
+  // a pull: the daemon refuses a Hello without it.
   message Preserve {
     bool links = 1;
     bool perms = 2;
@@ -148,7 +148,7 @@ message HelloAck {
   BuildInfo build = 4; // the daemon's build, logged by the client
   bytes single_name = 5; // push: the daemon's name for the file (the wire name)
 }
-// What a peer was built from; absent from an older peer.
+// What a peer was built from.
 message BuildInfo {
   string version = 1; // package version
   string commit = 2; // short git commit, or "unknown"

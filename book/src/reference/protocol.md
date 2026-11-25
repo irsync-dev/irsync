@@ -106,17 +106,15 @@ The client sends `Hello` on the control stream:
   decides the file's name on its side by rsync's rules and returns it in
   `HelloAck.single_name`, which can differ from `name` (a file named `T`);
 - the client's preserve flags (`-l -p -t -g -o -D -H -S`, `-r`, `-d`), which
-  the daemon honours in both directions; a `Hello` without them means
-  everything;
+  the daemon honours in both directions; it refuses a push or a pull whose
+  `Hello` lacks them;
 - the include and exclude rules, compiled and in order. A sending daemon walks
   with them; a receiving daemon protects what they exclude from deletion;
 - the receiver-side options, which the daemon honours only when it receives:
   the deletion mode, `--delete-excluded`, `--max-delete`, `-n`, `-u`, `-c`,
   `--inplace`, `--append` or `--append-verify`, `--partial-dir` (relative and
   inside the destination, or refused), `--no-rename-detection`, `--fsync`
-  (field 29; a daemon older than it ignores the field and flushes every file,
-  as every version did before it, while an export's `fsync = true` flushes
-  whatever the client sent). `-i`,
+  (field 29; an export's `fsync = true` flushes whatever the client sent). `-i`,
   `--ignore-errors` and `--numeric-ids` apply in both directions;
 - `paranoid` (field 30): `--paranoid`. Both roles take part in the final
   re-check, which the receiver asks for with `Settle`, so a daemon honours it
@@ -124,8 +122,7 @@ The client sends `Hello` on the control stream:
   so on a push the daemon does neither;
 - `bwlimit` (field 32): `--bwlimit` in bytes per second. The side that sends
   the file data paces it, so the daemon honours it only when it sends (a
-  pull); on a push the client paces itself. Absent or 0 means no limit. A
-  daemon older than the field ignores it and sends at full speed;
+  pull); on a push the client paces itself. Absent or 0 means no limit;
 - `traceparent` and `tracestate`, the client's W3C trace context (empty: no
   trace). A daemon that exports traces makes its `session` span a child of it;
 - `build`: the client's `BuildInfo` (package version, short git commit, dirty

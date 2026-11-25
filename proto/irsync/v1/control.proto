@@ -229,8 +229,7 @@ message SessionDone {
   uint64 transferred_size = 10; // summed size of the files it placed
   // What the receiver counted in the sender's listing, over every
   // connection of the session. A sender that resumed from the receiver's
-  // stored plan listed nothing itself and reports these. Absent from an
-  // older receiver.
+  // stored plan listed nothing itself and reports these.
   ListTotals listed = 11;
 }
 message Itemized {

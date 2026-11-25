@@ -26,6 +26,7 @@ fn hello(path: &[u8], dir: Direction) -> Hello {
         chunk_avg: CHUNK_PARAMS.avg,
         chunk_max: CHUNK_PARAMS.max,
         contents_only: false,
+        preserve: Some(Default::default()),
         ..Default::default()
     }
 }
@@ -280,6 +281,16 @@ async fn wrong_chunk_params_rejected() {
     let mut h = hello(b"rw", Direction::ClientSends);
     h.chunk_avg += 1;
     expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
+}
+
+/// A push or a pull must say what to preserve; a probe need not.
+#[tokio::test]
+async fn hello_without_preserve_flags_rejected() {
+    for dir in [Direction::ClientSends, Direction::DaemonSends] {
+        let mut h = hello(b"rw", dir);
+        h.preserve = None;
+        expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
+    }
 }
 
 /// A daemon started with an empty exports file serves an export added

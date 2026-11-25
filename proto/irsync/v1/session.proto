@@ -28,7 +28,7 @@ message SessionPlan {
   bool peer_listing_incomplete = 6; // receiver: the sender's listing was incomplete
   bytes remote_id = 7; // daemon: the client EndpointId that owns the session
   // Receiver, once complete: what the sender's listing held. A resumed
-  // session lists nothing, and reports these. Absent from an older record.
+  // session lists nothing, and reports these.
   ListTotals listed = 8;
   // Receiver, once complete: items planned that the destination did not
   // have. A resumed session plans nothing, and reports this count.
@@ -47,8 +47,7 @@ message PlacedStat {
   SourceStat stat = 2;
 }
 
-// The `ranges` column of a partial record (a `RangeSet` before `held`
-// existed, which decodes the same). `ranges`: the verified bytes of the
+// The `ranges` column of a partial record. `ranges`: the verified bytes of the
 // `.part`. `held`: chunks not verified yet whose first bytes were written
 // (offset: the chunk's, length: the bytes), so a later request can start
 // after them; they are verified with the rest of the chunk.

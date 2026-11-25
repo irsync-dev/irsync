@@ -763,6 +763,13 @@ fn validate<'a>(
     hello: &Hello,
 ) -> Result<Option<(Resolved<'a>, RelPath)>, (Code, String)> {
     version_check(hello)?;
+    // Every client sends its preserve flags for a push or a pull.
+    if hello.preserve.is_none() && hello.direction != Direction::Probe as i32 {
+        return Err((
+            Code::VersionMismatch,
+            "a Hello for a push or a pull must hold the preserve flags".into(),
+        ));
+    }
     // The path is resolved (export name, home, absolute) and the export
     // containing it chosen before anything is said about it. Only a key
     // that may use the containing export learns that the path is invalid
