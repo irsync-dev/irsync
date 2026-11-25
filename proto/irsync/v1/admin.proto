@@ -1,3 +1,5 @@
+// Part of the normative irsync wire protocol. Any change to these messages
+// bumps PROTOCOL_VERSION (irsync-proto).
 syntax = "proto3";
 package irsync.v1;
 

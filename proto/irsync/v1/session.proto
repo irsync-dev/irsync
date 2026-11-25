@@ -53,3 +53,13 @@ message PartialRanges {
   repeated Range ranges = 1;
   repeated Range held = 2;
 }
+// A byte range of a file.
+message Range {
+  uint64 offset = 1;
+  uint64 length = 2;
+}
+// The ranges of a `.part` the receiver has verified, as its partial record
+// in the index holds them.
+message RangeSet {
+  repeated Range ranges = 1;
+}

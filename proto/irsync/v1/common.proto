@@ -1,9 +1,13 @@
+// Part of the normative irsync wire protocol. Any change to these messages
+// bumps PROTOCOL_VERSION (irsync-proto). FileEntry and SourceStat are also
+// stored in each side's index (session.proto).
 syntax = "proto3";
 package irsync.v1;
 
+// A 32-byte BLAKE3 hash.
 message Hash {
   bytes bytes = 1;
-} // 32-byte BLAKE3
+}
 
 // The first frame of a connection, on its control stream, client ->
 // daemon. The daemon answers with one HelloReply. `protocol_version` and
@@ -166,6 +170,7 @@ message PathInfo {
   }
   Kind kind = 1;
 }
+// The reply to a push or a pull: the session is open.
 message HelloAck {
   bytes session_id = 1;
   bool resumed = 2;
@@ -180,8 +185,9 @@ message BuildInfo {
   string commit = 2; // short git commit, or "unknown"
   optional bool dirty = 3; // uncommitted changes at build time; absent = unknown
 }
-// A refusal of a Hello (in HelloReply), of an admin request (in
-// AdminReply), or a fatal session error (in Control), either way.
+// A refusal of a Hello (in HelloReply) or of an admin request (in
+// AdminReply), daemon -> client; or, in Control, a fatal session error,
+// which either side sends with INTERNAL before it gives the session up.
 message Error {
   enum Code {
     UNSPECIFIED = 0; // never sent
@@ -254,11 +260,4 @@ message SourceStat {
   uint32 mode = 7;
   uint32 uid = 8;
   uint32 gid = 9;
-}
-message Range {
-  uint64 offset = 1;
-  uint64 length = 2;
-}
-message RangeSet {
-  repeated Range ranges = 1;
 }

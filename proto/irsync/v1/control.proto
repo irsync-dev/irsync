@@ -1,4 +1,5 @@
-// Part of the normative irsync wire protocol. Field numbers are never reused.
+// Part of the normative irsync wire protocol. Any change to these messages
+// bumps PROTOCOL_VERSION (irsync-proto).
 syntax = "proto3";
 package irsync.v1;
 
@@ -33,7 +34,8 @@ message ListingEnd {
   bool incomplete = 1;
   uint64 count = 2;
 }
-message PlanItem { // receiver -> sender
+// receiver -> sender: send this file, under this id.
+message PlanItem {
   uint64 file_id = 1;
   bytes path = 2;
   enum Action {
@@ -112,7 +114,8 @@ message PlaceVerdict {
   bool changed = 2;
   uint32 gen = 3; // the MayPlace's
 }
-// `--paranoid` (the client's Hello), unless a dry run: the final re-check.
+// `--paranoid` (the client's SyncRequest), unless a dry run: the final
+// re-check.
 // receiver -> sender, once, in place of SessionDone when the receiver has
 // planned every path and has no file in flight: the sender stats every
 // listed regular file again (a resumed session that reuses the stored plan
@@ -120,16 +123,16 @@ message PlaceVerdict {
 message Settle {}
 // sender -> receiver, after Settle: a listed regular file that differs from
 // the stat it was listed (or last hashed) under: its entry as it is now,
-// with its path. The receiver plans it again as it plans a listed file, under a new
-// file id above every id the session used; a file already placed stays
-// placed. One per path at most; only before Settled.
+// with its path. The receiver plans it again as it plans a listed file,
+// under a new file id above every id the session used; a file already
+// placed stays placed. One per path at most; only before Settled.
 message Replan {
   FileEntry entry = 1;
 }
 // sender -> receiver, after its Replans: the re-check is over. `vanished`:
 // listed files gone, or no longer regular files (capped as
-// SessionDone.deleted_paths is; `vanished_omitted` counts the rest). `errors`:
-// files the re-check could not stat. The receiver sends SessionDone once
+// SessionDone.deleted_paths is; `vanished_omitted` counts the rest).
+// `errors`: files the re-check could not stat. The receiver sends SessionDone once
 // the re-planned files are done.
 message Settled {
   repeated bytes vanished = 1;
@@ -149,6 +152,8 @@ message CheckLink {
   bytes path = 1;
   SourceStat want = 2;
 }
+// receiver -> sender: the last CheckLink has been sent. With `-H` it is
+// always sent, even with no links to check.
 message CheckLinksEnd {}
 // sender -> receiver, after CheckLinksEnd: a CheckLink `path` that is no
 // longer the file it names in `want`. The receiver does not link it. Then
@@ -163,7 +168,11 @@ message Unlinked {
     bytes failed = 2;
   }
 }
+// sender -> receiver: the link check is over.
 message LinksChecked {}
+// receiver -> sender: the chunks of a file to send; empty means none are
+// needed (local copies, or the receiver has them). A large request comes
+// as several, each taking the bases sent before it.
 message NeedChunks {
   uint64 file_id = 1;
   repeated uint32 chunk_idx = 2;
@@ -171,8 +180,7 @@ message NeedChunks {
   // from an earlier connection: chunk index -> bytes held, less than the
   // chunk. The sender starts that chunk's data there and sends it raw.
   map<uint32, uint32> held = 3;
-} // receiver -> sender; empty = nothing needed (local copy / already have).
-// A large request comes as several, each taking the bases sent before it.
+}
 // receiver -> sender, before the NeedChunks that asks for `chunk_idx`: block
 // signatures over a region of the receiver's old file (`offset` is where it
 // starts in that file; the region is `block` * blocks long, a shorter tail
@@ -211,7 +219,8 @@ message SourceError {
   uint64 file_id = 1;
   string message = 2;
 }
-// A per-path problem the receiver recorded locally (mkdir, symlink, metadata, walk, ...).
+// A problem with one path (a walk, mkdir, symlink, metadata, ...): a gap in
+// a listing, and the errors of SessionDone and Settled.
 message PathError {
   bytes path = 1;
   string message = 2;
@@ -245,10 +254,12 @@ message SessionDone {
   // stored plan listed nothing itself and reports these.
   ListTotals listed = 11;
 }
+// receiver -> sender: one rsync `-i` line, for a client that pushes with
+// `-i` (`>` = received).
 message Itemized {
   bytes path = 1;
   string code = 2;
-} // receiver -> sender, rsync -i code (`>` = received)
+}
 // "I am busy": sent by either side while it makes local progress (hashing,
 // writing, finalizing) that the peer cannot otherwise see, so the peer's
 // inactivity watchdog stays quiet. Carries what the peer cannot otherwise see
