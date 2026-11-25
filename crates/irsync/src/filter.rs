@@ -1,7 +1,7 @@
 //! rsync-style include/exclude filters, matched on raw bytes.
 
-use crate::cli::FilterRule;
 use crate::fs::paths::RelPath;
+use crate::options::FilterRule;
 use irsync_glob::Glob;
 use std::io;
 

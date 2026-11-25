@@ -566,7 +566,7 @@ async fn rename_and_chunk_reuse_work_below_an_export_prefix() {
 async fn events_during_sync(flow: Flow) {
     use irsync::session::reconnect::{ConnState, ReconnectOpts};
     use irsync::session::Event;
-    let opts = irsync::cli::SyncOptions::from_args(
+    let opts = irsync::options::SyncOptions::from_args(
         &irsync::cli::Args::try_parse_from(["irsync", "-a", "-i", "src/", "host:m/"]).unwrap(),
     );
     let h = Harness::new().await;

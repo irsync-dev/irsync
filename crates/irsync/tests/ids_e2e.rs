@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Flow, Harness};
-use irsync::cli::{Args, SyncOptions};
+use irsync::cli::Args;
+use irsync::options::SyncOptions;
 use irsync::platform::{egid, euid, group_name, mode_of, mtime_of, owner_of, user_name};
 use irsync::session::Event;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};

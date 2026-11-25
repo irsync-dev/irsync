@@ -236,7 +236,8 @@ async fn single_file_session_takes_no_directory_under_its_name() {
 /// already in the destination must stay as it is.
 #[tokio::test]
 async fn excluded_paths_in_the_peers_listing_are_refused() {
-    use irsync::cli::{Args, SyncOptions};
+    use irsync::cli::Args;
+    use irsync::options::SyncOptions;
     let h = Harness::new().await;
     let outside = tempfile::tempdir().unwrap();
     fs::write(h.local.path().join("real.txt"), b"real content").unwrap();
@@ -307,10 +308,10 @@ mod attack {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
-    use irsync::cli::DeleteMode;
     use irsync::delete::DeletePass;
     use irsync::fs::paths::RelPath;
     use irsync::fs::safe::{create_dir_all_beneath, open_regular_beneath, Beneath, DirStack};
+    use irsync::options::DeleteMode;
     use irsync::platform::testutil::swap_for_link;
     use irsync::platform::{Create, Open};
     use irsync_proto::v1::file_entry::Kind;

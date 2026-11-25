@@ -414,7 +414,7 @@ async fn inplace_change_after_hash_retries_then_fails() {
         let args =
             irsync::cli::Args::try_parse_from(["irsync", "-a", "--inplace", "src/", "host:m/"])
                 .unwrap();
-        let opts = irsync::cli::SyncOptions::from_args(&args);
+        let opts = irsync::options::SyncOptions::from_args(&args);
         let out = h.run_side(&opts, flow, local).await.unwrap();
         assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
         assert_eq!(asked.load(Ordering::SeqCst), 2);
@@ -449,7 +449,7 @@ async fn append_change_after_hash_retries_then_fails() {
         let args =
             irsync::cli::Args::try_parse_from(["irsync", "-a", "--append", "src/", "host:m/"])
                 .unwrap();
-        let opts = irsync::cli::SyncOptions::from_args(&args);
+        let opts = irsync::options::SyncOptions::from_args(&args);
         let out = h.run_side(&opts, flow, local).await.unwrap();
         assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
         assert_eq!(asked.load(Ordering::SeqCst), 2);
@@ -526,7 +526,7 @@ async fn paranoid_second_hash_for(flow: Flow) {
     }
     let args = irsync::cli::Args::try_parse_from(["irsync", "-a", "--paranoid", "src/", "host:m/"])
         .unwrap();
-    let opts = irsync::cli::SyncOptions::from_args(&args);
+    let opts = irsync::options::SyncOptions::from_args(&args);
     let out = h.run_side(&opts, flow, local).await.unwrap();
     assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
     assert_eq!(asked.load(Ordering::SeqCst), 2);
@@ -596,7 +596,7 @@ async fn paranoid_append_catches_a_same_size_tail_rewrite() {
             "host:m/",
         ])
         .unwrap();
-        let opts = irsync::cli::SyncOptions::from_args(&args);
+        let opts = irsync::options::SyncOptions::from_args(&args);
         let out = h.run_side(&opts, flow, local).await.unwrap();
         assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
         assert_eq!(asked.load(Ordering::SeqCst), 2);
@@ -642,7 +642,7 @@ async fn paranoid_unchanged_tree_for(flow: Flow, extra: &str) {
     }
     argv.extend(["src/", "host:m/"]);
     let opts =
-        irsync::cli::SyncOptions::from_args(&irsync::cli::Args::try_parse_from(argv).unwrap());
+        irsync::options::SyncOptions::from_args(&irsync::cli::Args::try_parse_from(argv).unwrap());
     let out = h.run(&opts, flow).await.unwrap();
     assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
     assert!(out.errors.is_empty(), "{:?}", out.errors);
@@ -728,11 +728,11 @@ fn seed_late(h: &Harness, flow: Flow, late: Late) -> (irsync::session::LocalSide
     (local, fired)
 }
 
-fn opts_with(extra: &[&'static str]) -> irsync::cli::SyncOptions {
+fn opts_with(extra: &[&'static str]) -> irsync::options::SyncOptions {
     let mut argv = vec!["irsync", "-a"];
     argv.extend_from_slice(extra);
     argv.extend(["src/", "host:m/"]);
-    irsync::cli::SyncOptions::from_args(&irsync::cli::Args::try_parse_from(argv).unwrap())
+    irsync::options::SyncOptions::from_args(&irsync::cli::Args::try_parse_from(argv).unwrap())
 }
 
 async fn recheck_resends_for(flow: Flow) {

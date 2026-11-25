@@ -48,10 +48,10 @@ use super::recv_io::{
     settle_identical, verify, Fill, Opened, Route, Routes,
 };
 use super::Outcome;
-use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
+use crate::options::DeleteMode;
 use crate::recv::{FileWriter, FinalizeError, Verified};
 use crate::telemetry::meter::Counter;
 use crate::telemetry::PhaseKind;

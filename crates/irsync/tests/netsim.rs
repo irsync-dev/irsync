@@ -162,7 +162,7 @@ fn without_the_variable_nothing_changes() {
 async fn sync_through(
     h: &Harness,
     flow: Flow,
-    opts: &irsync::cli::SyncOptions,
+    opts: &irsync::options::SyncOptions,
 ) -> (
     anyhow::Result<irsync::session::Outcome>,
     u32,

@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use irsync::cli::progress::{escape_path, human, Reporter};
-use irsync::cli::Preserve;
 use irsync::fs::paths::RelPath;
+use irsync::options::Preserve;
 use irsync::plan::{itemize, Decision, Side};
 use irsync::scan::ListStats;
 use irsync::session::reconnect::ConnState;
@@ -780,7 +780,7 @@ async fn a_failed_session_leaves_failed_not_done() {
 /// forced to `done`.
 #[tokio::test]
 async fn a_failed_session_does_not_show_its_delete_pass_as_done() {
-    use irsync::cli::DeleteMode;
+    use irsync::options::DeleteMode;
     let buf = Buf::default();
     let r = reporter(&buf, true, 0, false, false).with_delete_mode(DeleteMode::After);
     let mut r = feed(

@@ -16,12 +16,12 @@ async fn within30<F: std::future::Future>(f: F) -> F::Output {
         .expect("test timed out after 30 s")
 }
 
-fn opts(extra: &[&str]) -> irsync::cli::SyncOptions {
+fn opts(extra: &[&str]) -> irsync::options::SyncOptions {
     let mut argv = vec!["irsync", "-a"];
     argv.extend_from_slice(extra);
     argv.extend(["src/", "host:m/"]);
     let args = irsync::cli::Args::try_parse_from(argv).unwrap();
-    irsync::cli::SyncOptions::from_args(&args)
+    irsync::options::SyncOptions::from_args(&args)
 }
 
 fn seed(dir: &std::path::Path) {

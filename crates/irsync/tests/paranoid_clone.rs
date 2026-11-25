@@ -75,11 +75,11 @@ fn set_mtime(p: &Path, secs: u64) {
 }
 
 #[cfg(unix)]
-fn paranoid_opts(extra: &[&str]) -> irsync::cli::SyncOptions {
+fn paranoid_opts(extra: &[&str]) -> irsync::options::SyncOptions {
     let mut argv = vec!["irsync"];
     argv.extend_from_slice(extra);
     argv.extend(["--paranoid", "src/", "host:m/"]);
-    irsync::cli::SyncOptions::from_args(&irsync::cli::Args::try_parse_from(argv).unwrap())
+    irsync::options::SyncOptions::from_args(&irsync::cli::Args::try_parse_from(argv).unwrap())
 }
 
 #[cfg(unix)]
@@ -493,7 +493,7 @@ async fn walk_skips_clone_folders() {
         let args =
             irsync::cli::Args::try_parse_from(["irsync", "-a", "--delete", "src/", "host:m/"])
                 .unwrap();
-        let opts = irsync::cli::SyncOptions::from_args(&args);
+        let opts = irsync::options::SyncOptions::from_args(&args);
         let out = h.run(&opts, flow).await.unwrap();
         assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
         assert_eq!(fs::read(dst.join("d/real")).unwrap(), b"real");

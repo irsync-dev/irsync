@@ -19,7 +19,7 @@ use super::engine::{
     PeerError, SessionRefused, TransportError,
 };
 use super::{control::hex, LocalSide, Outcome, SessionRecord, SyncHello, CLOSE_SUPERSEDED};
-use crate::cli::SyncOptions;
+use crate::options::SyncOptions;
 use crate::platform::local_time;
 use crate::telemetry::{phase, Phase, PhaseKind, Side};
 

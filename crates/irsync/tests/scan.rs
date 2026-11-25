@@ -1,8 +1,8 @@
 mod common;
 
-use irsync::cli::FilterRule;
 use irsync::filter::FilterSet;
 use irsync::fs::paths::RelPath;
+use irsync::options::FilterRule;
 use irsync::platform::testutil::symlink;
 #[cfg(unix)]
 use irsync::platform::testutil::{name_from_bytes, set_mode};

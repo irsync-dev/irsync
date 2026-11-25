@@ -7,8 +7,9 @@ use std::fs;
 use std::time::Duration;
 
 use common::{Flow, Harness};
-use irsync::cli::{Args, SyncOptions};
+use irsync::cli::Args;
 use irsync::fs::paths::RelPath;
+use irsync::options::SyncOptions;
 #[cfg(unix)]
 use irsync::platform::testutil::set_mode;
 use irsync::platform::testutil::symlink;
@@ -820,7 +821,7 @@ async fn a_file_the_receiver_cannot_write_is_reported_as_failed_on_the_bus() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_client_that_resumes_knows_the_total_before_any_data() {
     use irsync::cli::progress::state::Live;
-    use irsync::cli::DeleteMode;
+    use irsync::options::DeleteMode;
     const FILES: u64 = 10;
     const SIZE: usize = 2 << 20;
     within30(async {
@@ -881,7 +882,7 @@ async fn a_restarted_client_that_resumes_knows_the_total_before_any_data() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_client_that_resumes_counts_what_is_already_settled() {
     use irsync::cli::progress::state::Live;
-    use irsync::cli::DeleteMode;
+    use irsync::options::DeleteMode;
     const FILES: u64 = 10;
     const SIZE: u64 = 2 << 20;
     const SAME: u64 = 1 << 20;

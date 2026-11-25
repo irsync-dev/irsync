@@ -23,7 +23,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Access, Authorizer, AuthzError, FileAuthorizer, Grants, Snapshot};
 use crate::autoexport::{auto_root, check_root, AutoRootError};
-use crate::cli::Direction;
 use crate::config::exports::Export;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
@@ -38,6 +37,7 @@ use crate::net::addr::HostPort;
 use crate::net::frame::{read_msg_tapped, write_msg_tapped};
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::net::{build_endpoint, daemon_endpoint_opts};
+use crate::options::Direction;
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
 use crate::session::engine::{prepare_root, serve_daemon, Missing, Place};

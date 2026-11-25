@@ -47,7 +47,7 @@ fn data(n: usize, seed: u32) -> Vec<u8> {
         .collect()
 }
 
-fn opts_with(f: impl FnOnce(&mut irsync::cli::Preserve)) -> irsync::cli::SyncOptions {
+fn opts_with(f: impl FnOnce(&mut irsync::options::Preserve)) -> irsync::options::SyncOptions {
     let mut o = archive_opts();
     f(&mut o.preserve);
     o

@@ -1,6 +1,6 @@
 use futures_util::stream::{self, StreamExt};
-use irsync::cli::Append;
-use irsync::cli::Preserve;
+use irsync::options::Append;
+use irsync::options::Preserve;
 use irsync::plan::{decide, merge_join, Decision, PlanOpts, Side};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};

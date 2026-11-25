@@ -26,9 +26,9 @@ use std::sync::Arc;
 
 use irsync_proto::v1::file_entry::Kind;
 
-use crate::cli::DeleteMode;
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{open_dir_beneath, split_last};
+use crate::options::DeleteMode;
 use crate::platform::{cause, Cause, Create, Dir, Kind as FileKind, Open};
 use crate::recv::is_temp_name;
 use crate::telemetry::meter::{Activity, Meter};

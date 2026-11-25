@@ -47,10 +47,10 @@ fn inode(p: &Path) -> u64 {
     irsync::platform::file_id(&fs::metadata(p).unwrap()).1
 }
 
-fn checksum_opts() -> irsync::cli::SyncOptions {
+fn checksum_opts() -> irsync::options::SyncOptions {
     let args =
         irsync::cli::Args::try_parse_from(["irsync", "-a", "-c", "src/", "host:m/"]).unwrap();
-    irsync::cli::SyncOptions::from_args(&args)
+    irsync::options::SyncOptions::from_args(&args)
 }
 
 /// Itemize codes the bus carried for `name`.

@@ -159,7 +159,7 @@ async fn matched_and_literal_add_up_when_indexed_copies_are_gone() {
 async fn delete_pass_is_timed() {
     irsync::telemetry::set_enabled(true);
     let mut opts = archive_opts();
-    opts.delete = irsync::cli::DeleteMode::After;
+    opts.delete = irsync::options::DeleteMode::After;
     let (out, _h) = sync_trees(
         tree,
         |r| {

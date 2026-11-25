@@ -21,6 +21,7 @@ pub mod index;
 pub mod location;
 pub mod manage;
 pub mod net;
+pub mod options;
 pub mod plan;
 #[allow(unsafe_code)]
 pub mod platform;

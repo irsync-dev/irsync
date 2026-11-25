@@ -4,8 +4,8 @@ use futures_util::stream::{self, Stream, StreamExt};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
-use crate::cli::{Append, Preserve};
 use crate::fs::paths::RelPath;
+use crate::options::{Append, Preserve};
 
 /// One path's view on one side: its listing entry and, when known, its digest.
 #[derive(Debug, Clone)]

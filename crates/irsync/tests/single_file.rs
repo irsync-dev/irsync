@@ -12,8 +12,9 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use common::{archive_opts, Flow, Harness};
-use irsync::cli::{Args, SyncOptions};
+use irsync::cli::Args;
 use irsync::fs::paths::RelPath;
+use irsync::options::SyncOptions;
 #[cfg(unix)]
 use irsync::platform::testutil::set_mode;
 use irsync::platform::testutil::symlink;

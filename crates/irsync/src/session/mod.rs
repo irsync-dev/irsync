@@ -24,12 +24,12 @@ use irsync_proto::v1::{hello, BuildInfo, Hello, SessionPlan, SessionProgress, Sy
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 
-use crate::cli::{DeleteMode, Direction, FilterRule, SyncOptions};
 use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::hasher::Hasher;
 use crate::index::{IndexHandle, SessionRow};
 use crate::location::Location;
+use crate::options::{DeleteMode, Direction, FilterRule, SyncOptions};
 use crate::platform::{bytes_to_os, os_to_bytes};
 use crate::telemetry::meter::{Meter, Usage};
 

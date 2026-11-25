@@ -1,6 +1,6 @@
-use irsync::cli::FilterRule;
 use irsync::filter::{FilterSet, Verdict};
 use irsync::fs::paths::RelPath;
+use irsync::options::FilterRule;
 
 fn set(rules: &[FilterRule]) -> FilterSet {
     FilterSet::from_rules(rules).unwrap()

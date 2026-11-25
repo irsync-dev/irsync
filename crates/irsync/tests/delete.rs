@@ -11,9 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::{assert_trees_equal, Flow, Harness};
-use irsync::cli::{Args, SyncOptions};
+use irsync::cli::Args;
 use irsync::filter::FilterSet;
 use irsync::fs::paths::RelPath;
+use irsync::options::SyncOptions;
 #[cfg(unix)]
 use irsync::platform::testutil::set_mode;
 use irsync::platform::testutil::symlink;
@@ -570,8 +571,8 @@ async fn excluded_dst_files_are_protected_without_delete_excluded() {
 
 #[tokio::test]
 async fn delete_pass_reports_progress_per_candidate() {
-    use irsync::cli::DeleteMode;
     use irsync::delete::DeletePass;
+    use irsync::options::DeleteMode;
     use irsync_proto::v1::file_entry::Kind;
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("a"), b"a").unwrap();

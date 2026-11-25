@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{assert_trees_equal, Flow, Harness};
-use irsync::cli::{Args, SyncOptions};
+use irsync::cli::Args;
 use irsync::filter::FilterSet;
+use irsync::options::SyncOptions;
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(30), f)

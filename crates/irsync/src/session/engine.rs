@@ -37,7 +37,6 @@ use super::{
     receiver, sender_role, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey,
     SessionRecord, SideHooks, SyncHello, HASH_WORKERS,
 };
-use crate::cli::{Append, DeleteMode, Direction, Preserve, SyncOptions};
 use crate::filter::FilterSet;
 use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
@@ -46,6 +45,7 @@ use crate::index::IndexHandle;
 use crate::location::Location;
 use crate::net::frame::{read_body, write_msg_tapped};
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
+use crate::options::{Append, DeleteMode, Direction, Preserve, SyncOptions};
 use crate::send::DEFAULT_PARALLEL;
 use crate::telemetry::meter::Meter;
 use crate::telemetry::{self, phase, Phase, PhaseKind, Role, Side};

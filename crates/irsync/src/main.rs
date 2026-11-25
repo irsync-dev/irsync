@@ -14,9 +14,9 @@ use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::summary::SessionSummary;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
-    Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode, Direction,
-    ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs, LogArgs,
-    PairArgs, RemoteArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
+    Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, ExportArgs, ExportCmd,
+    FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs, LogArgs, PairArgs, RemoteArgs,
+    ServerAddArgs, ServerArgs, ServerCmd,
 };
 use irsync::config::clients::Clients;
 use irsync::config::dial::{Dial, DialFlags};
@@ -33,6 +33,7 @@ use irsync::index::Index;
 use irsync::location::Location;
 use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
+use irsync::options::{DeleteMode, Direction, SyncOptions};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{
     describe_dial, explain, never_reached, probe_path, run_with_reconnect, ConnState, NeverReached,

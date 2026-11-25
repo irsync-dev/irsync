@@ -8,7 +8,8 @@ use std::fs;
 use std::time::{Duration, SystemTime};
 
 use common::{Flow, Harness};
-use irsync::cli::{Args, SyncOptions};
+use irsync::cli::Args;
+use irsync::options::SyncOptions;
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(30), f)

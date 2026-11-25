@@ -7,9 +7,9 @@
 use tracing::Instrument;
 
 use super::Receiver;
-use crate::cli::DeleteMode;
 use crate::delete::DeletePass;
 use crate::fs::paths::RelPath;
+use crate::options::DeleteMode;
 use crate::telemetry::PhaseKind;
 
 impl Receiver {

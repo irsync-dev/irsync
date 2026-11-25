@@ -1,8 +1,9 @@
 #[path = "common/bin.rs"]
 mod bin;
 
-use irsync::cli::{validate, Args, Command, DeleteMode, Direction, FilterRule, SyncOptions};
+use irsync::cli::{validate, Args, Command};
 use irsync::location::Location;
+use irsync::options::{DeleteMode, Direction, FilterRule, SyncOptions};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -142,7 +143,7 @@ fn filters_keep_order_under_the_sync_command() {
 
 #[test]
 fn a_listing_takes_the_list_flags_only() {
-    use irsync::cli::FilterRule;
+    use irsync::options::FilterRule;
     // Connection flags, filters and --no-recursive go with a listing.
     for args in [
         vec![
