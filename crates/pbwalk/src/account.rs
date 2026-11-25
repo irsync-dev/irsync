@@ -364,7 +364,9 @@ mod tests {
     fn hello() -> v1::Hello {
         v1::Hello {
             protocol_version: 5,
-            path: b"export".to_vec(),
+            request: Some(v1::hello::Request::Probe(v1::Probe {
+                path: b"export".to_vec(),
+            })),
             ..Default::default()
         }
     }

@@ -2,7 +2,7 @@
 
 The protobuf definitions in
 [`proto/irsync/v1/`](https://github.com/irsync-dev/irsync/tree/main/proto/irsync/v1)
-(`common.proto`, `control.proto`, `data.proto`, `session.proto`) are
+(`common.proto`, `control.proto`, `data.proto`, `admin.proto`, `session.proto`) are
 normative. This page summarises the constants, the streams and the messages;
 where it disagrees with the `.proto` files, they win. The Rust types are
 generated from them in the `irsync-proto` crate.
@@ -18,7 +18,7 @@ version is refused with `VERSION_MISMATCH`.
 | Item | Value |
 | --- | --- |
 | ALPN | `irsync/1` |
-| `PROTOCOL_VERSION` | `7`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
+| `PROTOCOL_VERSION` | `8`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
 | Framing | A protobuf varint length (at most 4 bytes for `MAX_FRAME`), then that many bytes of one protobuf message: protobuf's standard length-delimited form |
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
@@ -27,14 +27,14 @@ version is refused with `VERSION_MISMATCH`.
 | Chunk list | At most 2^24 records. Every chunk but a file's last is at least 64 KiB; the receiver refuses a list with a shorter one. |
 | List room | 2^24 records per connection, across all files |
 | `NeedChunks` | At most 2^18 chunk indices per message |
-| `Hello.filters` | At most 16,384 rules; a pattern at most 4,096 bytes; all patterns together at most 1 MiB. The daemon refuses a `Hello` with more. |
+| `SyncRequest.filters` | At most 16,384 rules; a pattern at most 4,096 bytes; all patterns together at most 1 MiB. The daemon refuses a `Hello` with more. |
 | Path in `PlanItem` and `CheckLink` | At most 64 KiB, and a valid relative path; anything else is a protocol error |
 | Chunk basis | Blocks of 512 B to 4 KiB, at most 8,192 blocks; at most 32 MiB of bases held per session |
 | `DataChunk` | A piece of one chunk, at most 64 KiB of data; or the operations that rebuild one whole chunk |
 | Heartbeat | At most one every 500 ms |
 | Hello timeout | The daemon waits 10 s for `Hello` |
 
-The chunking parameters travel in the handshake (`Hello.chunk_min`,
+The chunking parameters travel in the handshake (`SyncRequest.chunk_min`,
 `chunk_avg`, `chunk_max`); a client with others is refused with
 `VERSION_MISMATCH`. A file's chunk list and whole-file hash are a pure function
 of its bytes and these parameters.
@@ -64,7 +64,7 @@ A session uses two bidirectional streams, both opened by the client, and many
 unidirectional ones.
 
 - **The control stream** is the first bidirectional stream. It carries `Hello`
-  and the reply, then every `Control` frame except the listing's.
+  and the `HelloReply`, then every `Control` frame except the listing's.
 - **The listing stream** is the second. The client opens it right after
   `HelloAck` and starts it with a `ListingStreamHeader` naming the session.
   Each half then carries one side's listing: `ListingEntry` frames in path
@@ -88,17 +88,37 @@ unidirectional ones.
 
 ## Handshake
 
-The client sends `Hello` on the control stream:
+The client sends `Hello` on the control stream: `protocol_version`, its
+`build` (`BuildInfo`: package version, short git commit, dirty flag), its
+W3C trace context (`traceparent` and `tracestate`, empty: no trace; a
+daemon that exports traces makes its `session` span a child of it), and
+exactly one `request`:
 
-- `protocol_version` and the three chunking parameters;
+| Request | Meaning |
+| --- | --- |
+| `push` | A `SyncRequest`: a session in which the client sends. |
+| `pull` | A `SyncRequest`: a session in which the daemon sends. |
+| `list_exports` | No session: the exports this key may use. |
+| `probe` | No session: what `Probe.path` is on the daemon. |
+| `admin` | The control stream becomes an admin session. |
+
+The daemon answers with one `HelloReply`, which holds exactly one of
+`error` (a refusal, then close code 2), `ack` (a `HelloAck`, for a push or
+a pull), `exports` (an `ExportList`), `path_info` (a `PathInfo`) or
+`admin_ready`. A `Hello` without a request is refused with `BAD_REQUEST`.
+`Hello.protocol_version` and `HelloReply.error` keep their field numbers in
+every version, so a client of another version still reads why it was
+refused.
+
+A `SyncRequest` holds:
+
 - `session_id`: 16 bytes to resume a session, empty for a new one;
-- `direction`: `CLIENT_SENDS` (a push), `DAEMON_SENDS` (a pull) or
-  `LIST_EXPORTS`, `PROBE` or `ADMIN`;
+- the three chunking parameters;
 - `path`, the remote `PATH` as typed, which the daemon resolves (see
   [Remote addresses](remote-addresses.md#resolution-order)); `contents_only`,
   the trailing-slash rule; and on a push of a source without a trailing slash,
   `name`, its basename;
-- `single_file` (field 31): the session copies one file. `name` is then the
+- `single_file`: the session copies one file. `name` is then the
   source's basename on a push, and the name the file gets on the client on a
   pull; it must be one path component. The daemon treats the directory that
   holds the file as the session root, so nothing else in it is listed or
@@ -107,31 +127,43 @@ The client sends `Hello` on the control stream:
   `HelloAck.single_name`, which can differ from `name` (a file named `T`);
 - the client's preserve flags (`-l -p -t -g -o -D -H -S`, `-r`, `-d`), which
   the daemon honours in both directions; it refuses a push or a pull whose
-  `Hello` lacks them;
+  request lacks them;
 - the include and exclude rules, compiled and in order. A sending daemon walks
   with them; a receiving daemon protects what they exclude from deletion;
 - the receiver-side options, which the daemon honours only when it receives:
   the deletion mode, `--delete-excluded`, `--max-delete`, `-n`, `-u`, `-c`,
   `--inplace`, `--append` or `--append-verify`, `--partial-dir` (relative and
   inside the destination, or refused), `--no-rename-detection`, `--fsync`
-  (field 29; an export's `fsync = true` flushes whatever the client sent). `-i`,
+  (an export's `fsync = true` flushes whatever the client sent). `-i`,
   `--ignore-errors` and `--numeric-ids` apply in both directions;
-- `paranoid` (field 30): `--paranoid`. Both roles take part in the final
+- `paranoid`: `--paranoid`. Both roles take part in the final
   re-check, which the receiver asks for with `Settle`, so a daemon honours it
   in both directions. Only the sending side clones or hashes each file again,
   so on a push the daemon does neither;
-- `bwlimit` (field 32): `--bwlimit` in bytes per second. The side that sends
+- `bwlimit`: `--bwlimit` in bytes per second. The side that sends
   the file data paces it, so the daemon honours it only when it sends (a
-  pull); on a push the client paces itself. Absent or 0 means no limit;
-- `traceparent` and `tracestate`, the client's W3C trace context (empty: no
-  trace). A daemon that exports traces makes its `session` span a child of it;
-- `build`: the client's `BuildInfo` (package version, short git commit, dirty
-  flag).
+  pull); on a push the client paces itself. Absent or 0 means no limit.
 
-An `ADMIN` Hello (`path` empty) turns the control stream into an admin
-session, defined in `admin.proto`. The client sends `AdminRequest` frames and
-the daemon answers each with an `AdminReply`. A key without `admin` gets an
-`Error` with `UNAUTHORIZED` and the message `not allowed`. Otherwise:
+A push or a pull is answered with `ack`: a `HelloAck` with the session id,
+whether the session was resumed, its protocol version, the daemon's
+`BuildInfo` and, on a single-file push, `single_name`. Each side logs the
+other's build at info level once the session is up.
+
+`list_exports` is answered with `exports`: the exports this key may use with
+their paths and effective access, sorted by name. The daemon then closes the
+connection.
+
+A `probe` opens no session. The daemon resolves `Probe.path` as it would
+for a pull, applies the same access checks, and answers with `path_info`,
+whose `kind` is `MISSING`, `DIRECTORY` or `FILE` (anything that is not a
+directory, a symlink included), then closes. A client uses it to learn
+whether a pull without a trailing slash names a file.
+
+An `admin` request turns the control stream into an admin session, defined
+in `admin.proto`. A key without `admin` gets an `error` with
+`UNAUTHORIZED` and the message `not allowed`. Otherwise the daemon answers
+with `admin_ready`; the client then sends `AdminRequest` frames and the
+daemon answers each with an `AdminReply`:
 
 | Message | Direction | Meaning |
 | --- | --- | --- |
@@ -140,35 +172,29 @@ the daemon answers each with an `AdminReply`. A key without `admin` gets an
 | `Read` | client to daemon | `ReadView` for the exports, clients and daemon facts, or `ReadConfig` for one key (empty: every key). Answered with `View` or `ConfigText`, from the saved config. Needs `admin` `ro` or `rw`. |
 | `Nack` | daemon to client | Nothing was applied. `change` is the 1-based number of the change at fault, or 0 for the whole transaction (busy, not allowed, own `admin` right, too many changes). |
 
-A `PROBE` opens no session. The daemon resolves `path` as it would for a
-pull, applies the same access checks, and answers with a `PathInfo` whose
-`kind` is `MISSING`, `DIRECTORY` or `FILE` (anything that is not a directory,
-a symlink included), then closes. A client uses it to learn whether a pull
-without a trailing slash names a file. `PathInfo` has `kind` on field 3, with
-fields 1 and 2 reserved and the field marked `optional`, so a refusal (an
-`Error`) never decodes as a `PathInfo`.
-
-For `LIST_EXPORTS` the daemon answers with an `ExportList`, the exports this
-key may use with their paths and effective access, sorted by name, and closes
-the connection. Otherwise it answers with `HelloAck` (the session id, whether
-the session was resumed, its protocol version, its `BuildInfo` and, on a
-single-file push, `single_name`), or with an
-`Error` and close code 2. Each side logs the other's build at info level once
-the session is up.
+A request the daemon refuses inside the session (one it cannot read, a read
+of a key that does not exist, a request too large) gets an `AdminReply`
+whose `refused` holds the `Error`.
 
 ## Errors
 
+An `Error` is a code and a message. It refuses a `Hello` (in
+`HelloReply`), refuses an admin request (in `AdminReply`), or, as the
+`error` of a `Control` frame, ends a session that failed: either side may
+send that one, with `INTERNAL`.
+
 | Code | Sent when |
 | --- | --- |
-| `UNKNOWN` | A malformed request, such as an unknown direction. |
+| `UNSPECIFIED` | Never sent. |
 | `UNAUTHORIZED` | The key has grants, but none for an export that contains the path. The message is `no access to PATH`. |
 | `READ_ONLY` | A push to an export that is `read_only` or that this key may only read. |
 | `BAD_PATH` | The path has a `..` component or a NUL byte, or the session's root cannot be prepared. |
 | `VERSION_MISMATCH` | Another protocol version or other chunking parameters. |
 | `BAD_SESSION` | A resume of a session the daemon does not know, that is finished, or that another key started. The client starts a fresh session at once. |
-| `INTERNAL` | The daemon failed, for example opening the export's index. |
+| `INTERNAL` | The daemon failed, for example opening the export's index; or a session failed (in `Control`). |
+| `BAD_REQUEST` | A malformed request: a `Hello` without a request, rules over the limits, an admin request that cannot be read. |
 
-Field number 2 is reserved. The answer for a path a key may not use is the
+The answer for a path a key may not use is the
 same whether the path lies outside every export, inside an export without a
 grant, or does not exist at all, so a key cannot probe the daemon's layout.
 `READ_ONLY` and a `BAD_PATH` about the root go only to a key that may use the
@@ -196,7 +222,7 @@ export.
 | `Unlinked` | sender to receiver | A name that is no longer exactly the file its target was hashed as: its stat differs (inode, size, times, mode, owner or group), or it is gone or no longer a regular file the walk would list. The receiver does not link it. If it is still a regular file, `entry` holds it as it is now, and the receiver plans it as a file of its own, as for `Replan`. Otherwise that name fails. |
 | `LinksChecked` | sender to receiver | The link check is over. The receiver makes the other links, then sends `SessionDone`. |
 | `SessionDone` | receiver to sender | The session's totals, errors and deletions, and what the sender's listing held (`listed`): a sender that resumed from the receiver's stored plan listed nothing itself and reports these counts. |
-| `Error` | daemon to client | A refusal, as above. |
+| `Error` | either | The session failed on this side, with `INTERNAL` and why; it ends the session. |
 
 Every message on the control stream is a `Control` frame with exactly one of
 these set. A file costs a `PlanItem`, at least one `ChunkListPart`, a

@@ -50,7 +50,7 @@ fn concurrent_pulls_finish_when_their_walks_could_fill_the_blocking_pool() {
             fs::create_dir_all(&dst).unwrap();
             fs::create_dir_all(&state).unwrap();
             let mut hello = Harness::hello(Flow::Pull);
-            hello.path = format!("m/s{s}").into_bytes();
+            hello.req.path = format!("m/s{s}").into_bytes();
             let (h, opts) = (&h, &opts);
             async move {
                 let out = h

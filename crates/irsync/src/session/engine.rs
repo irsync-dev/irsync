@@ -1,13 +1,13 @@
 //! Session entry points for both ends of a connection.
 //!
 //! The client opens the control stream and sends `Hello`; the daemon answers
-//! `HelloAck`; the client then opens the listing stream. From then on both
+//! `HelloAck` (in a `HelloReply`); the client then opens the listing stream. From then on both
 //! ends speak `Control` frames: each streams its listing on the listing
 //! stream while reading the peer's there, and on the control stream the
 //! **receiver role** (the planner, rsync-generator style) drives the
 //! transfer with `PlanItem`/`NeedChunks`/`FileAck` and the **sender role**
 //! answers with `ChunkList`s and data on unidirectional streams. Which end
-//! plays which role follows `Hello.direction`.
+//! plays which role follows the Hello's request: `push` or `pull`.
 
 use std::collections::HashSet;
 use std::io;
@@ -20,8 +20,11 @@ use crate::build::BuildInfo;
 use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::EndpointId;
-use irsync_proto::v1::hello::{AppendMode as WireAppend, DeleteMode as WireDeleteMode, Direction};
-use irsync_proto::v1::{error::Code, Error, ExportEntry, ExportList, FileEntry, Hello, HelloAck};
+use irsync_proto::v1::sync_request::{AppendMode as WireAppend, DeleteMode as WireDeleteMode};
+use irsync_proto::v1::{
+    error::Code, hello_reply, Error, ExportEntry, FileEntry, Hello, HelloAck, HelloReply,
+    SyncRequest,
+};
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 use tokio::sync::mpsc;
@@ -33,10 +36,10 @@ use super::listing_stream::{self, ListingSink};
 use super::single::{is_one_component, SingleFile};
 use super::{
     receiver, sender_role, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey,
-    SessionRecord, SideHooks, HASH_WORKERS,
+    SessionRecord, SideHooks, SyncHello, HASH_WORKERS,
 };
 use crate::cli::location::Location;
-use crate::cli::{Append, DeleteMode, Preserve, SyncOptions};
+use crate::cli::{Append, DeleteMode, Direction, Preserve, SyncOptions};
 use crate::filter::FilterSet;
 use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
@@ -48,7 +51,7 @@ use crate::send::DEFAULT_PARALLEL;
 use crate::telemetry::meter::Meter;
 use crate::telemetry::{self, phase, Phase, PhaseKind, Role, Side};
 
-/// The daemon refused the session: its `Error` reply to `Hello`.
+/// The daemon refused the request: the `Error` of its reply to `Hello`.
 #[derive(Debug, Clone)]
 pub struct SessionRefused {
     pub code: Code,
@@ -168,8 +171,8 @@ impl RoleOpts {
     /// options (deletion, dry run, `-u`, `-c`, itemize, inplace, fsync,
     /// append, local reuse). `--bwlimit` and `--paranoid`'s extra hashing
     /// are the sending side's, honoured only when the daemon sends.
-    fn daemon(hello: &Hello, receives: bool) -> RoleOpts {
-        let delete = match hello.delete_mode() {
+    fn daemon(req: &SyncRequest, receives: bool) -> RoleOpts {
+        let delete = match req.delete_mode() {
             _ if !receives => DeleteMode::Off,
             WireDeleteMode::DeleteOff => DeleteMode::Off,
             WireDeleteMode::DeleteBefore => DeleteMode::Before,
@@ -178,7 +181,7 @@ impl RoleOpts {
         };
         // The daemon refuses a session Hello without them (see
         // `daemon::validate`).
-        let p = hello.preserve.unwrap_or_default();
+        let p = req.preserve.unwrap_or_default();
         let preserve = Preserve {
             recursive: p.recursive,
             dirs: p.dirs,
@@ -194,38 +197,38 @@ impl RoleOpts {
         };
         RoleOpts {
             preserve,
-            checksum: receives && hello.checksum,
-            update_only: receives && hello.update_only,
-            reuse_local: !(receives && hello.no_local_reuse),
+            checksum: receives && req.checksum,
+            update_only: receives && req.update_only,
+            reuse_local: !(receives && req.no_local_reuse),
             // Validated by `serve_daemon` before this is used.
-            partial_dir: (receives && !hello.partial_dir.is_empty())
-                .then(|| crate::platform::bytes_to_os(&hello.partial_dir).ok())
+            partial_dir: (receives && !req.partial_dir.is_empty())
+                .then(|| crate::platform::bytes_to_os(&req.partial_dir).ok())
                 .flatten()
                 .map(PathBuf::from),
             parallel: DEFAULT_PARALLEL,
             // The sending side paces the data: honoured when the daemon
             // sends. It only slows what this client is sent.
-            bwlimit: hello.bwlimit.filter(|&b| !receives && b != 0),
+            bwlimit: req.bwlimit.filter(|&b| !receives && b != 0),
             delete,
-            delete_excluded: receives && hello.delete_excluded,
-            max_delete: hello.max_delete,
-            dry_run: receives && hello.dry_run,
-            ignore_errors: hello.ignore_errors,
-            itemize: hello.itemize,
-            inplace: receives && hello.inplace,
-            fsync: receives && hello.fsync,
-            numeric_ids: hello.numeric_ids,
-            append: match hello.append() {
+            delete_excluded: receives && req.delete_excluded,
+            max_delete: req.max_delete,
+            dry_run: receives && req.dry_run,
+            ignore_errors: req.ignore_errors,
+            itemize: req.itemize,
+            inplace: receives && req.inplace,
+            fsync: receives && req.fsync,
+            numeric_ids: req.numeric_ids,
+            append: match req.append() {
                 _ if !receives => Append::Off,
                 WireAppend::AppendOff => Append::Off,
                 WireAppend::Append => Append::Append,
                 WireAppend::AppendVerify => Append::Verify,
             },
             // The sending side's check: honoured when the daemon sends.
-            paranoid: !receives && hello.paranoid,
+            paranoid: !receives && req.paranoid,
             // In both directions: a receiving daemon asks for the re-check.
-            settle: hello.paranoid && !hello.dry_run,
-            check_links: preserve.hard_links && !hello.dry_run,
+            settle: req.paranoid && !req.dry_run,
+            check_links: preserve.hard_links && !req.dry_run,
         }
     }
 }
@@ -233,25 +236,25 @@ impl RoleOpts {
 /// Puts the client's options into `Hello`: the receiver-side ones (Ruling
 /// 19), which the daemon honours when it receives, the preserve flags (R36)
 /// and the compiled filter rules (R38), which it honours in both directions.
-pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet) {
+pub fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: &FilterSet) {
     // Relative only: an absolute one is this side's business (and refused on
     // a push by `check_options`).
-    hello.partial_dir = o
+    req.partial_dir = o
         .partial_dir
         .as_deref()
         .filter(|p| p.is_relative())
         .map(|p| crate::platform::os_to_bytes(p.as_os_str()))
         .unwrap_or_default();
-    hello.filters = filters
+    req.filters = filters
         .rules()
         .iter()
-        .map(|r| irsync_proto::v1::hello::FilterRule {
+        .map(|r| irsync_proto::v1::sync_request::FilterRule {
             include: r.is_include(),
             pattern: r.pattern().to_vec(),
         })
         .collect();
     let p = &o.preserve;
-    hello.preserve = Some(irsync_proto::v1::hello::Preserve {
+    req.preserve = Some(irsync_proto::v1::sync_request::Preserve {
         recursive: p.recursive,
         dirs: p.dirs,
         links: p.links,
@@ -264,27 +267,27 @@ pub fn set_hello_options(hello: &mut Hello, o: &SyncOptions, filters: &FilterSet
         hard_links: p.hard_links,
         sparse: p.sparse,
     });
-    hello.delete_mode = match o.delete {
+    req.delete_mode = match o.delete {
         DeleteMode::Off => WireDeleteMode::DeleteOff,
         DeleteMode::Before => WireDeleteMode::DeleteBefore,
         DeleteMode::During => WireDeleteMode::DeleteDuring,
         DeleteMode::After => WireDeleteMode::DeleteAfter,
     } as i32;
-    hello.delete_excluded = o.delete_excluded;
-    hello.max_delete = o.max_delete;
-    hello.dry_run = o.dry_run;
-    hello.ignore_errors = o.ignore_errors;
+    req.delete_excluded = o.delete_excluded;
+    req.max_delete = o.max_delete;
+    req.dry_run = o.dry_run;
+    req.ignore_errors = o.ignore_errors;
     // `-n -v` lists what a push would transfer: only the daemon knows.
-    hello.itemize = o.itemize || (o.dry_run && o.verbose > 0);
-    hello.update_only = o.update_only;
-    hello.no_local_reuse = o.no_rename_detection;
-    hello.numeric_ids = o.numeric_ids;
-    hello.checksum = o.checksum;
-    hello.inplace = o.inplace;
-    hello.fsync = o.fsync;
-    hello.paranoid = o.paranoid;
-    hello.bwlimit = o.bwlimit;
-    hello.append = match o.append {
+    req.itemize = o.itemize || (o.dry_run && o.verbose > 0);
+    req.update_only = o.update_only;
+    req.no_local_reuse = o.no_rename_detection;
+    req.numeric_ids = o.numeric_ids;
+    req.checksum = o.checksum;
+    req.inplace = o.inplace;
+    req.fsync = o.fsync;
+    req.paranoid = o.paranoid;
+    req.bwlimit = o.bwlimit;
+    req.append = match o.append {
         Append::Off => WireAppend::AppendOff,
         Append::Append => WireAppend::Append,
         Append::Verify => WireAppend::AppendVerify,
@@ -510,40 +513,43 @@ pub(crate) async fn read_reply_body(recv: &mut RecvStream) -> io::Result<Vec<u8>
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "end of stream before reply"))
 }
 
-/// The daemon answers `Hello` with `HelloAck`, or with `Error` when it
-/// refuses. The two differ in the wire type of field 1, so at most one
-/// decodes as a well-formed ack.
-///
-/// The ack names the session on `conn_tap` before `tap` reports it.
-async fn read_hello_reply(
+/// Reads the daemon's answer to `Hello` and reports it to `tap`. A
+/// refusal (its `error`) is a [`SessionRefused`]; a reply that does not
+/// decode, or holds nothing, is malformed. The wait ends after `timeout`
+/// (`--timeout`; none or zero: no limit).
+pub async fn read_hello_reply(
     recv: &mut RecvStream,
-    conn_tap: &ConnTap,
     tap: &StreamTap,
-) -> anyhow::Result<HelloAck> {
-    let body = read_reply_body(recv)
-        .await
-        .map_err(|e| TransportError(format!("reading HelloAck: {e}")))?;
-    if let Ok(ack) = HelloAck::decode(&body[..]) {
-        if ack.session_id.len() == 16 {
-            conn_tap.set_session(&ack.session_id);
-            tap.received(&ack, body.len());
-            return Ok(ack);
+    timeout: Option<Duration>,
+) -> anyhow::Result<hello_reply::Reply> {
+    let read = async {
+        read_reply_body(recv)
+            .await
+            .map_err(|e| TransportError(format!("reading the reply to Hello: {e}")))
+    };
+    let body = match timeout.filter(|t| !t.is_zero()) {
+        Some(t) => tokio::time::timeout(t, read)
+            .await
+            .map_err(|_| TransportError(format!("no reply to Hello within {} s", t.as_secs())))??,
+        None => read.await?,
+    };
+    let Ok(reply) = HelloReply::decode(&body[..]) else {
+        tap.reset("malformed reply to Hello");
+        bail!("malformed reply to Hello");
+    };
+    tap.received(&reply, body.len());
+    match reply.reply {
+        Some(hello_reply::Reply::Error(e)) => Err(SessionRefused {
+            code: e.code(),
+            message: e.message,
         }
-    }
-    match Error::decode(&body[..]) {
-        Ok(e) => {
-            tap.received(&e, body.len());
-            Err(SessionRefused {
-                code: Code::try_from(e.code).unwrap_or(Code::Unknown),
-                message: e.message,
-            }
-            .into())
-        }
-        Err(_) => bail!("malformed reply to Hello"),
+        .into()),
+        Some(r) => Ok(r),
+        None => bail!("malformed reply to Hello"),
     }
 }
 
-/// `irsync HOST:`: sends a `LIST_EXPORTS` hello and returns the daemon's
+/// `irsync HOST:`: sends a `list_exports` hello and returns the daemon's
 /// list (sorted by name). A refusal is a [`SessionRefused`].
 pub async fn list_exports(conn: &Connection, hello: Hello) -> anyhow::Result<Vec<ExportEntry>> {
     let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
@@ -553,54 +559,36 @@ pub async fn list_exports(conn: &Connection, hello: Hello) -> anyhow::Result<Vec
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
     send.finish()?;
     tap.finished();
-    let body = read_reply_body(&mut recv)
-        .await
-        .map_err(|e| TransportError(format!("reading ExportList: {e}")))?;
-    if let Ok(list) = ExportList::decode(&body[..]) {
-        tap.received(&list, body.len());
-        return Ok(list.exports);
-    }
-    match Error::decode(&body[..]) {
-        Ok(e) => {
-            tap.received(&e, body.len());
-            Err(SessionRefused {
-                code: Code::try_from(e.code).unwrap_or(Code::Unknown),
-                message: e.message,
-            }
-            .into())
-        }
-        Err(_) => bail!("malformed reply to Hello"),
+    match read_hello_reply(&mut recv, &tap, None).await? {
+        hello_reply::Reply::Exports(list) => Ok(list.exports),
+        _ => bail!("the daemon's reply does not fit a listing"),
     }
 }
 
-fn remote_location(daemon: EndpointId, hello: &Hello) -> anyhow::Result<Location> {
-    Ok(Location::Remote {
+fn remote_location(daemon: EndpointId, req: &SyncRequest) -> Location {
+    Location::Remote {
         host: daemon.to_string(),
-        path: hello.path.clone(),
-        contents_only: hello.contents_only,
-    })
+        path: req.path.clone(),
+        contents_only: req.contents_only,
+    }
 }
 
 /// The client's [`SessionKey`] for a session with `daemon` described by
 /// `hello` over `local` (canonicalizes the local path, so off the async threads).
 pub async fn client_session_key(
     daemon: EndpointId,
-    hello: &Hello,
+    hello: &SyncHello,
     local: &LocalSide,
     opts: &SyncOptions,
 ) -> anyhow::Result<Vec<u8>> {
-    let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
     let local_loc = Location::Local {
         path: local.root.clone(),
         contents_only: local.contents_only,
     };
-    let remote_loc = remote_location(daemon, hello)?;
-    let (src, dst) = match direction {
+    let remote_loc = remote_location(daemon, &hello.req);
+    let (src, dst) = match hello.direction {
         Direction::ClientSends => (local_loc, remote_loc),
         Direction::DaemonSends => (remote_loc, local_loc),
-        Direction::ListExports | Direction::Probe | Direction::Admin => {
-            bail!("a listing, probe or admin stream has no session")
-        }
     };
     let (o, single) = (opts.clone(), local.single.clone());
     Ok(tokio::task::spawn_blocking(move || {
@@ -642,14 +630,14 @@ async fn load_record(index: &IndexHandle, id: [u8; 16], key: &[u8]) -> Option<Se
 }
 
 /// Runs a whole session as the client over `conn`: sends `hello`, then plays
-/// the sender role (`CLIENT_SENDS`) or the receiver role (`DAEMON_SENDS`) on
+/// the sender role (a push) or the receiver role (a pull) on
 /// `local`. The root and remote path must already follow rsync's
 /// trailing-slash rule (see [`super::resolve_roots`]). A non-empty
-/// `hello.session_id` asks the daemon to resume that session. The current
+/// `hello.req.session_id` asks the daemon to resume that session. The current
 /// span stands for the session: it gets `session_id` and `resumed`.
 pub async fn run_client(
     conn: Connection,
-    hello: Hello,
+    hello: SyncHello,
     local: LocalSide,
     opts: &SyncOptions,
 ) -> anyhow::Result<Outcome> {
@@ -670,19 +658,19 @@ pub(super) struct Attempt {
 /// in `attempt`.
 pub(super) async fn run_client_inner(
     conn: Connection,
-    hello: Hello,
+    hello: SyncHello,
     local: LocalSide,
     opts: &SyncOptions,
     session: &tracing::Span,
     attempt: &mut Attempt,
 ) -> anyhow::Result<Outcome> {
     let mut hello = hello;
-    let direction = Direction::try_from(hello.direction).context("bad direction in Hello")?;
+    let direction = hello.direction;
     check_options(direction, opts)?;
-    if hello.single_file != local.single.is_some() {
-        bail!("a single-file session needs both Hello.single_file and the local file name");
+    if hello.req.single_file != local.single.is_some() {
+        bail!("a single-file session needs both SyncRequest.single_file and the local file name");
     }
-    set_hello_options(&mut hello, opts, &local.filters);
+    set_sync_options(&mut hello.req, opts, &local.filters);
     // The daemon's `session` span joins this one's trace.
     (hello.traceparent, hello.tracestate) = telemetry::inject(session);
     let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
@@ -691,7 +679,7 @@ pub(super) async fn run_client_inner(
     let handshake = phase(
         PhaseKind::Handshake,
         Side::Client,
-        role_of(Side::Client, hello.direction),
+        role_of(Side::Client, direction),
         None,
     );
     let (mut send, mut recv) = conn
@@ -700,17 +688,19 @@ pub(super) async fn run_client_inner(
         .map_err(|e| TransportError(format!("opening control stream: {e}")))?;
     let conn_tap = ConnTap::of(&conn);
     let tap = conn_tap.stream(TapStream::Control, u64::from(send.id()));
-    write_msg_tapped(&mut send, &hello, &tap)
+    write_msg_tapped(&mut send, &hello.to_hello(), &tap)
         .await
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
-    let reply = read_hello_reply(&mut recv, &conn_tap, &tap);
-    let ack = match opts.timeout.filter(|t| !t.is_zero()) {
-        Some(t) => tokio::time::timeout(t, reply)
-            .await
-            .map_err(|_| TransportError(format!("no reply to Hello within {} s", t.as_secs())))??,
-        None => reply.await?,
+    let ack = match read_hello_reply(&mut recv, &tap, opts.timeout).await? {
+        hello_reply::Reply::Ack(ack) => ack,
+        _ => bail!("the daemon's reply does not fit a session"),
     };
-    let session_id: [u8; 16] = ack.session_id.as_slice().try_into()?;
+    let session_id: [u8; 16] = ack
+        .session_id
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("the daemon's HelloAck holds no session id"))?;
+    conn_tap.set_session(&session_id);
     attempt.acked = Some(session_id);
     let single = client_single(direction, &local, &ack)?;
     let listing = listing_stream::open(&conn, &session_id)
@@ -968,7 +958,7 @@ pub async fn serve_daemon(
     recv: RecvStream,
     tap: StreamTap,
     place: Place,
-    hello: Hello,
+    hello: SyncHello,
     index: IndexHandle,
     shared: DaemonSessions,
     local_id: &str,
@@ -978,7 +968,7 @@ pub async fn serve_daemon(
     // trace only through the context in `Hello`, when export is on.
     let span = session_span(
         Side::Daemon,
-        &hello,
+        hello.direction,
         conn.remote_id().fmt_short().to_string(),
         None,
         local_id,
@@ -1056,19 +1046,18 @@ async fn drop_dormant_over(
 /// fields, and the id would lengthen each of them.
 pub(super) fn session_span(
     side: Side,
-    hello: &Hello,
+    direction: Direction,
     peer: String,
     source_index: Option<usize>,
     endpoint_id: &str,
 ) -> tracing::Span {
-    let direction = Direction::try_from(hello.direction).unwrap_or(Direction::ClientSends);
     let span = tracing::info_span!(
         parent: None,
         "session",
         session_id = tracing::field::Empty,
         direction = ?direction,
         side = side.label(),
-        role = role_of(side, hello.direction).label(),
+        role = role_of(side, direction).label(),
         endpoint_id = tracing::field::Empty,
         peer = %peer,
         resumed = tracing::field::Empty,
@@ -1089,9 +1078,9 @@ pub(super) fn session_span(
     span
 }
 
-/// The role `side` plays for a `Hello.direction` value.
-pub(super) fn role_of(side: Side, direction: i32) -> Role {
-    let client_sends = direction == Direction::ClientSends as i32;
+/// The role `side` plays in a session of `direction`.
+pub(super) fn role_of(side: Side, direction: Direction) -> Role {
+    let client_sends = direction == Direction::ClientSends;
     if client_sends == (side == Side::Client) {
         Role::Sender
     } else {
@@ -1121,7 +1110,7 @@ async fn serve_daemon_inner(
     recv: RecvStream,
     tap: StreamTap,
     place: Place,
-    hello: Hello,
+    hello: SyncHello,
     index: IndexHandle,
     shared: DaemonSessions,
     session: &tracing::Span,
@@ -1139,27 +1128,27 @@ async fn serve_daemon_inner(
         role_of(Side::Daemon, hello.direction),
         Some(&export_name),
     );
-    let direction = Direction::try_from(hello.direction).context("bad direction")?;
+    let (direction, req) = (hello.direction, &hello.req);
     // The daemon sends when the client receives.
     let sends = direction == Direction::DaemonSends;
-    let missing = match (sends, hello.dry_run) {
+    let missing = match (sends, req.dry_run) {
         (true, _) => Missing::Refuse,
         (false, false) => Missing::Create,
         (false, true) => Missing::Allow,
     };
     // A partial dir from the client names a place on this side: only a
     // canonical relative path, kept inside the destination, is acceptable.
-    if !sends && !hello.partial_dir.is_empty() && RelPath::new(&hello.partial_dir).is_err() {
+    if !sends && !req.partial_dir.is_empty() && RelPath::new(&req.partial_dir).is_err() {
         let msg = format!(
             "bad partial-dir {:?}: must be a relative path inside the destination",
-            String::from_utf8_lossy(&hello.partial_dir)
+            String::from_utf8_lossy(&req.partial_dir)
         );
         return refuse(&conn, &mut send, &tap, Code::BadPath, msg).await;
     }
     // The rules come from the peer: checked before they are compiled, so
     // their size is bounded by more than the frame.
-    if let Err(msg) = crate::filter::check_limits(hello.filters.iter().map(|r| &r.pattern[..])) {
-        return refuse(&conn, &mut send, &tap, Code::Unknown, msg).await;
+    if let Err(msg) = crate::filter::check_limits(req.filters.iter().map(|r| &r.pattern[..])) {
+        return refuse(&conn, &mut send, &tap, Code::BadRequest, msg).await;
     }
     let prepared = {
         let (m, r) = (export_root.clone(), rel.clone());
@@ -1175,7 +1164,7 @@ async fn serve_daemon_inner(
     let remote = conn.remote_id();
     let key =
         SessionKey::for_daemon(remote, &export_name, &rel, &hello, single.as_ref()).into_bytes();
-    let (session_id, record, _claim) = if hello.session_id.is_empty() {
+    let (session_id, record, _claim) = if req.session_id.is_empty() {
         let mut id = [0u8; 16];
         getrandom::fill(&mut id).expect("the system's random source");
         let claim = shared.registry.claim(id, &conn).await?;
@@ -1184,7 +1173,7 @@ async fn serve_daemon_inner(
         // Only the key that created a session may resume it, and only for
         // the same export, path and direction.
         let owned = |rec: &SessionRecord| rec.plan.remote_id == remote.as_bytes();
-        let id = <[u8; 16]>::try_from(hello.session_id.as_slice()).ok();
+        let id = <[u8; 16]>::try_from(req.session_id.as_slice()).ok();
         let found = match id {
             Some(id) => load_record(&index, id, &key).await.filter(owned),
             None => None,
@@ -1205,15 +1194,17 @@ async fn serve_daemon_inner(
     ConnTap::of(&conn).set_session(&session_id);
     write_msg_tapped(
         &mut send,
-        &HelloAck {
-            session_id: session_id.to_vec(),
-            resumed,
-            protocol_version: PROTOCOL_VERSION,
-            build: Some(BuildInfo::current().to_wire()),
-            single_name: single
-                .as_ref()
-                .map(|s| s.wire.as_bytes().to_vec())
-                .unwrap_or_default(),
+        &HelloReply {
+            reply: Some(hello_reply::Reply::Ack(HelloAck {
+                session_id: session_id.to_vec(),
+                resumed,
+                protocol_version: PROTOCOL_VERSION,
+                build: Some(BuildInfo::current().to_wire()),
+                single_name: single
+                    .as_ref()
+                    .map(|s| s.wire.as_bytes().to_vec())
+                    .unwrap_or_default(),
+            })),
         },
         &tap,
     )
@@ -1284,7 +1275,7 @@ async fn serve_daemon_inner(
     // `-c` applies to both sides: the daemon reads every file it lists
     // or compares, whichever way the data flows.
     let hasher = Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
-        .with_force(hello.checksum)
+        .with_force(req.checksum)
         .with_activity(activity.clone())
         .with_meter(meter.clone());
     let forced = Hasher::new(index.clone(), export_root.clone(), 1)
@@ -1342,14 +1333,13 @@ async fn serve_daemon_inner(
         // The client's rules: a sending daemon walks with them, a receiving
         // one protects what they exclude from deletion.
         filters: Arc::new(FilterSet::new(
-            hello
-                .filters
+            req.filters
                 .iter()
                 .map(|r| crate::filter::Rule::from_parts(r.include, &r.pattern))
                 .collect(),
         )),
         opts: {
-            let mut o = RoleOpts::daemon(&hello, !sends);
+            let mut o = RoleOpts::daemon(req, !sends);
             o.fsync |= export_fsync && !sends;
             // One file: nothing else in its directory is ever deleted.
             if single.is_some() {
@@ -1427,15 +1417,13 @@ async fn refuse(
     msg: String,
 ) -> anyhow::Result<Outcome> {
     tracing::info!(peer = %conn.remote_id().fmt_short(), ?code, %msg, "refusing session");
-    write_msg_tapped(
-        send,
-        &Error {
+    let refusal = HelloReply {
+        reply: Some(hello_reply::Reply::Error(Error {
             code: code as i32,
             message: msg.clone(),
-        },
-        tap,
-    )
-    .await?;
+        })),
+    };
+    write_msg_tapped(send, &refusal, tap).await?;
     send.finish()?;
     tap.finished();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send.stopped()).await;

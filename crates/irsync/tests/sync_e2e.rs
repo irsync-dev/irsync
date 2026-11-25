@@ -455,7 +455,7 @@ async fn daemon_index_rows_are_export_relative() {
         let h = Harness::new().await;
         fs::write(h.local.path().join("f.bin"), data(300 * KIB, 5)).unwrap();
         let mut hello = Harness::hello(Flow::Push);
-        hello.path = b"m/sub".to_vec();
+        hello.req.path = b"m/sub".to_vec();
         let out = h.run_hello(&opts, hello, h.local_side()).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert_eq!(
@@ -475,7 +475,7 @@ async fn daemon_index_rows_are_export_relative() {
         // Pulling the same sub-path reuses those rows: nothing is re-hashed.
         let before = h.daemon_files_hashed();
         let mut hello = Harness::hello(Flow::Pull);
-        hello.path = b"m/sub".to_vec();
+        hello.req.path = b"m/sub".to_vec();
         let pulled = tempfile::tempdir().unwrap();
         let state = tempfile::tempdir().unwrap();
         let index = irsync::index::Index::open(state.path(), pulled.path())
@@ -509,7 +509,7 @@ async fn rename_and_chunk_reuse_work_below_an_export_prefix() {
         let h = Harness::new().await;
         let push_to = |path: &[u8], dir: &Path, state: &Path| {
             let mut hello = Harness::hello(Flow::Push);
-            hello.path = path.to_vec();
+            hello.req.path = path.to_vec();
             (hello, Harness::side_for(dir, state))
         };
         let content = data(2 * MIB + 77, 21);
@@ -718,7 +718,7 @@ async fn all_paths_push_then_resume_uses_index() {
         };
         mixed_tree(h.local.path());
         let mut hello = Harness::hello(Flow::Push);
-        hello.path = irsync::platform::os_to_bytes(h.export.path().as_os_str());
+        hello.req.path = irsync::platform::os_to_bytes(h.export.path().as_os_str());
 
         let first = h
             .run_hello(&opts, hello.clone(), h.local_side())

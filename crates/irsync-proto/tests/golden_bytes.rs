@@ -9,7 +9,7 @@ use prost::Message;
 
 #[test]
 fn protocol_version_is_pinned() {
-    assert_eq!(irsync_proto::PROTOCOL_VERSION, 7);
+    assert_eq!(irsync_proto::PROTOCOL_VERSION, 8);
 }
 
 fn enc(m: Msg) -> Vec<u8> {
@@ -135,13 +135,31 @@ fn admin_nack_golden_bytes() {
 }
 
 #[test]
-fn hello_golden_bytes_carry_protocol_version_7() {
-    use irsync_proto::v1::{hello::Direction, Hello};
-    // protocol_version = 1, direction = 5 (ADMIN = 4)
+fn hello_golden_bytes_carry_protocol_version_8() {
+    use irsync_proto::v1::{hello, Hello, OpenAdmin};
+    // protocol_version = 1, admin = 9 (an empty OpenAdmin)
     let h = Hello {
         protocol_version: irsync_proto::PROTOCOL_VERSION,
-        direction: Direction::Admin as i32,
+        request: Some(hello::Request::Admin(OpenAdmin {})),
         ..Default::default()
     };
-    assert_eq!(h.encode_to_vec(), [0x08, 0x07, 0x28, 0x04]);
+    assert_eq!(h.encode_to_vec(), [0x08, 0x08, 0x4A, 0x00]);
+}
+
+#[test]
+fn hello_reply_error_golden_bytes() {
+    // error = 1 (code = 1, message = 2). Hello.protocol_version and this
+    // field keep their numbers in every version, so a refusal for a version
+    // mismatch stays readable.
+    use irsync_proto::v1::{error::Code, hello_reply, Error, HelloReply};
+    let r = HelloReply {
+        reply: Some(hello_reply::Reply::Error(Error {
+            code: Code::VersionMismatch as i32,
+            message: "x".into(),
+        })),
+    };
+    assert_eq!(
+        r.encode_to_vec(),
+        [0x0A, 0x05, 0x08, 0x04, 0x12, 0x01, 0x78]
+    );
 }

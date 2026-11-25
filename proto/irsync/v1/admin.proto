@@ -4,8 +4,8 @@ package irsync.v1;
 import "irsync/v1/common.proto";
 
 // The admin service: a client with `admin = "rw"` or `"ro"` changes or reads
-// the daemon's configuration over a control stream opened with
-// `Hello.direction = ADMIN`.
+// the daemon's configuration over a control stream opened with a Hello
+// whose request is `admin`, once the daemon has answered with AdminReady.
 
 message AdminRequest {
   oneof msg {

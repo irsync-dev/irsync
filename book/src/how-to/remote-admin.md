@@ -29,8 +29,7 @@ only to machines you trust that far. See the
 [threat model](../explanation/threat-model.md).
 
 The server must run the same irsync version as the client. An older server
-answers `myserver runs an older irsync without remote admin: update it
-there`.
+answers `myserver runs an older irsync: update it there`.
 
 ## Run a command
 

@@ -20,7 +20,8 @@ use std::time::Duration;
 
 use iroh::endpoint::Connection;
 use iroh::EndpointId;
-use irsync_proto::v1::{Hello, SessionPlan, SessionProgress};
+use irsync_proto::v1::{hello, BuildInfo, Hello, SessionPlan, SessionProgress, SyncRequest};
+use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 
 use crate::cli::location::Location;
@@ -36,6 +37,76 @@ use crate::telemetry::meter::{Meter, Usage};
 /// `hasher::LARGE_WORKERS` of them large. Many small reads in flight let a
 /// spinning disk order them (`docs/IRSYNC_DECISIONS.md`, 2.1 item 7).
 pub const HASH_WORKERS: usize = 128;
+
+/// A push or a pull as its `Hello` asks for it: the request out of the
+/// Hello's oneof, with the direction its arm stands for.
+#[derive(Debug, Clone)]
+pub struct SyncHello {
+    pub direction: Direction,
+    pub req: SyncRequest,
+    /// The client's build.
+    pub build: Option<BuildInfo>,
+    /// The client's W3C trace context; empty: no trace.
+    pub traceparent: String,
+    pub tracestate: String,
+}
+
+impl SyncHello {
+    /// `req` from this build, with this build's chunking parameters and no
+    /// trace context.
+    pub fn new(direction: Direction, req: SyncRequest) -> SyncHello {
+        let p = irsync_proto::chunk::CHUNK_PARAMS;
+        SyncHello {
+            direction,
+            req: SyncRequest {
+                chunk_min: p.min,
+                chunk_avg: p.avg,
+                chunk_max: p.max,
+                ..req
+            },
+            build: Some(crate::build::BuildInfo::current().to_wire()),
+            traceparent: String::new(),
+            tracestate: String::new(),
+        }
+    }
+
+    /// `hello`'s push or pull; `None` for any other request.
+    pub fn from_hello(hello: Hello) -> Option<SyncHello> {
+        let (direction, req) = match hello.request? {
+            hello::Request::Push(r) => (Direction::ClientSends, r),
+            hello::Request::Pull(r) => (Direction::DaemonSends, r),
+            _ => return None,
+        };
+        Some(SyncHello {
+            direction,
+            req,
+            build: hello.build,
+            traceparent: hello.traceparent,
+            tracestate: hello.tracestate,
+        })
+    }
+
+    /// The `Hello` that asks for it.
+    pub fn to_hello(&self) -> Hello {
+        let req = self.req.clone();
+        Hello {
+            protocol_version: PROTOCOL_VERSION,
+            build: self.build.clone(),
+            traceparent: self.traceparent.clone(),
+            tracestate: self.tracestate.clone(),
+            request: Some(match self.direction {
+                Direction::ClientSends => hello::Request::Push(req),
+                Direction::DaemonSends => hello::Request::Pull(req),
+            }),
+        }
+    }
+}
+
+impl From<SyncHello> for Hello {
+    fn from(h: SyncHello) -> Hello {
+        h.to_hello()
+    }
+}
 
 /// Identity of a session: BLAKE3 over a canonical byte string of everything
 /// that changes what the session does (daemon, both locations, and the
@@ -143,9 +214,10 @@ impl SessionKey {
         client: EndpointId,
         export: &str,
         rel: &RelPath,
-        hello: &Hello,
+        hello: &SyncHello,
         single: Option<&single::SingleFile>,
     ) -> SessionKey {
+        let (direction, req) = (hello.direction, &hello.req);
         let mut h = blake3::Hasher::new();
         field(&mut h, b"irsync-daemon-session-key", b"v1");
         field(&mut h, b"client", client.as_bytes());
@@ -154,22 +226,22 @@ impl SessionKey {
         field(
             &mut h,
             b"flags",
-            &[hello.direction as u8, hello.contents_only as u8],
+            &[direction as u8, req.contents_only as u8],
         );
         field(
             &mut h,
             b"receiver",
             &[
-                hello.delete_mode as u8,
-                hello.delete_excluded as u8,
-                hello.dry_run as u8,
-                hello.update_only as u8,
-                hello.checksum as u8,
-                hello.inplace as u8,
-                hello.append as u8,
+                req.delete_mode as u8,
+                req.delete_excluded as u8,
+                req.dry_run as u8,
+                req.update_only as u8,
+                req.checksum as u8,
+                req.inplace as u8,
+                req.append as u8,
             ],
         );
-        field(&mut h, b"sender", &[hello.paranoid as u8]);
+        field(&mut h, b"sender", &[req.paranoid as u8]);
         if let Some(s) = single {
             field(&mut h, b"single", s.local.as_bytes());
         }
@@ -1309,9 +1381,14 @@ mod tests {
     fn daemon_session_key_is_by_resolved_place() {
         let c = iroh::SecretKey::from_bytes(&[1; 32]).public();
         let rel = RelPath::new(b"2024").unwrap();
-        let h = |path: &[u8]| Hello {
-            path: path.to_vec(),
-            ..Hello::default()
+        let h = |path: &[u8]| {
+            SyncHello::new(
+                Direction::ClientSends,
+                SyncRequest {
+                    path: path.to_vec(),
+                    ..SyncRequest::default()
+                },
+            )
         };
         assert_eq!(
             SessionKey::for_daemon(c, "photos", &rel, &h(b"photos/2024"), None),

@@ -156,10 +156,10 @@ async fn single_file_session_takes_only_its_file() {
 
     let (parent, name) = irsync::session::single::split_last(&src);
     let mut hello = Harness::hello(Flow::Push);
-    hello.path = b"m".to_vec();
-    hello.contents_only = true;
-    hello.single_file = true;
-    hello.name = name.clone();
+    hello.req.path = b"m".to_vec();
+    hello.req.contents_only = true;
+    hello.req.single_file = true;
+    hello.req.name = name.clone();
     let mut local = Harness::side_for(&parent, h.client_state.path()).with_single(name);
     local.contents_only = false;
     let target = outside.path().as_os_str().as_encoded_bytes().to_vec();
@@ -209,8 +209,8 @@ async fn single_file_session_takes_no_directory_under_its_name() {
 
     let (parent, name) = irsync::session::single::split_last(&src);
     let mut hello = Harness::hello(Flow::Push);
-    hello.single_file = true;
-    hello.name = name.clone();
+    hello.req.single_file = true;
+    hello.req.name = name.clone();
     let mut local = Harness::side_for(&parent, h.client_state.path()).with_single(name);
     local.contents_only = false;
     local.hooks.inject_listing = Some(Arc::new(|e: &FileEntry| {

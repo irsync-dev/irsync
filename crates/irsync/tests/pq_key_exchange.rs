@@ -12,8 +12,7 @@ use irsync::authz::{Access, Grants, MemoryAuthorizer};
 use irsync::config::settings::{DaemonSettings, PqKeyExchange};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{check_pq_key_exchange, probe_path, ReconnectOpts};
-use irsync_proto::chunk::CHUNK_PARAMS;
-use irsync_proto::v1::{hello::Direction, Hello};
+use irsync_proto::v1::{hello, Hello, ListExports};
 use irsync_proto::{ALPN, PROTOCOL_VERSION};
 
 /// A daemon that grants `client` everything, with `pq_key_exchange` as given.
@@ -63,10 +62,7 @@ async fn a_requiring_daemon_closes_a_client_without_the_hybrid() {
 async fn hello_is_answered(conn: &iroh::endpoint::Connection) -> bool {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
-        direction: Direction::ListExports as i32,
-        chunk_min: CHUNK_PARAMS.min,
-        chunk_avg: CHUNK_PARAMS.avg,
-        chunk_max: CHUNK_PARAMS.max,
+        request: Some(hello::Request::ListExports(ListExports {})),
         ..Hello::default()
     };
     match within(list_exports(conn, hello)).await {

@@ -1,6 +1,6 @@
 //! `irsync remote SERVER COMMAND`: the client side of the admin service.
 //!
-//! Each call dials the server, sends an ADMIN Hello and then one change and
+//! Each call dials the server, sends an admin Hello and then one change and
 //! a commit, or one read, and prints what the same command prints on the
 //! server. It never sets a server up: the server must be saved or named by
 //! its EndpointId, and its daemon must be running.
@@ -18,12 +18,12 @@ use irsync::fs::paths::escape_text;
 use irsync::manage::{self, PeerSpec};
 use irsync::net::frame::{read_body, write_msg_tapped};
 use irsync::net::tap::{ConnTap, StreamKind, StreamTap};
-use irsync::session::engine::SessionRefused;
+use irsync::session::engine::{read_hello_reply, SessionRefused};
 use irsync_proto::config as pb;
 use irsync_proto::v1::{
-    admin_reply, admin_request, change::Op, error::Code, hello::Direction, read, AdminReply,
-    AdminRequest, Change, ClientAdd, ClientRemove, ClientRename, ClientSet, Commit, Error,
-    ExportAdd, ExportRemove, GrantAdd, GrantRemove, Hello, Read, ReadConfig, ReadView, View,
+    admin_reply, admin_request, change::Op, error::Code, hello, hello_reply, read, AdminReply,
+    AdminRequest, Change, ClientAdd, ClientRemove, ClientRename, ClientSet, Commit, ExportAdd,
+    ExportRemove, GrantAdd, GrantRemove, Hello, OpenAdmin, Read, ReadConfig, ReadView, View,
 };
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
@@ -224,7 +224,8 @@ async fn converse(
     let tap = ConnTap::of(conn).stream(StreamKind::Control, u64::from(send.id()));
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
-        direction: Direction::Admin as i32,
+        build: Some(irsync::build::BuildInfo::current().to_wire()),
+        request: Some(hello::Request::Admin(OpenAdmin {})),
         ..Hello::default()
     };
     let (what, requests) = match req {
@@ -260,7 +261,7 @@ async fn converse(
         Ok::<(), anyhow::Error>(())
     }
     .await;
-    let Ok(read) = tokio::time::timeout(REPLY_WAIT, read_body(&mut recv)).await else {
+    let Ok(read) = tokio::time::timeout(REPLY_WAIT, read_answer(&mut recv, &tap)).await else {
         bail!(
             "{server} did not answer within {} seconds",
             REPLY_WAIT.as_secs()
@@ -268,6 +269,9 @@ async fn converse(
     };
     let body = match read {
         Ok(Some(body)) => body,
+        Err(e) if e.is::<SessionRefused>() => {
+            return Err(refusal(server, e.downcast().expect("checked above")));
+        }
         read => {
             sent.context("sending the request")?;
             match read {
@@ -279,10 +283,23 @@ async fn converse(
     decode_reply(server, &body, what, &tap)
 }
 
+/// The answer to the request: the daemon's reply to Hello, which must open
+/// the admin session, then the body of its first `AdminReply`; `None` when
+/// the stream ends before it. A refusal of the Hello is a [`SessionRefused`].
+async fn read_answer(
+    recv: &mut iroh::endpoint::RecvStream,
+    tap: &StreamTap,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    match read_hello_reply(recv, tap, None).await? {
+        hello_reply::Reply::AdminReady(_) => {}
+        _ => bail!("the reply to Hello does not open an admin session"),
+    }
+    Ok(read_body(recv).await?)
+}
+
 /// The outcome of the reply `body` to a request; `what` says which
 /// (`None`: a change, `Some(false)`: a view, `Some(true)`: config lines).
-/// The reply is reported to `tap` as received: as an `AdminReply`, or as
-/// an `Error` when that is what the daemon sent.
+/// The reply is reported to `tap` as received.
 fn decode_reply(
     server: &str,
     body: &[u8],
@@ -290,50 +307,49 @@ fn decode_reply(
     tap: &StreamTap,
 ) -> anyhow::Result<RemoteOutcome> {
     let msg = match AdminReply::decode(body) {
-        Ok(reply @ AdminReply { msg: Some(_) }) => {
-            tap.received(&reply, body.len());
-            reply.msg.expect("checked above")
+        Ok(AdminReply { msg: Some(msg) }) => {
+            tap.received(
+                &AdminReply {
+                    msg: Some(msg.clone()),
+                },
+                body.len(),
+            );
+            msg
         }
-        // A daemon that does not know the admin service answers with a
-        // plain Error, which does not decode as a reply.
-        _ => match Error::decode(body) {
-            Ok(e) => {
-                tap.received(&e, body.len());
-                admin_reply::Msg::Refused(e)
-            }
-            Err(_) => {
-                tap.reset("malformed reply");
-                bail!("malformed reply from {server}")
-            }
-        },
+        _ => {
+            tap.reset("malformed reply");
+            bail!("malformed reply from {server}")
+        }
     };
     match (msg, what) {
         (admin_reply::Msg::Ack(ack), None) => Ok(RemoteOutcome::Applied(ack.results)),
         (admin_reply::Msg::Nack(n), None) => bail!("{}", n.reason),
         (admin_reply::Msg::View(v), Some(false)) => Ok(RemoteOutcome::View(v)),
         (admin_reply::Msg::Config(t), Some(true)) => Ok(RemoteOutcome::Config(t.lines)),
-        (admin_reply::Msg::Refused(e), _) => Err(refusal(server, e)),
+        (admin_reply::Msg::Refused(e), _) => Err(refusal(
+            server,
+            SessionRefused {
+                code: e.code(),
+                message: e.message,
+            },
+        )),
         _ => bail!("{server} sent an answer that does not fit the request"),
     }
 }
 
 /// The error for a refusal: the plain words for the two the user can act on,
 /// the daemon's own text otherwise.
-fn refusal(server: &str, e: Error) -> anyhow::Error {
-    match Code::try_from(e.code) {
-        Ok(Code::Unauthorized) => anyhow::anyhow!(
+fn refusal(server: &str, e: SessionRefused) -> anyhow::Error {
+    match e.code {
+        Code::Unauthorized => anyhow::anyhow!(
             "{server} does not let this client manage it \
              (it needs admin = \"rw\" or \"ro\" in its [clients] entry)"
         ),
-        Ok(Code::VersionMismatch) => match daemon_version(&e.message) {
-            Some(n) if n < PROTOCOL_VERSION => anyhow::anyhow!(
-                "{server} runs an older irsync without remote admin: update it there"
-            ),
-            _ => SessionRefused {
-                code: Code::VersionMismatch,
-                message: e.message,
+        Code::VersionMismatch => match daemon_version(&e.message) {
+            Some(n) if n < PROTOCOL_VERSION => {
+                anyhow::anyhow!("{server} runs an older irsync: update it there")
             }
-            .into(),
+            _ => e.into(),
         },
         _ => anyhow::anyhow!("{}", e.message),
     }
@@ -465,9 +481,9 @@ pub fn print(shape: &Shape, server: &str, outcome: RemoteOutcome) -> anyhow::Res
 mod tests {
     use super::*;
 
-    fn version_error(n: u32) -> Error {
-        Error {
-            code: Code::VersionMismatch as i32,
+    fn version_error(n: u32) -> SessionRefused {
+        SessionRefused {
+            code: Code::VersionMismatch,
             message: format!("protocol version {PROTOCOL_VERSION} unsupported (daemon speaks {n})"),
         }
     }
@@ -477,21 +493,28 @@ mod tests {
         let e = refusal("myserver", version_error(PROTOCOL_VERSION - 1));
         assert_eq!(
             e.to_string(),
-            "myserver runs an older irsync without remote admin: update it there"
+            "myserver runs an older irsync: update it there"
         );
     }
 
-    /// The bytes an older daemon sends, decoded as a reply is.
+    /// A refusal inside the admin session is read as one, for every request.
     #[test]
-    fn an_older_daemons_version_error_decodes_to_update_it() {
+    fn a_refused_request_decodes_to_its_refusal() {
         for what in [None, Some(false), Some(true)] {
-            let body = version_error(PROTOCOL_VERSION - 1).encode_to_vec();
+            let body = AdminReply {
+                msg: Some(admin_reply::Msg::Refused(irsync_proto::v1::Error {
+                    code: Code::Unauthorized as i32,
+                    message: "not allowed".into(),
+                })),
+            }
+            .encode_to_vec();
             let Err(e) = decode_reply("myserver", &body, what, &StreamTap::off()) else {
-                panic!("a version error decoded as an answer");
+                panic!("a refusal decoded as an answer");
             };
-            assert_eq!(
-                e.to_string(),
-                "myserver runs an older irsync without remote admin: update it there"
+            assert!(
+                e.to_string()
+                    .starts_with("myserver does not let this client manage it"),
+                "{e:#}"
             );
         }
     }
@@ -504,8 +527,8 @@ mod tests {
 
     #[test]
     fn a_plain_refusal_has_no_hint_of_the_server() {
-        let e = Error {
-            code: Code::Unauthorized as i32,
+        let e = SessionRefused {
+            code: Code::Unauthorized,
             message: "not allowed".to_string(),
         };
         assert!(refusal("myserver", e)

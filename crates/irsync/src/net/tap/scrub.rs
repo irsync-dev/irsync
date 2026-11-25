@@ -316,8 +316,8 @@ mod tests {
 
     #[test]
     fn huge_message_without_lists_keeps_only_its_context() {
-        let mut r = record_with(Msg::Error(irsync_proto::v1::Error {
-            message: "x".repeat(300_000),
+        let mut r = record_with(Msg::Hello(irsync_proto::v1::Hello {
+            traceparent: "x".repeat(300_000),
             ..Default::default()
         }));
         fit(&mut r, 262_144);

@@ -13,7 +13,9 @@ const A: Ipv6Addr = Ipv6Addr::new(0xfd69, 0x7273, 0, 0, 0, 0, 0, 1);
 fn hello_record(encoded_len: Option<u32>) -> Record {
     let hello = v1::Hello {
         protocol_version: 5,
-        path: b"m".to_vec(),
+        request: Some(v1::hello::Request::Probe(v1::Probe {
+            path: b"m".to_vec(),
+        })),
         ..Default::default()
     };
     Record {

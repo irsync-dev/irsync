@@ -289,7 +289,7 @@ async fn push_capture_has_both_sides_of_every_message() {
         .any(|r| matches!(r.msg, Some(Msg::Hello(_))) && r.side() == Side::Client));
     assert!(recs
         .iter()
-        .any(|r| matches!(r.msg, Some(Msg::HelloAck(_))) && r.side() == Side::Daemon));
+        .any(|r| matches!(r.msg, Some(Msg::HelloReply(_))) && r.side() == Side::Daemon));
     let chunks: Vec<_> = recs
         .iter()
         .filter_map(|r| match &r.msg {

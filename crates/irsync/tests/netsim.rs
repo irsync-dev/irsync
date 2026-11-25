@@ -316,10 +316,10 @@ async fn single_file_push_resumes_after_blackout() {
 
         let (parent, name) = irsync::session::single::split_last(&src);
         let mut hello = Harness::hello(Flow::Push);
-        hello.path = b"m/new.bin".to_vec();
-        hello.contents_only = false;
-        hello.single_file = true;
-        hello.name = name.clone();
+        hello.req.path = b"m/new.bin".to_vec();
+        hello.req.contents_only = false;
+        hello.req.single_file = true;
+        hello.req.name = name.clone();
         let mut local = Harness::side_for(&parent, h.client_state.path()).with_single(name);
         local.contents_only = false;
         let ropts = ReconnectOpts {
@@ -363,10 +363,10 @@ async fn single_file_pull_resumes_after_blackout() {
         )
         .unwrap();
         let mut hello = Harness::hello(Flow::Pull);
-        hello.path = remote.to_vec();
-        hello.contents_only = false;
-        hello.single_file = true;
-        hello.name = placed.name.clone();
+        hello.req.path = remote.to_vec();
+        hello.req.contents_only = false;
+        hello.req.single_file = true;
+        hello.req.name = placed.name.clone();
         let mut local =
             Harness::side_for(&placed.root, h.client_state.path()).with_single(placed.name.clone());
         local.contents_only = false;

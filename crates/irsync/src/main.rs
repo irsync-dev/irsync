@@ -40,13 +40,14 @@ use irsync::session::reconnect::{
 use irsync::session::single::{
     is_one_component, place_file, source_is_single, split_last, PlaceError,
 };
-use irsync::session::{resolve_roots, Event, EventBus, LocalSide, Outcome, Party, HASH_WORKERS};
+use irsync::session::{
+    resolve_roots, Event, EventBus, LocalSide, Outcome, Party, SyncHello, HASH_WORKERS,
+};
 use irsync::ssh::onboard::SetupFlags;
 use irsync::telemetry::init::trace_files_from_env;
 use irsync::telemetry::meter::Usage;
 use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
-use irsync_proto::chunk::CHUNK_PARAMS;
-use irsync_proto::v1::{export_entry, hello, path_info, Hello};
+use irsync_proto::v1::{export_entry, hello, path_info, Hello, ListExports, SyncRequest};
 use irsync_proto::PROTOCOL_VERSION;
 
 mod remote;
@@ -883,11 +884,8 @@ async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> 
 async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
-        direction: hello::Direction::ListExports as i32,
-        chunk_min: CHUNK_PARAMS.min,
-        chunk_avg: CHUNK_PARAMS.avg,
-        chunk_max: CHUNK_PARAMS.max,
         build: Some(BuildInfo::current().to_wire()),
+        request: Some(hello::Request::ListExports(ListExports {})),
         ..Hello::default()
     };
     let client = c.endpoint.id();
@@ -1034,23 +1032,16 @@ async fn sync(
         let dir_plan = Plan {
             root,
             local_contents_only: *local_co,
-            hello: Hello {
-                protocol_version: PROTOCOL_VERSION,
-                session_id: vec![],
-                path: rpath.clone(),
-                name,
-                direction: match direction {
-                    Direction::ClientSends => hello::Direction::ClientSends,
-                    Direction::DaemonSends => hello::Direction::DaemonSends,
-                } as i32,
-                chunk_min: CHUNK_PARAMS.min,
-                chunk_avg: CHUNK_PARAMS.avg,
-                chunk_max: CHUNK_PARAMS.max,
-                contents_only: *remote_co,
-                build: Some(BuildInfo::current().to_wire()),
-                // The receiver-side options are filled in from `opts` by the session.
-                ..Hello::default()
-            },
+            // The receiver-side options are filled in from `opts` by the session.
+            hello: SyncHello::new(
+                direction,
+                SyncRequest {
+                    path: rpath.clone(),
+                    name,
+                    contents_only: *remote_co,
+                    ..SyncRequest::default()
+                },
+            ),
             single: None,
         };
         let several = of > 1;
@@ -1175,7 +1166,7 @@ async fn sync(
 struct Plan {
     root: PathBuf,
     local_contents_only: bool,
-    hello: Hello,
+    hello: SyncHello,
     /// The local name of the one file a single-file session copies.
     single: Option<Vec<u8>>,
 }
@@ -1194,11 +1185,12 @@ fn push_plan(dir: Plan, path: &Path, contents_only: bool, several: bool) -> anyh
         return Ok(dir);
     }
     let (root, name) = split_last(path);
-    let hello = Hello {
+    let mut hello = dir.hello;
+    hello.req = SyncRequest {
         single_file: true,
         name: name.clone(),
-        contents_only: dir.hello.contents_only || several,
-        ..dir.hello
+        contents_only: hello.req.contents_only || several,
+        ..hello.req
     };
     Ok(Plan {
         root,
@@ -1225,11 +1217,12 @@ fn pull_plan(
         bail!("cannot tell the file's name from {}", escape_path(rpath));
     }
     let placed = place_file(local, contents_only, basename, true)?;
-    let hello = Hello {
+    let mut hello = dir.hello;
+    hello.req = SyncRequest {
         single_file: true,
         name: placed.name.clone(),
         contents_only: false,
-        ..dir.hello
+        ..hello.req
     };
     Ok(Plan {
         root: placed.root,
@@ -1315,9 +1308,10 @@ async fn session(
     {
         side.hooks.no_change_checks = irsync::session::no_change_checks_from_env();
     }
-    let hello_for = |id: Option<[u8; 16]>| Hello {
-        session_id: id.map(|i| i.to_vec()).unwrap_or_default(),
-        ..hello.clone()
+    let hello_for = |id: Option<[u8; 16]>| {
+        let mut h = hello.clone();
+        h.req.session_id = id.map(|i| i.to_vec()).unwrap_or_default();
+        h
     };
     let target_id = target.id;
     let on_state = |s: ConnState| match s {

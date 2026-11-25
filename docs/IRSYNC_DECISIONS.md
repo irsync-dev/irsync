@@ -444,9 +444,8 @@ cross-referenced from commit messages and review notes.
     resumes and never collides with a directory session. Cost if wrong: a
     second kind of root in the engine.
   - *A pull probes first.* Without a trailing slash the client sends a
-    `PROBE` Hello and gets `PathInfo` (`MISSING`, `DIRECTORY` or `FILE`,
-    `kind` = 3, `optional`, fields 1 and 2 reserved so an `Error` never reads
-    as one). Nothing local is created until the answer is `FILE`. A remote
+    `probe` Hello and gets a `HelloReply` holding `PathInfo` (`MISSING`,
+    `DIRECTORY` or `FILE`) or an `Error`. Nothing local is created until the answer is `FILE`. A remote
     symlink as the last component is `FILE` and is pulled as a link; a
     missing remote file is an error. Cost if wrong: one extra connection per
     pull, and people who expect a followed directory link get a link.

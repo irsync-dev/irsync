@@ -254,7 +254,7 @@ async fn foreign_client_cannot_resume_session() {
             .await
             .unwrap();
         let mut hello = Harness::hello(flow);
-        hello.session_id = id.to_vec();
+        hello.req.session_id = id.to_vec();
         let err = irsync::session::engine::run_client(conn.clone(), hello, side, &opts)
             .await
             .expect_err("foreign client resumed a session");
@@ -697,7 +697,7 @@ async fn resumed_session_reports_the_created_count() {
 async fn interrupted_push(h: &Harness, sub: &str) -> [u8; 16] {
     let before = h.daemon.session_ids().len();
     let mut hello = Harness::hello(Flow::Push);
-    hello.path = format!("m/{sub}").into_bytes();
+    hello.req.path = format!("m/{sub}").into_bytes();
     h.daemon.fault.drop_again_after_bytes(2 * MIB as u64);
     let (out, _) = h
         .run_reconnect_hello(&archive_opts(), hello, no_reconnect(), h.local_side())
@@ -758,7 +758,7 @@ async fn a_key_keeps_only_so_many_dormant_sessions() {
         // finishes. (Last: its files would make the later pushes too cheap
         // to interrupt.)
         let mut hello = Harness::hello(Flow::Push);
-        hello.path = b"m/a".to_vec();
+        hello.req.path = b"m/a".to_vec();
         let opts = archive_opts();
         let (out, _) = h
             .run_reconnect_hello(&opts, hello, fast(), h.local_side())

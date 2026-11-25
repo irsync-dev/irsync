@@ -1,5 +1,5 @@
 //! The admin service on the daemon's side. An admin session is the
-//! control stream of a connection whose Hello says ADMIN: the client sends
+//! control stream of a connection whose Hello asks for `admin`: the client sends
 //! changes, which wait until its COMMIT applies them all or nothing under
 //! the config lock (with the engine in [`crate::manage::admin`]), and reads,
 //! answered at once from the saved file. The client's `admin` right is
@@ -17,7 +17,8 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use irsync_proto::v1::{
-    admin_reply, admin_request, error::Code, read, AdminReply, AdminRequest, Change, Error, Nack,
+    admin_reply, admin_request, error::Code, hello_reply, read, AdminReady, AdminReply,
+    AdminRequest, Change, Error, HelloReply, Nack,
 };
 use prost::Message;
 
@@ -97,9 +98,10 @@ impl Pending {
 }
 
 /// Serves the admin session on the control stream `send`/`recv` of `conn`,
-/// opened by `id` with an ADMIN Hello whose version was checked; `snap`
+/// opened by `id` with an admin Hello whose version was checked; `snap`
 /// is the connection's snapshot and `local` the daemon's own id. A key
-/// without `admin` in `snap` gets the plain refusal. Ends when the client
+/// without `admin` in `snap` gets the plain refusal, as the reply to the
+/// Hello; any other key gets `AdminReady`. Ends when the client
 /// closes the stream or stays idle for [`ADMIN_IDLE`]; pending changes are
 /// dropped then.
 #[allow(clippy::too_many_arguments)]
@@ -118,8 +120,22 @@ pub(super) async fn serve_admin(
     let Some(path) = path.filter(|_| snap.admin(&id).is_some()) else {
         let who = label_in(shared.authz.config_path(), id).await;
         tracing::warn!("admin: {who}: session refused");
-        return refuse(&conn, &mut send, &tap).await;
+        let refusal = hello_reply::Reply::Error(Error {
+            code: Code::Unauthorized as i32,
+            message: NOT_ALLOWED.to_string(),
+        });
+        return close_with(
+            &conn,
+            &mut send,
+            &tap,
+            HelloReply {
+                reply: Some(refusal),
+            },
+        )
+        .await;
     };
+    let ready = hello_reply::Reply::AdminReady(AdminReady {});
+    write_msg_tapped(&mut send, &HelloReply { reply: Some(ready) }, &tap).await?;
     let mut pending = Pending::default();
     let reason = loop {
         let read = read_msg_max_tapped(&mut recv, ADMIN_MAX_REQUEST, &tap);
@@ -137,7 +153,7 @@ pub(super) async fn serve_admin(
                     "request too large (at most {} KiB)",
                     ADMIN_MAX_REQUEST / 1024
                 );
-                return close_with(&conn, &mut send, &tap, Code::Unknown, &message).await;
+                return close_refused(&conn, &mut send, &tap, Code::BadRequest, &message).await;
             }
             Ok(Err(e)) => {
                 conn.close(2u32.into(), b"bad request");
@@ -307,7 +323,7 @@ fn answer(
         read::What::Config(c) => match engine::config_text(&msg, &c.key) {
             Ok(text) => admin_reply::Msg::Config(text),
             Err(message) => admin_reply::Msg::Refused(Error {
-                code: Code::Unknown as i32,
+                code: Code::BadRequest as i32,
                 message,
             }),
         },
@@ -357,7 +373,7 @@ fn cannot_read(path: &Path, e: &dyn std::fmt::Display) {
 /// The plain refusal, which says nothing about the server; closes the
 /// session.
 async fn refuse(conn: &Connection, send: &mut SendStream, tap: &StreamTap) -> Result<()> {
-    close_with(conn, send, tap, Code::Unauthorized, NOT_ALLOWED).await
+    close_refused(conn, send, tap, Code::Unauthorized, NOT_ALLOWED).await
 }
 
 /// The reply to a request with nothing in it; closes the session.
@@ -370,10 +386,11 @@ async fn bad_request(
 ) -> Result<()> {
     let who = label_in(Some(path), id).await;
     tracing::warn!("admin: {who}: bad request");
-    close_with(conn, send, tap, Code::Unknown, "bad request").await
+    close_refused(conn, send, tap, Code::BadRequest, "bad request").await
 }
 
-async fn close_with(
+/// Refuses an admin request with `code` and `message`; closes the session.
+async fn close_refused(
     conn: &Connection,
     send: &mut SendStream,
     tap: &StreamTap,
@@ -384,7 +401,18 @@ async fn close_with(
         code: code as i32,
         message: message.to_string(),
     });
-    write_msg_tapped(send, &AdminReply { msg: Some(refused) }, tap).await?;
+    close_with(conn, send, tap, AdminReply { msg: Some(refused) }).await
+}
+
+/// Writes `last`, the session's last frame, and closes the connection once
+/// the client has read it.
+async fn close_with<M: crate::net::tap::WireMsg>(
+    conn: &Connection,
+    send: &mut SendStream,
+    tap: &StreamTap,
+    last: M,
+) -> Result<()> {
+    write_msg_tapped(send, &last, tap).await?;
     send.finish()?;
     tap.finished();
     // An acknowledgement is not a read: a peer that is slow to read loses

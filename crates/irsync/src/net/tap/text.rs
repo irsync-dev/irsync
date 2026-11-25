@@ -142,10 +142,7 @@ fn inner(msg: &record::Msg) -> DynamicMessage {
     use record::Msg as M;
     let (name, bytes) = match msg {
         M::Hello(m) => ("irsync.v1.Hello", m.encode_to_vec()),
-        M::HelloAck(m) => ("irsync.v1.HelloAck", m.encode_to_vec()),
-        M::Error(m) => ("irsync.v1.Error", m.encode_to_vec()),
-        M::ExportList(m) => ("irsync.v1.ExportList", m.encode_to_vec()),
-        M::PathInfo(m) => ("irsync.v1.PathInfo", m.encode_to_vec()),
+        M::HelloReply(m) => ("irsync.v1.HelloReply", m.encode_to_vec()),
         M::Control(m) => ("irsync.v1.Control", m.encode_to_vec()),
         M::ListingStreamHeader(m) => ("irsync.v1.ListingStreamHeader", m.encode_to_vec()),
         M::DataStreamHeader(m) => ("irsync.v1.DataStreamHeader", m.encode_to_vec()),
@@ -277,10 +274,7 @@ mod tests {
         use record::Msg as M;
         let all = [
             M::Hello(Default::default()),
-            M::HelloAck(Default::default()),
-            M::Error(Default::default()),
-            M::ExportList(Default::default()),
-            M::PathInfo(Default::default()),
+            M::HelloReply(Default::default()),
             M::Control(Default::default()),
             M::ListingStreamHeader(Default::default()),
             M::DataStreamHeader(Default::default()),
@@ -293,10 +287,7 @@ mod tests {
         for msg in all {
             let name = match &msg {
                 M::Hello(_) => "Hello",
-                M::HelloAck(_) => "HelloAck",
-                M::Error(_) => "Error",
-                M::ExportList(_) => "ExportList",
-                M::PathInfo(_) => "PathInfo",
+                M::HelloReply(_) => "HelloReply",
                 M::Control(_) => "Control",
                 M::ListingStreamHeader(_) => "ListingStreamHeader",
                 M::DataStreamHeader(_) => "DataStreamHeader",

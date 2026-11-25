@@ -26,7 +26,7 @@ async fn two_local_endpoints_exchange_hello() {
             .unwrap()
             .expect("hello frame");
         let ack = HelloAck {
-            session_id: hello.session_id.clone(),
+            session_id: vec![7; 16],
             resumed: false,
             protocol_version: hello.protocol_version,
             build: None,
@@ -44,8 +44,11 @@ async fn two_local_endpoints_exchange_hello() {
 
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
-        session_id: vec![7; 16],
-        path: b"photos/2026/oct".to_vec(),
+        request: Some(irsync_proto::v1::hello::Request::Probe(
+            irsync_proto::v1::Probe {
+                path: b"photos/2026/oct".to_vec(),
+            },
+        )),
         ..Default::default()
     };
     let (mut send, mut recv) = client.open_bi().await.expect("open_bi");

@@ -9,24 +9,33 @@ use common::{
 };
 use iroh::Endpoint;
 use irsync::authz::{Access, FileAuthorizer, Grants, MemoryAuthorizer};
+use irsync::cli::Direction;
 use irsync::config::paths::Paths;
 use irsync::net::frame::{read_body, read_msg, write_msg};
-use irsync_proto::chunk::CHUNK_PARAMS;
-use irsync_proto::v1::{error::Code, hello::Direction, Error, Hello, HelloAck};
+use irsync::session::SyncHello;
+use irsync_proto::v1::{
+    error::Code, hello as wire_hello, hello_reply, Error, Hello, HelloAck, HelloReply, ListExports,
+    SyncRequest,
+};
 use irsync_proto::{ALPN, PROTOCOL_VERSION};
 use prost::Message as _;
 
-fn hello(path: &[u8], dir: Direction) -> Hello {
+fn hello(path: &[u8], dir: Direction) -> SyncHello {
+    SyncHello::new(
+        dir,
+        SyncRequest {
+            path: path.to_vec(),
+            preserve: Some(Default::default()),
+            ..Default::default()
+        },
+    )
+}
+
+/// The Hello of an export listing.
+fn listing_hello() -> Hello {
     Hello {
         protocol_version: PROTOCOL_VERSION,
-        session_id: vec![],
-        path: path.to_vec(),
-        direction: dir as i32,
-        chunk_min: CHUNK_PARAMS.min,
-        chunk_avg: CHUNK_PARAMS.avg,
-        chunk_max: CHUNK_PARAMS.max,
-        contents_only: false,
-        preserve: Some(Default::default()),
+        request: Some(wire_hello::Request::ListExports(ListExports {})),
         ..Default::default()
     }
 }
@@ -39,11 +48,11 @@ fn grants(access: Access) -> Grants {
 }
 
 /// Sends `h` from an authorised client with `access`; returns the reply bytes' decode attempt.
-async fn exchange(access: Access, h: Hello) -> Result<HelloAckOrError, String> {
+async fn exchange(access: Access, h: impl Into<Hello>) -> Result<HelloAckOrError, String> {
     exchange_with(grants(access), h).await
 }
 
-async fn exchange_with(g: Grants, h: Hello) -> Result<HelloAckOrError, String> {
+async fn exchange_with(g: Grants, h: impl Into<Hello>) -> Result<HelloAckOrError, String> {
     let dir = tempfile::tempdir().unwrap();
     exchange_in(dir.path(), g, h).await
 }
@@ -74,7 +83,7 @@ fn reply(r: Result<HelloAckOrError, String>) -> (i32, String) {
 async fn exchange_in(
     dir: &std::path::Path,
     g: Grants,
-    h: Hello,
+    h: impl Into<Hello>,
 ) -> Result<HelloAckOrError, String> {
     let client = client_endpoint().await;
     let d = spawn_daemon_home(
@@ -97,8 +106,9 @@ async fn exchange_in(
 async fn exchange_against(
     d: &DaemonHandle,
     client: &Endpoint,
-    h: Hello,
+    h: impl Into<Hello>,
 ) -> Result<HelloAckOrError, String> {
+    let h: Hello = h.into();
     let conn = within(client.connect(d.addr.clone(), ALPN))
         .await
         .map_err(|e| e.to_string())?;
@@ -113,10 +123,10 @@ async fn exchange_against(
         .await
         .map_err(|e| e.to_string())?
         .ok_or("end of stream before reply")?;
-    // HelloAck and Error differ in the wire type of field 1, so at most one decodes.
-    Ok(match HelloAck::decode(&body[..]) {
-        Ok(ack) => HelloAckOrError::Ack(ack),
-        _ => HelloAckOrError::Err(Error::decode(&body[..]).unwrap()),
+    Ok(match HelloReply::decode(&body[..]).unwrap().reply {
+        Some(hello_reply::Reply::Ack(ack)) => HelloAckOrError::Ack(ack),
+        Some(hello_reply::Reply::Error(e)) => HelloAckOrError::Err(e),
+        r => panic!("not a session's reply: {r:?}"),
     })
 }
 
@@ -161,7 +171,7 @@ async fn assert_closed_before_hello(d: &DaemonHandle, client: &Endpoint) {
     // The stream may open locally and the write may even succeed; reading must fail.
     let res = within(async {
         let (mut send, mut recv) = conn.open_bi().await?;
-        let _ = write_msg(&mut send, &hello(b"rw", Direction::ClientSends)).await;
+        let _ = write_msg(&mut send, &hello(b"rw", Direction::ClientSends).to_hello()).await;
         let _ = send.finish();
         recv.read_to_end(1 << 20)
             .await
@@ -271,7 +281,7 @@ async fn ro_grant_can_pull() {
 
 #[tokio::test]
 async fn wrong_protocol_version_rejected() {
-    let mut h = hello(b"rw", Direction::ClientSends);
+    let mut h: Hello = hello(b"rw", Direction::ClientSends).into();
     h.protocol_version = PROTOCOL_VERSION + 1;
     expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
 }
@@ -279,7 +289,7 @@ async fn wrong_protocol_version_rejected() {
 #[tokio::test]
 async fn wrong_chunk_params_rejected() {
     let mut h = hello(b"rw", Direction::ClientSends);
-    h.chunk_avg += 1;
+    h.req.chunk_avg += 1;
     expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
 }
 
@@ -288,7 +298,7 @@ async fn wrong_chunk_params_rejected() {
 async fn hello_without_preserve_flags_rejected() {
     for dir in [Direction::ClientSends, Direction::DaemonSends] {
         let mut h = hello(b"rw", dir);
-        h.preserve = None;
+        h.req.preserve = None;
         expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
     }
 }
@@ -464,7 +474,7 @@ async fn push_basename_is_joined_after_resolution() {
     )
     .await;
     let mut h = hello(b"", Direction::ClientSends);
-    h.name = b"photos".to_vec();
+    h.req.name = b"photos".to_vec();
     let r = exchange_against(&d, &client, h).await;
     assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)));
     assert!(home.join("photos").is_dir(), "the push lands in the home");
@@ -517,9 +527,7 @@ async fn list_against(
     d: &DaemonHandle,
     client: &Endpoint,
 ) -> Result<Vec<(String, Vec<u8>, i32)>, String> {
-    use irsync_proto::v1::ExportList;
-    let mut h = hello(b"", Direction::ListExports);
-    h.direction = Direction::ListExports as i32;
+    let h = listing_hello();
     let conn = within(client.connect(d.addr.clone(), ALPN))
         .await
         .map_err(|e| e.to_string())?;
@@ -528,10 +536,13 @@ async fn list_against(
         .await
         .map_err(|e| e.to_string())?;
     send.finish().map_err(|e| e.to_string())?;
-    let list: ExportList = within(read_msg(&mut recv))
+    let reply: HelloReply = within(read_msg(&mut recv))
         .await
         .map_err(|e| e.to_string())?
         .ok_or("no reply")?;
+    let Some(hello_reply::Reply::Exports(list)) = reply.reply else {
+        return Err(format!("not an export list: {reply:?}"));
+    };
     Ok(list
         .exports
         .into_iter()
@@ -581,6 +592,31 @@ async fn list_exports_names_only_what_the_key_may_use() {
     // No grants at all: closed before Hello, as for a sync.
     let d = spawn(Grants::default()).await;
     assert!(list_against(&d, &client).await.is_err());
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+/// A refused listing reaches the client as a refusal, not as an empty
+/// list: the reply's oneof says which it is.
+#[tokio::test]
+async fn a_refused_listing_reaches_the_client_as_a_refusal() {
+    use irsync::session::engine::{list_exports, SessionRefused};
+    let (dir, ..) = export_dir();
+    let client = client_endpoint().await;
+    let d = spawn_daemon_home(
+        vec![("rw", dir.path().to_path_buf(), false)],
+        MemoryAuthorizer::single(client.id(), grants(Access::ReadWrite)),
+        None,
+    )
+    .await;
+    let conn = within(client.connect(d.addr.clone(), ALPN)).await.unwrap();
+    let mut h = listing_hello();
+    h.protocol_version = PROTOCOL_VERSION + 1;
+    let err = within(list_exports(&conn, h)).await.unwrap_err();
+    let refused = err
+        .downcast_ref::<SessionRefused>()
+        .unwrap_or_else(|| panic!("not a refusal: {err:#}"));
+    assert_eq!(refused.code, Code::VersionMismatch, "{}", refused.message);
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }

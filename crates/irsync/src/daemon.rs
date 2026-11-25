@@ -14,8 +14,8 @@ use iroh::endpoint::{Connection, Incoming, SendStream};
 use iroh::{Endpoint, EndpointId, SecretKey};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{
-    error::Code, export_entry, hello::Direction, path_info, Error, ExportEntry, ExportList, Hello,
-    PathInfo,
+    error::Code, export_entry, hello, hello_reply, path_info, Error, ExportEntry, ExportList,
+    Hello, HelloReply, PathInfo, SyncRequest,
 };
 use irsync_proto::PROTOCOL_VERSION;
 use tokio::sync::Notify;
@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Access, Authorizer, AuthzError, FileAuthorizer, Grants, Snapshot};
 use crate::autoexport::{auto_root, check_root, AutoRootError};
+use crate::cli::Direction;
 use crate::config::exports::Export;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
@@ -41,7 +42,7 @@ use crate::session::engine::{prepare_root, serve_daemon, Missing, Place};
 use crate::session::single::{is_one_component, FilePlace, PlaceError, SingleFile};
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
-use crate::session::{DaemonSessions, HASH_WORKERS};
+use crate::session::{DaemonSessions, SyncHello, HASH_WORKERS};
 use irsync_proto::v1::SessionPlan;
 use prost::Message;
 
@@ -546,96 +547,80 @@ async fn handle(
         anyhow::bail!("timed out waiting for Hello");
     };
     let (mut send, recv, tap, hello) = first?;
+    if let Err((code, message)) = protocol_check(&hello) {
+        tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting connection");
+        return reject(&conn, &mut send, &tap, code, message).await;
+    }
+    match &hello.request {
+        None => {
+            let message = "a Hello must hold a request".to_string();
+            tracing::info!(peer = %id.fmt_short(), %message, "rejecting connection");
+            return reject(&conn, &mut send, &tap, Code::BadRequest, message).await;
+        }
+        Some(hello::Request::Admin(_)) => {
+            return admin::serve_admin(shared, &snap, conn, local, id, send, recv, tap).await;
+        }
+        Some(hello::Request::ListExports(_)) => {
+            tracing::info!(peer = %id.fmt_short(), "listing exports");
+            let list = list_exports_for(&snap, &grants);
+            return answer(&conn, &mut send, &tap, hello_reply::Reply::Exports(list)).await;
+        }
+        Some(hello::Request::Probe(p)) => {
+            let target = Target {
+                push: false,
+                path: &p.path,
+                name: b"",
+                single_file: false,
+                contents_only: false,
+            };
+            let mut fresh = None;
+            let kind = match admit_target(&shared, &snap, &mut fresh, &grants, id, &target).await {
+                Ok((resolved, rel)) => {
+                    let root = resolved.export.path.clone();
+                    tokio::task::spawn_blocking(move || probe_kind(&root, &rel))
+                        .await
+                        .map_err(|e| (Code::Internal, format!("probing the path failed: {e}")))
+                }
+                Err(e) => Err(e),
+            };
+            return match kind {
+                Ok(kind) => {
+                    tracing::info!(peer = %id.fmt_short(), ?kind, "probed path");
+                    let info = PathInfo { kind: kind as i32 };
+                    answer(&conn, &mut send, &tap, hello_reply::Reply::PathInfo(info)).await
+                }
+                Err((code, message)) => {
+                    tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting probe");
+                    reject(&conn, &mut send, &tap, code, message).await
+                }
+            };
+        }
+        Some(hello::Request::Push(_) | hello::Request::Pull(_)) => {}
+    }
+    let hello = SyncHello::from_hello(hello).expect("a push or a pull");
     // Only session hellos: a listing or a probe never bumps `sessions`, so
     // counting it would leave the tests' `settle` waiting forever.
     #[cfg(feature = "test-hooks")]
-    if hello.direction != Direction::ListExports as i32
-        && hello.direction != Direction::Probe as i32
-        && hello.direction != Direction::Admin as i32
-    {
-        shared
-            .hellos
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    if hello.direction == Direction::Admin as i32 {
-        if let Err((code, message)) = protocol_check(&hello) {
-            tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting admin session");
-            return reject(&conn, &mut send, &tap, code, message).await;
-        }
-        return admin::serve_admin(shared, &snap, conn, local, id, send, recv, tap).await;
-    }
-
-    if hello.direction == Direction::ListExports as i32 {
-        if let Err((code, message)) = version_check(&hello) {
-            tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting listing");
-            return reject(&conn, &mut send, &tap, code, message).await;
-        }
-        tracing::info!(peer = %id.fmt_short(), "listing exports");
-        write_msg_tapped(&mut send, &list_exports_for(&snap, &grants), &tap).await?;
-        send.finish()?;
-        tap.finished();
-        let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
-        conn.close(0u32.into(), b"done");
-        return Ok(());
-    }
-
+    shared
+        .hellos
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let req = &hello.req;
+    let target = Target {
+        push: hello.direction == Direction::ClientSends,
+        path: &req.path,
+        name: &req.name,
+        single_file: req.single_file,
+        contents_only: req.contents_only,
+    };
     // The snapshot taken after adding an automatic export; the session's
     // `Resolved` borrows from it.
-    let fresh: Snapshot;
-    let validated = match validate(&snap, &grants, shared.home.as_deref(), &hello) {
-        Ok(Some(v)) => Ok(v),
-        Ok(None) if grants.all_paths.is_some() => {
-            match serve_all_paths(&shared, &snap, id, &hello).await {
-                Ok((s, abs)) => {
-                    fresh = s;
-                    let grants = fresh.grants(&id);
-                    match containing(&abs, &fresh.exports, &grants, None) {
-                        Some(resolved) => admit(resolved, &hello),
-                        None => Err(no_access(&hello)),
-                    }
-                }
-                Err(e) => Err(e),
-            }
-        }
-        Ok(None) => Err(no_access(&hello)),
+    let mut fresh = None;
+    let validated = match sync_check(req) {
+        Ok(()) => admit_target(&shared, &snap, &mut fresh, &grants, id, &target).await,
         Err(e) => Err(e),
     };
-    if hello.direction == Direction::Probe as i32 {
-        let kind = match validated {
-            Ok((resolved, rel)) => {
-                let root = resolved.export.path.clone();
-                tokio::task::spawn_blocking(move || probe_kind(&root, &rel))
-                    .await
-                    .map_err(|e| (Code::Internal, format!("probing the path failed: {e}")))
-            }
-            Err(e) => Err(e),
-        };
-        return match kind {
-            Ok(kind) => {
-                tracing::info!(peer = %id.fmt_short(), ?kind, "probed path");
-                write_msg_tapped(
-                    &mut send,
-                    &PathInfo {
-                        kind: Some(kind as i32),
-                    },
-                    &tap,
-                )
-                .await?;
-                send.finish()?;
-                tap.finished();
-                let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
-                conn.close(0u32.into(), b"done");
-                Ok(())
-            }
-            Err((code, message)) => {
-                tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting probe");
-                reject(&conn, &mut send, &tap, code, message).await
-            }
-        };
-    }
     let validated = match validated {
-        Ok((resolved, rel)) if hello.single_file => {
+        Ok((resolved, rel)) if req.single_file => {
             let (root, hello) = (resolved.export.path.clone(), hello.clone());
             tokio::task::spawn_blocking(move || place_single(&root, &rel, &hello))
                 .await
@@ -670,6 +655,7 @@ async fn handle(
                 fsync: resolved.export.fsync,
                 single,
             };
+            let hello = hello.clone();
             let res = serve_daemon(
                 conn, send, recv, tap, place, hello, index, hosting, &local_id,
             )
@@ -696,6 +682,62 @@ async fn handle(
     }
 }
 
+/// What a `Hello` asks of a path: a push's or a pull's, or a probe's, which
+/// is resolved and checked as a pull of its path.
+struct Target<'h> {
+    push: bool,
+    path: &'h [u8],
+    /// Joined below the resolved path; with `single_file`, the file's name,
+    /// which `place_single` places.
+    name: &'h [u8],
+    single_file: bool,
+    contents_only: bool,
+}
+
+/// Resolves `t` for the key with `grants` and admits it, or says why not.
+/// For a key with `all_paths` whose path no export it may use contains,
+/// an automatic export is added first ([`serve_all_paths`]); `fresh` then
+/// holds the snapshot that has it, which the result borrows.
+async fn admit_target<'a>(
+    shared: &Arc<Shared>,
+    snap: &'a Snapshot,
+    fresh: &'a mut Option<Snapshot>,
+    grants: &Grants,
+    id: iroh::EndpointId,
+    t: &Target<'_>,
+) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
+    match validate(snap, grants, shared.home.as_deref(), t)? {
+        Some(v) => Ok(v),
+        None if grants.all_paths.is_some() => {
+            let (s, abs) = serve_all_paths(shared, snap, id, t).await?;
+            let fresh: &'a Snapshot = fresh.insert(s);
+            let grants = fresh.grants(&id);
+            match containing(&abs, &fresh.exports, &grants, None) {
+                Some(resolved) => admit(resolved, t),
+                None => Err(no_access(t.path)),
+            }
+        }
+        None => Err(no_access(t.path)),
+    }
+}
+
+/// Writes `reply` as the answer to `Hello` and closes the connection once
+/// the client has it: a listing's or a probe's, which ends the connection.
+async fn answer(
+    conn: &Connection,
+    send: &mut SendStream,
+    tap: &StreamTap,
+    reply: hello_reply::Reply,
+) -> Result<()> {
+    let reply = HelloReply { reply: Some(reply) };
+    write_msg_tapped(send, &reply, tap).await?;
+    send.finish()?;
+    tap.finished();
+    let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
+    conn.close(0u32.into(), b"done");
+    Ok(())
+}
+
 /// The exports `grants` cover, by name, with the real path and the
 /// effective access (`read_only` caps a read-write grant).
 fn list_exports_for(snap: &Snapshot, grants: &Grants) -> ExportList {
@@ -719,7 +761,8 @@ fn list_exports_for(snap: &Snapshot, grants: &Grants) -> ExportList {
     ExportList { exports }
 }
 
-/// The protocol version alone: all an admin session needs to agree on.
+/// The protocol version: all a listing, a probe or an admin session needs
+/// to agree on.
 fn protocol_check(hello: &Hello) -> Result<(), (Code, String)> {
     if hello.protocol_version != PROTOCOL_VERSION {
         return Err((
@@ -733,12 +776,19 @@ fn protocol_check(hello: &Hello) -> Result<(), (Code, String)> {
     Ok(())
 }
 
-fn version_check(hello: &Hello) -> Result<(), (Code, String)> {
-    protocol_check(hello)?;
-    if (hello.chunk_min, hello.chunk_avg, hello.chunk_max)
+/// What a push or a pull must agree on besides the protocol version: the
+/// chunking parameters, and the preserve flags every client sends.
+fn sync_check(req: &SyncRequest) -> Result<(), (Code, String)> {
+    if (req.chunk_min, req.chunk_avg, req.chunk_max)
         != (CHUNK_PARAMS.min, CHUNK_PARAMS.avg, CHUNK_PARAMS.max)
     {
         return Err((Code::VersionMismatch, "chunk params mismatch".into()));
+    }
+    if req.preserve.is_none() {
+        return Err((
+            Code::VersionMismatch,
+            "a Hello for a push or a pull must hold the preserve flags".into(),
+        ));
     }
     Ok(())
 }
@@ -746,10 +796,10 @@ fn version_check(hello: &Hello) -> Result<(), (Code, String)> {
 /// The reply for a path this key may not use. It is the same whether the
 /// path is outside every export, inside an export the key has no grant
 /// for, or missing: a key must not be able to probe the daemon's layout.
-fn no_access(hello: &Hello) -> (Code, String) {
+fn no_access(path: &[u8]) -> (Code, String) {
     (
         Code::Unauthorized,
-        format!("no access to {}", escape_path(&hello.path)),
+        format!("no access to {}", escape_path(path)),
     )
 }
 
@@ -760,24 +810,16 @@ fn validate<'a>(
     snap: &'a Snapshot,
     grants: &Grants,
     home: Option<&Path>,
-    hello: &Hello,
+    t: &Target<'_>,
 ) -> Result<Option<(Resolved<'a>, RelPath)>, (Code, String)> {
-    version_check(hello)?;
-    // Every client sends its preserve flags for a push or a pull.
-    if hello.preserve.is_none() && hello.direction != Direction::Probe as i32 {
-        return Err((
-            Code::VersionMismatch,
-            "a Hello for a push or a pull must hold the preserve flags".into(),
-        ));
-    }
     // The path is resolved (export name, home, absolute) and the export
     // containing it chosen before anything is said about it. Only a key
     // that may use the containing export learns that the path is invalid
     // or that the export is read-only.
-    match resolve(&hello.path, home, &snap.exports, grants) {
+    match resolve(t.path, home, &snap.exports, grants) {
         Err(ResolveError::BadPath) => Err((Code::BadPath, "invalid path".into())),
         Ok(None) => Ok(None),
-        Ok(Some(r)) => admit(r, hello).map(Some),
+        Ok(Some(r)) => admit(r, t).map(Some),
     }
 }
 
@@ -793,19 +835,15 @@ async fn serve_all_paths(
     shared: &Arc<Shared>,
     snap: &Snapshot,
     id: iroh::EndpointId,
-    hello: &Hello,
+    t: &Target<'_>,
 ) -> Result<(Snapshot, PathBuf), (Code, String)> {
-    let push = match Direction::try_from(hello.direction) {
-        Ok(Direction::ClientSends) => true,
-        Ok(Direction::DaemonSends | Direction::Probe) => false,
-        _ => return Err((Code::Unknown, "bad direction".into())),
-    };
+    let push = t.push;
     // An export's short name stands for its path only when this peer may
     // use that export; any other name is a directory under the home, so
     // the peer cannot reach (and auto-export) another client's export.
     let grants = snap.grants(&id);
     let Some(level) = grants.all_paths else {
-        return Err(no_access(hello));
+        return Err(no_access(t.path));
     };
     let usable: BTreeMap<String, Export> = snap
         .exports
@@ -813,9 +851,9 @@ async fn serve_all_paths(
         .filter(|(name, e)| grants.access_to(name, e).is_some())
         .map(|(name, e)| (name.clone(), e.clone()))
         .collect();
-    let abs = match resolve_path(&hello.path, shared.home.as_deref(), &usable) {
+    let abs = match resolve_path(t.path, shared.home.as_deref(), &usable) {
         Ok(Some((abs, _))) => abs,
-        Ok(None) => return Err(no_access(hello)),
+        Ok(None) => return Err(no_access(t.path)),
         Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),
     };
     // Before `auto_root`, which makes a missing push target. The reply is
@@ -824,8 +862,8 @@ async fn serve_all_paths(
         return Err(read_only());
     }
     // A single file pushed to a name, not into a directory.
-    let file_dest = hello.single_file && push && !hello.contents_only;
-    let (shared, path) = (shared.clone(), hello.path.clone());
+    let file_dest = t.single_file && push && !t.contents_only;
+    let (shared, path) = (shared.clone(), t.path.to_vec());
     tokio::task::spawn_blocking(move || {
         add_auto_export(&shared, abs, push, file_dest, id, level, &path)
     })
@@ -877,39 +915,29 @@ fn read_only() -> (Code, String) {
     (Code::ReadOnly, "export is read-only for this key".into())
 }
 
-/// The session `resolved` stands for, when `hello` may have it: the name
-/// joined below the path, and no push into a read-only export.
+/// The session `resolved` stands for, when `t` may have it: the name
+/// joined below the path, and no push into a read-only export. A probe is
+/// checked as a pull of its path.
 fn admit<'a>(
     resolved: Resolved<'a>,
-    hello: &Hello,
+    t: &Target<'_>,
 ) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
     // A single file's name is placed by `place_single`, not joined here.
-    let rel = if hello.single_file {
-        if !is_one_component(&hello.name) {
+    let rel = if t.single_file {
+        if !is_one_component(t.name) {
             return Err((Code::BadPath, "invalid name".into()));
         }
         resolved.rel.clone()
-    } else if hello.name.is_empty() {
+    } else if t.name.is_empty() {
         resolved.rel.clone()
     } else {
         resolved
             .rel
-            .join(&hello.name)
+            .join(t.name)
             .map_err(|_| (Code::BadPath, "invalid name".into()))?
     };
-    match Direction::try_from(hello.direction) {
-        Ok(Direction::ClientSends) => {
-            if resolved.export.read_only || !resolved.access.permits(true) {
-                return Err(read_only());
-            }
-        }
-        // A probe is resolved and checked as a pull of its path.
-        Ok(Direction::DaemonSends | Direction::Probe) => {}
-        // A listing never reaches here; no dedicated code for a malformed
-        // direction either: UNKNOWN is the honest answer.
-        Ok(Direction::ListExports | Direction::Admin) | Err(_) => {
-            return Err((Code::Unknown, "bad direction".into()))
-        }
+    if t.push && (resolved.export.read_only || !resolved.access.permits(true)) {
+        return Err(read_only());
     }
     Ok((resolved, rel))
 }
@@ -917,17 +945,18 @@ fn admit<'a>(
 /// A single-file session at `rel` in the export at `export_root`: the
 /// directory that holds the file (export-relative) and the file's names.
 /// A push places the file by rsync's rules ([`place_file`]); a pull sends
-/// the file `rel` names, under the receiver's name `hello.name`. Nothing
-/// is looked at through a symlink: the directories above the file are
-/// checked as `prepare_root` checks a session root, first.
+/// the file `rel` names, under the receiver's name `hello.req.name`.
+/// Nothing is looked at through a symlink: the directories above the file
+/// are checked as `prepare_root` checks a session root, first.
 fn place_single(
     export_root: &Path,
     rel: &RelPath,
-    hello: &Hello,
+    hello: &SyncHello,
 ) -> Result<(RelPath, SingleFile), (Code, String)> {
-    if hello.direction == Direction::DaemonSends as i32 {
-        return source_single(export_root, rel, hello);
+    if hello.direction == Direction::DaemonSends {
+        return source_single(export_root, rel, &hello.req);
     }
+    let hello = &hello.req;
     // A missing directory is created later, by the session.
     prepare_root(export_root, &rel.parent(), Missing::Allow).map_err(bad_session_path)?;
     let dest = if rel.as_bytes().is_empty() {
@@ -1095,7 +1124,7 @@ fn link_leads_to(export_root: &Path, rel: &RelPath) -> LinkTo {
 fn source_single(
     export_root: &Path,
     rel: &RelPath,
-    hello: &Hello,
+    hello: &SyncRequest,
 ) -> Result<(RelPath, SingleFile), (Code, String)> {
     let parent = rel.parent();
     let dir = prepare_root(export_root, &parent, Missing::Refuse).map_err(bad_session_path)?;
@@ -1153,15 +1182,13 @@ async fn reject(
     code: Code,
     message: String,
 ) -> Result<()> {
-    write_msg_tapped(
-        send,
-        &Error {
+    let refusal = HelloReply {
+        reply: Some(hello_reply::Reply::Error(Error {
             code: code as i32,
             message,
-        },
-        tap,
-    )
-    .await?;
+        })),
+    };
+    write_msg_tapped(send, &refusal, tap).await?;
     send.finish()?;
     tap.finished();
     // Wait (bounded) for the peer to read the error before closing the connection.

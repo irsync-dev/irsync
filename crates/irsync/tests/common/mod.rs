@@ -569,23 +569,19 @@ impl Harness {
     }
 
     /// Hello for the whole export, contents only (`host:m/`).
-    pub fn hello(flow: Flow) -> irsync_proto::v1::Hello {
-        use irsync_proto::chunk::CHUNK_PARAMS;
-        use irsync_proto::v1::hello::Direction;
-        irsync_proto::v1::Hello {
-            protocol_version: irsync_proto::PROTOCOL_VERSION,
-            session_id: vec![],
-            path: b"m".to_vec(),
-            direction: match flow {
+    pub fn hello(flow: Flow) -> irsync::session::SyncHello {
+        use irsync::cli::Direction;
+        irsync::session::SyncHello::new(
+            match flow {
                 Flow::Push => Direction::ClientSends,
                 Flow::Pull => Direction::DaemonSends,
-            } as i32,
-            chunk_min: CHUNK_PARAMS.min,
-            chunk_avg: CHUNK_PARAMS.avg,
-            chunk_max: CHUNK_PARAMS.max,
-            contents_only: true,
-            ..Default::default()
-        }
+            },
+            irsync_proto::v1::SyncRequest {
+                path: b"m".to_vec(),
+                contents_only: true,
+                ..Default::default()
+            },
+        )
     }
 
     /// The client's side of a session over the local dir (contents only).
@@ -625,7 +621,7 @@ impl Harness {
     pub async fn run_reconnect_hello(
         &self,
         opts: &irsync::cli::SyncOptions,
-        hello: irsync_proto::v1::Hello,
+        hello: irsync::session::SyncHello,
         ropts: irsync::session::reconnect::ReconnectOpts,
         local: irsync::session::LocalSide,
     ) -> (anyhow::Result<irsync::session::Outcome>, u32) {
@@ -637,7 +633,7 @@ impl Harness {
             "daemon:m/",
             |id| {
                 let mut h = hello.clone();
-                h.session_id = id.map(|i| i.to_vec()).unwrap_or_default();
+                h.req.session_id = id.map(|i| i.to_vec()).unwrap_or_default();
                 h
             },
             local,
@@ -666,10 +662,10 @@ impl Harness {
     ) -> anyhow::Result<irsync::session::Outcome> {
         let (parent, name) = irsync::session::single::split_last(src_file);
         let mut hello = Self::hello(Flow::Push);
-        hello.path = dest_path.to_vec();
-        hello.contents_only = contents_only;
-        hello.single_file = true;
-        hello.name = name.clone();
+        hello.req.path = dest_path.to_vec();
+        hello.req.contents_only = contents_only;
+        hello.req.single_file = true;
+        hello.req.name = name.clone();
         let mut local = Self::side_for(&parent, self.client_state.path()).with_single(name);
         local.contents_only = false;
         local.filters = std::sync::Arc::new(irsync::filter::FilterSet::from_rules(&opts.filters)?);
@@ -715,10 +711,10 @@ impl Harness {
         let (_, basename) = split_last(remote);
         let placed = place_file(dest, contents_only, &basename, true)?;
         let mut hello = Self::hello(Flow::Pull);
-        hello.path = remote_path.to_vec();
-        hello.contents_only = false;
-        hello.single_file = true;
-        hello.name = placed.name.clone();
+        hello.req.path = remote_path.to_vec();
+        hello.req.contents_only = false;
+        hello.req.single_file = true;
+        hello.req.name = placed.name.clone();
         let mut local =
             Self::side_for(&placed.root, self.client_state.path()).with_single(placed.name);
         local.contents_only = false;
@@ -747,7 +743,7 @@ impl Harness {
     pub async fn run_hello(
         &self,
         opts: &irsync::cli::SyncOptions,
-        hello: irsync_proto::v1::Hello,
+        hello: irsync::session::SyncHello,
         local: irsync::session::LocalSide,
     ) -> anyhow::Result<irsync::session::Outcome> {
         use std::sync::atomic::Ordering;

@@ -1,18 +1,16 @@
 #[test]
 fn hello_roundtrips() {
-    use irsync_proto::v1::{hello::Direction, Hello};
+    use irsync_proto::v1::{hello, sync_request, Hello, SyncRequest};
     use prost::Message;
-    let h = Hello {
-        protocol_version: irsync_proto::PROTOCOL_VERSION,
+    let req = SyncRequest {
         session_id: vec![7; 16],
         name: b"photos".to_vec(),
         path: b"2024/\xff".to_vec(),
-        direction: Direction::DaemonSends as i32,
         chunk_min: 65536,
         chunk_avg: 262144,
         chunk_max: 1048576,
         contents_only: true,
-        delete_mode: irsync_proto::v1::hello::DeleteMode::DeleteAfter as i32,
+        delete_mode: sync_request::DeleteMode::DeleteAfter as i32,
         delete_excluded: true,
         max_delete: Some(0),
         dry_run: true,
@@ -25,13 +23,8 @@ fn hello_roundtrips() {
         paranoid: true,
         bwlimit: Some(1 << 20),
         single_file: true,
-        append: irsync_proto::v1::hello::AppendMode::AppendVerify as i32,
-        build: Some(irsync_proto::v1::BuildInfo {
-            version: "0.1.0".into(),
-            commit: "abc1234".into(),
-            dirty: Some(true),
-        }),
-        preserve: Some(irsync_proto::v1::hello::Preserve {
+        append: sync_request::AppendMode::AppendVerify as i32,
+        preserve: Some(sync_request::Preserve {
             recursive: false,
             dirs: true,
             links: true,
@@ -45,24 +38,72 @@ fn hello_roundtrips() {
             sparse: true,
         }),
         filters: vec![
-            irsync_proto::v1::hello::FilterRule {
+            sync_request::FilterRule {
                 include: true,
                 pattern: "keep.o".into(),
             },
-            irsync_proto::v1::hello::FilterRule {
+            sync_request::FilterRule {
                 include: false,
                 pattern: "*.o".into(),
             },
         ],
         partial_dir: b".p".to_vec(),
         numeric_ids: true,
-        traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into(),
-        tracestate: "k=v".into(),
         no_local_reuse: true,
     };
-    let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
-    assert_eq!(back, h);
+    for request in [
+        hello::Request::Push(req.clone()),
+        hello::Request::Pull(req),
+        hello::Request::Probe(irsync_proto::v1::Probe {
+            path: b"photos/a".to_vec(),
+        }),
+    ] {
+        let h = Hello {
+            protocol_version: irsync_proto::PROTOCOL_VERSION,
+            build: Some(irsync_proto::v1::BuildInfo {
+                version: "0.1.0".into(),
+                commit: "abc1234".into(),
+                dirty: Some(true),
+            }),
+            traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into(),
+            tracestate: "k=v".into(),
+            request: Some(request),
+        };
+        let back = Hello::decode(h.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(back, h);
+    }
     assert_eq!(irsync_proto::ALPN, b"irsync/1");
+}
+
+/// Every reply to Hello decodes as itself and as nothing else: an empty
+/// export listing and a refusal no longer look alike.
+#[test]
+fn hello_reply_arms_stay_apart() {
+    use irsync_proto::v1::{
+        error::Code, hello_reply::Reply, path_info, AdminReady, Error, ExportList, HelloAck,
+        HelloReply, PathInfo,
+    };
+    use prost::Message;
+    let replies = [
+        Reply::Error(Error {
+            code: Code::BadRequest as i32,
+            message: String::new(),
+        }),
+        Reply::Ack(HelloAck {
+            session_id: vec![1; 16],
+            ..Default::default()
+        }),
+        Reply::Exports(ExportList::default()),
+        Reply::PathInfo(PathInfo {
+            kind: path_info::Kind::Missing as i32,
+        }),
+        Reply::AdminReady(AdminReady {}),
+    ];
+    for r in replies {
+        let m = HelloReply { reply: Some(r) };
+        let back = HelloReply::decode(m.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(back, m);
+    }
 }
 
 #[test]
@@ -170,7 +211,7 @@ fn control_oneof_roundtrips() {
             }),
         }),
         Msg::Error(Error {
-            code: 7,
+            code: 6,
             message: "boom".into(),
         }),
         Msg::MayPlace(MayPlace {
