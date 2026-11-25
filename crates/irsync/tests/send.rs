@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{connect_pair, loopback_pair, within};
+use irsync::data_stream::Sender;
 use irsync::fs::paths::RelPath;
 use irsync::hasher::Hasher;
 use irsync::index::Index;
 use irsync::net::frame::read_msg;
-use irsync::send::Sender;
 use irsync_proto::chunk::{digest_bytes, FileDigest};
 use irsync_proto::v1::{DataChunk, DataStreamHeader};
 use irsync_proto::DATA_PIECE;

@@ -808,9 +808,9 @@ pub struct SideHooks {
     /// `IRSYNC_FILE_REPORT` variable (see [`crate::file_report`]).
     #[cfg(feature = "test-hooks")]
     pub file_report: Option<PathBuf>,
-    /// Cuts data streams short (see [`crate::send::TruncateHook`]).
+    /// Cuts data streams short (see [`crate::data_stream::TruncateHook`]).
     #[cfg(feature = "test-hooks")]
-    pub truncate_streams: Option<Arc<crate::send::TruncateHook>>,
+    pub truncate_streams: Option<Arc<crate::data_stream::TruncateHook>>,
     /// Receives the receiver role's events (see [`EventLog`]).
     #[cfg(feature = "test-hooks")]
     pub events: Option<EventLog>,

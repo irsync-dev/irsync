@@ -38,7 +38,7 @@ use crate::fs::paths::RelPath;
 use crate::index::{ChunkHolder, IndexHandle, NewEntry};
 use crate::net::frame::read_msg_tapped;
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
-use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError, Verified};
+use crate::part_file::{discard_part, CloneSource, FileWriter, FinalizeError, Verified};
 use crate::scan::ScanItem;
 use crate::session::control::{Ev, Out};
 use crate::session::engine::{blocking, Ctx};

@@ -61,7 +61,7 @@ pub(super) fn need_piece(hooks: &super::SideHooks) -> usize {
 ///
 /// `held` (sender indices too): the chunks the receiver holds the first
 /// bytes of, each named in the piece that requests it. At most
-/// `recv::MAX_HELD_CHUNKS` entries, a few hundred bytes on the wire, which
+/// `part_file::MAX_HELD_CHUNKS` entries, a few hundred bytes on the wire, which
 /// [`FILE_WIRE`] leaves room for.
 pub(super) fn need_pieces(
     file_id: u64,

@@ -107,7 +107,7 @@ Two numbers bound how much a session has going at once.
 
 - **Files in flight**: at most 4,096 per session, counted from the
   `PlanItem` to the acknowledgement (`MAX_INFLIGHT` in
-  `crates/irsync/src/session/planner.rs`). A file in flight may hold two
+  `crates/irsync/src/session/receiver/planner.rs`). A file in flight may hold two
   descriptors, its `.part` and its old version, so the window shrinks to
   (soft open-file limit − 256) / 2 when that is smaller. At startup `irsync`
   raises its soft limit to the hard limit (on macOS to at most 10,240), so the
@@ -116,7 +116,7 @@ Two numbers bound how much a session has going at once.
   sender's data hold no descriptor.
 - **Data streams**: the sender keeps at most `--parallel` QUIC streams open at
   once, across all files of the session, 128 by default (`DEFAULT_PARALLEL` in
-  `crates/irsync/src/send.rs`). A daemon that sends always uses 128. A run of
+  `crates/irsync/src/data_stream.rs`). A daemon that sends always uses 128. A run of
   contiguous chunks longer than 64 MiB is split, so one large file spreads
   over several streams.
 

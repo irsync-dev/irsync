@@ -58,7 +58,7 @@ async fn reflink_harness() -> Option<Harness> {
     fs::create_dir_all(base).unwrap();
     let a = fs::File::create(base.join(".probe-a")).unwrap();
     let b = fs::File::create(base.join(".probe-b")).unwrap();
-    let ok = irsync::recv::reflink(&a, &b).is_ok();
+    let ok = irsync::part_file::reflink(&a, &b).is_ok();
     let _ = fs::remove_file(base.join(".probe-a"));
     let _ = fs::remove_file(base.join(".probe-b"));
     if !ok {

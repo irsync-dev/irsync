@@ -1486,7 +1486,7 @@ fn verify_signature_hidden_from_help() {
 #[test]
 fn parallel_help_names_the_default() {
     let home = tempfile::tempdir().unwrap();
-    let want = format!("else {})", irsync::send::DEFAULT_PARALLEL);
+    let want = format!("else {})", irsync::data_stream::DEFAULT_PARALLEL);
     for args in [&["--help"][..], &["server", "add", "--help"]] {
         let o = bin::irsync_command(home.path())
             .args(args)

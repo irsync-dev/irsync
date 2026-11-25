@@ -15,7 +15,7 @@
 //! [`file_io`] (opening, filling and finalizing `.part` writers, and routing
 //! data streams into them), `delete` (the deletion passes), `links` (hard
 //! links, placed last) and `resume` (restarting from a stored plan). The
-//! `.part` writer itself is [`crate::recv`].
+//! `.part` writer itself is [`crate::part_file`].
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -50,7 +50,7 @@ use crate::delete::DeletePass;
 use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::options::DeleteMode;
-use crate::recv::{FileWriter, FinalizeError, Verified};
+use crate::part_file::{FileWriter, FinalizeError, Verified};
 use crate::telemetry::meter::Counter;
 use crate::telemetry::PhaseKind;
 pub(super) use delete::capped_paths;
@@ -1118,7 +1118,7 @@ impl Receiver {
                 let msg = if e.kind() == io::ErrorKind::WouldBlock {
                     // Another session writes the same destination; a later
                     // run (or this session's resume) retries it.
-                    crate::recv::PART_BUSY.to_string()
+                    crate::part_file::PART_BUSY.to_string()
                 } else {
                     format!("opening partial file: {e}")
                 };

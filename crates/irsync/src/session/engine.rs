@@ -37,6 +37,7 @@ use super::{
     receiver, sender, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey, SessionRecord,
     SideHooks, SyncHello, HASH_WORKERS,
 };
+use crate::data_stream::DEFAULT_PARALLEL;
 use crate::filter::FilterSet;
 use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
@@ -46,7 +47,6 @@ use crate::location::Location;
 use crate::net::frame::{read_body, write_msg_tapped};
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::options::{Append, DeleteMode, Direction, Preserve, SyncOptions};
-use crate::send::DEFAULT_PARALLEL;
 use crate::telemetry::meter::Meter;
 use crate::telemetry::{self, phase, Phase, PhaseKind, Role, Side};
 
@@ -422,10 +422,10 @@ impl Ctx {
     /// `--partial-dir` for a file writer, which works from `base` with index
     /// keys: the option is relative to the session root, so the root's path
     /// below `base` is put in front (nothing, when they are the same).
-    pub fn partial_dir_from_base(&self) -> Option<crate::recv::PartialDir> {
+    pub fn partial_dir_from_base(&self) -> Option<crate::part_file::PartialDir> {
         let pd = self.opts.partial_dir.as_deref()?;
         let below = self.root.strip_prefix(&self.base).unwrap_or(Path::new(""));
-        Some(crate::recv::PartialDir {
+        Some(crate::part_file::PartialDir {
             dir: if pd.is_absolute() {
                 pd.to_path_buf()
             } else {

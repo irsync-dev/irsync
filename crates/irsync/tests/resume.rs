@@ -381,7 +381,7 @@ async fn daemon_that_drops_after_ack_respects_max() {
 
 /// Pushes one multi-chunk file with the client's data streams cut short by `hook`.
 async fn push_with_truncation(
-    hook: std::sync::Arc<irsync::send::TruncateHook>,
+    hook: std::sync::Arc<irsync::data_stream::TruncateHook>,
 ) -> (anyhow::Result<irsync::session::Outcome>, Harness) {
     let opts = archive_opts();
     let flow = Flow::Push;
@@ -397,7 +397,7 @@ async fn push_with_truncation(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn short_stream_is_re_requested_and_completes() {
     within60(async {
-        let hook = irsync::send::TruncateHook::once(2);
+        let hook = irsync::data_stream::TruncateHook::once(2);
         let (out, h) = push_with_truncation(hook.clone()).await;
         let out = out.unwrap();
         assert_eq!(hook.fired(), 1, "the stream was never cut");
@@ -421,7 +421,7 @@ async fn short_stream_is_re_requested_and_completes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn four_short_streams_give_write_error() {
     within60(async {
-        let hook = irsync::send::TruncateHook::always(2);
+        let hook = irsync::data_stream::TruncateHook::always(2);
         let (out, h) = push_with_truncation(hook.clone()).await;
         let out = out.unwrap();
         // The first stream and three re-requests, all cut short.

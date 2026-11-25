@@ -152,8 +152,8 @@ Each output line is a count, the syscall and where it was called from,
 innermost frame first (the line numbers depend on the build):
 
 ```text
-     142  statx ENOENT             part_exists (recv.rs:353) < open_from (recv.rs:560) < poll (session/recv_io.rs:461)
-     142  statx (fd)               open_locked_part (recv.rs:435) < open_part_in_dir (recv.rs:464) < open_sized_part (recv.rs:1220)
+     142  statx ENOENT             part_exists (part_file.rs:353) < open_from (part_file.rs:560) < poll (session/receiver/file_io.rs:461)
+     142  statx (fd)               open_locked_part (part_file.rs:435) < open_part_in_dir (part_file.rs:464) < open_sized_part (part_file.rs:1220)
 ```
 
 Divide by the number of files to get calls per file, then look for one

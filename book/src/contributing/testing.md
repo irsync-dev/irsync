@@ -371,13 +371,13 @@ place and `-c`; `warm.rs` covers same-size candidates and `irsync index`;
 `--append` and `--append-verify` decisions.
 
 To find the code for a step: the early hash is the `Delta` arm of
-`session/planner.rs`; opening, comparing, partitioning and choosing bases are
-in `session/recv_io.rs` (`open_writer`, `unchanged_file`, `local_sources`,
+`session/receiver/planner.rs`; opening, comparing, partitioning and choosing bases are
+in `session/receiver/file_io.rs` (`open_writer`, `unchanged_file`, `local_sources`,
 `basis_specs`, `offer_bases`, `rebuild`, `copy_local_chunks`, `finish_unit`,
 `settle_identical`, `finalize`, the in-place `Gate`); dispatch and re-requests
-are in `session/receiver.rs` (`on_opened`, `on_drained`, `MAX_REREQUESTS`);
-the sender's use of a basis is `session/sender_role.rs` (`on_basis`) and
-`send.rs` (`payload`); the codec is `delta.rs`; the writer, cloning and
-adoption are `recv.rs` (`FileWriter`, `reflink`); the folded whole-file hash
+are in `session/receiver/mod.rs` (`on_opened`, `on_drained`, `MAX_REREQUESTS`);
+the sender's use of a basis is `session/sender/mod.rs` (`on_basis`) and
+`data_stream.rs` (`payload`); the codec is `delta.rs`; the writer, cloning and
+adoption are `part_file.rs` (`FileWriter`, `reflink`); the folded whole-file hash
 is `tree_hash.rs`; chunk lists in parts are `session/parts.rs`; the test hooks
 are the fields of `SideHooks` in `session/mod.rs`.
