@@ -92,8 +92,8 @@ entries.
 
 | Command | Effect |
 | --- | --- |
-| `irsync export add NAME:PATH [--ro] [--warm-index]` | Export a directory under `NAME`. Prints the daemon's `EndpointId` on stdout, generating the daemon's key if it does not exist yet. |
-| `irsync export add PATH [--ro] [--warm-index]` | The same, named after the directory's last component. |
+| `irsync export add NAME:PATH [--read-only] [--warm-index]` | Export a directory under `NAME`. Prints the daemon's `EndpointId` on stdout, generating the daemon's key if it does not exist yet. |
+| `irsync export add PATH [--read-only] [--warm-index]` | The same, named after the directory's last component. |
 | `irsync export remove NAME` | Stop exporting a directory. Its grants go with it. |
 | `irsync export list` | One block per export: `NAME: PATH`, then `read_only`, `warm_index` and `fsync` when set, then its grant lines. |
 | `irsync export update [-n] [-v] [-q] NAME...` | Hash the files of the named exports into their indexes, so that files `irsync` did not place are reused from the next session on. `all` names every export. `-n` counts what would be hashed. See [Seed the index](../how-to/seed-the-index.md). |
@@ -101,7 +101,7 @@ entries.
 `export add` joins a relative `PATH` onto the working directory, expands a
 leading `~` (`irsync export add home:~` exports the home directory), and
 requires an existing directory. The text before the first `:` is a name only
-when it has no `/`. `--ro` sets `read_only`, which refuses pushes from
+when it has no `/`. `--read-only` sets `read_only`, which refuses pushes from
 everyone; `--warm-index` sets `warm_index`.
 
 ## grant

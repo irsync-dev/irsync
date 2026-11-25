@@ -705,9 +705,9 @@ fn export_update_parses_export_names_or_all() {
 fn nouns_share_add_remove_list() {
     use irsync::cli::{ClientCmd, ExportCmd, GrantCmd, ServerCmd};
     assert!(matches!(
-        parse(&["export", "add", "photos:/srv/photos", "--ro", "--warm-index"]).cmd,
+        parse(&["export", "add", "photos:/srv/photos", "--read-only", "--warm-index"]).cmd,
         Some(Command::Export(ref e))
-            if matches!(e.cmd, Some(ExportCmd::Add(ref a)) if a.target == "photos:/srv/photos" && a.ro && a.warm_index)
+            if matches!(e.cmd, Some(ExportCmd::Add(ref a)) if a.target == "photos:/srv/photos" && a.read_only && a.warm_index)
     ));
     assert!(matches!(
         parse(&["export", "remove", "photos"]).cmd,

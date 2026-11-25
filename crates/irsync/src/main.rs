@@ -1769,7 +1769,7 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                     .with_context(|| format!("identity {}", daemon_key.display()))?;
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                manage::exports::add_export(&mut msg, &name, &path, a.ro, a.warm_index)?;
+                manage::exports::add_export(&mut msg, &name, &path, a.read_only, a.warm_index)?;
                 // The daemon identity comes first: when it cannot be had, the
                 // export is not added either.
                 let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;

@@ -88,7 +88,7 @@ pub fn plan(server: &str, cmd: &RemoteCmd) -> anyhow::Result<Plan> {
                 )?;
                 change(Op::ExportAdd(ExportAdd {
                     target: a.target.clone(),
-                    read_only: a.ro,
+                    read_only: a.read_only,
                     warm_index: a.warm_index,
                 }))
             }

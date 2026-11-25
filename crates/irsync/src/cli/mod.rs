@@ -808,9 +808,9 @@ pub struct PairArgs {
 pub struct ExportAddArgs {
     /// `NAME:PATH`, or a directory named by its final component.
     pub target: String,
-    /// Export read-only.
+    /// Refuse pushes into the export from every client (`read_only`).
     #[arg(long)]
-    pub ro: bool,
+    pub read_only: bool,
     /// Hash the export's files into its index whenever the daemon starts,
     /// so files irsync did not place are reused from the first session on.
     #[arg(long)]
