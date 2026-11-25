@@ -37,8 +37,8 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         // Read-only: see [`writable`].
         ["config_version"] => Int,
         ["unsafe_config_allowed"] => Bool,
-        ["identity"] | ["state_dir"] => Path,
-        ["client"]
+        ["state_dir"] => Path,
+        ["defaults"]
         | ["daemon"]
         | ["daemon", "discovery"]
         | ["telemetry"]
@@ -48,12 +48,13 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         | ["clients", _]
         | ["exports"]
         | ["exports", _] => Table,
-        ["client", "parallel"] => Int,
-        ["client", "reconnect"] => Duration,
-        ["client", "dial_retries"] => Int,
-        ["client", "dht" | "mdns" | "ssh_install"] => Bool,
-        ["client", "relay"] => Url,
-        ["client", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
+        ["defaults", "identity"] => Path,
+        ["defaults", "parallel"] => Int,
+        ["defaults", "reconnect"] => Duration,
+        ["defaults", "dial_retries"] => Int,
+        ["defaults", "dht" | "mdns" | "ssh_install"] => Bool,
+        ["defaults", "relay"] => Url,
+        ["defaults", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "identity"] => Path,
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
         ["daemon", "max_dormant_sessions_per_key"] => Int,
@@ -151,7 +152,7 @@ fn as_written(p: &std::path::Path) -> String {
 
 /// The default of a key, as `get` prints it (one element per line);
 /// `None` when the key has no default or is not a key. A server's keys
-/// have none of their own: they fall back to `[client]`'s.
+/// have none of their own: they fall back to `[defaults]`'s.
 pub fn default_of(path: &[String]) -> Option<Vec<String>> {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     let s = Settings::default();
@@ -159,21 +160,21 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
     match parts.as_slice() {
         ["config_version"] => one(reader::CONFIG_VERSION.to_string()),
         ["unsafe_config_allowed"] => one(s.unsafe_config_allowed.to_string()),
-        ["identity"] => one(as_written(&s.identity)),
-        // The effective [client] defaults, as book/src/reference/configuration.md lists them.
-        ["client", "parallel"] => one(crate::send::DEFAULT_PARALLEL.to_string()),
-        ["client", "reconnect"] => one(duration::format(
+        ["defaults", "identity"] => one(as_written(&s.identity)),
+        // The effective [defaults], as book/src/reference/configuration.md lists them.
+        ["defaults", "parallel"] => one(crate::send::DEFAULT_PARALLEL.to_string()),
+        ["defaults", "reconnect"] => one(duration::format(
             crate::session::reconnect::ReconnectOpts::default().max,
         )),
-        ["client", "dial_retries"] => one(crate::session::reconnect::ReconnectOpts::default()
+        ["defaults", "dial_retries"] => one(crate::session::reconnect::ReconnectOpts::default()
             .dial_retries
             .to_string()),
-        ["client", "dht"] | ["client", "mdns"] | ["client", "ssh_install"] => {
+        ["defaults", "dht"] | ["defaults", "mdns"] | ["defaults", "ssh_install"] => {
             one("true".to_string())
         }
-        ["client", "relay_mode"] => one(RelayMode::default().as_str().to_string()),
-        ["client", "congestion"] => one(Congestion::default().as_str().into()),
-        ["client", "pq_key_exchange"] => one(PqKeyExchange::default().as_str().into()),
+        ["defaults", "relay_mode"] => one(RelayMode::default().as_str().to_string()),
+        ["defaults", "congestion"] => one(Congestion::default().as_str().into()),
+        ["defaults", "pq_key_exchange"] => one(PqKeyExchange::default().as_str().into()),
         ["state_dir"] => one(as_written(&s.state_dir)),
         ["daemon", "identity"] => one(as_written(&s.daemon.identity)),
         ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),
@@ -333,7 +334,7 @@ pub fn set(msg: &mut pb::Config, path: &[String], value: Value) -> Result<(), Ma
 
 /// Removes `path`: a key with its comments, or a whole table with its
 /// comments. A table the removal leaves without keys goes too, as an
-/// empty `[servers.home]` would not load and an empty `[client]` is only
+/// empty `[servers.home]` would not load and an empty `[defaults]` is only
 /// noise. Absent: `NothingToRemove`.
 pub fn unset(msg: &mut pb::Config, path: &[String]) -> Result<(), ManageError> {
     let kind = kind_of(path).ok_or_else(|| unknown(path))?;
@@ -475,7 +476,6 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let pb::Config {
                 config_version,
                 unsafe_config_allowed,
-                identity,
                 state_dir,
                 key_comments,
                 ..
@@ -483,15 +483,15 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let f = match *key {
                 "config_version" => Int(config_version),
                 "unsafe_config_allowed" => Bool(unsafe_config_allowed),
-                "identity" => Text(identity),
                 "state_dir" => Text(state_dir),
                 _ => return None,
             };
             (f, key_comments)
         }
-        ["client", key] => {
-            let c = table(&mut msg.client, create)?;
+        ["defaults", key] => {
+            let c = table(&mut msg.defaults, create)?;
             let f = match *key {
+                "identity" => Text(&mut c.identity),
                 "parallel" => Int(&mut c.parallel),
                 "reconnect" => Duration(&mut c.reconnect),
                 "dial_retries" => Int(&mut c.dial_retries),
@@ -596,13 +596,9 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
 }
 
 /// The keys of each table, in the order the writer writes them.
-const TOP: &[&str] = &[
-    "config_version",
-    "unsafe_config_allowed",
+const TOP: &[&str] = &["config_version", "unsafe_config_allowed", "state_dir"];
+const DEFAULTS: &[&str] = &[
     "identity",
-    "state_dir",
-];
-const CLIENT: &[&str] = &[
     "parallel",
     "reconnect",
     "dial_retries",
@@ -666,7 +662,7 @@ fn key_paths(msg: &pb::Config) -> Vec<Vec<String>> {
         }
     };
     add(&[], TOP);
-    add(&["client"], CLIENT);
+    add(&["defaults"], DEFAULTS);
     add(&["daemon"], DAEMON);
     add(&["daemon", "discovery"], DISCOVERY);
     add(&["telemetry"], TELEMETRY);
@@ -707,7 +703,7 @@ fn key_lines(msg: &pb::Config, prefix: &[String]) -> Vec<String> {
 fn has_table(msg: &pb::Config, path: &[String]) -> bool {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     match parts.as_slice() {
-        ["client"] => msg.client.is_some(),
+        ["defaults"] => msg.defaults.is_some(),
         ["daemon"] => msg.daemon.is_some(),
         ["daemon", "discovery"] => msg.daemon.as_ref().is_some_and(|d| d.discovery.is_some()),
         ["telemetry"] => msg.telemetry.is_some(),
@@ -725,7 +721,7 @@ fn has_table(msg: &pb::Config, path: &[String]) -> bool {
 fn remove_table(msg: &mut pb::Config, path: &[String]) -> bool {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     match parts.as_slice() {
-        ["client"] => msg.client.take().is_some(),
+        ["defaults"] => msg.defaults.take().is_some(),
         ["daemon"] => msg.daemon.take().is_some(),
         ["daemon", "discovery"] => msg
             .daemon
@@ -780,7 +776,7 @@ fn drop_if<T>(t: &mut Option<T>, empty: impl Fn(&T) -> bool) {
 fn prune(msg: &mut pb::Config, path: &[String]) {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     match parts.as_slice() {
-        ["client", _] => drop_if(&mut msg.client, |c| keyless!(c, Client)),
+        ["defaults", _] => drop_if(&mut msg.defaults, |c| keyless!(c, Defaults)),
         ["daemon", rest @ ..] if !rest.is_empty() => {
             if rest.len() > 1 {
                 if let Some(d) = msg.daemon.as_mut() {

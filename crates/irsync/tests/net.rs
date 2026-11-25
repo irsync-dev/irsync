@@ -368,7 +368,7 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
     let o = client_endpoint_opts(SecretKey::generate(), None, true, false, &cs, None, &[]).unwrap();
     assert_eq!(o.relay, RelayChoice::Disabled);
     assert!(o.dht && o.dns && o.mdns && o.portmap);
-    // [client] relay_mode = "disabled", even with a relay URL beside it.
+    // [defaults] relay_mode = "disabled", even with a relay URL beside it.
     let off = ClientSettings {
         relay: Some("https://c.example".parse().unwrap()),
         relay_mode: Some(RelayMode::Disabled),

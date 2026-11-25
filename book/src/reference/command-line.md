@@ -299,16 +299,16 @@ These have no rsync counterpart.
 
 | Flag | Meaning |
 | --- | --- |
-| `--parallel N` | Data streams a push keeps open at once, across all files. Default: `parallel` from the server entry, else from `[client]`, else 128. A pull uses the daemon's 128. See [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams). |
-| `--reconnect DUR` | How long to keep redialling after a dropped connection, as `N[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the server entry, else from `[client]`, else 24h. This window applies only once the server has answered; before that, `--dial-retries` applies. |
-| `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[client]`, else 4. For a server `irsync pair` saved (one with `ssh`), the default is 0 and only this flag changes it; each try there waits at most 15 seconds. |
-| `--relay URL` | Use this relay server instead of the server entry's, `[client]`'s or n0's default. Cannot be combined with `--no-relay` or `--address`. |
-| `--no-relay` | Direct connections only: never fall back to a relay. The address lookups stay on. Default: `relay_mode` from the server entry, else from `[client]`. |
-| `--pq-key-exchange prefer\|require` | `require`: refuse a daemon that does not offer the post-quantum key exchange, such as an irsync built without it; nothing is sent to it. `prefer`: use that key exchange when the daemon offers it. Default: `pq_key_exchange` from the server entry, else from `[client]`, else `prefer`. See [Post-quantum key exchange](configuration.md#post-quantum-key-exchange). |
+| `--parallel N` | Data streams a push keeps open at once, across all files. Default: `parallel` from the server entry, else from `[defaults]`, else 128. A pull uses the daemon's 128. See [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams). |
+| `--reconnect DUR` | How long to keep redialling after a dropped connection, as `N[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the server entry, else from `[defaults]`, else 24h. This window applies only once the server has answered; before that, `--dial-retries` applies. |
+| `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[defaults]`, else 4. For a server `irsync pair` saved (one with `ssh`), the default is 0 and only this flag changes it; each try there waits at most 15 seconds. |
+| `--relay URL` | Use this relay server instead of the server entry's, `[defaults]`'s or n0's default. Cannot be combined with `--no-relay` or `--address`. |
+| `--no-relay` | Direct connections only: never fall back to a relay. The address lookups stay on. Default: `relay_mode` from the server entry, else from `[defaults]`. |
+| `--pq-key-exchange prefer\|require` | `require`: refuse a daemon that does not offer the post-quantum key exchange, such as an irsync built without it; nothing is sent to it. `prefer`: use that key exchange when the daemon offers it. Default: `pq_key_exchange` from the server entry, else from `[defaults]`, else `prefer`. See [Post-quantum key exchange](configuration.md#post-quantum-key-exchange). |
 | `--no-dht` | Do not look the daemon up in the mainline DHT. |
 | `--address ADDR` | Dial the daemon at `ip:port`, `[ipv6]:port` or `host:port` directly; repeatable. Turns the relay, DNS, DHT, mDNS and the port mapper off, and binds the client to the local address it dials from (see [Keep to one path](../how-to/direct-and-relay.md#keep-to-one-path)). The daemon's `EndpointId` is still required and still checked. |
 | `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. |
-| `--identity FILE` | The private key to connect with. Default: `identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
+| `--identity FILE` | The private key to connect with. Default: `[defaults] identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted key from the first line of this file. Without it, `IRSYNC_PASSPHRASE` is used, else a prompt when stdin is a terminal. |
 | `--no-resume` | Start a fresh plan instead of resuming a dormant session. Partial files are still picked up. |
 | `--no-rename-detection` | Do not fill files from other files on the receiving side that hold the same content or parts of it, so a moved or copied file is transferred again. A changed file still reuses its own old version. |
@@ -316,7 +316,7 @@ These have no rsync counterpart.
 | `--debug-port-no-wait` | With `--debug-addr`, close the port when the sync ends instead of waiting. |
 
 The connection settings resolve in this order: the flag, then the server's
-table, then `[client]`, then the built-in default. See
+table, then `[defaults]`, then the built-in default. See
 [Configuration](configuration.md#client).
 
 ## Subcommands

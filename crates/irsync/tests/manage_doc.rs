@@ -212,7 +212,7 @@ fn save_config_refuses_a_message_that_does_not_load() {
     let e = save_config(&path, &mut m).unwrap_err();
     assert!(e.to_string().contains("refusing to save"), "{e}");
     assert!(!path.exists());
-    let mut m = msg("[client]\nparallel = 2\n[exports.p]\npath = \"/p\"\n");
+    let mut m = msg("[defaults]\nparallel = 2\n[exports.p]\npath = \"/p\"\n");
     m.state_dir = Some(state(d.path()));
     save_config(&path, &mut m).unwrap();
     assert!(path.exists());
@@ -225,11 +225,11 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     irsync::fs::private::write(
         &p,
-        format!("{}# keep\n[client]\nparallel = 4\n", state_line(d.path())),
+        format!("{}# keep\n[defaults]\nparallel = 4\n", state_line(d.path())),
     )
     .unwrap();
     let kept = format!(
-        "config_version = 2\n{}\n# keep\n[client]\nparallel = 8\n",
+        "config_version = 2\n{}\n# keep\n[defaults]\nparallel = 8\n",
         state_line(d.path())
     );
     let lock_file = d.path().join("sub/irsync.toml.lock");
@@ -243,7 +243,7 @@ fn lock_config_excludes_a_second_editor_until_save_or_drop() {
         "{e}"
     );
     let mut m = lock.load().unwrap();
-    m.client.as_mut().unwrap().parallel = Some(8);
+    m.defaults.as_mut().unwrap().parallel = Some(8);
     lock.save(&mut m).unwrap();
     assert!(!lock_file.exists(), "save releases the lock");
     assert_eq!(std::fs::read_to_string(&p).unwrap(), kept);
@@ -344,7 +344,7 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     let fresh = d.path().join("new.toml");
     let mut m = load_message(&fresh).unwrap();
     m.state_dir = Some(state(d.path()));
-    m.client = Some(Default::default());
+    m.defaults = Some(Default::default());
     save_config(&fresh, &mut m).unwrap();
     assert_eq!(mode(&fresh), 0o600);
 
@@ -352,7 +352,7 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     let mut lock = lock_config(&locked).unwrap();
     let mut m = lock.load().unwrap();
     m.state_dir = Some(state(d.path()));
-    m.client = Some(Default::default());
+    m.defaults = Some(Default::default());
     lock.save(&mut m).unwrap();
     assert_eq!(mode(&locked), 0o600);
 
@@ -362,12 +362,12 @@ fn save_keeps_the_files_mode_and_a_new_file_is_private() {
     save_config(&fresh, &mut m).unwrap();
     for kept in [0o640, 0o644, 0o600] {
         set_mode(&fresh, kept).unwrap();
-        m.client.as_mut().unwrap().parallel = Some(kept);
+        m.defaults.as_mut().unwrap().parallel = Some(kept);
         save_config(&fresh, &mut m).unwrap();
         assert_eq!(mode(&fresh), kept, "save_config");
         let mut lock = lock_config(&fresh).unwrap();
         let mut m = lock.load().unwrap();
-        m.client.as_mut().unwrap().parallel = Some(1);
+        m.defaults.as_mut().unwrap().parallel = Some(1);
         lock.save(&mut m).unwrap();
         assert_eq!(mode(&fresh), kept, "lock.save");
     }
@@ -380,7 +380,7 @@ fn a_save_writes_config_version() {
     let path = d.path().join("irsync.toml");
     irsync::fs::private::write(
         &path,
-        format!("{}[client]\nparallel = 2\n", state_line(d.path())),
+        format!("{}[defaults]\nparallel = 2\n", state_line(d.path())),
     )
     .unwrap();
     let mut lock = lock_config(&path).unwrap();
@@ -391,7 +391,7 @@ fn a_save_writes_config_version() {
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         format!(
-            "config_version = 2\n{}\n[client]\nparallel = 2\n",
+            "config_version = 2\n{}\n[defaults]\nparallel = 2\n",
             state_line(d.path())
         )
     );

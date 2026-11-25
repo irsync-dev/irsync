@@ -161,10 +161,10 @@ for the old key stops working.
 | `irsync config unset KEY` | Remove a key, or a whole table (`irsync config unset servers.myserver`). A table left empty goes with it. Removing a client this way is refused while a grant names it, as with `client remove`. |
 | `irsync config list` | Every key the file sets, as `dotted.key = value`, in the order the file is written in: the tables in a fixed order, and each table's keys in a fixed order. |
 
-These keys have no default: the tables themselves, `client.relay` and
+These keys have no default: the tables themselves, `defaults.relay` and
 `daemon.relay` (n0's relays are used), `daemon.debug_addr` (off),
 `telemetry.otlp_endpoint`, every key of a server (each falls back to
-`[client]`'s), every key of a client, and an export's `path`, `rw` and
+`[defaults]`'s), every key of a client, and an export's `path`, `rw` and
 `ro`. An export's flags, such as `read_only`, default to `false` for an
 export that exists.
 

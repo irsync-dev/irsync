@@ -19,7 +19,7 @@ on or off under [`[daemon.discovery]`](../reference/configuration.md#daemon):
 - `mdns`: the local network.
 
 A client looks the `EndpointId` up in the same places. DNS is always on for a
-client; the DHT and mDNS can be turned off per host or in `[client]`, and
+client; the DHT and mDNS can be turned off per host or in `[defaults]`, and
 `--no-dht` turns the DHT off for one sync.
 
 The DNS and DHT records carry only the daemon's relay address, never its IP
@@ -99,7 +99,7 @@ reports the file busy.
 ## Congestion control
 
 The side that sends picks QUIC's congestion controller: the client for a push,
-the daemon for a pull. The setting is `congestion`, in `[client]`, in a host's
+the daemon for a pull. The setting is `congestion`, in `[defaults]`, in a host's
 table or in `[daemon]`, and takes `bbr`, the default, or `cubic`.
 
 - **BBR** keeps the queue at the bottleneck short and copes with random loss,

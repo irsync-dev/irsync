@@ -512,12 +512,12 @@ fn direction_of(args: &Args) -> anyhow::Result<Direction> {
 }
 
 /// Whether a connection to this host must have the post-quantum hybrid key
-/// exchange: the flag, else the host entry, else the client settings.
+/// exchange: the flag, else the host entry, else `[defaults]`.
 fn pq_required(opts: &SyncOptions, host_entry: Option<&ServerEntry>, settings: &Settings) -> bool {
     pq_required_of(
         opts.pq_key_exchange,
         host_entry.and_then(|h| h.pq_key_exchange),
-        settings.client.pq_key_exchange,
+        settings.defaults.pq_key_exchange,
     )
 }
 
@@ -600,7 +600,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
         opts.parallel = host_entry
             .as_ref()
             .and_then(|h| h.parallel)
-            .or(settings.client.parallel);
+            .or(settings.defaults.parallel);
     }
     // Direct addresses: the command line's, else the host's. Any address
     // means isolated mode: dial those and nothing else. Resolved before the
@@ -636,7 +636,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
         opts.relay.as_deref(),
         opts.no_relay,
         opts.no_dht,
-        &settings.client,
+        &settings.defaults,
         host_entry.as_ref(),
         &addresses,
     )?;
@@ -718,7 +718,7 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
             let flags = SetupFlags {
                 recheck: t.kind == irsync::ssh::pair::PairKind::Saved,
                 no_dht: a.no_dht,
-                no_install: a.no_install || config.settings.client.ssh_install == Some(false),
+                no_install: a.no_install || config.settings.defaults.ssh_install == Some(false),
                 no_service: a.no_service,
             };
             let host = &t.host;
@@ -1049,7 +1049,7 @@ async fn sync(
             max: opts
                 .reconnect
                 .or(host_entry.and_then(|h| h.reconnect))
-                .or(settings.client.reconnect)
+                .or(settings.defaults.reconnect)
                 .unwrap_or(ReconnectOpts::default().max),
             // A paired server is dialled once (see `PAIRED_FIRST_DIAL`), unless
             // the command line asks for retries.
@@ -1058,7 +1058,7 @@ async fn sync(
                 None => opts
                     .dial_retries
                     .or(host_entry.and_then(|h| h.dial_retries))
-                    .or(settings.client.dial_retries)
+                    .or(settings.defaults.dial_retries)
                     .unwrap_or(ReconnectOpts::default().dial_retries),
             },
             source_index: index,

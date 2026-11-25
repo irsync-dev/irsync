@@ -148,7 +148,7 @@ client's session, or exhaust the daemon.
   only reads: the exports, clients and grants (names, paths and ids), and,
   through `config get` and `config list`, every other setting in the file,
   such as `state_dir`, the ids and addresses of the saved `[servers.*]` and
-  the `[client]` settings. None of it is a secret.
+  the `[defaults]` settings. None of it is a secret.
 - **Who can reach the admin service.** Only a named client with `admin` set.
   A key without it gets the plain answer `not allowed`, which says nothing
   about the server. A change is checked on the server, against the config as

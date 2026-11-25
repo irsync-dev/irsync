@@ -25,10 +25,10 @@ Every table, with the defaults except where marked:
 ```toml
 config_version = 2              # written by irsync; always first
 unsafe_config_allowed = false   # true: skip the permission checks
-identity = "~/.config/irsync/id_ed25519"
 state_dir = "~/.local/state/irsync"
 
-[client]                     # defaults for every server
+[defaults]                   # this machine as a client
+identity = "~/.config/irsync/id_ed25519"
 parallel = 128
 reconnect = "1d"
 dial_retries = 4
@@ -142,12 +142,11 @@ Only regular files are checked. A passphrase read from a pipe, such as
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `identity` | `~/.config/irsync/id_ed25519` | The client's private key, an OpenSSH Ed25519 key file. |
 | `state_dir` | `~/.local/state/irsync`; `$XDG_STATE_HOME/irsync` when that is set | Where the client and the daemon keep their indexes, sessions and partial-file records. |
 
-The client's key is looked up the way ssh picks one: `--identity`; else
-`identity` when the file sets it; else `~/.config/irsync/id_ed25519` when it
-exists; else `~/.ssh/id_ed25519` when it exists, read as it is and never
+The client's key is `identity` in [`[defaults]`](#defaults). It is looked
+up the way ssh picks one: `--identity`; else `identity` when the file sets
+it; else `~/.config/irsync/id_ed25519` when it exists; else `~/.ssh/id_ed25519` when it exists, read as it is and never
 written; else a key generated at `~/.config/irsync/id_ed25519`. A key named by
 `--identity` or `identity` is the whole answer: when it is missing, a key is
 generated there. An encrypted key needs a passphrase, from
@@ -158,15 +157,18 @@ file-based Ed25519 keys work.
 The client and the daemon use different keys, so both can run in one account
 on one machine and reach each other.
 
-## Client
+## Defaults
 
-`[client]` holds the defaults for every sync. A server's table overrides them
-for that server, and a command-line flag overrides both: a sync resolves each
-setting from the flag, then the server's table, then `[client]`, then the
+`[defaults]` holds this machine's settings for when it connects to a server:
+its key, and the defaults for every sync. Do not mix it up with
+`[clients.NAME]`, the machines this machine's daemon lets in. A server's table
+overrides these defaults for that server, and a command-line flag overrides both: a sync resolves each
+setting from the flag, then the server's table, then `[defaults]`, then the
 built-in default.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `identity` | `~/.config/irsync/id_ed25519` | The client's private key, an OpenSSH Ed25519 key file. See [Identity and state](#identity-and-state). Flag: `--identity`. |
 | `parallel` | `128` | Data streams a push keeps open at once. Flag: `--parallel`. |
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
 | `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. Not used for a server `irsync pair` saved: that is dialled once, unless `--dial-retries` is given. Flag: `--dial-retries`. |
@@ -179,7 +181,7 @@ built-in default.
 | `pq_key_exchange` | `prefer` | `require`: refuse a daemon that does not offer the post-quantum key exchange. See [Post-quantum key exchange](#post-quantum-key-exchange). Flag: `--pq-key-exchange`. |
 
 `congestion` picks the congestion controller of the side that sends: the
-client's (the server's, else `[client]`'s) for a push, the daemon's for a pull.
+client's (the server's, else `[defaults]`'s) for a push, the daemon's for a pull.
 When to choose `cubic` over `bbr`, with measurements, is in
 [Connections](../explanation/connections.md#congestion-control).
 
@@ -198,7 +200,7 @@ the other side does not:
   sent. The side that refuses says why, and the other side prints it.
 
 Each side decides for itself. On the client it is the flag, else the server's
-table, else `[client]`. On the daemon it is `pq_key_exchange` in
+table, else `[defaults]`. On the daemon it is `pq_key_exchange` in
 [`[daemon]`](#daemon), and it holds for every client: there is no setting
 per export or per grant yet. A daemon tells only a client that has a grant;
 a key without one is turned away as before.
@@ -214,16 +216,16 @@ an `EndpointId`.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `endpoint_id` | required | The `EndpointId` of the server's daemon: the one dialled for `NAME:PATH`. The client pins it. |
-| `relay` | `[client]`'s | This server's relay server. |
-| `relay_mode` | `[client]`'s | `disabled`: reach this server directly only. |
-| `congestion` | `[client]`'s | The congestion controller for pushes to this server. |
-| `pq_key_exchange` | `[client]`'s | `require`: refuse this server when it does not offer the post-quantum key exchange. |
+| `relay` | `[defaults]`'s | This server's relay server. |
+| `relay_mode` | `[defaults]`'s | `disabled`: reach this server directly only. |
+| `congestion` | `[defaults]`'s | The congestion controller for pushes to this server. |
+| `pq_key_exchange` | `[defaults]`'s | `require`: refuse this server when it does not offer the post-quantum key exchange. |
 | `address` | none | Dial these addresses directly, with the relay, DNS, DHT, mDNS and the port mapper off. The client binds to the local address it reaches the first address of each IP version from, and offers the daemon no other. Cannot be combined with `--relay`. |
-| `parallel` | `[client]`'s | Data streams a push to this server keeps open at once. |
-| `reconnect` | `[client]`'s | How long to keep redialling. |
-| `dial_retries` | `[client]`'s | How often to retry this server before it has answered. Not used when the server has `ssh`: see `--dial-retries`. |
-| `dht` | `[client]`'s | Look this server up in the mainline DHT. |
-| `mdns` | `[client]`'s | Look this server up with mDNS. |
+| `parallel` | `[defaults]`'s | Data streams a push to this server keeps open at once. |
+| `reconnect` | `[defaults]`'s | How long to keep redialling. |
+| `dial_retries` | `[defaults]`'s | How often to retry this server before it has answered. Not used when the server has `ssh`: see `--dial-retries`. |
+| `dht` | `[defaults]`'s | Look this server up in the mainline DHT. |
+| `mdns` | `[defaults]`'s | Look this server up with mDNS. |
 | `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. It is what `irsync pair` logs in to. A sync never uses it, except to find the server when you type that address. `irsync pair` for a saved server checks it again, and never adds back `all_paths` that was removed on the server. |
 | `ssh_aliases` | none | Other ssh destinations that were typed for this server, such as its address: `["192.168.1.5"]`. Typing one of them finds this server, as typing its `ssh` value does. `irsync pair` adds to it; nothing is ever dialled through it. These are not server names: they do not work with `irsync server`. |
 

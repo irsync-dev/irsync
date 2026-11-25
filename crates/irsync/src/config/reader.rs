@@ -32,9 +32,8 @@ use url::Url;
 struct RawFile {
     config_version: Option<Spanned<toml::Value>>,
     unsafe_config_allowed: Option<bool>,
-    identity: Option<String>,
     state_dir: Option<String>,
-    client: Option<RawClient>,
+    defaults: Option<RawDefaults>,
     daemon: Option<RawDaemon>,
     telemetry: Option<RawTelemetry>,
     #[serde(default)]
@@ -47,7 +46,8 @@ struct RawFile {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawClient {
+struct RawDefaults {
+    identity: Option<PathBuf>,
     parallel: Option<u32>,
     #[serde(default, deserialize_with = "de_opt_duration")]
     reconnect: Option<Duration>,
@@ -280,9 +280,8 @@ pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
             .and_then(|v| v.get_ref().as_integer())
             .and_then(|n| u32::try_from(n).ok()),
         unsafe_config_allowed: raw.unsafe_config_allowed,
-        identity: raw.identity,
         state_dir: raw.state_dir,
-        client: raw.client.map(client),
+        defaults: raw.defaults.map(defaults),
         daemon: raw.daemon.map(daemon),
         telemetry: raw.telemetry.map(telemetry),
         ..Default::default()
@@ -307,20 +306,20 @@ fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
                 None => continue,
                 Some(m) => m,
             },
-            "servers" | "clients" | "exports" | "client" | "daemon" | "telemetry"
+            "servers" | "clients" | "exports" | "defaults" | "daemon" | "telemetry"
                 if value.is_table() =>
             {
                 continue
             }
-            "servers" | "clients" | "exports" | "client" | "daemon" | "telemetry" => {
+            "servers" | "clients" | "exports" | "defaults" | "daemon" | "telemetry" => {
                 format!("{name}: expected a table, found {}", value.type_str())
             }
             "unsafe_config_allowed" if value.is_bool() => continue,
             "unsafe_config_allowed" => {
                 format!("{name}: expected a boolean, found {}", value.type_str())
             }
-            "identity" | "state_dir" if value.is_str() => continue,
-            "identity" | "state_dir" => {
+            "state_dir" if value.is_str() => continue,
+            "state_dir" => {
                 format!("{name}: expected a string, found {}", value.type_str())
             }
             _ => format!("unknown key {name:?}"),
@@ -334,8 +333,9 @@ fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn client(r: RawClient) -> pb::Client {
-    pb::Client {
+fn defaults(r: RawDefaults) -> pb::Defaults {
+    pb::Defaults {
+        identity: r.identity.map(path_text),
         parallel: r.parallel,
         reconnect: r.reconnect.map(duration::to_proto),
         dial_retries: r.dial_retries,

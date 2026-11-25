@@ -23,14 +23,13 @@ pub fn write(msg: &pb::Config) -> String {
     let mut top = Keys::new(&msg.key_comments);
     top.int("config_version", msg.config_version);
     top.bool("unsafe_config_allowed", msg.unsafe_config_allowed);
-    top.string("identity", msg.identity.as_deref());
     top.string("state_dir", msg.state_dir.as_deref());
     let mut top = top.lines;
     top.extend(msg.tail.iter().cloned());
 
     let mut sections = vec![msg.header.clone(), top];
-    if let Some(c) = &msg.client {
-        sections.push(table(&["client"], &c.comment, &c.tail, client_table(c)));
+    if let Some(d) = &msg.defaults {
+        sections.push(table(&["defaults"], &d.comment, &d.tail, defaults(d)));
     }
     if let Some(d) = &msg.daemon {
         sections.push(table(&["daemon"], &d.comment, &d.tail, daemon(d)));
@@ -97,8 +96,9 @@ fn table(path: &[&str], comment: &Option<pb::Comment>, tail: &[String], keys: Ke
     lines
 }
 
-fn client_table(c: &pb::Client) -> Keys<'_> {
+fn defaults(c: &pb::Defaults) -> Keys<'_> {
     let mut k = Keys::new(&c.key_comments);
+    k.string("identity", c.identity.as_deref());
     k.int("parallel", c.parallel);
     k.duration("reconnect", c.reconnect.as_ref());
     k.int("dial_retries", c.dial_retries);

@@ -38,7 +38,7 @@ relay.
 
   ```sh
   irsync server add myserver <id> --relay-mode disabled
-  irsync config set client.relay_mode disabled
+  irsync config set defaults.relay_mode disabled
   ```
 
 - On the daemon, which then neither uses a relay nor is reachable through one:
@@ -71,7 +71,7 @@ than the shared public relays. iroh ships one as `iroh-relay`.
 
    ```sh
    irsync server add myserver <id> --relay https://relay.example.net
-   irsync config set client.relay https://relay.example.net
+   irsync config set defaults.relay https://relay.example.net
    ```
 
    For one sync, `--relay URL` does the same.
@@ -79,7 +79,7 @@ than the shared public relays. iroh ships one as `iroh-relay`.
 ## Turn the lookups off
 
 - On the client, `--no-dht` skips the mainline DHT for one sync. A server's
-  `dht` and `mdns` keys, or `[client]`'s, turn either lookup off for good:
+  `dht` and `mdns` keys, or `[defaults]`'s, turn either lookup off for good:
 
   ```sh
   irsync server add myserver <id> --dht no --mdns no

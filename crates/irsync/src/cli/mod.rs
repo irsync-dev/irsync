@@ -683,12 +683,12 @@ pub struct ServerAddArgs {
     pub name: String,
     /// The server's EndpointId: its daemon, the id dialled.
     pub id: String,
-    /// The server's home relay, used instead of the client settings' or n0's
+    /// The server's home relay, used instead of `[defaults]`'s or n0's
     /// default.
     #[arg(long, value_name = "URL")]
     pub relay: Option<String>,
     /// `disabled`: reach this server directly only, never through a relay;
-    /// `default`: relays as usual (default: the client settings').
+    /// `default`: relays as usual (default: `[defaults]`'s).
     #[arg(long, value_name = "default|disabled")]
     pub relay_mode: Option<crate::config::settings::RelayMode>,
     /// Dial the server at this `ip:port`, `[ipv6]:port` or `host:port`
@@ -696,8 +696,8 @@ pub struct ServerAddArgs {
     /// stored list).
     #[arg(long, value_name = "ADDR")]
     pub address: Vec<HostPort>,
-    /// Data streams a push to this server keeps open at once (default: the
-    /// client settings', else 128).
+    /// Data streams a push to this server keeps open at once (default:
+    /// `[defaults]`'s, else 128).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long a sync with this server keeps redialling after a dropped
@@ -705,21 +705,21 @@ pub struct ServerAddArgs {
     #[arg(long, value_name = "DUR", value_parser = validate_duration)]
     pub reconnect: Option<String>,
     /// How often a sync retries this server when it has not answered yet,
-    /// before giving up; 0 gives up on the first failure (default: the
-    /// client settings', else 4).
+    /// before giving up; 0 gives up on the first failure (default:
+    /// `[defaults]`'s, else 4).
     #[arg(long, value_name = "N")]
     pub dial_retries: Option<u32>,
-    /// Look this server up in the mainline DHT (default: the client
-    /// settings', else yes).
+    /// Look this server up in the mainline DHT (default:
+    /// `[defaults]`'s, else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub dht: Option<bool>,
-    /// Look this server up with mDNS on the local network (default: the
-    /// client settings', else yes).
+    /// Look this server up with mDNS on the local network (default:
+    /// `[defaults]`'s, else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub mdns: Option<bool>,
     /// `require`: refuse this server when it does not offer the
     /// post-quantum hybrid key exchange (X25519MLKEM768); `prefer`: use it
-    /// when offered (default: the client settings', else prefer).
+    /// when offered (default: `[defaults]`'s, else prefer).
     #[arg(long, value_name = "prefer|require")]
     pub pq_key_exchange: Option<PqKeyExchange>,
 }
@@ -797,7 +797,7 @@ pub struct PairArgs {
     /// your own way.
     #[arg(long)]
     pub no_service: bool,
-    /// The private key to pair with (default: `identity` in irsync.toml,
+    /// The private key to pair with (default: `[defaults] identity` in irsync.toml,
     /// else id_ed25519 in the config directory; generated if missing).
     #[arg(long, value_name = "FILE")]
     pub identity: Option<PathBuf>,
@@ -1031,33 +1031,33 @@ pub struct SyncArgs {
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
     /// Data streams a push keeps open at once (default: `parallel` from the
-    /// server entry or the client settings, else 128).
+    /// server entry or `[defaults]`, else 128).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long to keep redialling after a dropped connection:
     /// `<N>[s|m|h|d]`; 0 gives up at once like rsync (default: `reconnect`
-    /// from the server entry or the client settings, else 24h). A server that
+    /// from the server entry or `[defaults]`, else 24h). A server that
     /// has never answered gets only `--dial-retries` retries.
     #[arg(long, value_name = "DUR", value_parser = duration::parse)]
     pub reconnect: Option<Duration>,
     /// How often to retry a server that has not answered yet, with growing
     /// waits (1s, 2s, 4s, ...), before giving up; 0 gives up on the first
-    /// failure (default: `dial_retries` from the server entry or the client
-    /// settings, else 4; 0 for a server `irsync pair` saved).
+    /// failure (default: `dial_retries` from the server entry or
+    /// `[defaults]`, else 4; 0 for a server `irsync pair` saved).
     #[arg(long, value_name = "N")]
     pub dial_retries: Option<u32>,
-    /// Use this relay server instead of the server entry's, the client
-    /// settings' or n0's default.
+    /// Use this relay server instead of the server entry's,
+    /// `[defaults]`'s or n0's default.
     #[arg(long, value_name = "URL")]
     pub relay: Option<String>,
     /// Direct connections only: never fall back to a relay (the lookups stay
-    /// on). Default: `relay_mode` from the server entry or the client settings.
+    /// on). Default: `relay_mode` from the server entry or `[defaults]`.
     #[arg(long, conflicts_with = "relay")]
     pub no_relay: bool,
     /// `require`: refuse a daemon that does not offer the post-quantum
     /// hybrid key exchange (X25519MLKEM768), such as an irsync built without it.
     /// `prefer`: use it when offered. Default: `pq_key_exchange` from the
-    /// server entry or the client settings, else prefer.
+    /// server entry or `[defaults]`, else prefer.
     #[arg(long, value_name = "prefer|require")]
     pub pq_key_exchange: Option<PqKeyExchange>,
     /// Do not look the daemon up in the mainline DHT.
@@ -1068,7 +1068,7 @@ pub struct SyncArgs {
     /// mapper off; the daemon's EndpointId is still required.
     #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
     pub address: Vec<HostPort>,
-    /// The private key to connect with (default: `identity` in irsync.toml,
+    /// The private key to connect with (default: `[defaults] identity` in irsync.toml,
     /// else id_ed25519 in the config directory; generated if missing).
     #[arg(long, value_name = "FILE")]
     pub identity: Option<PathBuf>,

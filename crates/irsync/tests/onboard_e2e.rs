@@ -1379,7 +1379,8 @@ fn ssh_install_false_in_config_stops_a_first_pairing() {
     let w = World::new();
     let cfg = w.client.path().join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
-    irsync::fs::private::write(cfg.join("irsync.toml"), "[client]\nssh_install = false\n").unwrap();
+    irsync::fs::private::write(cfg.join("irsync.toml"), "[defaults]\nssh_install = false\n")
+        .unwrap();
     let o = w.irsync_bare(&["pair", "myserver"]);
     assert_stopped_by_no_install(&w, &o);
 }

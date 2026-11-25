@@ -79,9 +79,9 @@ impl Syncer<'_> {
     }
 }
 
-/// The client's `irsync.toml` with `[client] congestion` set.
+/// The client's `irsync.toml` with `[defaults] congestion` set.
 fn client_settings(c: Congestion) -> String {
-    format!("[client]\ncongestion = \"{}\"\n", c.name())
+    format!("[defaults]\ncongestion = \"{}\"\n", c.name())
 }
 
 /// `IRSYNC_NETSIM=profile=<p>,side=<side>,seed=<seed>,stream=<stream>`,
@@ -673,7 +673,7 @@ mod tests {
     #[test]
     fn client_settings_set_the_client_congestion() {
         let t: toml::Table = client_settings(Congestion::Cubic).parse().unwrap();
-        assert_eq!(t["client"]["congestion"].as_str(), Some("cubic"));
+        assert_eq!(t["defaults"]["congestion"].as_str(), Some("cubic"));
     }
 
     #[test]

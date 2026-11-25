@@ -74,7 +74,7 @@ the daemon cannot read it. Root can run the same commands with the same flags
 if it fixes the ownership afterwards.
 
 `irsync show` and `irsync id show -a` also load the client key that
-`identity` names in the same file, and generate it if it is missing.
+`[defaults] identity` names in the same file, and generate it if it is missing.
 
 ### Do not run it as root
 

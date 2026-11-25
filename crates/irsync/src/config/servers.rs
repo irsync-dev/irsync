@@ -19,9 +19,9 @@ pub struct ServerEntry {
     pub relay: Option<Url>,
     /// `"disabled"`: reach this server directly only, never through a relay.
     pub relay_mode: Option<RelayMode>,
-    /// For pushes to this server; unset: the client settings'.
+    /// For pushes to this server; unset: `[defaults]`'s.
     pub congestion: Option<Congestion>,
-    /// For connections to this server; unset: the client settings'.
+    /// For connections to this server; unset: `[defaults]`'s.
     pub pq_key_exchange: Option<PqKeyExchange>,
     pub address: Vec<HostPort>,
     pub parallel: Option<u32>,

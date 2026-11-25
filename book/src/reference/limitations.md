@@ -6,13 +6,13 @@
   and resumes. See [Configuration](configuration.md#daemon).
 - **Only file-based Ed25519 keys.** Hardware keys and ssh-agent keys cannot be
   used. Of the keys under `~/.ssh`, only `id_ed25519` is tried, unless
-  `identity` in the config file or `--identity` names another. See
+  `[defaults] identity` in the config file or `--identity` names another. See
   [Configuration](configuration.md#identity-and-state).
 - **Relays are slow.** The throughput target, filling a 1 Gbit/s link, applies
   to direct connections. Relays are a fallback and are much slower. When one
   end sits behind a symmetric NAT and the other behind a symmetric or
   port-restricted NAT, hole punching fails and the connection stays on the
-  relay; then run a self-hosted relay and point `relay` in `[client]` and
+  relay; then run a self-hosted relay and point `relay` in `[defaults]` and
   `[daemon]` at it. [Configuration](configuration.md#client) has the keys,
   and [Connections](../explanation/connections.md#relays) explains relays.
 - **No compression.** `irsync` has no counterpart to rsync's `-z`; data

@@ -1,5 +1,5 @@
 # top
-identity = "~/k"
+state_dir = "~/k"
 # on portmap
 daemon.portmap = false # off
 daemon.discovery.dht = false # dht off

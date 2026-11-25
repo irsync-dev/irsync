@@ -294,7 +294,7 @@ fn id_show_uses_the_ssh_key_until_an_irsync_key_exists() {
     let named = home.join("elsewhere/key");
     irsync::fs::private::write(
         home.join(".config/irsync/irsync.toml"),
-        format!("identity = {:?}\n", named.display().to_string()),
+        format!("[defaults]\nidentity = {:?}\n", named.display().to_string()),
     )
     .unwrap();
     let o = irsync(&home, &["id", "show"]);
@@ -851,8 +851,11 @@ fn id_generate_writes_the_configured_identity_and_refuses_a_second_time() {
     // The paths come from the settings file.
     let other = home.join("elsewhere/client_key");
     std::fs::create_dir_all(&cfg).unwrap();
-    irsync::fs::private::write(cfg.join("irsync.toml"), format!("identity = {:?}\n", other))
-        .unwrap();
+    irsync::fs::private::write(
+        cfg.join("irsync.toml"),
+        format!("[defaults]\nidentity = {:?}\n", other),
+    )
+    .unwrap();
     let o = irsync(&home, &["id", "generate"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(other.exists() && home.join("elsewhere/client_key.pub").exists());
@@ -1092,8 +1095,8 @@ fn get_prints_defaults_and_exits_1_for_unset_optional_keys() {
     );
     let o = irsync(&home, &["config", "get", "daemon.listen"]);
     assert!(o.status.success() && o.stdout.is_empty(), "{o:?}");
-    assert_eq!(ok(&home, &["config", "get", "client.parallel"]), "128\n");
-    let o = irsync(&home, &["config", "get", "client.relay"]);
+    assert_eq!(ok(&home, &["config", "get", "defaults.parallel"]), "128\n");
+    let o = irsync(&home, &["config", "get", "defaults.relay"]);
     assert_eq!(o.status.code(), Some(1));
     assert!(o.stdout.is_empty() && o.stderr.is_empty(), "{o:?}");
     let o = irsync(&home, &["config", "get", "daemon.nope"]);
@@ -1130,7 +1133,7 @@ fn set_with_a_bad_value_leaves_the_file_untouched() {
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let config = cfg.join("irsync.toml");
-    irsync::fs::private::write(&config, "[client]\nparallel = 4\n").unwrap();
+    irsync::fs::private::write(&config, "[defaults]\nparallel = 4\n").unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
     for (args, needle) in [
         (
@@ -1146,8 +1149,8 @@ fn set_with_a_bad_value_leaves_the_file_untouched() {
             "exports.p.path",
         ),
         (
-            &["config", "set", "client.parallel", "x"],
-            "client.parallel",
+            &["config", "set", "defaults.parallel", "x"],
+            "defaults.parallel",
         ),
         (&["config", "set", "daemon.nope", "1"], "daemon.nope"),
         (
@@ -1159,8 +1162,11 @@ fn set_with_a_bad_value_leaves_the_file_untouched() {
             "clients.all.client_id",
         ),
         (&["config", "set", "servers.home", "1"], "servers.home"),
-        (&["config", "set", "client.parallel"], "client.parallel"),
-        (&["config", "unset", "client.reconnect"], "client.reconnect"),
+        (&["config", "set", "defaults.parallel"], "defaults.parallel"),
+        (
+            &["config", "unset", "defaults.reconnect"],
+            "defaults.reconnect",
+        ),
     ] {
         let o = irsync(&home, args);
         assert_eq!(o.status.code(), Some(1), "{args:?}");
@@ -1168,7 +1174,7 @@ fn set_with_a_bad_value_leaves_the_file_untouched() {
         assert!(err.contains(needle), "{args:?}: {err}");
         assert_eq!(
             std::fs::read_to_string(&config).unwrap(),
-            "[client]\nparallel = 4\n",
+            "[defaults]\nparallel = 4\n",
             "{args:?}"
         );
     }
@@ -1209,8 +1215,8 @@ fn set_unset_and_the_nouns_share_one_file() {
         ok(&home, &["config", "get", "daemon.listen"]),
         "127.0.0.1:1\n[::1]:1\n"
     );
-    ok(&home, &["config", "set", "client.reconnect", "2h"]);
-    assert_eq!(ok(&home, &["config", "get", "client.reconnect"]), "2h\n");
+    ok(&home, &["config", "set", "defaults.reconnect", "2h"]);
+    assert_eq!(ok(&home, &["config", "get", "defaults.reconnect"]), "2h\n");
     ok(&home, &["config", "unset", "exports.p"]);
     assert_eq!(ok(&home, &["export", "list"]), "");
 }
@@ -1247,15 +1253,15 @@ fn a_lock_file_blocks_edits_and_names_itself() {
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::write(cfg.join("irsync.toml.lock"), "").unwrap();
-    let o = irsync(&home, &["config", "set", "client.parallel", "4"]);
+    let o = irsync(&home, &["config", "set", "defaults.parallel", "4"]);
     assert_eq!(o.status.code(), Some(1));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("irsync.toml.lock"), "{err}");
     assert!(!cfg.join("irsync.toml").exists());
     std::fs::remove_file(cfg.join("irsync.toml.lock")).unwrap();
-    ok(&home, &["config", "set", "client.parallel", "4"]);
+    ok(&home, &["config", "set", "defaults.parallel", "4"]);
     assert!(!cfg.join("irsync.toml.lock").exists());
-    assert_eq!(ok(&home, &["config", "get", "client.parallel"]), "4\n");
+    assert_eq!(ok(&home, &["config", "get", "defaults.parallel"]), "4\n");
 }
 
 #[test]
@@ -1585,7 +1591,7 @@ fn unrelated_config_set_cleans_the_file() {
             "[clients.box]\nclient_id = \"{id}\"\n[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"
         ),
     );
-    ok(&home, &["config", "set", "client.parallel", "4"]);
+    ok(&home, &["config", "set", "defaults.parallel", "4"]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
         text.contains("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"),
@@ -2540,8 +2546,8 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
         &["server", "add", "box", id],
         &["export", "add", src],
         &["client", "set", "nas", "all_exports=rw"],
-        &["config", "get", "client.parallel"],
-        &["config", "set", "client.parallel", "4"],
+        &["config", "get", "defaults.parallel"],
+        &["config", "set", "defaults.parallel", "4"],
         &["config", "set", "unsafe_config_allowed", "true"],
         &["id", "show"],
         &["id", "list"],
@@ -2570,7 +2576,7 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
     // The file's owner can say that this is meant.
     std::fs::write(&file, format!("unsafe_config_allowed = true\n{text}")).unwrap();
     assert!(ok(&home, &["server", "list"]).contains("nas"));
-    ok(&home, &["config", "set", "client.parallel", "4"]);
+    ok(&home, &["config", "set", "defaults.parallel", "4"]);
     assert_eq!(
         ok(&home, &["config", "get", "unsafe_config_allowed"]),
         "true\n"

@@ -1,9 +1,9 @@
 config_version = 2
 unsafe_config_allowed = true
-identity = "~/keys/client"
 state_dir = "/var/lib/irsync"
 
-[client]
+[defaults]
+identity = "~/keys/client"
 parallel = 7
 reconnect = "90s"
 dial_retries = 9

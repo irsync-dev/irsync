@@ -374,7 +374,7 @@ fn table<'a>(c: &'a mut pb::Config, path: &[String]) -> Option<Parts<'a>> {
             tail: &mut c.tail,
             arrays: Vec::new(),
         },
-        ["client"] => parts!(c.client.as_mut()?),
+        ["defaults"] => parts!(c.defaults.as_mut()?),
         ["daemon"] => parts!(c.daemon.as_mut()?, "listen" => listen),
         ["daemon", "discovery"] => parts!(c.daemon.as_mut()?.discovery.as_mut()?),
         ["telemetry"] => parts!(c.telemetry.as_mut()?),

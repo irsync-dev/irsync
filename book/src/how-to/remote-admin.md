@@ -21,7 +21,7 @@ There are two levels:
   `config get` and `config list`, and nothing that changes the server.
   `config get` and `config list` show every setting in the server's config
   file, such as its `state_dir`, the ids and addresses of the servers it has
-  saved, and its `[client]` settings. None of them is a secret.
+  saved, and its `[defaults]` settings. None of them is a secret.
 
 `admin = "rw"` is the whole account, like `all_paths = "rw"`: a client that
 can add an export and grant itself access to it can reach any path. Give it

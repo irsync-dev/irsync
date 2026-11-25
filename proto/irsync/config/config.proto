@@ -29,32 +29,33 @@ enum OtlpProtocol { OTLP_PROTOCOL_UNSPECIFIED = 0; OTLP_PROTOCOL_GRPC = 1; OTLP_
 message Config {
   repeated string header = 1;  // lines at the top of the file; "" is a blank line
   repeated string footer = 2;  // lines after everything
-  optional bool unsafe_config_allowed = 3;
-  optional string identity = 4;
+  optional uint32 config_version = 3;
+  optional bool unsafe_config_allowed = 4;
   optional string state_dir = 5;
   map<string, Comment> key_comments = 6;
   repeated string tail = 7;    // after the last top-level key
-  Client client = 8;
+  Defaults defaults = 8;
   Daemon daemon = 9;
   Telemetry telemetry = 10;
-  repeated Export exports = 11;
-  optional uint32 config_version = 12;
-  repeated ServerEntry servers = 13;
-  repeated ClientEntry clients = 14;
+  repeated ServerEntry servers = 11;
+  repeated ClientEntry clients = 12;
+  repeated Export exports = 13;
 }
 
-message Client {
+// This machine's defaults for dialling a server, and its client identity.
+message Defaults {
   Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
-  optional uint32 parallel = 4;
-  google.protobuf.Duration reconnect = 5;
-  optional uint32 dial_retries = 6;
-  optional bool dht = 7;
-  optional bool ssh_install = 8;
-  optional bool mdns = 9;
-  optional string relay = 10;
-  optional RelayMode relay_mode = 11;
-  optional Congestion congestion = 12;
-  optional PqKeyExchange pq_key_exchange = 13;
+  optional string identity = 4;
+  optional uint32 parallel = 5;
+  google.protobuf.Duration reconnect = 6;
+  optional uint32 dial_retries = 7;
+  optional bool dht = 8;
+  optional bool ssh_install = 9;
+  optional bool mdns = 10;
+  optional string relay = 11;
+  optional RelayMode relay_mode = 12;
+  optional Congestion congestion = 13;
+  optional PqKeyExchange pq_key_exchange = 14;
 }
 
 message Daemon {

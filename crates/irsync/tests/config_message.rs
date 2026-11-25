@@ -31,12 +31,15 @@ fn unset_and_set_to_the_default_differ() {
 #[test]
 fn values_not_spellings() {
     let c = values(&format!(
-        "identity = \"~/k\"\n[client]\nreconnect = \"90\"\n[servers.nas]\nendpoint_id = \"{}\"\nrelay_mode = \"disabled\"\nreconnect = 3600\n",
+        "[defaults]\nidentity = \"~/k\"\nreconnect = \"90\"\n[servers.nas]\nendpoint_id = \"{}\"\nrelay_mode = \"disabled\"\nreconnect = 3600\n",
         id(1)
     ));
-    assert_eq!(c.identity.as_deref(), Some("~/k")); // as written
     assert_eq!(
-        c.client
+        c.defaults.as_ref().unwrap().identity.as_deref(),
+        Some("~/k")
+    ); // as written
+    assert_eq!(
+        c.defaults
             .as_ref()
             .unwrap()
             .reconnect
@@ -54,13 +57,13 @@ fn values_not_spellings() {
 #[test]
 fn urls_are_kept_as_written() {
     let text = format!(
-        "[client]\nrelay = \"https://r.example\"\n\n[daemon]\nrelay = \"https://d.example\"\n\n\
+        "[defaults]\nrelay = \"https://r.example\"\n\n[daemon]\nrelay = \"https://d.example\"\n\n\
          [telemetry]\notlp_endpoint = \"http://c:4318\"\n\n[servers.nas]\nendpoint_id = \"{}\"\nrelay = \"https://h.example\"\n",
         id(1)
     );
     let c = values(&text);
     assert_eq!(
-        c.client.as_ref().unwrap().relay.as_deref(),
+        c.defaults.as_ref().unwrap().relay.as_deref(),
         Some("https://r.example")
     );
     assert_eq!(
@@ -155,8 +158,11 @@ fn a_client_id_is_32_bytes() {
 
 #[test]
 fn from_message_applies_defaults_and_expands_tilde() {
-    let c =
-        Config::from_message(&values("identity = \"~/k\"\n[daemon]\n"), Path::new("f")).unwrap();
+    let c = Config::from_message(
+        &values("[defaults]\nidentity = \"~/k\"\n[daemon]\n"),
+        Path::new("f"),
+    )
+    .unwrap();
     assert_eq!(c.settings.identity, dirs::home_dir().unwrap().join("k"));
     assert_eq!(c.settings.ssh_identity, None); // the file names an identity
     assert_eq!(c.settings.daemon, DaemonSettings::default());
@@ -252,12 +258,12 @@ fn from_message_checks_each_edit_again() {
     );
     assert_eq!(
         refusal(&|m| {
-            m.client = Some(pb::Client {
+            m.defaults = Some(pb::Defaults {
                 relay: Some("not a url".into()),
                 ..Default::default()
             })
         }),
-        "f: [client]: relative URL without a base: \"not a url\""
+        "f: [defaults]: relative URL without a base: \"not a url\""
     );
 }
 
@@ -289,8 +295,8 @@ fn errors_are_those_of_config_parse() {
             "f:1: invalid name \"all\": must be non-empty, contain no ':' or '/', and be neither all, * nor an EndpointId",
         ),
         (
-            "[client]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `parallel`, `reconnect`, `dial_retries`, `dht`, `ssh_install`, `mdns`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`",
+            "[defaults]\nbogus = 1\n",
+            "f:2: unknown field `bogus`, expected one of `identity`, `parallel`, `reconnect`, `dial_retries`, `dht`, `ssh_install`, `mdns`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`",
         ),
         (
             "[daemon]\nidentity = 1\n",
@@ -309,7 +315,7 @@ fn errors_are_those_of_config_parse() {
             "f:2: unknown field `bogus`, expected one of `dht`, `dns`, `mdns`",
         ),
         (
-            "[client]\nrelay = \"not a url\"\n",
+            "[defaults]\nrelay = \"not a url\"\n",
             "f:2: relative URL without a base: \"not a url\"",
         ),
         (
@@ -349,8 +355,8 @@ fn errors_are_those_of_config_parse() {
             "f:1: unknown key \"all\"",
         ),
         (
-            "identity = 1\n",
-            "f:1: identity: expected a string, found integer",
+            "state_dir = 1\n",
+            "f:1: state_dir: expected a string, found integer",
         ),
         (
             "[daemon]\nidle_timeout = true\n",
@@ -361,11 +367,11 @@ fn errors_are_those_of_config_parse() {
             "f:2: invalid type: integer `1`, expected a string",
         ),
         (
-            "[client]\nrelay_mode = 1\n",
+            "[defaults]\nrelay_mode = 1\n",
             "f:2: invalid type: integer `1`, expected a string",
         ),
         (
-            "[client]\nrelay_mode = \"x\"\n",
+            "[defaults]\nrelay_mode = \"x\"\n",
             "f:2: \"x\": expected default or disabled",
         ),
         (
@@ -381,11 +387,11 @@ fn errors_are_those_of_config_parse() {
             "f:2: invalid type: integer `1`, expected a string",
         ),
         (
-            "[client]\nreconnect = true\n",
+            "[defaults]\nreconnect = true\n",
             "f:2: data did not match any variant of untagged enum Raw",
         ),
         (
-            "[client]\nreconnect = \"soon\"\n",
+            "[defaults]\nreconnect = \"soon\"\n",
             "f:2: bad duration \"soon\": expected <number>[s|m|h|d]",
         ),
         (
@@ -453,11 +459,11 @@ fn errors_are_those_of_config_parse() {
             "f:1: unsafe_config_allowed: expected a boolean, found integer",
         ),
         (
-            "[client]\nrelay_mode = {}\n",
+            "[defaults]\nrelay_mode = {}\n",
             "f:2: invalid type: map, expected a string",
         ),
         (
-            "[client]\nrelay_mode = { default = 1 }\n",
+            "[defaults]\nrelay_mode = { default = 1 }\n",
             "f:2: invalid type: map, expected a string",
         ),
         (
@@ -494,7 +500,7 @@ const COMMENTED: &str = "\
 # irsync on the nas
 # second header line
 
-identity = \"~/k\" # my key
+state_dir = \"~/k\" # my key
 # after the top keys
 
 # about the daemon
@@ -519,7 +525,7 @@ rw = [
 fn every_comment_has_a_home() {
     let c = read(COMMENTED, Path::new("f")).unwrap();
     assert_eq!(c.header, ["# irsync on the nas", "# second header line"]);
-    assert_eq!(c.key_comments["identity"].trailing, "# my key");
+    assert_eq!(c.key_comments["state_dir"].trailing, "# my key");
     assert_eq!(c.tail, ["# after the top keys"]);
     let d = c.daemon.unwrap();
     assert_eq!(d.comment.as_ref().unwrap().above, ["# about the daemon"]);
@@ -546,7 +552,7 @@ fn the_footer_starts_at_the_first_blank_line_after_the_last_key() {
     assert_eq!(c.daemon.unwrap().tail, ["# daemon tail"]);
     assert_eq!(c.footer, ["# the footer", "", "# more"]);
     // Top-level keys and no table: the top level's tail.
-    let c = commented("identity = \"~/k\"\n# top tail\n\n# the footer\n");
+    let c = commented("state_dir = \"~/k\"\n# top tail\n\n# the footer\n");
     assert_eq!(c.tail, ["# top tail"]);
     assert_eq!(c.footer, ["# the footer"]);
 }
@@ -588,11 +594,12 @@ fn a_file_that_starts_with_a_table_has_a_header() {
 
 #[test]
 fn a_tail_keeps_its_inner_blank_lines() {
-    let c =
-        commented("[daemon]\nportmap = true\n\n# a\n\n# b\n\n[client]\n# first\n\nparallel = 2\n");
+    let c = commented(
+        "[daemon]\nportmap = true\n\n# a\n\n# b\n\n[defaults]\n# first\n\nparallel = 2\n",
+    );
     let d = c.daemon.unwrap();
     assert_eq!(d.tail, ["# a", "", "# b"]);
-    let cl = c.client.unwrap();
+    let cl = c.defaults.unwrap();
     assert_eq!(cl.comment, None);
     assert_eq!(cl.key_comments["parallel"].above, ["# first"]);
 }
@@ -695,7 +702,7 @@ fn the_writers_form() {
 # irsync on the nas
 # second header line
 
-identity = \"~/k\" # my key
+state_dir = \"~/k\" # my key
 # after the top keys
 
 # about the daemon
@@ -831,7 +838,7 @@ rw = [\"nas\", \"lap\"]
     let dotted_twin = format!(
         "\
 # top
-identity = \"~/k\"
+state_dir = \"~/k\"
 
 [daemon]
 # on portmap

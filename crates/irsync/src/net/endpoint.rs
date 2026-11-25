@@ -218,9 +218,9 @@ fn transport_config_with(
 /// command line, else the host entry) means isolated mode: no relay, no
 /// lookups, no port mapper, whatever the config says; `cli_relay` together
 /// with addresses is an error. Without addresses: the relay from `cli_relay`, else none when
-/// `no_relay` or a `relay_mode = "disabled"` (host entry, then client
-/// settings) says so, else the host entry's, else the client settings',
-/// else n0's; lookups likewise (host entry, then client settings, then on).
+/// `no_relay` or a `relay_mode = "disabled"` (host entry, then
+/// `[defaults]`) says so, else the host entry's, else `[defaults]`'s,
+/// else n0's; lookups likewise (host entry, then `[defaults]`, then on).
 pub fn client_endpoint_opts(
     secret: SecretKey,
     cli_relay: Option<&str>,
@@ -231,7 +231,7 @@ pub fn client_endpoint_opts(
     addresses: &[HostPort],
 ) -> anyhow::Result<EndpointOpts> {
     let host_relay = host.and_then(|h| h.relay.as_ref());
-    // `--no-relay`, else the host entry's mode, else the client settings'.
+    // `--no-relay`, else the host entry's mode, else `[defaults]`'s.
     let relay_off = no_relay
         || host
             .and_then(|h| h.relay_mode)
@@ -239,7 +239,7 @@ pub fn client_endpoint_opts(
             .is_some_and(|m| m == DaemonRelayMode::Disabled);
     let host_dht = host.and_then(|h| h.dht);
     let host_mdns = host.and_then(|h| h.mdns);
-    // The host entry's, else the client settings', else BBR.
+    // The host entry's, else `[defaults]`'s, else BBR.
     let congestion = host
         .and_then(|h| h.congestion)
         .or(client.congestion)

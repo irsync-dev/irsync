@@ -41,21 +41,21 @@ fn settings_defaults_when_empty() {
             && s.daemon.discovery.dns
             && s.daemon.discovery.mdns
     );
-    assert_eq!(s.client.parallel, None);
+    assert_eq!(s.defaults.parallel, None);
 }
 
 #[test]
 fn settings_tables_parse_and_expand_tilde() {
-    let t = "identity = \"~/k\"\n[client]\nparallel = 8\nreconnect = \"1h\"\ndial_retries = 2\nrelay_mode = \"disabled\"\n[daemon]\nidentity = \"~/d\"\nrelay_mode = \"disabled\"\nlisten = [\"127.0.0.1:0\"]\n[daemon.discovery]\ndht = false\n";
+    let t = "[defaults]\nidentity = \"~/k\"\nparallel = 8\nreconnect = \"1h\"\ndial_retries = 2\nrelay_mode = \"disabled\"\n[daemon]\nidentity = \"~/d\"\nrelay_mode = \"disabled\"\nlisten = [\"127.0.0.1:0\"]\n[daemon.discovery]\ndht = false\n";
     let s = Settings::parse(t, p()).unwrap();
     assert_eq!(s.identity, dirs::home_dir().unwrap().join("k"));
     assert_eq!(s.daemon.identity, dirs::home_dir().unwrap().join("d"));
-    assert_eq!(s.client.parallel, Some(8));
-    assert_eq!(s.client.relay_mode, Some(RelayMode::Disabled));
-    assert_eq!(Settings::default().client.relay_mode, None);
-    assert_eq!(s.client.reconnect, Some(Duration::from_secs(3600)));
-    assert_eq!(s.client.dial_retries, Some(2));
-    assert_eq!(Settings::default().client.dial_retries, None);
+    assert_eq!(s.defaults.parallel, Some(8));
+    assert_eq!(s.defaults.relay_mode, Some(RelayMode::Disabled));
+    assert_eq!(Settings::default().defaults.relay_mode, None);
+    assert_eq!(s.defaults.reconnect, Some(Duration::from_secs(3600)));
+    assert_eq!(s.defaults.dial_retries, Some(2));
+    assert_eq!(Settings::default().defaults.dial_retries, None);
     assert_eq!(s.daemon.relay_mode, RelayMode::Disabled);
     assert_eq!(s.daemon.listen.len(), 1);
     assert!(!s.daemon.discovery.dht && s.daemon.discovery.dns);
@@ -66,17 +66,17 @@ fn congestion_is_bbr_unless_set_to_cubic() {
     use irsync::config::settings::Congestion;
     let d = Settings::default();
     assert_eq!(
-        (d.client.congestion, d.daemon.congestion),
+        (d.defaults.congestion, d.daemon.congestion),
         (None, Congestion::Bbr)
     );
     let s = Settings::parse(
-        "[client]\ncongestion = \"cubic\"\n[daemon]\ncongestion = \"cubic\"\n",
+        "[defaults]\ncongestion = \"cubic\"\n[daemon]\ncongestion = \"cubic\"\n",
         p(),
     )
     .unwrap();
-    assert_eq!(s.client.congestion, Some(Congestion::Cubic));
+    assert_eq!(s.defaults.congestion, Some(Congestion::Cubic));
     assert_eq!(s.daemon.congestion, Congestion::Cubic);
-    let e = Settings::parse("[client]\ncongestion = \"reno\"\n", p()).unwrap_err();
+    let e = Settings::parse("[defaults]\ncongestion = \"reno\"\n", p()).unwrap_err();
     assert!(e.to_string().contains("reno"), "{e}");
 }
 
@@ -85,18 +85,18 @@ fn pq_key_exchange_is_prefer_unless_set_to_require() {
     use irsync::config::settings::PqKeyExchange;
     let d = Settings::default();
     assert_eq!(
-        (d.client.pq_key_exchange, d.daemon.pq_key_exchange),
+        (d.defaults.pq_key_exchange, d.daemon.pq_key_exchange),
         (None, PqKeyExchange::Prefer)
     );
     let s = Settings::parse(
-        "[client]\npq_key_exchange = \"require\"\n[daemon]\npq_key_exchange = \"require\"\n",
+        "[defaults]\npq_key_exchange = \"require\"\n[daemon]\npq_key_exchange = \"require\"\n",
         p(),
     )
     .unwrap();
-    assert_eq!(s.client.pq_key_exchange, Some(PqKeyExchange::Require));
+    assert_eq!(s.defaults.pq_key_exchange, Some(PqKeyExchange::Require));
     assert_eq!(s.daemon.pq_key_exchange, PqKeyExchange::Require);
-    let s = Settings::parse("[client]\npq_key_exchange = \"prefer\"\n", p()).unwrap();
-    assert_eq!(s.client.pq_key_exchange, Some(PqKeyExchange::Prefer));
+    let s = Settings::parse("[defaults]\npq_key_exchange = \"prefer\"\n", p()).unwrap();
+    assert_eq!(s.defaults.pq_key_exchange, Some(PqKeyExchange::Prefer));
     let e = Settings::parse("[daemon]\npq_key_exchange = \"only\"\n", p()).unwrap_err();
     assert!(e.to_string().contains("only"), "{e}");
 }
@@ -105,13 +105,13 @@ fn pq_key_exchange_is_prefer_unless_set_to_require() {
 fn pq_key_exchange_of_a_server() {
     use irsync::config::settings::PqKeyExchange;
     let t = format!(
-        "[client]\npq_key_exchange = \"require\"\n[servers.nas]\nendpoint_id = \"{}\"\npq_key_exchange = \"prefer\"\n[servers.home]\nendpoint_id = \"{}\"\n",
+        "[defaults]\npq_key_exchange = \"require\"\n[servers.nas]\nendpoint_id = \"{}\"\npq_key_exchange = \"prefer\"\n[servers.home]\nendpoint_id = \"{}\"\n",
         id(1),
         id(2)
     );
     let c = Config::parse(&t, p()).unwrap();
     assert_eq!(
-        c.settings.client.pq_key_exchange,
+        c.settings.defaults.pq_key_exchange,
         Some(PqKeyExchange::Require)
     );
     assert_eq!(
@@ -132,7 +132,7 @@ fn pq_key_exchange_of_a_server() {
 
 #[test]
 fn settings_unknown_key_names_file_and_key() {
-    let e = Settings::parse("[client]\nbogus = 1\n", p()).unwrap_err();
+    let e = Settings::parse("[defaults]\nbogus = 1\n", p()).unwrap_err();
     let msg = e.to_string();
     assert!(msg.contains("/x/f.toml") && msg.contains("bogus"), "{msg}");
 }
@@ -142,7 +142,7 @@ fn settings_missing_file_is_default() {
     let d = tempfile::tempdir().unwrap();
     let paths = Paths::resolve(Some(&d.path().join("none.toml")));
     let s = Config::load(&paths).unwrap().settings;
-    assert_eq!(s.client.parallel, None);
+    assert_eq!(s.defaults.parallel, None);
 }
 
 #[test]
@@ -482,14 +482,14 @@ fn merged_file_holds_every_table() {
     let c = merged(
         d.path(),
         &format!(
-            "state_dir = \"/var/lib/irsync\"\n[client]\nparallel = 4\n[daemon]\nlisten = [\"127.0.0.1:0\"]\n\
+            "state_dir = \"/var/lib/irsync\"\n[defaults]\nparallel = 4\n[daemon]\nlisten = [\"127.0.0.1:0\"]\n\
              [servers.home]\nendpoint_id = \"{0}\"\n[clients.home]\nclient_id = \"{0}\"\nall_exports = \"ro\"\n[exports.photos]\npath = \"/srv/photos\"\nrw = [\"home\"]\n",
             id(1)
         ),
     )
     .unwrap();
     assert_eq!(c.settings.state_dir, PathBuf::from("/var/lib/irsync"));
-    assert_eq!(c.settings.client.parallel, Some(4));
+    assert_eq!(c.settings.defaults.parallel, Some(4));
     assert_eq!(c.servers.get("home").unwrap().endpoint_id, id(1));
     assert_eq!(c.clients.get("home").unwrap().client_id, id(1));
     assert_eq!(
@@ -670,11 +670,11 @@ fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
     // No file at all is still the defaults.
     assert!(!Config::load(&paths).unwrap().settings.unsafe_config_allowed);
     for mode in [0o600, 0o400] {
-        let c = set("[client]\nparallel = 4\n", mode).unwrap();
+        let c = set("[defaults]\nparallel = 4\n", mode).unwrap();
         assert!(!c.settings.unsafe_config_allowed, "{mode:o}");
     }
     for mode in [0o640, 0o604, 0o620, 0o602, 0o610, 0o644, 0o666] {
-        let e = set("[client]\nparallel = 4\n", mode).unwrap_err();
+        let e = set("[defaults]\nparallel = 4\n", mode).unwrap_err();
         assert!(matches!(e, ConfigError::TooOpen { .. }), "{mode:o}: {e}");
         let text = e.to_string();
         assert!(text.contains(&format!("has mode {mode:04o}")), "{text}");
@@ -682,7 +682,7 @@ fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
         assert!(text.contains("unsafe_config_allowed = true"), "{text}");
         // Switched off by the file itself.
         let c = set(
-            "unsafe_config_allowed = true\n[client]\nparallel = 4\n",
+            "unsafe_config_allowed = true\n[defaults]\nparallel = 4\n",
             mode,
         )
         .unwrap();
@@ -694,7 +694,7 @@ fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
         "not toml [",
         "unsafe_config_allowed = false\n",
         "unsafe_config_allowed = \"true\"\n",
-        "[client]\nunsafe_config_allowed = true\n",
+        "[defaults]\nunsafe_config_allowed = true\n",
         "bogus_key = 1\n",
     ] {
         let e = set(text, 0o644).unwrap_err();
@@ -710,7 +710,7 @@ fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
     let e = set("unsafe_config_allowed = \"true\"\n", 0o600).unwrap_err();
     assert!(e.to_string().contains("expected a boolean"), "{e}");
     // Editing reads the file under the same rule.
-    set("[client]\nparallel = 4\n", 0o644).unwrap_err();
+    set("[defaults]\nparallel = 4\n", 0o644).unwrap_err();
     let e = irsync::manage::load_message(&paths.config).unwrap_err();
     assert!(e.to_string().contains("has mode 0644"), "{e}");
     let mut lock = irsync::manage::lock_config(&paths.config).unwrap();

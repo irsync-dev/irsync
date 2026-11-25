@@ -280,15 +280,16 @@ pub struct Settings {
     /// True: the config file, a private key and a passphrase file are used
     /// even when other users can read or change them, or own them.
     pub unsafe_config_allowed: bool,
-    /// The client identity: the key to load, or to generate when nothing
-    /// else serves (see `ssh_identity`).
+    /// The client identity, `[defaults] identity`: the key to load, or to
+    /// generate when nothing else serves (see `ssh_identity`).
     pub identity: PathBuf,
     /// `~/.ssh/id_ed25519`, used when `identity` is not set in the file and
     /// the key at `identity` does not exist yet; never generated. Not a file
     /// key: `None` once the file names an identity.
     pub ssh_identity: Option<PathBuf>,
     pub state_dir: PathBuf,
-    pub client: ClientSettings,
+    /// `[defaults]`: this machine's defaults for dialling a server.
+    pub defaults: ClientSettings,
     pub daemon: DaemonSettings,
     pub telemetry: TelemetrySettings,
 }
@@ -300,7 +301,7 @@ impl Default for Settings {
             identity: paths::config_dir().join("id_ed25519"),
             ssh_identity: paths::ssh_identity(),
             state_dir: paths::state_dir(),
-            client: ClientSettings::default(),
+            defaults: ClientSettings::default(),
             daemon: DaemonSettings::default(),
             telemetry: TelemetrySettings::default(),
         }
@@ -328,7 +329,7 @@ pub(crate) fn addresses_from(entries: &[pb::Entry]) -> Result<Vec<HostPort>, Str
 }
 
 impl ClientSettings {
-    fn from_message(c: &pb::Client) -> Result<ClientSettings, String> {
+    fn from_message(c: &pb::Defaults) -> Result<ClientSettings, String> {
         Ok(ClientSettings {
             parallel: c.parallel,
             reconnect: duration_from(c.reconnect.as_ref())?,
@@ -405,24 +406,27 @@ impl Settings {
             // A named identity is the whole answer; the ssh key is only
             // consulted for the built-in default.
             ssh_identity: msg
-                .identity
+                .defaults
+                .as_ref()
+                .and_then(|d| d.identity.as_ref())
                 .is_none()
                 .then_some(defaults.ssh_identity)
                 .flatten(),
             identity: msg
-                .identity
+                .defaults
                 .as_ref()
+                .and_then(|d| d.identity.as_ref())
                 .map_or(defaults.identity, PathBuf::from),
             state_dir: msg
                 .state_dir
                 .as_ref()
                 .map_or(defaults.state_dir, PathBuf::from),
-            client: msg
-                .client
+            defaults: msg
+                .defaults
                 .as_ref()
                 .map(ClientSettings::from_message)
                 .transpose()
-                .map_err(in_table("client"))?
+                .map_err(in_table("defaults"))?
                 .unwrap_or_default(),
             daemon: msg
                 .daemon
