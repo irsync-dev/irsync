@@ -28,7 +28,7 @@ use irsync_proto::v1::{
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 
-use crate::Connected;
+use irsync::client::Connected;
 
 /// How long [`converse`] waits for the server's answer.
 const REPLY_WAIT: Duration = Duration::from_secs(60);
@@ -206,7 +206,7 @@ fn client_id_of(id: &str) -> anyhow::Result<iroh::EndpointId> {
 pub async fn run_remote(c: &Connected, req: RemoteRequest) -> anyhow::Result<RemoteOutcome> {
     let server = c.alias.clone().unwrap_or_else(|| c.target.id.to_string());
     let client = c.endpoint.id();
-    let conn = crate::dial(c).await?;
+    let conn = irsync::client::dial(c).await?;
     let answer = converse(&conn, &server, req).await;
     let answer = answer.map_err(|e| {
         irsync::session::reconnect::explain(e, Some(&conn), &format!("{server}:"), &client)

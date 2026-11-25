@@ -1,5 +1,6 @@
 pub mod progress;
 
+use crate::client::Operands;
 use crate::config::duration;
 use crate::config::settings::{parse_debug_addr, PqKeyExchange};
 use crate::location::Location;
@@ -1253,14 +1254,6 @@ impl ListArgs {
     }
 }
 
-/// The operands of a sync, read: [`Args::try_parse_from`] has checked them.
-#[derive(Debug, Clone)]
-pub struct Operands {
-    pub srcs: Vec<Location>,
-    pub dest: Location,
-    pub direction: Direction,
-}
-
 impl SyncArgs {
     /// The sources, the destination and which way the data flows. Panics
     /// on operands [`Args::try_parse_from`] would have refused.
@@ -1276,6 +1269,8 @@ impl SyncArgs {
             srcs: all,
             dest,
             direction,
+            typed_srcs: self.src().to_vec(),
+            typed_dest: self.dest().unwrap_or_default().to_string(),
         }
     }
 

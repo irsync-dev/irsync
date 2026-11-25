@@ -6,6 +6,7 @@ pub mod authz;
 pub mod autoexport;
 pub mod build;
 pub mod cli;
+pub mod client;
 pub mod config;
 pub mod daemon;
 pub mod daemon_addr;
