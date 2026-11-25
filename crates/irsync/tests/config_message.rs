@@ -756,6 +756,29 @@ fn the_typed_config_is_the_same_after_a_rewrite() {
     }
 }
 
+/// `parallel = 0` could send nothing: refused at its line, as
+/// `--parallel 0` is, and in an edited message.
+#[test]
+fn parallel_must_be_at_least_one() {
+    let e = read("[defaults]\nreconnect = 1\nparallel = 0\n", Path::new("f")).unwrap_err();
+    assert_eq!(e.to_string(), "f:3: parallel must be at least 1");
+    let text = format!("[servers.nas]\nendpoint_id = \"{}\"\nparallel = 0\n", id(1));
+    let e = read(&text, Path::new("f")).unwrap_err();
+    assert_eq!(e.to_string(), "f:3: parallel must be at least 1");
+    assert!(read("[defaults]\nparallel = 1\n", Path::new("f")).is_ok());
+    let mut m = values("[defaults]\nparallel = 1\n");
+    m.defaults.as_mut().unwrap().parallel = Some(0);
+    let e = Config::from_message(&m, Path::new("f")).unwrap_err();
+    assert_eq!(e.to_string(), "f: [defaults]: parallel must be at least 1");
+    let mut m = values(&text.replace("parallel = 0", "parallel = 2"));
+    m.servers[0].parallel = Some(0);
+    let e = Config::from_message(&m, Path::new("f")).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "f: server \"nas\": parallel must be at least 1"
+    );
+}
+
 /// A server's `address` dials it directly: `relay` and the lookups
 /// beside it are refused, at the line of `address`.
 #[test]

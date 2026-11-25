@@ -170,7 +170,7 @@ built-in default.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `identity` | `~/.config/irsync/id_ed25519` | The client's private key, an OpenSSH Ed25519 key file. See [Identity and state](#identity-and-state). Flag: `--identity`. |
-| `parallel` | `128` | Data streams a push keeps open at once. Flag: `--parallel`. |
+| `parallel` | `128` | Data streams a push keeps open at once; at least 1. Flag: `--parallel`. |
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
 | `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. A server `irsync pair` saved is dialled once when no `dial_retries` is set: not here, not in its table and not by the flag. Flag: `--dial-retries`. |
 | `ssh_install` | `true` | Copy irsync to the server when `irsync pair` sets it up. `false` copies nothing: `pair` uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
@@ -224,7 +224,7 @@ an `EndpointId`.
 | `mdns` | `[defaults]`'s | Look this server up with mDNS. |
 | `congestion` | `[defaults]`'s | The congestion controller for pushes to this server. |
 | `pq_key_exchange` | `[defaults]`'s | `require`: refuse this server when it does not offer the post-quantum key exchange. |
-| `parallel` | `[defaults]`'s | Data streams a push to this server keeps open at once. |
+| `parallel` | `[defaults]`'s | Data streams a push to this server keeps open at once; at least 1. |
 | `reconnect` | `[defaults]`'s | How long to keep redialling. |
 | `dial_retries` | `[defaults]`'s | How often to retry this server before it has answered. A server with `ssh` is dialled once when neither this nor `[defaults]` sets it. |
 | `ssh` | none | The ssh destination this server was set up through, such as `myserver` or `me@myserver`. [`irsync pair`](../tutorial/first-sync.md#the-quick-way-over-ssh) writes it. It is what `irsync pair` logs in to. A sync never uses it, except to find the server when you type that address. `irsync pair` for a saved server checks it again, and never adds back `all_paths` that was removed on the server. |

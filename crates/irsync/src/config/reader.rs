@@ -11,7 +11,8 @@ use super::exports::{name_problem, not_absolute};
 use super::names::{invalid_name, valid_alias};
 use super::servers::beside_address;
 use super::settings::{
-    listen_problem, parse_debug_addr, Congestion, OtlpProtocol, PqKeyExchange, Relay, Spelled,
+    listen_problem, parallel_problem, parse_debug_addr, Congestion, OtlpProtocol, PqKeyExchange,
+    Relay, Spelled,
 };
 use super::{duration, expand_tilde, line_of, ConfigError};
 use crate::authz::Access;
@@ -49,6 +50,7 @@ struct RawFile {
 #[serde(deny_unknown_fields)]
 struct RawDefaults {
     identity: Option<PathBuf>,
+    #[serde(default, deserialize_with = "de_opt_parallel")]
     parallel: Option<u32>,
     #[serde(default, deserialize_with = "de_opt_duration")]
     reconnect: Option<Duration>,
@@ -104,6 +106,7 @@ struct RawServer {
     mdns: Option<bool>,
     congestion: Option<Text<Congestion>>,
     pq_key_exchange: Option<Text<PqKeyExchange>>,
+    #[serde(default, deserialize_with = "de_opt_parallel")]
     parallel: Option<u32>,
     #[serde(default, deserialize_with = "de_opt_duration")]
     reconnect: Option<Duration>,
@@ -205,6 +208,15 @@ fn de_opt_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, 
             .map(Some)
             .map_err(serde::de::Error::custom),
     }
+}
+
+/// `parallel`: at least one stream, as `--parallel` asks.
+fn de_opt_parallel<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    let n = u32::deserialize(d)?;
+    if let Some(problem) = parallel_problem(n) {
+        return Err(serde::de::Error::custom(problem));
+    }
+    Ok(Some(n))
 }
 
 fn de_opt_listen<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<HostPort>>, D::Error> {

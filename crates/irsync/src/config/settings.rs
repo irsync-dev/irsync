@@ -162,6 +162,12 @@ impl Default for Discovery {
     }
 }
 
+/// The message for a `parallel` of 0, which could send nothing; `None`
+/// for any other.
+pub(crate) fn parallel_problem(n: u32) -> Option<&'static str> {
+    (n == 0).then_some("parallel must be at least 1")
+}
+
 /// The message for a `listen` with two addresses of one family, or
 /// `None` when it has at most one of each.
 pub(crate) fn listen_problem(listen: &[HostPort]) -> Option<&'static str> {
@@ -365,6 +371,9 @@ pub(crate) fn addresses_from(entries: &[pb::Entry]) -> Result<Vec<HostPort>, Str
 
 impl Defaults {
     fn from_message(c: &pb::Defaults) -> Result<Defaults, String> {
+        if let Some(problem) = c.parallel.and_then(parallel_problem) {
+            return Err(problem.to_string());
+        }
         Ok(Defaults {
             parallel: c.parallel,
             reconnect: duration_from(c.reconnect.as_ref())?,

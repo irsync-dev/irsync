@@ -1,7 +1,7 @@
 //! The `[servers]` table of `irsync.toml`: aliases for daemons to dial.
 
 use super::names::{invalid_name, valid_alias};
-use super::settings::{addresses_from, duration_from};
+use super::settings::{addresses_from, duration_from, parallel_problem};
 use super::{endpoint_id_from, file_error, ConfigError};
 use crate::config::settings::{relay_from, Congestion, PqKeyExchange, Relay, Spelled};
 use crate::net::addr::HostPort;
@@ -63,6 +63,9 @@ impl ServerEntry {
             return Err(format!("server {name:?}: needs an endpoint_id"));
         }
         let field = |e: String| format!("server {name:?}: {e}");
+        if let Some(problem) = s.parallel.and_then(parallel_problem) {
+            return Err(field(problem.to_string()));
+        }
         if !s.address.is_empty() {
             let keys = [
                 ("relay", s.relay.is_some()),
