@@ -378,7 +378,7 @@ pub enum Command {
         /// identity gets one).
         #[arg(long)]
         recheck: bool,
-        /// Turn the daemon's DHT publishing off (`[daemon.discovery] dht`).
+        /// Turn the daemon's DHT publishing off (`[daemon] dht`).
         #[arg(long)]
         no_dht: bool,
         /// Start the daemon in the background, not as a user service.
@@ -713,6 +713,10 @@ pub struct ServerAddArgs {
     /// `[defaults]`'s, else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
     pub dht: Option<bool>,
+    /// Look this server up through n0's DNS service (default:
+    /// `[defaults]`'s, else yes).
+    #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
+    pub dns: Option<bool>,
     /// Look this server up with mDNS on the local network (default:
     /// `[defaults]`'s, else yes).
     #[arg(long, value_name = "yes|no", value_parser = parse_yes_no)]
@@ -788,7 +792,7 @@ pub struct PairArgs {
     /// version. Default: `ssh_install` in the config file, else install.
     #[arg(long)]
     pub no_install: bool,
-    /// Turn the server's DHT publishing off (`[daemon.discovery] dht =
+    /// Turn the server's DHT publishing off (`[daemon] dht =
     /// false`). Without it the server's setting is left alone.
     #[arg(long)]
     pub no_dht: bool,

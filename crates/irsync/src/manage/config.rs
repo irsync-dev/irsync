@@ -40,7 +40,6 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["state_dir"] => Path,
         ["defaults"]
         | ["daemon"]
-        | ["daemon", "discovery"]
         | ["telemetry"]
         | ["servers"]
         | ["servers", _]
@@ -52,20 +51,19 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["defaults", "parallel"] => Int,
         ["defaults", "reconnect"] => Duration,
         ["defaults", "dial_retries"] => Int,
-        ["defaults", "dht" | "mdns" | "ssh_install"] => Bool,
+        ["defaults", "dht" | "dns" | "mdns" | "ssh_install"] => Bool,
         ["defaults", "relay"] => Url,
         ["defaults", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "identity"] => Path,
         ["daemon", "idle_timeout"] | ["daemon", "dormant_session_timeout"] => Duration,
         ["daemon", "max_dormant_sessions_per_key"] => Int,
         ["daemon", "listen"] => AddrArray,
-        ["daemon", "portmap" | "allow_all_paths" | "allow_root"] => Bool,
+        ["daemon", "portmap" | "dht" | "dns" | "mdns" | "allow_all_paths" | "allow_root"] => Bool,
         ["daemon", "relay"] => Url,
         ["daemon", "relay_mode" | "congestion" | "pq_key_exchange"] => Str,
         ["daemon", "debug_addr"] => Str,
         ["telemetry", "otlp_endpoint"] => Url,
         ["telemetry", "otlp_protocol"] => Str,
-        ["daemon", "discovery", "dht" | "dns" | "mdns"] => Bool,
         ["servers", _, "endpoint_id"] | ["clients", _, "client_id"] => Id,
         ["servers", _, "relay"] => Url,
         ["servers", _, "relay_mode" | "congestion" | "pq_key_exchange" | "ssh"] => Str,
@@ -74,7 +72,7 @@ pub fn kind_of(path: &[String]) -> Option<Kind> {
         ["servers", _, "parallel"] => Int,
         ["servers", _, "reconnect"] => Duration,
         ["servers", _, "dial_retries"] => Int,
-        ["servers", _, "dht" | "mdns"] => Bool,
+        ["servers", _, "dht" | "dns" | "mdns"] => Bool,
         ["clients", _, key] if RIGHTS.iter().any(|r| r.key() == *key) => Str,
         ["exports", _, "path"] => Path,
         ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => Bool,
@@ -169,9 +167,7 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["defaults", "dial_retries"] => one(crate::session::reconnect::ReconnectOpts::default()
             .dial_retries
             .to_string()),
-        ["defaults", "dht"] | ["defaults", "mdns"] | ["defaults", "ssh_install"] => {
-            one("true".to_string())
-        }
+        ["defaults", "dht" | "dns" | "mdns" | "ssh_install"] => one("true".to_string()),
         ["defaults", "relay_mode"] => one(RelayMode::default().as_str().to_string()),
         ["defaults", "congestion"] => one(Congestion::default().as_str().into()),
         ["defaults", "pq_key_exchange"] => one(PqKeyExchange::default().as_str().into()),
@@ -189,9 +185,9 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["daemon", "relay_mode"] => one(s.daemon.relay_mode.as_str().to_string()),
         ["daemon", "congestion"] => one(s.daemon.congestion.as_str().to_string()),
         ["daemon", "pq_key_exchange"] => one(s.daemon.pq_key_exchange.as_str().to_string()),
-        ["daemon", "discovery", "dht"] => one(s.daemon.discovery.dht.to_string()),
-        ["daemon", "discovery", "dns"] => one(s.daemon.discovery.dns.to_string()),
-        ["daemon", "discovery", "mdns"] => one(s.daemon.discovery.mdns.to_string()),
+        ["daemon", "dht"] => one(s.daemon.discovery.dht.to_string()),
+        ["daemon", "dns"] => one(s.daemon.discovery.dns.to_string()),
+        ["daemon", "mdns"] => one(s.daemon.discovery.mdns.to_string()),
         ["daemon", "allow_all_paths"] => one(s.daemon.allow_all_paths.to_string()),
         ["daemon", "allow_root"] => one(s.daemon.allow_root.to_string()),
         ["telemetry", "otlp_protocol"] => one(OtlpProtocol::DEFAULT.as_str().into()),
@@ -496,6 +492,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "reconnect" => Duration(&mut c.reconnect),
                 "dial_retries" => Int(&mut c.dial_retries),
                 "dht" => Bool(&mut c.dht),
+                "dns" => Bool(&mut c.dns),
                 "ssh_install" => Bool(&mut c.ssh_install),
                 "mdns" => Bool(&mut c.mdns),
                 "relay" => Url(&mut c.relay),
@@ -505,17 +502,6 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 _ => return None,
             };
             (f, &mut c.key_comments)
-        }
-        ["daemon", "discovery", key] => {
-            let d = table(&mut msg.daemon, create)?;
-            let x = table(&mut d.discovery, create)?;
-            let f = match *key {
-                "dht" => Bool(&mut x.dht),
-                "dns" => Bool(&mut x.dns),
-                "mdns" => Bool(&mut x.mdns),
-                _ => return None,
-            };
-            (f, &mut x.key_comments)
         }
         ["daemon", key] => {
             let d = table(&mut msg.daemon, create)?;
@@ -528,6 +514,9 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "portmap" => Bool(&mut d.portmap),
                 "relay" => Url(&mut d.relay),
                 "relay_mode" => Spelled(&mut d.relay_mode, spelling::<RelayMode>()),
+                "dht" => Bool(&mut d.dht),
+                "dns" => Bool(&mut d.dns),
+                "mdns" => Bool(&mut d.mdns),
                 "congestion" => Spelled(&mut d.congestion, spelling::<Congestion>()),
                 "pq_key_exchange" => Spelled(&mut d.pq_key_exchange, spelling::<PqKeyExchange>()),
                 "debug_addr" => Text(&mut d.debug_addr),
@@ -559,6 +548,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
                 "reconnect" => Duration(&mut h.reconnect),
                 "dial_retries" => Int(&mut h.dial_retries),
                 "dht" => Bool(&mut h.dht),
+                "dns" => Bool(&mut h.dns),
                 "mdns" => Bool(&mut h.mdns),
                 "ssh" => Text(&mut h.ssh),
                 "ssh_aliases" => List(&mut h.ssh_aliases, &mut h.ssh_aliases_set),
@@ -602,11 +592,12 @@ const DEFAULTS: &[&str] = &[
     "parallel",
     "reconnect",
     "dial_retries",
-    "dht",
     "ssh_install",
-    "mdns",
     "relay",
     "relay_mode",
+    "dht",
+    "dns",
+    "mdns",
     "congestion",
     "pq_key_exchange",
 ];
@@ -619,26 +610,29 @@ const DAEMON: &[&str] = &[
     "portmap",
     "relay",
     "relay_mode",
+    "dht",
+    "dns",
+    "mdns",
     "congestion",
     "pq_key_exchange",
     "debug_addr",
     "allow_all_paths",
     "allow_root",
 ];
-const DISCOVERY: &[&str] = &["dht", "dns", "mdns"];
 const TELEMETRY: &[&str] = &["otlp_endpoint", "otlp_protocol"];
 const SERVER: &[&str] = &[
     "endpoint_id",
+    "address",
     "relay",
     "relay_mode",
+    "dht",
+    "dns",
+    "mdns",
     "congestion",
     "pq_key_exchange",
-    "address",
     "parallel",
     "reconnect",
     "dial_retries",
-    "dht",
-    "mdns",
     "ssh",
     "ssh_aliases",
 ];
@@ -664,7 +658,6 @@ fn key_paths(msg: &pb::Config) -> Vec<Vec<String>> {
     add(&[], TOP);
     add(&["defaults"], DEFAULTS);
     add(&["daemon"], DAEMON);
-    add(&["daemon", "discovery"], DISCOVERY);
     add(&["telemetry"], TELEMETRY);
     for s in &msg.servers {
         add(&["servers", &s.name], SERVER);
@@ -705,7 +698,6 @@ fn has_table(msg: &pb::Config, path: &[String]) -> bool {
     match parts.as_slice() {
         ["defaults"] => msg.defaults.is_some(),
         ["daemon"] => msg.daemon.is_some(),
-        ["daemon", "discovery"] => msg.daemon.as_ref().is_some_and(|d| d.discovery.is_some()),
         ["telemetry"] => msg.telemetry.is_some(),
         ["servers"] => !msg.servers.is_empty(),
         ["servers", name] => msg.servers.iter().any(|s| s.name == *name),
@@ -723,10 +715,6 @@ fn remove_table(msg: &mut pb::Config, path: &[String]) -> bool {
     match parts.as_slice() {
         ["defaults"] => msg.defaults.take().is_some(),
         ["daemon"] => msg.daemon.take().is_some(),
-        ["daemon", "discovery"] => msg
-            .daemon
-            .as_mut()
-            .is_some_and(|d| d.discovery.take().is_some()),
         ["telemetry"] => msg.telemetry.take().is_some(),
         ["servers"] => !std::mem::take(&mut msg.servers).is_empty(),
         ["servers", name] => {
@@ -777,14 +765,7 @@ fn prune(msg: &mut pb::Config, path: &[String]) {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     match parts.as_slice() {
         ["defaults", _] => drop_if(&mut msg.defaults, |c| keyless!(c, Defaults)),
-        ["daemon", rest @ ..] if !rest.is_empty() => {
-            if rest.len() > 1 {
-                if let Some(d) = msg.daemon.as_mut() {
-                    drop_if(&mut d.discovery, |x| keyless!(x, Discovery));
-                }
-            }
-            drop_if(&mut msg.daemon, |d| keyless!(d, Daemon));
-        }
+        ["daemon", _] => drop_if(&mut msg.daemon, |d| keyless!(d, Daemon)),
         ["telemetry", _] => drop_if(&mut msg.telemetry, |t| keyless!(t, Telemetry)),
         ["servers", name, _] => msg
             .servers

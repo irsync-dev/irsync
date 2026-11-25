@@ -238,6 +238,7 @@ pub fn client_endpoint_opts(
             .or(client.relay_mode)
             .is_some_and(|m| m == DaemonRelayMode::Disabled);
     let host_dht = host.and_then(|h| h.dht);
+    let host_dns = host.and_then(|h| h.dns);
     let host_mdns = host.and_then(|h| h.mdns);
     // The host entry's, else `[defaults]`'s, else BBR.
     let congestion = host
@@ -254,12 +255,14 @@ pub fn client_endpoint_opts(
         }
         if host_relay.is_some()
             || host_dht.is_some()
+            || host_dns.is_some()
             || host_mdns.is_some()
             || client.relay.is_some()
             || client.dht.is_some()
+            || client.dns.is_some()
             || client.mdns.is_some()
         {
-            tracing::debug!("address given: ignoring relay/dht/mdns from the config");
+            tracing::debug!("address given: ignoring relay/dht/dns/mdns from the config");
         }
         return Ok(EndpointOpts {
             congestion,
@@ -277,7 +280,7 @@ pub fn client_endpoint_opts(
         secret,
         relay,
         dht: !no_dht && host_dht.or(client.dht).unwrap_or(true),
-        dns: true,
+        dns: host_dns.or(client.dns).unwrap_or(true),
         mdns: host_mdns.or(client.mdns).unwrap_or(true),
         publish: false,
         bind_addrs: Vec::new(),

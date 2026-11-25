@@ -64,15 +64,15 @@ connection; nothing needs a restart.
 
 | Command | Effect |
 | --- | --- |
-| `irsync server add NAME ID [--relay URL] [--relay-mode default\|disabled] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dial-retries N] [--dht yes\|no] [--mdns yes\|no] [--pq-key-exchange prefer\|require]` | Add a server: a name for the `EndpointId` of a daemon you connect to. For an existing name, change the id and the keys given. Keys not given stay as they are. Prints `NAME: ID`, or `NAME: OLD -> NEW` when the id changed. |
+| `irsync server add NAME ID [--relay URL] [--relay-mode default\|disabled] [--address ADDR]... [--parallel N] [--reconnect DUR] [--dial-retries N] [--dht yes\|no] [--dns yes\|no] [--mdns yes\|no] [--pq-key-exchange prefer\|require]` | Add a server: a name for the `EndpointId` of a daemon you connect to. For an existing name, change the id and the keys given. Keys not given stay as they are. Prints `NAME: ID`, or `NAME: OLD -> NEW` when the id changed. |
 | `irsync server remove NAME` | Remove a server. Grants never name servers, so none can stop it. |
 | `irsync server rename OLD NEW` | Rename a server. It keeps its place, keys and comments. Refused, with nothing changed, when `OLD` is no server, `NEW` is not a valid name or `NEW` is a server already. Only the config file changes: scripts and commands that use `OLD` keep using it. |
 | `irsync server list` | One `NAME: ID` line per server, then one indented `key = value` line per other key. |
 
 The flags of `server add` set the keys of the server's table; see
 [Configuration](configuration.md#servers) for what each does. `--address`
-replaces the stored list and may be repeated. `--dht` and `--mdns` take `yes`
-or `no` (also `true` or `false`). `--pq-key-exchange require` refuses this
+replaces the stored list and may be repeated. `--dht`, `--dns` and `--mdns` take
+`yes` or `no` (also `true` or `false`). `--pq-key-exchange require` refuses this
 server when it does not offer post-quantum key exchange.
 
 ## client

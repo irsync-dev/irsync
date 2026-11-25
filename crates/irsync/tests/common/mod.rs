@@ -1005,7 +1005,7 @@ pub fn spawn_daemon_binary_env(
     irsync::fs::private::write(
         cfg.join("irsync.toml"),
         "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
-         [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+         dht = false\ndns = false\nmdns = false\n",
     )
     .unwrap();
     let log = server_home.join("daemon.stderr");

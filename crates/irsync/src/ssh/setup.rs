@@ -369,7 +369,7 @@ pub fn grant_client(
 /// missing `all_paths` right is set only when the daemon identity was just
 /// generated, a rebuilt server; otherwise the owner removed it, and it is
 /// reported as [`GrantOutcome::Missing`] instead.
-/// With `no_dht`, `[daemon.discovery] dht` is set to `false` when it is on;
+/// With `no_dht`, `[daemon] dht` is set to `false` when it is on;
 /// without it the setting is left as it is.
 pub fn run(
     paths: &Paths,
@@ -445,7 +445,7 @@ pub fn run(
     } else if no_dht {
         let mut lock = manage::lock_config(&paths.config)?;
         let mut msg = lock.load()?;
-        let key = ["daemon", "discovery", "dht"].map(String::from);
+        let key = ["daemon", "dht"].map(String::from);
         manage::config::set(&mut msg, &key, manage::config::Value::Bool(false))
             .with_context(|| format!("in {}", paths.config.display()))?;
         lock.save(&mut msg)?;

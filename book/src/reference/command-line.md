@@ -162,7 +162,7 @@ See [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
 | --- | --- |
 | `--rsh CMD` | The remote shell, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
 | `--no-install` | Copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
-| `--no-dht` | Turn the server's DHT publishing off (`[daemon.discovery] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
+| `--no-dht` | Turn the server's DHT publishing off (`[daemon] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
 | `--no-service` | Do not make the daemon a user service: start it in the background, until the server reboots. For a daemon you run your own way. |
 | `--identity FILE` | The private key to pair with. Default as for a sync. |
 

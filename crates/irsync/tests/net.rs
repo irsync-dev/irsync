@@ -178,6 +178,7 @@ fn client_opts_are_isolated_whenever_addresses_are_given() {
         reconnect: None,
         dial_retries: None,
         dht: Some(true),
+        dns: Some(true),
         mdns: Some(true),
         ssh: None,
         ssh_aliases: Vec::new(),
@@ -250,7 +251,7 @@ fn daemon_opts_follow_the_isolated_config() {
     let parse = |t: &str| Settings::parse(t, std::path::Path::new("irsync.toml")).unwrap();
     let cfg = parse(
         "[daemon]\nlisten = [\"127.0.0.1:0\"]\nrelay_mode = \"disabled\"\nportmap = false\n\
-         [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+         dht = false\ndns = false\nmdns = false\n",
     );
     let bind = vec!["127.0.0.1:0".parse().unwrap()];
     let o = daemon_endpoint_opts(&cfg.daemon, SecretKey::generate(), bind.clone());
@@ -296,6 +297,7 @@ fn opts_carry_the_congestion_controller() {
         reconnect: None,
         dial_retries: None,
         dht: None,
+        dns: None,
         mdns: None,
         ssh: None,
         ssh_aliases: Vec::new(),
@@ -389,6 +391,7 @@ fn client_opts_disable_the_relay_but_keep_the_lookups() {
         reconnect: None,
         dial_retries: None,
         dht: None,
+        dns: None,
         mdns: None,
         ssh: None,
         ssh_aliases: Vec::new(),
@@ -476,4 +479,51 @@ async fn a_peer_without_the_hybrid_falls_back_to_x25519() {
     }
     ours.close().await;
     old.close().await;
+}
+
+/// `dns` turns the client's DNS lookup off, from the server's table or
+/// `[defaults]`, the server's first.
+#[test]
+fn client_dns_follows_the_server_then_the_defaults() {
+    use irsync::config::servers::ServerEntry;
+    use irsync::config::settings::ClientSettings;
+    use irsync::net::client_endpoint_opts;
+    let server = |dns| ServerEntry {
+        endpoint_id: SecretKey::generate().public(),
+        relay: None,
+        relay_mode: None,
+        congestion: None,
+        pq_key_exchange: None,
+        address: Vec::new(),
+        parallel: None,
+        reconnect: None,
+        dial_retries: None,
+        dht: None,
+        dns,
+        mdns: None,
+        ssh: None,
+        ssh_aliases: Vec::new(),
+    };
+    let dns = |defaults: Option<bool>, entry: Option<bool>| {
+        let cs = ClientSettings {
+            dns: defaults,
+            ..ClientSettings::default()
+        };
+        let s = server(entry);
+        client_endpoint_opts(
+            SecretKey::generate(),
+            None,
+            false,
+            false,
+            &cs,
+            Some(&s),
+            &[],
+        )
+        .unwrap()
+        .dns
+    };
+    assert!(dns(None, None));
+    assert!(!dns(Some(false), None));
+    assert!(dns(Some(false), Some(true)));
+    assert!(!dns(None, Some(false)));
 }

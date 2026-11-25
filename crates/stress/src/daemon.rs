@@ -69,7 +69,6 @@ pub fn write_config(c: &DaemonConfig) -> Result<DaemonFiles> {
          identity = {}\n\
          relay_mode = \"disabled\"\n\
          portmap = false\n\
-         [daemon.discovery]\n\
          dht = false\n\
          dns = false\n\
          mdns = false\n\
@@ -566,7 +565,7 @@ mod tests {
             "irsync's default unless asked"
         );
         for k in ["dht", "dns", "mdns"] {
-            assert_eq!(d["discovery"][k].as_bool(), Some(false));
+            assert_eq!(d[k].as_bool(), Some(false));
         }
         assert_eq!(parsed["exports"]["data"]["path"], s(export));
         assert_eq!(

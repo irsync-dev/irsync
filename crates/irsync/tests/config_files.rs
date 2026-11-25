@@ -46,7 +46,7 @@ fn settings_defaults_when_empty() {
 
 #[test]
 fn settings_tables_parse_and_expand_tilde() {
-    let t = "[defaults]\nidentity = \"~/k\"\nparallel = 8\nreconnect = \"1h\"\ndial_retries = 2\nrelay_mode = \"disabled\"\n[daemon]\nidentity = \"~/d\"\nrelay_mode = \"disabled\"\nlisten = [\"127.0.0.1:0\"]\n[daemon.discovery]\ndht = false\n";
+    let t = "[defaults]\nidentity = \"~/k\"\nparallel = 8\nreconnect = \"1h\"\ndial_retries = 2\nrelay_mode = \"disabled\"\n[daemon]\nidentity = \"~/d\"\nrelay_mode = \"disabled\"\nlisten = [\"127.0.0.1:0\"]\ndht = false\n";
     let s = Settings::parse(t, p()).unwrap();
     assert_eq!(s.identity, dirs::home_dir().unwrap().join("k"));
     assert_eq!(s.daemon.identity, dirs::home_dir().unwrap().join("d"));

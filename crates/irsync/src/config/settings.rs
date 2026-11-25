@@ -110,6 +110,8 @@ pub enum PqKeyExchange {
 
 spelled!(PqKeyExchange, PqKeyExchange, "pq_key_exchange", Prefer => "prefer", Require => "require");
 
+/// How clients may find the daemon: `dht`, `dns` and `mdns` in
+/// `[daemon]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Discovery {
     pub dht: bool,
@@ -190,6 +192,7 @@ pub struct ClientSettings {
     /// Retries for a server that has not answered yet; unset: 4.
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
+    pub dns: Option<bool>,
     /// Set the server up over ssh by copying irsync there; unset: true.
     /// `false` is `--no-install` for every run.
     pub ssh_install: Option<bool>,
@@ -335,6 +338,7 @@ impl ClientSettings {
             reconnect: duration_from(c.reconnect.as_ref())?,
             dial_retries: c.dial_retries,
             dht: c.dht,
+            dns: c.dns,
             ssh_install: c.ssh_install,
             mdns: c.mdns,
             relay: url_from(c.relay.as_deref())?,
@@ -352,14 +356,11 @@ impl DaemonSettings {
         if let Some(problem) = listen_problem(&listen) {
             return Err(problem.to_string());
         }
-        let discovery = d
-            .discovery
-            .as_ref()
-            .map_or(defaults.discovery.clone(), |x| Discovery {
-                dht: x.dht.unwrap_or(defaults.discovery.dht),
-                dns: x.dns.unwrap_or(defaults.discovery.dns),
-                mdns: x.mdns.unwrap_or(defaults.discovery.mdns),
-            });
+        let discovery = Discovery {
+            dht: d.dht.unwrap_or(defaults.discovery.dht),
+            dns: d.dns.unwrap_or(defaults.discovery.dns),
+            mdns: d.mdns.unwrap_or(defaults.discovery.mdns),
+        };
         Ok(DaemonSettings {
             identity: d.identity.as_ref().map_or(defaults.identity, PathBuf::from),
             idle_timeout: duration_from(d.idle_timeout.as_ref())?.unwrap_or(defaults.idle_timeout),

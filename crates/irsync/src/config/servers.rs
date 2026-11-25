@@ -28,6 +28,7 @@ pub struct ServerEntry {
     pub reconnect: Option<Duration>,
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
+    pub dns: Option<bool>,
     pub mdns: Option<bool>,
     /// The `[user@]host` that `ssh` reaches this daemon's machine by.
     pub ssh: Option<String>,
@@ -60,6 +61,7 @@ impl ServerEntry {
             reconnect: duration_from(s.reconnect.as_ref()).map_err(field)?,
             dial_retries: s.dial_retries,
             dht: s.dht,
+            dns: s.dns,
             mdns: s.mdns,
             ssh: s.ssh.clone(),
             ssh_aliases: s.ssh_aliases.iter().map(|e| e.value.clone()).collect(),

@@ -23,6 +23,7 @@ pub struct ServerFlags {
     pub reconnect: Option<Duration>,
     pub dial_retries: Option<u32>,
     pub dht: Option<bool>,
+    pub dns: Option<bool>,
     pub mdns: Option<bool>,
     pub pq_key_exchange: Option<PqKeyExchange>,
     pub ssh: Option<String>,
@@ -86,6 +87,9 @@ pub fn server_add(
     }
     if let Some(d) = flags.dht {
         h.dht = Some(d);
+    }
+    if let Some(d) = flags.dns {
+        h.dns = Some(d);
     }
     if let Some(m) = flags.mdns {
         h.mdns = Some(m);

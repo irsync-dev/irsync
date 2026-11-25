@@ -49,13 +49,14 @@ message Defaults {
   optional uint32 parallel = 5;
   google.protobuf.Duration reconnect = 6;
   optional uint32 dial_retries = 7;
-  optional bool dht = 8;
-  optional bool ssh_install = 9;
-  optional bool mdns = 10;
-  optional string relay = 11;
-  optional RelayMode relay_mode = 12;
-  optional Congestion congestion = 13;
-  optional PqKeyExchange pq_key_exchange = 14;
+  optional bool ssh_install = 8;
+  optional string relay = 9;
+  optional RelayMode relay_mode = 10;
+  optional bool dht = 11;
+  optional bool dns = 12;
+  optional bool mdns = 13;
+  optional Congestion congestion = 14;
+  optional PqKeyExchange pq_key_exchange = 15;
 }
 
 message Daemon {
@@ -69,19 +70,14 @@ message Daemon {
   optional bool portmap = 10;
   optional string relay = 11;
   optional RelayMode relay_mode = 12;
-  optional Congestion congestion = 13;
-  optional PqKeyExchange pq_key_exchange = 14;
-  Discovery discovery = 15;
-  optional string debug_addr = 16;
-  optional bool allow_root = 17;
-  optional bool allow_all_paths = 18;
-}
-
-message Discovery {
-  Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
-  optional bool dht = 4;
-  optional bool dns = 5;
-  optional bool mdns = 6;
+  optional bool dht = 13;
+  optional bool dns = 14;
+  optional bool mdns = 15;
+  optional Congestion congestion = 16;
+  optional PqKeyExchange pq_key_exchange = 17;
+  optional string debug_addr = 18;
+  optional bool allow_all_paths = 19;
+  optional bool allow_root = 20;
 }
 
 message Telemetry {
@@ -95,20 +91,21 @@ message ServerEntry {
   Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
   string name = 4;
   bytes endpoint_id = 5;       // empty: missing
-  optional string relay = 6;
-  optional RelayMode relay_mode = 7;
-  optional Congestion congestion = 8;
-  optional PqKeyExchange pq_key_exchange = 9;
-  repeated Entry address = 10;
-  bool address_set = 11;
-  optional uint32 parallel = 12;
-  google.protobuf.Duration reconnect = 13;
-  optional uint32 dial_retries = 14;
-  optional bool dht = 15;
-  optional bool mdns = 16;
-  optional string ssh = 17;
-  repeated Entry ssh_aliases = 18;
-  bool ssh_aliases_set = 19;
+  repeated Entry address = 6;
+  bool address_set = 7;
+  optional string relay = 8;
+  optional RelayMode relay_mode = 9;
+  optional bool dht = 10;
+  optional bool dns = 11;
+  optional bool mdns = 12;
+  optional Congestion congestion = 13;
+  optional PqKeyExchange pq_key_exchange = 14;
+  optional uint32 parallel = 15;
+  google.protobuf.Duration reconnect = 16;
+  optional uint32 dial_retries = 17;
+  optional string ssh = 18;
+  repeated Entry ssh_aliases = 19;
+  bool ssh_aliases_set = 20;
 }
 
 // A peer that grants name.

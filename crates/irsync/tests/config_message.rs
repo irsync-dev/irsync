@@ -296,7 +296,7 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[defaults]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `identity`, `parallel`, `reconnect`, `dial_retries`, `dht`, `ssh_install`, `mdns`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`",
+            "f:2: unknown field `bogus`, expected one of `identity`, `parallel`, `reconnect`, `dial_retries`, `ssh_install`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`",
         ),
         (
             "[daemon]\nidentity = 1\n",
@@ -311,8 +311,8 @@ fn errors_are_those_of_config_parse() {
             "f:2: bad debug address \"x\": expected PORT or IP:PORT",
         ),
         (
-            "[daemon.discovery]\nbogus = true\n",
-            "f:2: unknown field `bogus`, expected one of `dht`, `dns`, `mdns`",
+            "[daemon]\ndiscovery = true\n",
+            "f:2: unknown field `discovery`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `debug_addr`, `allow_all_paths`, `allow_root`",
         ),
         (
             "[defaults]\nrelay = \"not a url\"\n",
@@ -407,16 +407,12 @@ fn errors_are_those_of_config_parse() {
             "f:2: at most one IPv4 and one IPv6 listen address",
         ),
         (
-            "[daemon]\ndiscovery = 1\n",
-            "f:2: invalid type: integer `1`, expected struct RawDiscovery",
-        ),
-        (
             "[servers.nas]\nreconnect = \"x\"\n",
             "f:2: bad duration \"x\": expected <number>[s|m|h|d]",
         ),
         (
             "[daemon]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `discovery`, `debug_addr`, `allow_all_paths`, `allow_root`",
+            "f:2: unknown field `bogus`, expected one of `identity`, `idle_timeout`, `dormant_session_timeout`, `max_dormant_sessions_per_key`, `listen`, `portmap`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `debug_addr`, `allow_all_paths`, `allow_root`",
         ),
         (
             "[telemetry]\nbogus = 1\n",
@@ -424,10 +420,10 @@ fn errors_are_those_of_config_parse() {
         ),
         (
             "[servers.nas]\nbogus = 1\n",
-            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`",
+            "f:2: unknown field `bogus`, expected one of `endpoint_id`, `address`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `parallel`, `reconnect`, `dial_retries`, `ssh`, `ssh_aliases`",
         ),
         (
-            "[daemon.discovery]\ndht = 1\n",
+            "[daemon]\ndht = 1\n",
             "f:2: invalid type: integer `1`, expected a boolean",
         ),
         (
@@ -638,10 +634,10 @@ fn comments_in_arrays() {
 #[test]
 fn comments_on_dotted_keys_and_inline_tables() {
     let c = commented(&format!(
-        "[daemon]\n# on dht\ndiscovery.dht = false # off\n[servers]\n# the nas\nnas = {{ endpoint_id = \"{}\" }} # inline\n",
+        "# on dht\ndaemon.dht = false # off\n[servers]\n# the nas\nnas = {{ endpoint_id = \"{}\" }} # inline\n",
         id(1)
     ));
-    let disc = c.daemon.unwrap().discovery.unwrap();
+    let disc = c.daemon.unwrap();
     assert_eq!(disc.key_comments["dht"].above, ["# on dht"]);
     assert_eq!(disc.key_comments["dht"].trailing, "# off");
     let h = c.servers[0].comment.as_ref().unwrap();
@@ -843,8 +839,6 @@ state_dir = \"~/k\"
 [daemon]
 # on portmap
 portmap = false # off
-
-[daemon.discovery]
 dht = false # dht off
 
 [servers.nas]
@@ -1144,7 +1138,7 @@ fn the_current_reader_checks_servers_and_clients_at_their_line() {
     );
     assert_eq!(
         error(&format!("[servers.nas]\nendpoint_id = \"{}\"\nclient_id = \"x\"\n", id(1))),
-        "f:3: unknown field `client_id`, expected one of `endpoint_id`, `relay`, `relay_mode`, `congestion`, `pq_key_exchange`, `address`, `parallel`, `reconnect`, `dial_retries`, `dht`, `mdns`, `ssh`, `ssh_aliases`"
+        "f:3: unknown field `client_id`, expected one of `endpoint_id`, `address`, `relay`, `relay_mode`, `dht`, `dns`, `mdns`, `congestion`, `pq_key_exchange`, `parallel`, `reconnect`, `dial_retries`, `ssh`, `ssh_aliases`"
     );
     assert_eq!(
         error(&format!("[servers.all]\nendpoint_id = \"{}\"\n", id(1))),

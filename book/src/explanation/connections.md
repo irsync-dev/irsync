@@ -12,15 +12,15 @@ punching, QUIC, TLS and streams) and the standards behind them.
 ## Finding the daemon
 
 A daemon publishes where it can be reached, in up to three places, each turned
-on or off under [`[daemon.discovery]`](../reference/configuration.md#daemon):
+on or off by a key of the same name in [`[daemon]`](../reference/configuration.md#daemon):
 
 - `dns`: n0's DNS service, through signed pkarr records.
 - `dht`: the mainline DHT, with the same kind of record.
 - `mdns`: the local network.
 
-A client looks the `EndpointId` up in the same places. DNS is always on for a
-client; the DHT and mDNS can be turned off per host or in `[defaults]`, and
-`--no-dht` turns the DHT off for one sync.
+A client looks the `EndpointId` up in the same places. Each can be turned off
+per server or in `[defaults]`, with the same three keys, and `--no-dht` turns
+the DHT off for one sync.
 
 The DNS and DHT records carry only the daemon's relay address, never its IP
 addresses: that is iroh's default, so that publishing an id does not publish

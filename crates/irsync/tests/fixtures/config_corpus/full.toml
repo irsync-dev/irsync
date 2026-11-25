@@ -7,11 +7,12 @@ identity = "~/keys/client"
 parallel = 7
 reconnect = "90s"
 dial_retries = 9
-dht = false
 ssh_install = false
-mdns = false
 relay = "https://relay.example.com/"
 relay_mode = "disabled"
+dht = false
+dns = false
+mdns = false
 congestion = "cubic"
 pq_key_exchange = "require"
 
@@ -24,16 +25,14 @@ listen = ["0.0.0.0:7000", "[::]:7000"]
 portmap = false
 relay = "https://relay.example.com/"
 relay_mode = "disabled"
+dht = false
+dns = false
+mdns = false
 congestion = "cubic"
 pq_key_exchange = "require"
 debug_addr = "127.0.0.1:9000"
 allow_all_paths = false
 allow_root = true
-
-[daemon.discovery]
-dht = false
-dns = false
-mdns = false
 
 [telemetry]
 otlp_endpoint = "http://collector.lan:4317/"
@@ -41,16 +40,17 @@ otlp_protocol = "http"
 
 [servers.nas]
 endpoint_id = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191"
+address = ["10.0.0.2:4433", "nas.lan:4433"]
 relay = "https://relay.example.com/"
 relay_mode = "disabled"
+dht = false
+dns = false
+mdns = false
 congestion = "cubic"
 pq_key_exchange = "require"
-address = ["10.0.0.2:4433", "nas.lan:4433"]
 parallel = 3
 reconnect = "30m"
 dial_retries = 2
-dht = false
-mdns = false
 ssh = "me@nas"
 ssh_aliases = ["10.0.0.2", "nas.local"]
 

@@ -2417,6 +2417,7 @@ fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
             .transpose()?,
         dial_retries: a.dial_retries,
         dht: a.dht,
+        dns: a.dns,
         mdns: a.mdns,
         pq_key_exchange: a.pq_key_exchange,
         ssh: None,

@@ -79,17 +79,20 @@ than the shared public relays. iroh ships one as `iroh-relay`.
 ## Turn the lookups off
 
 - On the client, `--no-dht` skips the mainline DHT for one sync. A server's
-  `dht` and `mdns` keys, or `[defaults]`'s, turn either lookup off for good:
+  `dht`, `dns` and `mdns` keys, or `[defaults]`'s, turn a lookup off for
+  good:
 
   ```sh
   irsync server add myserver <id> --dht no --mdns no
+  irsync config set defaults.dns false
   ```
 
-- On the daemon, `[daemon.discovery]` says where it publishes its addresses:
+- On the daemon, the same three keys in `[daemon]` say where it publishes
+  its addresses:
 
   ```sh
-  irsync config set daemon.discovery.dht false
-  irsync config set daemon.discovery.mdns false
+  irsync config set daemon.dht false
+  irsync config set daemon.mdns false
   ```
 
 - For a server paired over ssh, `irsync pair --no-dht` sets the
@@ -109,8 +112,6 @@ sockets; it does not isolate the daemon. Turn everything off explicitly.
    listen = ["127.0.0.1:0"]   # at most one IPv4 and one IPv6 entry; port 0 = daemon picks
    relay_mode = "disabled"
    portmap = false            # no UPnP/PCP/NAT-PMP gateway probing
-
-   [daemon.discovery]
    dht = false
    dns = false
    mdns = false
@@ -171,6 +172,6 @@ With both, the connection keeps to the path you dialled.
 ## See also
 
 - [Configuration](../reference/configuration.md#servers): the `relay`,
-  `relay_mode`, `address`, `dht` and `mdns` keys.
+  `relay_mode`, `address`, `dht`, `dns` and `mdns` keys.
 - [Command line](../reference/command-line.md#irsync-flags): `--relay`,
   `--no-relay`, `--no-dht`, `--address`.

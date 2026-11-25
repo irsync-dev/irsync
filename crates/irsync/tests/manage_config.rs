@@ -49,7 +49,8 @@ fn kinds_of_known_keys() {
     assert_eq!(kind_of(&p("exports.photos.fsync")), Some(Kind::Bool));
     assert_eq!(kind_of(&p("servers.home")), Some(Kind::Table));
     assert_eq!(kind_of(&p("clients.home")), Some(Kind::Table));
-    assert_eq!(kind_of(&p("daemon.discovery")), Some(Kind::Table));
+    assert_eq!(kind_of(&p("daemon.discovery")), None);
+    assert_eq!(kind_of(&p("daemon.dns")), Some(Kind::Bool));
     assert_eq!(kind_of(&p("exports.photos.rw")), Some(Kind::StrArray));
     // The old tables of rights are no keys any more.
     assert_eq!(kind_of(&p("defaults.identity")), Some(Kind::Path));
@@ -117,8 +118,8 @@ fn clients_are_set_and_unset_by_their_id() {
 #[test]
 fn get_prints_scalars_arrays_and_tables() {
     let m = msg(&format!(
-        "[defaults]\nparallel = 4\n[daemon]\nlisten = [\"0.0.0.0:0\", \"[::]:0\"]\n\
-         [servers.home]\nendpoint_id = \"{}\"\nrelay = \"https://r/\"\n[daemon.discovery]\nmdns = false\n",
+        "[defaults]\nparallel = 4\n[daemon]\nlisten = [\"0.0.0.0:0\", \"[::]:0\"]\nmdns = false\n\
+         [servers.home]\nendpoint_id = \"{}\"\nrelay = \"https://r/\"\n",
         id()
     ));
     assert_eq!(get(&m, &p("defaults.parallel")).unwrap(), lines(&["4"]));
@@ -135,10 +136,7 @@ fn get_prints_scalars_arrays_and_tables() {
     );
     assert_eq!(
         get(&m, &p("daemon")).unwrap(),
-        lines(&[
-            "listen = [\"0.0.0.0:0\", \"[::]:0\"]",
-            "discovery.mdns = false"
-        ])
+        lines(&["listen = [\"0.0.0.0:0\", \"[::]:0\"]", "mdns = false"])
     );
     assert_eq!(
         get(&m, &p("servers")).unwrap(),
@@ -170,6 +168,7 @@ const EVERY_KEY: &[&str] = &[
     "defaults.reconnect",
     "defaults.dial_retries",
     "defaults.dht",
+    "defaults.dns",
     "defaults.mdns",
     "defaults.ssh_install",
     "defaults.relay",
@@ -190,10 +189,9 @@ const EVERY_KEY: &[&str] = &[
     "daemon.congestion",
     "daemon.pq_key_exchange",
     "daemon.debug_addr",
-    "daemon.discovery",
-    "daemon.discovery.dht",
-    "daemon.discovery.dns",
-    "daemon.discovery.mdns",
+    "daemon.dht",
+    "daemon.dns",
+    "daemon.mdns",
     "telemetry",
     "telemetry.otlp_endpoint",
     "telemetry.otlp_protocol",
@@ -211,6 +209,7 @@ const EVERY_KEY: &[&str] = &[
     "servers.NAME.reconnect",
     "servers.NAME.dial_retries",
     "servers.NAME.dht",
+    "servers.NAME.dns",
     "servers.NAME.mdns",
     "clients",
     "clients.NAME",
@@ -239,7 +238,6 @@ const NO_DEFAULT: &[&str] = &[
     "daemon",
     "daemon.relay",
     "daemon.debug_addr",
-    "daemon.discovery",
     "telemetry",
     "telemetry.otlp_endpoint",
     "servers",
@@ -256,6 +254,7 @@ const NO_DEFAULT: &[&str] = &[
     "servers.NAME.reconnect",
     "servers.NAME.dial_retries",
     "servers.NAME.dht",
+    "servers.NAME.dns",
     "servers.NAME.mdns",
     "clients",
     "clients.NAME",
@@ -339,10 +338,7 @@ fn defaults_for_settings_keys() {
         default_of(&p("daemon.relay_mode")),
         Some(vec!["default".into()])
     );
-    assert_eq!(
-        default_of(&p("daemon.discovery.dht")),
-        Some(vec!["true".into()])
-    );
+    assert_eq!(default_of(&p("daemon.dht")), Some(vec!["true".into()]));
     // Path defaults print as the file would hold them: home as `~`.
     assert_eq!(
         default_of(&p("defaults.identity")),
@@ -402,15 +398,15 @@ fn defaults_for_settings_keys() {
 #[test]
 fn list_is_dotted_keys_in_the_writers_order_with_quoting() {
     let m = msg(
-        "[exports.\"www.example.com\"]\npath = \"/w\"\n[daemon.discovery]\ndht = false\n\
-         [daemon]\nlisten = [\"a:1\"]\n\nidentity = \"/k\"\n",
+        "[exports.\"www.example.com\"]\npath = \"/w\"\n[daemon]\ndht = false\n\
+         listen = [\"a:1\"]\n\nidentity = \"/k\"\n",
     );
     assert_eq!(
         list(&m),
         vec![
             "daemon.identity = \"/k\"",
             "daemon.listen = [\"a:1\"]",
-            "daemon.discovery.dht = false",
+            "daemon.dht = false",
             "exports.\"www.example.com\".path = \"/w\"",
         ]
     );
@@ -490,16 +486,11 @@ fn set_and_unset_edit_the_message_and_keep_the_rest() {
     let val = |k, s: &str| parse_value(k, &[s.to_string()]).unwrap();
     set(&mut m, &p("defaults.parallel"), val(Kind::Int, "8")).unwrap();
     set(&mut m, &p("servers.home.endpoint_id"), val(Kind::Id, &id())).unwrap();
-    set(
-        &mut m,
-        &p("daemon.discovery.mdns"),
-        val(Kind::Bool, "false"),
-    )
-    .unwrap();
+    set(&mut m, &p("daemon.mdns"), val(Kind::Bool, "false")).unwrap();
     assert_eq!(
         write(&m),
         format!(
-            "# keep me\n[defaults]\nparallel = 8 # inline\n\n[daemon.discovery]\nmdns = false\n\n[servers.home]\nendpoint_id = \"{}\"\n",
+            "# keep me\n[defaults]\nparallel = 8 # inline\n\n[daemon]\nmdns = false\n\n[servers.home]\nendpoint_id = \"{}\"\n",
             id()
         )
     );
@@ -583,14 +574,14 @@ fn bare_seconds_set_a_duration_as_an_integer() {
 #[test]
 fn unset_removes_tables_it_leaves_empty() {
     let mut m = msg(&format!(
-        "[defaults]\nparallel = 4\nrelay = \"https://r/\"\n\n[servers.home]\nendpoint_id = \"{}\"\n\n[clients.home]\nclient_id = \"{}\"\n\n[daemon.discovery]\nmdns = false\n",
+        "[defaults]\nparallel = 4\nrelay = \"https://r/\"\n\n[servers.home]\nendpoint_id = \"{}\"\n\n[clients.home]\nclient_id = \"{}\"\n\n[daemon]\nmdns = false\n",
         id(),
         id2()
     ));
     unset(&mut m, &p("defaults.parallel")).unwrap();
     unset(&mut m, &p("servers.home.endpoint_id")).unwrap();
     unset(&mut m, &p("clients.home.client_id")).unwrap();
-    unset(&mut m, &p("daemon.discovery.mdns")).unwrap();
+    unset(&mut m, &p("daemon.mdns")).unwrap();
     assert_eq!(write(&m), "[defaults]\nrelay = \"https://r/\"\n");
     assert!(m.daemon.is_none() && m.servers.is_empty() && m.clients.is_empty());
 }
@@ -641,6 +632,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("defaults.reconnect", &["1h"]),
     ("defaults.dial_retries", &["2"]),
     ("defaults.dht", &["false"]),
+    ("defaults.dns", &["false"]),
     ("defaults.ssh_install", &["false"]),
     ("defaults.mdns", &["false"]),
     ("defaults.relay", &["https://r/"]),
@@ -660,9 +652,9 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("daemon.debug_addr", &["127.0.0.1:9000"]),
     ("daemon.allow_all_paths", &["false"]),
     ("daemon.allow_root", &["true"]),
-    ("daemon.discovery.dht", &["false"]),
-    ("daemon.discovery.dns", &["false"]),
-    ("daemon.discovery.mdns", &["false"]),
+    ("daemon.dht", &["false"]),
+    ("daemon.dns", &["false"]),
+    ("daemon.mdns", &["false"]),
     ("telemetry.otlp_endpoint", &["http://c:4318/"]),
     ("telemetry.otlp_protocol", &["http"]),
     ("servers.nas.endpoint_id", &[ID5]),
@@ -675,6 +667,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("servers.nas.reconnect", &["1h"]),
     ("servers.nas.dial_retries", &["2"]),
     ("servers.nas.dht", &["false"]),
+    ("servers.nas.dns", &["false"]),
     ("servers.nas.mdns", &["false"]),
     ("servers.nas.ssh", &["me@nas"]),
     ("servers.nas.ssh_aliases", &["box"]),
@@ -825,13 +818,13 @@ fn unset_takes_the_keys_comment_and_set_keeps_it() {
 fn unset_of_a_table_takes_its_comments() {
     let mut m = msg(&format!(
         "# the nas\n[servers.nas]\nendpoint_id = \"{}\"\n\n# the tv\n[servers.tv]\nendpoint_id = \"{}\"\n\n\
-         # client side\n[defaults]\nparallel = 2\n\n[daemon]\nportmap = false\n\n# found how\n[daemon.discovery]\ndns = false\n",
+         # client side\n[defaults]\nparallel = 2\n\n[daemon]\nportmap = false\n\n# found how\n[telemetry]\notlp_protocol = \"grpc\"\n",
         id(),
         id2()
     ));
     unset(&mut m, &p("servers.nas")).unwrap();
     unset(&mut m, &p("defaults")).unwrap();
-    unset(&mut m, &p("daemon.discovery")).unwrap();
+    unset(&mut m, &p("telemetry")).unwrap();
     assert_eq!(
         write(&m),
         format!(

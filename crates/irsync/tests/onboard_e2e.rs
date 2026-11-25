@@ -103,7 +103,7 @@ impl World {
         let text = format!(
             "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
              listen = [\"127.0.0.1:{}\"]\n{daemon_extra}\
-             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n{extra}",
+             dht = false\ndns = false\nmdns = false\n{extra}",
             self.port
         );
         irsync::fs::private::write(cfg.join("irsync.toml"), text).unwrap();
@@ -207,7 +207,7 @@ impl World {
         let text = format!(
             "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
              listen = [\"127.0.0.1:{}\"]\n\
-             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+             dht = false\ndns = false\nmdns = false\n",
             self.client_port
         );
         irsync::fs::private::write(cfg.join("irsync.toml"), text).unwrap();
@@ -1126,7 +1126,7 @@ fn pair_takes_an_address_and_no_dht() {
     let log = std::fs::read_to_string(w.ssh_log()).unwrap();
     assert!(log.lines().all(|l| l == "192.168.1.5"), "{log}");
     let doc: toml::Table = w.server_toml().parse().unwrap();
-    assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
+    assert_eq!(doc["daemon"]["dht"].as_bool(), Some(false));
     let t = config_in(w.client.path());
     assert_eq!(t["servers"].as_table().unwrap().len(), 1, "{t}");
     assert_eq!(
@@ -1342,13 +1342,11 @@ fn no_dht_turns_server_publishing_off() {
     irsync::fs::private::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
     let err = ok(&w.irsync_bare(&["pair", "--no-dht", "myserver"]));
     assert!(
-        err.contains(
-            "irsync:   turned off DHT publishing on myserver ([daemon.discovery] dht = false)"
-        ),
+        err.contains("irsync:   turned off DHT publishing on myserver ([daemon] dht = false)"),
         "{err}"
     );
     let doc: toml::Table = w.server_toml().parse().unwrap();
-    assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
+    assert_eq!(doc["daemon"]["dht"].as_bool(), Some(false));
 }
 
 /// A first push that must stop: the server has no irsync, and nothing is

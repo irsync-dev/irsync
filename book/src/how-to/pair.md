@@ -128,7 +128,7 @@ table, pass `--no-dht`:
 irsync pair --no-dht myserver
 ```
 
-`pair` then writes `dht = false` under `[daemon.discovery]` on the server.
+`pair` then writes `dht = false` under `[daemon]` on the server.
 The daemon can still be found through DNS and the relay.
 
 ## Use another ssh command

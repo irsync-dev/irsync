@@ -52,11 +52,12 @@ struct RawDefaults {
     #[serde(default, deserialize_with = "de_opt_duration")]
     reconnect: Option<Duration>,
     dial_retries: Option<u32>,
-    dht: Option<bool>,
     ssh_install: Option<bool>,
-    mdns: Option<bool>,
     relay: Option<UrlText>,
     relay_mode: Option<Text<RelayMode>>,
+    dht: Option<bool>,
+    dns: Option<bool>,
+    mdns: Option<bool>,
     congestion: Option<Text<Congestion>>,
     pq_key_exchange: Option<Text<PqKeyExchange>>,
 }
@@ -75,21 +76,15 @@ struct RawDaemon {
     portmap: Option<bool>,
     relay: Option<UrlText>,
     relay_mode: Option<Text<RelayMode>>,
+    dht: Option<bool>,
+    dns: Option<bool>,
+    mdns: Option<bool>,
     congestion: Option<Text<Congestion>>,
     pq_key_exchange: Option<Text<PqKeyExchange>>,
-    discovery: Option<RawDiscovery>,
     #[serde(default, deserialize_with = "de_opt_debug_addr")]
     debug_addr: Option<String>,
     allow_all_paths: Option<bool>,
     allow_root: Option<bool>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawDiscovery {
-    dht: Option<bool>,
-    dns: Option<bool>,
-    mdns: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -103,17 +98,18 @@ struct RawTelemetry {
 #[serde(deny_unknown_fields)]
 struct RawServer {
     endpoint_id: Option<Spanned<String>>,
+    address: Option<Vec<HostPort>>,
     relay: Option<UrlText>,
     relay_mode: Option<Text<RelayMode>>,
+    dht: Option<bool>,
+    dns: Option<bool>,
+    mdns: Option<bool>,
     congestion: Option<Text<Congestion>>,
     pq_key_exchange: Option<Text<PqKeyExchange>>,
-    address: Option<Vec<HostPort>>,
     parallel: Option<u32>,
     #[serde(default, deserialize_with = "de_opt_duration")]
     reconnect: Option<Duration>,
     dial_retries: Option<u32>,
-    dht: Option<bool>,
-    mdns: Option<bool>,
     ssh: Option<String>,
     ssh_aliases: Option<Vec<String>>,
 }
@@ -339,11 +335,12 @@ fn defaults(r: RawDefaults) -> pb::Defaults {
         parallel: r.parallel,
         reconnect: r.reconnect.map(duration::to_proto),
         dial_retries: r.dial_retries,
-        dht: r.dht,
         ssh_install: r.ssh_install,
-        mdns: r.mdns,
         relay: r.relay.map(|u| u.0),
         relay_mode: r.relay_mode.map(number),
+        dht: r.dht,
+        dns: r.dns,
+        mdns: r.mdns,
         congestion: r.congestion.map(number),
         pq_key_exchange: r.pq_key_exchange.map(number),
         ..Default::default()
@@ -362,14 +359,11 @@ fn daemon(r: RawDaemon) -> pb::Daemon {
         portmap: r.portmap,
         relay: r.relay.map(|u| u.0),
         relay_mode: r.relay_mode.map(number),
+        dht: r.dht,
+        dns: r.dns,
+        mdns: r.mdns,
         congestion: r.congestion.map(number),
         pq_key_exchange: r.pq_key_exchange.map(number),
-        discovery: r.discovery.map(|d| pb::Discovery {
-            dht: d.dht,
-            dns: d.dns,
-            mdns: d.mdns,
-            ..Default::default()
-        }),
         debug_addr: r.debug_addr,
         allow_all_paths: r.allow_all_paths,
         allow_root: r.allow_root,
@@ -433,6 +427,7 @@ fn servers(
             reconnect: r.reconnect.map(duration::to_proto),
             dial_retries: r.dial_retries,
             dht: r.dht,
+            dns: r.dns,
             mdns: r.mdns,
             ssh: r.ssh,
             ssh_aliases,

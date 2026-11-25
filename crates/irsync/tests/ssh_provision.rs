@@ -39,7 +39,7 @@ impl Home {
         let text = format!(
             "[daemon]\nrelay_mode = \"disabled\"\nportmap = false\n\
              listen = [\"127.0.0.1:0\"]\n{extra_daemon}\
-             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n"
+             dht = false\ndns = false\nmdns = false\n"
         );
         irsync::fs::private::write(cfg.join("irsync.toml"), text).unwrap();
         Home { dir }
@@ -234,7 +234,7 @@ fn no_dht_turns_publishing_off_and_reloads() {
     assert_eq!(r.dht, Dht::TurnedOff);
     assert_eq!(r.daemon, DaemonOutcome::Started);
     let doc = read_config(&home);
-    assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
+    assert_eq!(doc["daemon"]["dht"].as_bool(), Some(false));
     let pid = probe(&home.state()).unwrap().pid;
     let r = home.setup_with(&client, &["--no-dht"]);
     assert_eq!(r.dht, Dht::Off);
@@ -246,7 +246,7 @@ fn no_dht_turns_publishing_off_and_reloads() {
     assert_eq!(r.daemon, DaemonOutcome::Reloaded);
     assert_eq!(probe(&home.state()).unwrap().pid, pid);
     let doc = read_config(&home);
-    assert_eq!(doc["daemon"]["discovery"]["dht"].as_bool(), Some(false));
+    assert_eq!(doc["daemon"]["dht"].as_bool(), Some(false));
 }
 
 #[test]

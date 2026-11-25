@@ -152,7 +152,7 @@ fn start_daemon(tmp: &Path) -> Daemon {
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
              relay_mode = \"disabled\"\nportmap = false\n\
-             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+             dht = false\ndns = false\nmdns = false\n",
             tmp.join("state"),
             tmp.join("daemon_key"),
         ),
@@ -505,7 +505,7 @@ fn no_listening_line_when_startup_fails_after_bind() {
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
              relay_mode = \"disabled\"\nportmap = false\n\
-             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+             dht = false\ndns = false\nmdns = false\n",
             tmp.join("state"),
             tmp.join("daemon_key"),
         ),
@@ -542,7 +542,7 @@ fn no_exports_warning_names_the_config_file() {
         format!(
             "state_dir = {:?}\n[daemon]\nidentity = {:?}\n\
              relay_mode = \"disabled\"\nportmap = false\n\
-             [daemon.discovery]\ndht = false\ndns = false\nmdns = false\n",
+             dht = false\ndns = false\nmdns = false\n",
             tmp.join("state"),
             tmp.join("daemon_key"),
         ),

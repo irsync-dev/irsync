@@ -33,14 +33,6 @@ pub fn write(msg: &pb::Config) -> String {
     }
     if let Some(d) = &msg.daemon {
         sections.push(table(&["daemon"], &d.comment, &d.tail, daemon(d)));
-        if let Some(x) = &d.discovery {
-            sections.push(table(
-                &["daemon", "discovery"],
-                &x.comment,
-                &x.tail,
-                discovery(x),
-            ));
-        }
     }
     if let Some(t) = &msg.telemetry {
         sections.push(table(&["telemetry"], &t.comment, &t.tail, telemetry(t)));
@@ -102,11 +94,12 @@ fn defaults(c: &pb::Defaults) -> Keys<'_> {
     k.int("parallel", c.parallel);
     k.duration("reconnect", c.reconnect.as_ref());
     k.int("dial_retries", c.dial_retries);
-    k.bool("dht", c.dht);
     k.bool("ssh_install", c.ssh_install);
-    k.bool("mdns", c.mdns);
     k.string("relay", c.relay.as_deref());
     k.string("relay_mode", c.relay_mode.and_then(spelled::<RelayMode>));
+    k.bool("dht", c.dht);
+    k.bool("dns", c.dns);
+    k.bool("mdns", c.mdns);
     k.string("congestion", c.congestion.and_then(spelled::<Congestion>));
     k.string(
         "pq_key_exchange",
@@ -131,6 +124,9 @@ fn daemon(d: &pb::Daemon) -> Keys<'_> {
     k.bool("portmap", d.portmap);
     k.string("relay", d.relay.as_deref());
     k.string("relay_mode", d.relay_mode.and_then(spelled::<RelayMode>));
+    k.bool("dht", d.dht);
+    k.bool("dns", d.dns);
+    k.bool("mdns", d.mdns);
     k.string("congestion", d.congestion.and_then(spelled::<Congestion>));
     k.string(
         "pq_key_exchange",
@@ -139,14 +135,6 @@ fn daemon(d: &pb::Daemon) -> Keys<'_> {
     k.string("debug_addr", d.debug_addr.as_deref());
     k.bool("allow_all_paths", d.allow_all_paths);
     k.bool("allow_root", d.allow_root);
-    k
-}
-
-fn discovery(d: &pb::Discovery) -> Keys<'_> {
-    let mut k = Keys::new(&d.key_comments);
-    k.bool("dht", d.dht);
-    k.bool("dns", d.dns);
-    k.bool("mdns", d.mdns);
     k
 }
 
@@ -163,19 +151,20 @@ fn telemetry(t: &pb::Telemetry) -> Keys<'_> {
 fn server(s: &pb::ServerEntry) -> Keys<'_> {
     let mut k = Keys::new(&s.key_comments);
     k.string("endpoint_id", non_empty(&s.endpoint_id).map(id).as_deref());
+    k.array("address", &s.address, s.address_set);
     k.string("relay", s.relay.as_deref());
     k.string("relay_mode", s.relay_mode.and_then(spelled::<RelayMode>));
+    k.bool("dht", s.dht);
+    k.bool("dns", s.dns);
+    k.bool("mdns", s.mdns);
     k.string("congestion", s.congestion.and_then(spelled::<Congestion>));
     k.string(
         "pq_key_exchange",
         s.pq_key_exchange.and_then(spelled::<PqKeyExchange>),
     );
-    k.array("address", &s.address, s.address_set);
     k.int("parallel", s.parallel);
     k.duration("reconnect", s.reconnect.as_ref());
     k.int("dial_retries", s.dial_retries);
-    k.bool("dht", s.dht);
-    k.bool("mdns", s.mdns);
     k.string("ssh", s.ssh.as_deref());
     k.array("ssh_aliases", &s.ssh_aliases, s.ssh_aliases_set);
     k

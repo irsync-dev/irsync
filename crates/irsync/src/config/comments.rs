@@ -376,7 +376,6 @@ fn table<'a>(c: &'a mut pb::Config, path: &[String]) -> Option<Parts<'a>> {
         },
         ["defaults"] => parts!(c.defaults.as_mut()?),
         ["daemon"] => parts!(c.daemon.as_mut()?, "listen" => listen),
-        ["daemon", "discovery"] => parts!(c.daemon.as_mut()?.discovery.as_mut()?),
         ["telemetry"] => parts!(c.telemetry.as_mut()?),
         ["servers", name] => parts!(
             c.servers.iter_mut().find(|s| s.name == name)?,
