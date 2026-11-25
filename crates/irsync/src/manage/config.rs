@@ -5,7 +5,7 @@
 use super::{id_bytes, ManageError};
 use crate::authz::Access;
 use crate::config::clients::RIGHTS;
-use crate::config::settings::{RelayMode, Settings};
+use crate::config::settings::{OtlpProtocol, RelayMode, Settings};
 use crate::config::{duration, reader, writer};
 use crate::net::addr::HostPort;
 use irsync_proto::config as pb;
@@ -117,14 +117,25 @@ pub fn key_path(key: &str) -> Result<Vec<String>, ManageError> {
 }
 
 /// The lines `config get` prints for `path`: its value, else its
-/// default; `None` for a key unset and without a default.
+/// default; `None` for a key unset and without a default. A key of a
+/// server, client or export that is not there has no default either.
 pub fn get_or_default(
     msg: &pb::Config,
     path: &[String],
 ) -> Result<Option<Vec<String>>, ManageError> {
     Ok(match get(msg, path)? {
         Got::Lines(lines) => Some(lines),
-        Got::Unset => default_of(path),
+        Got::Unset => {
+            let entry = matches!(
+                path.first().map(String::as_str),
+                Some("servers" | "clients" | "exports")
+            );
+            if entry && path.len() > 2 && !has_table(msg, &path[..2]) {
+                None
+            } else {
+                default_of(path)
+            }
+        }
     })
 }
 
@@ -136,13 +147,15 @@ fn as_written(p: &std::path::Path) -> String {
     }
 }
 
-/// The default of a settings key, as `get` prints it (one element per
-/// line); `None` when the key has no default or is not a settings key.
+/// The default of a key, as `get` prints it (one element per line);
+/// `None` when the key has no default or is not a key. A server's keys
+/// have none of their own: they fall back to `[client]`'s.
 pub fn default_of(path: &[String]) -> Option<Vec<String>> {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     let s = Settings::default();
     let one = |v: String| Some(vec![v]);
     match parts.as_slice() {
+        ["config_version"] => one(reader::CONFIG_VERSION.to_string()),
         ["unsafe_config_allowed"] => one(s.unsafe_config_allowed.to_string()),
         ["identity"] => one(as_written(&s.identity)),
         // The effective [client] defaults, as book/src/reference/configuration.md lists them.
@@ -184,6 +197,11 @@ pub fn default_of(path: &[String]) -> Option<Vec<String>> {
         ["daemon", "discovery", "dht"] => one(s.daemon.discovery.dht.to_string()),
         ["daemon", "discovery", "dns"] => one(s.daemon.discovery.dns.to_string()),
         ["daemon", "discovery", "mdns"] => one(s.daemon.discovery.mdns.to_string()),
+        ["daemon", "allow_all_paths"] => one(s.daemon.allow_all_paths.to_string()),
+        ["daemon", "allow_root"] => one(s.daemon.allow_root.to_string()),
+        ["telemetry", "otlp_protocol"] => one(OtlpProtocol::DEFAULT.as_str().into()),
+        // A flag left out of an export is off, as config/exports.rs reads it.
+        ["exports", _, "read_only" | "warm_index" | "fsync" | "auto"] => one("false".into()),
         _ => None,
     }
 }

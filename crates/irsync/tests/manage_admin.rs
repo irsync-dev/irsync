@@ -385,15 +385,19 @@ fn config_text_gets_and_lists() {
     let m = config_with("admin = \"rw\"");
     // Unset and without a default: no lines, as irsync config get prints
     // none (and exits 1).
-    assert!(config_text(&m, "daemon.allow_all_paths")
+    assert!(config_text(&m, "daemon.debug_addr")
         .unwrap()
         .lines
         .is_empty());
     // Unset with a default: the default.
     assert_eq!(config_text(&m, "daemon.portmap").unwrap().lines, ["true"]);
-    let set = msg("[daemon]\nallow_all_paths = true\n");
+    let set = msg("[daemon]\nallow_all_paths = false\n");
     assert_eq!(
         config_text(&set, "daemon.allow_all_paths").unwrap().lines,
+        ["false"]
+    );
+    assert_eq!(
+        config_text(&m, "daemon.allow_all_paths").unwrap().lines,
         ["true"]
     );
     assert_eq!(

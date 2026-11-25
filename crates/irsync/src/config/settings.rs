@@ -200,6 +200,20 @@ pub enum OtlpProtocol {
     Http,
 }
 
+impl OtlpProtocol {
+    /// The protocol when neither the config file nor the environment
+    /// names one.
+    pub const DEFAULT: OtlpProtocol = OtlpProtocol::Http;
+
+    /// The name the config files use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OtlpProtocol::Grpc => "grpc",
+            OtlpProtocol::Http => "http",
+        }
+    }
+}
+
 /// `[telemetry]`: OTLP export, for either side.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TelemetrySettings {
