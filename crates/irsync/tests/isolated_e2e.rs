@@ -467,7 +467,7 @@ fn unresolvable_address_fails_before_the_identity_is_needed() {
 }
 
 #[test]
-fn unknown_alias_error_names_hosts_file() {
+fn unknown_name_error_names_hosts_file() {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
     std::fs::create_dir_all(tmp.join("home")).unwrap();

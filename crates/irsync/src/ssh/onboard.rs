@@ -10,7 +10,7 @@ use super::payload::Contents;
 use super::service::ServiceOutcome;
 use super::setup::{Created, DaemonOutcome, Dht, GrantOutcome, SetupReport};
 use crate::build_info::LONG_VERSION;
-use crate::config::names::valid_alias;
+use crate::config::names::valid_name;
 use crate::config::paths::Paths;
 use crate::manage::{self, servers::ServerFlags};
 use irsync_proto::config as pb;
@@ -24,8 +24,8 @@ const RUN_THE_DAEMON_URL: &str = "https://irsync.org/book/how-to/run-the-daemon"
 
 /// One server that onboarding wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedAlias {
-    pub alias: String,
+pub struct SavedName {
+    pub name: String,
     /// The id it pointed at before, when it changed.
     pub previous_id: Option<EndpointId>,
     /// It was saved before this run (with `previous_id` or the same id).
@@ -74,19 +74,19 @@ fn ip_of(dest: &str) -> Option<std::net::IpAddr> {
 
 /// Whether a first run to `dest` can go ahead, before any ssh call: ssh
 /// must not take `dest` for an option, and `dest` must be an IP address
-/// or a name that can be saved as an alias.
+/// or a name that can be saved as a server name.
 pub fn check_dest(dest: &str) -> anyhow::Result<()> {
     if dest.starts_with('-') {
         anyhow::bail!("{dest:?} is not a host name");
     }
-    if !matches!(dest_kind(dest), DestKind::Ip { .. }) && !valid_alias(dest) {
-        return Err(manage::ManageError::BadAlias(dest.to_string()).into());
+    if !matches!(dest_kind(dest), DestKind::Ip { .. }) && !valid_name(dest) {
+        return Err(manage::ManageError::BadName(dest.to_string()).into());
     }
     Ok(())
 }
 
-/// [`check_dest`], and after the probe: an IPv6 address cannot be an
-/// alias, so the server must have given a host name (`server_name`) to
+/// [`check_dest`], and after the probe: an IPv6 address cannot be a
+/// server name, so the server must have given a host name (`server_name`) to
 /// save it under. Checked before anything on the server is changed.
 pub(crate) fn check_first(dest: &str, server_name: Option<&str>) -> anyhow::Result<()> {
     check_dest(dest)?;
@@ -100,13 +100,13 @@ pub(crate) fn check_first(dest: &str, server_name: Option<&str>) -> anyhow::Resu
     Ok(())
 }
 
-/// The aliases a first run to `dest` saves for the daemon `id`, the main
+/// The names a first run to `dest` saves for the daemon `id`, the main
 /// one first. An IP address goes under the server's host name
 /// (`server_name`), with `-2`, `-3`, ... when that name belongs to another
-/// daemon; without a name an IPv4 address is its own alias. `user@host`
-/// also gets the plain `host` when no alias has that name yet (the first
-/// one wins). `existing`: the id an alias is saved with.
-pub(crate) fn choose_aliases(
+/// daemon; without a name an IPv4 address is its own name. `user@host`
+/// also gets the plain `host` when no server has that name yet (the first
+/// one wins). `existing`: the id a name is saved with.
+pub(crate) fn choose_names(
     dest: &str,
     server_name: Option<&str>,
     id: EndpointId,
@@ -115,29 +115,29 @@ pub(crate) fn choose_aliases(
     match (dest_kind(dest), server_name) {
         (DestKind::Ip { .. }, Some(name)) => {
             let free = |a: &str| existing(a).is_none_or(|old| old == id);
-            let mut alias = name.to_string();
+            let mut candidate = name.to_string();
             let mut n = 2;
-            while !free(&alias) {
-                alias = format!("{name}-{n}");
+            while !free(&candidate) {
+                candidate = format!("{name}-{n}");
                 n += 1;
             }
-            vec![alias]
+            vec![candidate]
         }
-        (DestKind::UserHost { host }, _) if valid_alias(&host) && existing(&host).is_none() => {
+        (DestKind::UserHost { host }, _) if valid_name(&host) && existing(&host).is_none() => {
             vec![dest.to_string(), host]
         }
         _ => vec![dest.to_string()],
     }
 }
 
-/// What onboarding `alias` did.
+/// What onboarding `name` did.
 #[derive(Debug, Clone)]
 pub struct Onboarded {
-    pub alias: String,
-    /// The server daemon's EndpointId, now saved under `alias`.
+    pub name: String,
+    /// The server daemon's EndpointId, now saved under `name`.
     pub endpoint_id: EndpointId,
-    /// Every alias this run saved or checked, `alias` first.
-    pub saved: Vec<SavedAlias>,
+    /// Every name this run saved or checked, `name` first.
+    pub saved: Vec<SavedName>,
     pub report: SetupReport,
     pub install: Install,
     /// The server's OS (`std::env::consts::OS` names), from the probe.
@@ -165,7 +165,7 @@ impl Onboarded {
 /// What an onboarding run is asked to do beyond the defaults.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SetupFlags {
-    /// `alias` is a saved host being checked, so `ssh-setup` must not add
+    /// `name` is a saved host being checked, so `ssh-setup` must not add
     /// back a removed grant.
     pub recheck: bool,
     /// Turn the daemon's DHT publishing off.
@@ -178,18 +178,18 @@ pub struct SetupFlags {
 
 /// Sets up `dest` (an ssh destination) for `client`: probe, install this
 /// build, run `ssh-setup`, then save the host with `ssh = dest`.
-/// `alias`: a saved host being checked, the only entry updated; `None` on
-/// a first run, which saves what [`choose_aliases`] says. `flags` says
+/// `name`: a saved host being checked, the only entry updated; `None` on
+/// a first run, which saves what [`choose_names`] says. `flags` says
 /// what else to do.
 pub fn onboard(
     paths: &Paths,
     rsh: &Rsh,
-    alias: Option<&str>,
+    name: Option<&str>,
     dest: &str,
     client: EndpointId,
     flags: SetupFlags,
 ) -> anyhow::Result<Onboarded> {
-    match alias {
+    match name {
         Some(a) => check(a, dest)?,
         None => check_dest(dest)?,
     }
@@ -204,7 +204,7 @@ pub fn onboard(
              {RUN_THE_DAEMON_URL}"
         );
     }
-    if alias.is_none() {
+    if name.is_none() {
         check_first(dest, p.hostname.as_deref())?;
     }
     let install = ensure_installed(rsh, dest, &p, flags.no_install)?;
@@ -220,37 +220,37 @@ pub fn onboard(
     let mut lock = manage::lock_config(&paths.config)?;
     let mut msg = lock.load()?;
     let id = report.endpoint_id;
-    let aliases = match alias {
+    let names = match name {
         Some(a) => vec![a.to_string()],
-        None => choose_aliases(dest, p.hostname.as_deref(), id, &|a| saved_id(&msg, a)),
+        None => choose_names(dest, p.hostname.as_deref(), id, &|a| saved_id(&msg, a)),
     };
     let typed_ip = ip_of(dest);
     let mut saved = Vec::new();
-    for alias in aliases {
+    for name in names {
         // Saved with a daemon id before: an entry that was a client only
         // is saved as a host now.
-        let before = saved_id(&msg, &alias);
+        let before = saved_id(&msg, &name);
         let existed = before.is_some();
         // An address goes stale, a name does not: the same daemon, saved
         // with a name to reach it by, keeps that name. It also keeps
         // another spelling of this address (`u@1.2.3.4` for `1.2.3.4`).
         // Only an address that differs is replaced: the old one is stale.
         let kept_ssh = (typed_ip.is_some() && before == Some(id))
-            .then(|| saved_ssh(&msg, &alias))
+            .then(|| saved_ssh(&msg, &name))
             .flatten()
             .filter(|old| old != dest && ip_of(old).is_none_or(|ip| Some(ip) == typed_ip));
         let server_flags = ServerFlags {
             ssh: kept_ssh.is_none().then(|| dest.to_string()),
             ..ServerFlags::default()
         };
-        let previous_id = manage::servers::server_add(&mut msg, &alias, id, &server_flags)
-            .with_context(|| format!("saving server {alias}"))?;
+        let previous_id = manage::servers::server_add(&mut msg, &name, id, &server_flags)
+            .with_context(|| format!("saving server {name}"))?;
         if kept_ssh.is_some() {
             // So that typing this address again finds the host without ssh.
-            manage::servers::server_add_ssh_alias(&mut msg, &alias, dest);
+            manage::servers::server_add_ssh_alias(&mut msg, &name, dest);
         }
-        saved.push(SavedAlias {
-            alias,
+        saved.push(SavedName {
+            name,
             previous_id,
             existed,
             kept_ssh,
@@ -258,12 +258,12 @@ pub fn onboard(
     }
     // A check that found a new daemon (the server was rebuilt): the other
     // names saved for that daemon through this ssh destination follow.
-    if let (Some(_), Some(old)) = (alias, saved[0].previous_id) {
-        for other in aliases_of(&msg, old, dest) {
+    if let (Some(_), Some(old)) = (name, saved[0].previous_id) {
+        for other in names_of(&msg, old, dest) {
             manage::servers::server_add(&mut msg, &other, id, &ServerFlags::default())
                 .with_context(|| format!("saving server {other}"))?;
-            saved.push(SavedAlias {
-                alias: other,
+            saved.push(SavedName {
+                name: other,
                 previous_id: Some(old),
                 existed: true,
                 kept_ssh: None,
@@ -272,7 +272,7 @@ pub fn onboard(
     }
     lock.save(&mut msg)?;
     Ok(Onboarded {
-        alias: saved[0].alias.clone(),
+        name: saved[0].name.clone(),
         endpoint_id: id,
         saved,
         install,
@@ -283,19 +283,19 @@ pub fn onboard(
     })
 }
 
-/// The server `alias` of `msg`.
-fn saved_host<'a>(msg: &'a pb::Config, alias: &str) -> Option<&'a pb::ServerEntry> {
-    msg.servers.iter().find(|s| s.name == alias)
+/// The server `name` of `msg`.
+fn saved_host<'a>(msg: &'a pb::Config, name: &str) -> Option<&'a pb::ServerEntry> {
+    msg.servers.iter().find(|s| s.name == name)
 }
 
-/// The id `[servers.alias]` holds in `msg`.
-fn saved_id(msg: &pb::Config, alias: &str) -> Option<EndpointId> {
-    manage::id_of(&saved_host(msg, alias)?.endpoint_id)
+/// The id `[servers.NAME]` holds in `msg`.
+fn saved_id(msg: &pb::Config, name: &str) -> Option<EndpointId> {
+    manage::id_of(&saved_host(msg, name)?.endpoint_id)
 }
 
 /// The names of the servers in `msg` saved with the daemon `id` and
 /// `ssh = dest`.
-fn aliases_of(msg: &pb::Config, id: EndpointId, dest: &str) -> Vec<String> {
+fn names_of(msg: &pb::Config, id: EndpointId, dest: &str) -> Vec<String> {
     msg.servers
         .iter()
         .filter(|s| manage::id_of(&s.endpoint_id) == Some(id) && s.ssh.as_deref() == Some(dest))
@@ -303,20 +303,20 @@ fn aliases_of(msg: &pb::Config, id: EndpointId, dest: &str) -> Vec<String> {
         .collect()
 }
 
-/// The `ssh` value `[servers.alias]` holds in `msg`.
-fn saved_ssh(msg: &pb::Config, alias: &str) -> Option<String> {
-    saved_host(msg, alias)?.ssh.clone()
+/// The `ssh` value `[servers.NAME]` holds in `msg`.
+fn saved_ssh(msg: &pb::Config, name: &str) -> Option<String> {
+    saved_host(msg, name)?.ssh.clone()
 }
 
-/// Whether `alias` can be saved and `dest` is a host name ssh will not
+/// Whether `name` can be saved and `dest` is a host name ssh will not
 /// take for an option. Checked before any ssh call, so the server is
-/// never changed for an alias that can't be saved.
-pub fn check(alias: &str, dest: &str) -> anyhow::Result<()> {
+/// never changed for a name that can't be saved.
+pub fn check(name: &str, dest: &str) -> anyhow::Result<()> {
     if dest.starts_with('-') {
         anyhow::bail!("{dest:?} is not a host name");
     }
-    if !valid_alias(alias) {
-        return Err(manage::ManageError::BadAlias(alias.to_string()).into());
+    if !valid_name(name) {
+        return Err(manage::ManageError::BadName(name.to_string()).into());
     }
     Ok(())
 }
@@ -324,7 +324,7 @@ pub fn check(alias: &str, dest: &str) -> anyhow::Result<()> {
 /// The report, one line each, without the `irsync: ` prefix. The service
 /// how-to is separate: see [`howto`].
 pub fn summary(o: &Onboarded) -> Vec<String> {
-    let dest = &o.alias;
+    let dest = &o.name;
     let dir = "~/.local/bin";
     let version = &*LONG_VERSION;
     let r = &o.report;
@@ -410,21 +410,21 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
         out.push(line);
     }
     for a in &o.saved {
-        let alias = &a.alias;
+        let name = &a.name;
         match a.previous_id {
             None if a.existed => {
                 // Already saved with this id (a restart): nothing to say,
                 // unless the host was reached another way than it is saved.
                 if let Some(ssh) = &a.kept_ssh {
-                    out.push(format!("  server {alias} keeps ssh = {ssh}"));
+                    out.push(format!("  server {name} keeps ssh = {ssh}"));
                 }
             }
             None => out.push(format!(
-                "  saved server {alias} -> {}",
+                "  saved server {name} -> {}",
                 short(&o.endpoint_id)
             )),
             Some(old) => out.push(format!(
-                "  updated server {alias}: {} -> {}",
+                "  updated server {name}: {} -> {}",
                 short(&old),
                 short(&o.endpoint_id)
             )),
@@ -601,21 +601,21 @@ mod tests {
     }
 
     /// ssh would read `-oProxyCommand=…` as an option: such a destination
-    /// is refused before any ssh call, as alias or as `ssh` value.
+    /// is refused before any ssh call, as name or as `ssh` value.
     #[test]
     fn dash_destination_is_not_a_host_name() {
-        for (alias, dest) in [("-oProxyCommand=x", "-oProxyCommand=x"), ("nas", "-x")] {
-            let e = check(alias, dest).unwrap_err();
+        for (name, dest) in [("-oProxyCommand=x", "-oProxyCommand=x"), ("nas", "-x")] {
+            let e = check(name, dest).unwrap_err();
             assert_eq!(e.to_string(), format!("{dest:?} is not a host name"));
         }
         check("nas", "me@myserver").unwrap();
     }
 
     #[test]
-    fn chooses_aliases() {
+    fn chooses_names() {
         let none = |_: &str| None;
         let pick = |dest, name, ex: &dyn Fn(&str) -> Option<EndpointId>| {
-            choose_aliases(dest, name, id(1), ex)
+            choose_names(dest, name, id(1), ex)
         };
         assert_eq!(pick("myserver", None, &none), ["myserver"]);
         assert_eq!(
@@ -659,28 +659,28 @@ mod tests {
         assert!(check_first("all", None).is_err());
     }
 
-    /// One line for each alias saved or changed; none for one that was
+    /// One line for each name saved or changed; none for one that was
     /// already saved with this id.
     #[test]
-    fn summary_lists_every_saved_alias() {
+    fn summary_lists_every_saved_name() {
         let mut o = onboarded(Install::Current, DaemonOutcome::Running, Some("linux"));
-        o.alias = "u@myserver".into();
+        o.name = "u@myserver".into();
         o.saved = vec![
-            SavedAlias {
-                alias: "u@myserver".into(),
+            SavedName {
+                name: "u@myserver".into(),
                 previous_id: None,
                 existed: true,
                 kept_ssh: None,
             },
-            SavedAlias {
-                alias: "myserver".into(),
+            SavedName {
+                name: "myserver".into(),
                 previous_id: None,
                 existed: false,
                 kept_ssh: None,
             },
         ];
         let s = summary(&o).join("\n");
-        assert!(!s.contains("alias u@myserver"), "{s}");
+        assert!(!s.contains("server u@myserver"), "{s}");
         assert!(
             s.contains(&format!("  saved server myserver -> {}", id(2).fmt_short())),
             "{s}"
@@ -689,10 +689,10 @@ mod tests {
 
     fn onboarded(install: Install, daemon: DaemonOutcome, os: Option<&'static str>) -> Onboarded {
         Onboarded {
-            alias: "myserver".into(),
+            name: "myserver".into(),
             endpoint_id: id(2),
-            saved: vec![SavedAlias {
-                alias: "myserver".into(),
+            saved: vec![SavedName {
+                name: "myserver".into(),
                 previous_id: Some(id(3)),
                 existed: true,
                 kept_ssh: None,
@@ -913,10 +913,10 @@ mod tests {
         assert!(!summary(&o).join("\n").contains("DHT"));
     }
 
-    /// `saved` for a new alias, `updated` for a changed id, and nothing
-    /// about the alias when it existed with the same id (a plain restart).
+    /// `saved` for a new name, `updated` for a changed id, and nothing
+    /// about the name when it existed with the same id (a plain restart).
     #[test]
-    fn alias_line_says_saved_updated_or_nothing() {
+    fn name_line_says_saved_updated_or_nothing() {
         let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
         o.saved[0].previous_id = None;
         o.saved[0].existed = false;

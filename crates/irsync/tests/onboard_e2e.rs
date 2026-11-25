@@ -1,5 +1,5 @@
 //! The client's first run against an unknown host: it sets the server up
-//! over (fake) ssh, saves the alias, then syncs over iroh.
+//! over (fake) ssh, saves it under a server name, then syncs over iroh.
 #![cfg(unix)]
 
 mod common;
@@ -399,7 +399,7 @@ fn a_typo_in_the_host_runs_no_ssh() {
 }
 
 #[test]
-fn user_at_host_alias() {
+fn user_at_host_is_saved_under_that_name() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("u@myserver:{}", dest.display());
@@ -521,7 +521,7 @@ fn ip_address_is_saved_under_the_server_name() {
         std::fs::read_to_string(dest.join("a.txt")).unwrap(),
         "again\n"
     );
-    // The other spelling of the address ends on the same alias, and is
+    // The other spelling of the address ends on the same name, and is
     // remembered beside the first.
     let other = format!("u@192.168.1.5:{}", dest.display());
     w.pair("u@192.168.1.5");
@@ -559,11 +559,11 @@ fn an_address_does_not_replace_a_saved_ssh_name() {
     );
     let cfg: toml::Table = w.client_config().parse().unwrap();
     assert_eq!(cfg["servers"].as_table().unwrap().len(), 2, "{cfg}");
-    for alias in ["myserver", "mike@myserver"] {
+    for name in ["myserver", "mike@myserver"] {
         assert_eq!(
-            cfg["servers"][alias]["ssh"].as_str(),
+            cfg["servers"][name]["ssh"].as_str(),
             Some("mike@myserver"),
-            "{alias}"
+            "{name}"
         );
     }
     // The address is remembered beside the name: typed again, no ssh.
@@ -609,7 +609,7 @@ fn two_hosts_with_one_ssh_destination_are_refused() {
 #[test]
 fn client_name_with_shell_characters_runs_nothing() {
     let mut w = World::new();
-    // A valid alias (no `/`, `:` or `.`) that a shell would act on.
+    // A valid name (no `/`, `:` or `.`) that a shell would act on.
     w.client_name = "x';cd;touch pwned;echo '$(cd;touch pwned)`cd;touch pwned`".into();
     w.pair("myserver");
     assert!(!w.server.path().join("pwned").exists());
@@ -651,7 +651,7 @@ fn ipv6_without_a_server_name_changes_nothing() {
 }
 
 #[test]
-fn all_paths_off_still_saves_alias() {
+fn all_paths_off_still_saves_name() {
     let w = World::new();
     // The client identity first, so the export can be granted to it.
     let out = common::irsync_bin(w.client.path(), &["id", "generate"]);
@@ -727,9 +727,9 @@ fn other_platform_gets_the_release_binary() {
 }
 
 #[test]
-fn unsavable_alias_stops_before_ssh() {
+fn unsavable_name_stops_before_ssh() {
     let w = World::new();
-    // `all` means every peer: it can never be an alias.
+    // `all` means every client: it can never be a name.
     let o = w.irsync_bare(&["pair", "all"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
@@ -757,10 +757,10 @@ impl World {
         }
     }
 
-    /// The `endpoint_id` saved for `alias` in the client config.
-    fn saved_id(&self, alias: &str) -> String {
+    /// The `endpoint_id` saved for `name` in the client config.
+    fn saved_id(&self, name: &str) -> String {
         let doc: toml::Table = self.client_config().parse().unwrap();
-        doc["servers"][alias]["endpoint_id"]
+        doc["servers"][name]["endpoint_id"]
             .as_str()
             .unwrap()
             .to_string()
@@ -839,7 +839,7 @@ fn dead_daemon_stops_a_listing_with_the_pair_hint() {
 /// rebuilt: the check through one name gives both the new id. A host
 /// reached another way keeps what it has.
 #[test]
-fn rebuilt_server_updates_every_alias_of_that_ssh_destination() {
+fn rebuilt_server_updates_every_name_of_that_ssh_destination() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("mike@myserver:{}", dest.display());
@@ -868,7 +868,7 @@ fn rebuilt_server_updates_every_alias_of_that_ssh_destination() {
 }
 
 #[test]
-fn rebuilt_server_updates_alias() {
+fn rebuilt_server_updates_name() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     let target = format!("myserver:{}", dest.display());
@@ -1152,7 +1152,7 @@ fn pair_takes_an_address_and_no_dht() {
 /// A daemon that died is started again when the host is typed as its
 /// address: the check goes to the entry the address is saved under.
 #[test]
-fn a_dead_daemon_found_by_address_names_its_alias() {
+fn a_dead_daemon_found_by_address_is_told_by_its_name() {
     let mut w = World::new();
     w.hostname = Some("myserver".into());
     let dest = w.server.path().join("dest");
@@ -1195,7 +1195,7 @@ fn a_taken_client_name_is_refused_and_changes_no_configuration() {
         probe(&w.server.path().join("xdg/irsync")).is_none(),
         "no daemon started"
     );
-    assert_eq!(w.client_config(), "", "no alias saved");
+    assert_eq!(w.client_config(), "", "no name saved");
     // The name is checked by the irsync just installed there: that one
     // stays, and the message says so.
     let note = "irsync was installed on myserver before this; that stays";
@@ -1210,7 +1210,7 @@ fn a_taken_client_name_is_refused_and_changes_no_configuration() {
     assert_eq!(w.server_toml(), before);
 }
 
-/// The client's config with the ssh link of `myserver` removed: the alias
+/// The client's config with the ssh link of `myserver` removed: the name
 /// then looks like one added by hand with `irsync server add`.
 fn forget_ssh(w: &World) {
     let path = w.client.path().join(".config/irsync/irsync.toml");
@@ -1252,11 +1252,11 @@ fn hand_added_host_listing_gets_the_id_hint() {
     assert_eq!(err.matches("irsync id show --daemon").count(), 1, "{err}");
 }
 
-/// An alias whose name is not its ssh destination: the check goes to the
-/// destination and updates that alias, not one named after the
+/// A server whose name is not its ssh destination: the check goes to the
+/// destination and updates that server, not one named after the
 /// destination.
 #[test]
-fn pair_updates_the_alias_not_its_ssh_name() {
+fn pair_updates_the_server_not_its_ssh_name() {
     let w = World::new();
     let dest = w.server.path().join("dest");
     w.pair("myserver");
@@ -1289,7 +1289,7 @@ fn pair_updates_the_alias_not_its_ssh_name() {
 }
 
 #[test]
-fn alias_without_ssh_does_not_fall_back() {
+fn name_without_ssh_does_not_fall_back() {
     let w = World::new();
     let dead = iroh::SecretKey::from_bytes(&[9; 32]).public().to_string();
     let out = common::irsync_bin(w.client.path(), &["server", "add", "myserver", &dead]);

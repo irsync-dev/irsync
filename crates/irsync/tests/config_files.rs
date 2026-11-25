@@ -1,7 +1,7 @@
 use irsync::config::clients::Clients;
 use irsync::config::exports::Exports;
 use irsync::config::file::Config;
-use irsync::config::names::{short_host_name, valid_alias};
+use irsync::config::names::{short_host_name, valid_name};
 use irsync::config::paths::Paths;
 use irsync::config::servers::Servers;
 use irsync::config::settings::{Relay, Settings};
@@ -180,11 +180,11 @@ fn server_without_endpoint_id_is_error_with_line() {
 }
 
 #[test]
-fn alias_validity() {
-    assert!(valid_alias("home-server"));
-    assert!(!valid_alias("") && !valid_alias("a:b") && !valid_alias("a/b"));
-    assert!(!valid_alias(&id(1).to_string()));
-    assert!(!valid_alias("all") && !valid_alias("*"));
+fn name_validity() {
+    assert!(valid_name("home-server"));
+    assert!(!valid_name("") && !valid_name("a:b") && !valid_name("a/b"));
+    assert!(!valid_name(&id(1).to_string()));
+    assert!(!valid_name("all") && !valid_name("*"));
 }
 
 #[test]
@@ -216,9 +216,9 @@ fn short_host_names() {
 
 #[test]
 fn server_by_ssh_destination() {
-    let host = |alias: &str, n: u8, ssh: &str| {
+    let host = |name: &str, n: u8, ssh: &str| {
         format!(
-            "[servers.\"{alias}\"]\nendpoint_id = \"{}\"\nssh = \"{ssh}\"\n",
+            "[servers.\"{name}\"]\nendpoint_id = \"{}\"\nssh = \"{ssh}\"\n",
             id(n)
         )
     };
@@ -290,10 +290,10 @@ fn a_machine_as_a_server_and_a_client() {
     assert_eq!(clients.get("laptop").unwrap().client_id, id(2));
     // Grants go by the client id: the daemon of a machine is not its client.
     assert_eq!(clients.resolve_client("laptop").unwrap(), id(2));
-    assert_eq!(clients.alias_of(&id(2)), Some("laptop"));
-    assert_eq!(clients.alias_of(&id(1)), None);
-    assert_eq!(clients.alias_of(&id(3)), Some("phone"));
-    assert_eq!(clients.alias_of(&id(4)), None);
+    assert_eq!(clients.name_of(&id(2)), Some("laptop"));
+    assert_eq!(clients.name_of(&id(1)), None);
+    assert_eq!(clients.name_of(&id(3)), Some("phone"));
+    assert_eq!(clients.name_of(&id(4)), None);
     assert!(servers.get("phone").is_none());
     // A bad client id names its line.
     let e = parse_clients("[clients.x]\nclient_id = \"nope\"\n", p())

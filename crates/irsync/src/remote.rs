@@ -204,7 +204,7 @@ fn client_id_of(id: &str) -> anyhow::Result<iroh::EndpointId> {
 /// Sends `req` to the server of `c` and returns its answer. A refusal, a
 /// NACK or a failure is the error.
 pub async fn run_remote(c: &Connected, req: RemoteRequest) -> anyhow::Result<RemoteOutcome> {
-    let server = c.alias.clone().unwrap_or_else(|| c.target.id.to_string());
+    let server = c.name.clone().unwrap_or_else(|| c.target.id.to_string());
     let client = c.endpoint.id();
     let conn = irsync::client::dial(c).await?;
     let answer = converse(&conn, &server, req).await;

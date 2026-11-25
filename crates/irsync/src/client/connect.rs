@@ -55,9 +55,9 @@ pub struct Connected {
     pub host_entry: Option<ServerEntry>,
     /// The settings of the dial, decided.
     pub dial: Dial,
-    /// The saved alias `host_entry` is under: the host as typed, or the
-    /// alias a first run saved it as.
-    pub alias: Option<String>,
+    /// The saved name `host_entry` is under: the host as typed, or the
+    /// name a first run saved it as.
+    pub name: Option<String>,
     /// `opts` with `parallel` and `state_dir` filled in from the config.
     pub opts: SyncOptions,
 }
@@ -68,7 +68,7 @@ impl Connected {
         self.host_entry
             .as_ref()
             .filter(|h| h.ssh.is_some())
-            .and(self.alias.as_deref())
+            .and(self.name.as_deref())
     }
 
     /// The bound on each dial before the daemon has answered: see
@@ -107,8 +107,8 @@ pub async fn connect(
     // An address that is the `ssh` value of a saved server finds that
     // server: no ssh is needed for that.
     let by_ssh = crate::ssh::pair::saved_by_ssh(&config.servers, &config.clients, host)?;
-    if let Some(alias) = &by_ssh {
-        say(&format!("irsync: {host} is saved as {alias}"));
+    if let Some(name) = &by_ssh {
+        say(&format!("irsync: {host} is saved as {name}"));
     }
     let host = by_ssh.as_deref().unwrap_or(host);
     // A sync never sets a server up: it says how to.
@@ -173,7 +173,7 @@ pub async fn connect(
     Ok(Connected {
         endpoint,
         target,
-        alias: host_entry.is_some().then(|| host.to_string()),
+        name: host_entry.is_some().then(|| host.to_string()),
         host_entry,
         dial,
         opts,

@@ -150,7 +150,7 @@ fn peer_spec_forms() {
     .unwrap();
     let hosts = (&c.clients, &c.servers);
     assert!(
-        matches!(ClientSpec::parse("laptop", hosts.0, hosts.1).unwrap(), ClientSpec::Alias(ref a) if a == "laptop")
+        matches!(ClientSpec::parse("laptop", hosts.0, hosts.1).unwrap(), ClientSpec::Name(ref a) if a == "laptop")
     );
     assert!(
         matches!(ClientSpec::parse(&id(2).to_string(), hosts.0, hosts.1).unwrap(), ClientSpec::Id { id: got, .. } if got == id(2))
@@ -275,7 +275,7 @@ fn parse_clients(
 }
 
 #[test]
-fn save_writes_aliases_for_ids() {
+fn save_writes_names_for_ids() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
     let mut m = msg(&format!(
@@ -316,7 +316,7 @@ fn canonicalize_doc_uses_the_clients_of_the_message() {
 }
 
 #[test]
-fn written_is_the_alias_of_an_id_that_has_one() {
+fn written_is_the_name_of_an_id_that_has_one() {
     let hosts = parse_clients(
         &format!(
             "[clients.zed]\nclient_id = \"{0}\"\n[clients.amy]\nclient_id = \"{0}\"\n",
@@ -331,7 +331,7 @@ fn written_is_the_alias_of_an_id_that_has_one() {
     };
     assert_eq!(spec(1).written(&hosts), "amy");
     assert_eq!(spec(2).written(&hosts), id(2).to_string());
-    assert_eq!(ClientSpec::Alias("zed".into()).written(&hosts), "zed");
+    assert_eq!(ClientSpec::Name("zed".into()).written(&hosts), "zed");
 }
 
 /// A save keeps the mode the file has, so it never opens up a config its

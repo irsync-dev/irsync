@@ -151,7 +151,7 @@ fn auto_root_missing_parent_is_not_found() {
 }
 
 #[test]
-fn auto_export_names_the_peer_by_its_alias() {
+fn auto_export_names_the_client_by_its_name() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("irsync.toml");
     irsync::fs::private::write(

@@ -139,7 +139,7 @@ fn target<'a>(msg: &'a mut pb::Config, export: &str) -> Result<Lists<'a>, Manage
 fn who_id(who: &ClientSpec, resolve: Resolve) -> Option<EndpointId> {
     match who {
         ClientSpec::Id { id, .. } => Some(*id),
-        ClientSpec::Alias(a) => resolve(a),
+        ClientSpec::Name(a) => resolve(a),
     }
 }
 
@@ -179,7 +179,7 @@ fn grant_entry(who: &ClientSpec) -> Result<pb::Entry, ManageError> {
 /// Writes every grant entry in its canonical form: an EndpointId that
 /// `clients` has a name for becomes that name (the first in
 /// lexicographic order when there are several). An entry that is already
-/// an alias, an id without an alias and text that names nobody are left
+/// a name, an id without a name and text that names nobody are left
 /// alone. Then, per table, an entry named twice in one list keeps its
 /// first place, and an entry in both `rw` and `ro` leaves `ro`: `rw` wins
 /// when the file is read, so nobody's access changes.
@@ -196,16 +196,16 @@ pub fn canonicalize(msg: &mut pb::Config, clients: &Clients) -> bool {
             let mut i = 0;
             while i < lists.list(ro).len() {
                 let text = &lists.list(ro)[i].value;
-                let alias = parse_endpoint_id(text)
+                let named = parse_endpoint_id(text)
                     .ok()
-                    .and_then(|id| clients.alias_of(&id));
-                let name = alias.unwrap_or(text).to_string();
+                    .and_then(|id| clients.name_of(&id));
+                let name = named.unwrap_or(text).to_string();
                 if seen.contains(&name) {
                     lists.drop_at(ro, i);
                     changed = true;
                     continue;
                 }
-                if alias.is_some() {
+                if named.is_some() {
                     lists.list(ro)[i].value = name.clone();
                     changed = true;
                 }

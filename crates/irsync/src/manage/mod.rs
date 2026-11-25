@@ -45,13 +45,13 @@ pub enum ManageError {
     #[error("client {name:?} is named by grants in {}: remove those grants first, or pass --force", lists.join(", "))]
     ClientInUse { name: String, lists: Vec<String> },
     #[error("{0:?} is not a valid export name")]
-    BadName(String),
+    BadExportName(String),
     #[error("{}", crate::config::exports::reserved(.0))]
     Reserved(String),
     #[error(
         "{0:?} is not a valid name: must not contain ':' or '/' and must be neither all, * nor an EndpointId"
     )]
-    BadAlias(String),
+    BadName(String),
     #[error("no open access: a client must be named (its name, an EndpointId, a public key line or a .pub file)")]
     NoOpenAccess,
     /// Grants name clients: a name that is only a server's names nobody.
@@ -292,7 +292,7 @@ impl Drop for ConfigLock {
 /// How a command-line "who" argument is understood.
 #[derive(Debug, Clone)]
 pub enum ClientSpec {
-    Alias(String),
+    Name(String),
     Id {
         id: EndpointId,
         comment: Option<String>,
@@ -331,7 +331,7 @@ impl ClientSpec {
     ) -> Result<ClientSpec, ManageError> {
         match parsed {
             Err(ManageError::Config(ConfigError::BadClient(_)) | ManageError::NotAClient(_)) => {
-                Ok(ClientSpec::Alias(who.to_string()))
+                Ok(ClientSpec::Name(who.to_string()))
             }
             other => other,
         }
@@ -347,7 +347,7 @@ impl ClientSpec {
             return Err(ManageError::NoOpenAccess);
         }
         if clients.get(who).is_some() {
-            return Ok(ClientSpec::Alias(who.to_string()));
+            return Ok(ClientSpec::Name(who.to_string()));
         }
         if servers.get(who).is_some() {
             return Err(ManageError::NotAClient(who.to_string()));
@@ -399,16 +399,16 @@ impl ClientSpec {
     pub fn written(&self, clients: &Clients) -> String {
         match self {
             ClientSpec::Id { id, .. } => clients
-                .alias_of(id)
+                .name_of(id)
                 .map_or_else(|| id.to_string(), str::to_string),
-            ClientSpec::Alias(a) => a.clone(),
+            ClientSpec::Name(a) => a.clone(),
         }
     }
 
-    /// The text stored in a config entry: the alias, or the id in hex.
+    /// The text stored in a config entry: the name, or the id in hex.
     pub fn entry(&self) -> String {
         match self {
-            ClientSpec::Alias(a) => a.clone(),
+            ClientSpec::Name(a) => a.clone(),
             ClientSpec::Id { id, .. } => id.to_string(),
         }
     }

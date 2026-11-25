@@ -28,7 +28,7 @@ pub struct PairTarget {
     pub dest: String,
     /// The name to save the server under, when it is known before the
     /// pairing: a saved server, or a client only (which keeps its name).
-    pub alias: Option<String>,
+    pub name: Option<String>,
     pub kind: PairKind,
     /// Set when an address found a saved server by its `ssh` value: what
     /// was typed.
@@ -50,12 +50,12 @@ pub(crate) fn saved_by_ssh(
         return Ok(None);
     }
     match servers.by_ssh(typed) {
-        Ok(alias) => Ok(alias.map(str::to_string)),
-        Err(aliases) => bail!(
+        Ok(name) => Ok(name.map(str::to_string)),
+        Err(names) => bail!(
             "{typed} is the ssh destination of several saved servers with \
              different ids ({}); name one of them, or change an `ssh` \
              value in {}",
-            aliases.join(", "),
+            names.join(", "),
             servers.path.display()
         ),
     }
@@ -84,15 +84,15 @@ pub fn target(servers: &Servers, clients: &Clients, host: &str) -> anyhow::Resul
     Ok(PairTarget {
         host: name.to_string(),
         dest,
-        alias: (kind != PairKind::First).then(|| name.to_string()),
+        name: (kind != PairKind::First).then(|| name.to_string()),
         kind,
         found_as,
     })
 }
 
 /// The last line of a pairing.
-pub fn paired_line(alias: &str) -> String {
-    format!("paired with {alias}; syncs go over iroh, not ssh")
+pub fn paired_line(name: &str) -> String {
+    format!("paired with {name}; syncs go over iroh, not ssh")
 }
 
 #[cfg(test)]
@@ -113,7 +113,7 @@ mod tests {
     fn unknown_name_is_a_first_pairing() {
         let t = target_in("", "myserver").unwrap();
         assert_eq!(t.dest, "myserver");
-        assert_eq!(t.alias, None);
+        assert_eq!(t.name, None);
         assert_eq!(t.kind, PairKind::First);
         assert_eq!(t.found_as, None);
     }
@@ -133,7 +133,7 @@ mod tests {
         );
         let t = target_in(&h, "myserver").unwrap();
         assert_eq!(t.dest, "mike@nas");
-        assert_eq!(t.alias.as_deref(), Some("myserver"));
+        assert_eq!(t.name.as_deref(), Some("myserver"));
         assert_eq!(t.kind, PairKind::Saved);
     }
 
@@ -157,7 +157,7 @@ mod tests {
         );
         let t = target_in(&h, "myserver").unwrap();
         assert_eq!(t.kind, PairKind::ClientOnly);
-        assert_eq!(t.alias.as_deref(), Some("myserver"));
+        assert_eq!(t.name.as_deref(), Some("myserver"));
     }
 
     #[test]

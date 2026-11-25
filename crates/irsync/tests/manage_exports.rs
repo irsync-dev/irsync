@@ -259,7 +259,7 @@ fn add_target_edge_cases() {
     std::fs::create_dir_all(d.path().join("sub/x")).unwrap();
     assert!(matches!(
         parse_add_target(":docs", d.path()),
-        Err(ManageError::BadName(_))
+        Err(ManageError::BadExportName(_))
     ));
     let abs = d.path().join("a:b");
     assert_eq!(

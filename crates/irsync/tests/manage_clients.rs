@@ -48,10 +48,7 @@ fn add_refuses_an_invalid_name() {
     let mut m = pb::Config::default();
     for bad in ["a:b", "a/b", "", "all", "*", &id(1).to_string()] {
         assert!(
-            matches!(
-                client_add(&mut m, bad, id(1)),
-                Err(ManageError::BadAlias(_))
-            ),
+            matches!(client_add(&mut m, bad, id(1)), Err(ManageError::BadName(_))),
             "{bad:?}"
         );
     }
@@ -140,7 +137,7 @@ fn rename_to_an_existing_name_or_bad_name_is_refused() {
     assert_eq!(e.to_string(), "client \"taken\" already exists");
     assert!(matches!(
         client_rename(&mut m, "box", "a:b"),
-        Err(ManageError::BadAlias(_))
+        Err(ManageError::BadName(_))
     ));
     assert!(matches!(
         client_rename(&mut m, "nobody", "c"),

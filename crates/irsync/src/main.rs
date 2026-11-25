@@ -513,8 +513,8 @@ fn run_pair(a: &PairArgs, quiet: LogArgs, files: &FilesArgs) -> i32 {
                 say(&format!("irsync: {typed} is saved as {}", t.host));
             }
             // No ssh call yet: these errors need no "over ssh failed" context.
-            match &t.alias {
-                Some(alias) => irsync::ssh::onboard::check(alias, &t.dest)?,
+            match &t.name {
+                Some(name) => irsync::ssh::onboard::check(name, &t.dest)?,
                 None => irsync::ssh::onboard::check_dest(&t.dest)?,
             }
             let secret =
@@ -534,7 +534,7 @@ fn run_pair(a: &PairArgs, quiet: LogArgs, files: &FilesArgs) -> i32 {
             let o = irsync::ssh::onboard::onboard(
                 &paths,
                 &rsh,
-                t.alias.as_deref(),
+                t.name.as_deref(),
                 &t.dest,
                 secret.public(),
                 flags,
@@ -557,13 +557,13 @@ fn run_pair(a: &PairArgs, quiet: LogArgs, files: &FilesArgs) -> i32 {
             }
             if o.report.grant == irsync::ssh::setup::GrantOutcome::Missing {
                 bail!(irsync::session::reconnect::no_access_hint(
-                    &format!("{}:", o.alias),
+                    &format!("{}:", o.name),
                     &secret.public()
                 ));
             }
             say(&format!(
                 "irsync: {}",
-                irsync::ssh::pair::paired_line(&o.alias)
+                irsync::ssh::pair::paired_line(&o.name)
             ));
             Ok(())
         })(),

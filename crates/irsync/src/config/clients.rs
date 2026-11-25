@@ -2,7 +2,7 @@
 //! grants are given to.
 
 use super::access::Access;
-use super::names::{invalid_name, valid_alias};
+use super::names::{invalid_name, valid_name};
 use super::{endpoint_id_from, file_error, ConfigError};
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
@@ -136,7 +136,7 @@ impl Clients {
     pub fn from_message(clients: &[pb::ClientEntry], path: &Path) -> Result<Clients, ConfigError> {
         let mut entries = BTreeMap::new();
         for c in clients {
-            if !valid_alias(&c.name) {
+            if !valid_name(&c.name) {
                 return Err(file_error(path, invalid_name(&c.name)));
             }
             let entry = ClientEntry::from_message(c).map_err(|m| file_error(path, m))?;
@@ -159,7 +159,7 @@ impl Clients {
 
     /// The name that stands for the client `id`: the first in
     /// lexicographic order when several entries have it.
-    pub fn alias_of(&self, id: &EndpointId) -> Option<&str> {
+    pub fn name_of(&self, id: &EndpointId) -> Option<&str> {
         self.entries
             .iter()
             .find(|(_, e)| e.client_id == *id)

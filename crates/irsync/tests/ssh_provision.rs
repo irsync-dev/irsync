@@ -400,7 +400,7 @@ fn setup_leaves_foreign_daemon() {
 }
 
 #[test]
-fn a_client_with_an_alias_gets_all_paths_under_it() {
+fn a_client_with_an_name_gets_all_paths_under_it() {
     let home = Home::new("");
     let client = client_id();
     let mut text = std::fs::read_to_string(home.config()).unwrap();

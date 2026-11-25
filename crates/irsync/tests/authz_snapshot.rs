@@ -13,7 +13,7 @@ fn snap(clients: &str, exports: &str) -> Snapshot {
 }
 
 #[test]
-fn alias_and_raw_id_entries_both_grant() {
+fn name_and_raw_id_entries_both_grant() {
     let s = snap(
         &format!("[clients.laptop]\nclient_id = \"{}\"\n", id(1)),
         &format!(
