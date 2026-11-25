@@ -164,6 +164,18 @@ impl RoleOpts {
         }
     }
 
+    /// These options with deletion off: a single-file session never
+    /// deletes anything, since nothing else in the file's directory is
+    /// part of it (see [`SyncOptions::without_deletion`] for the client).
+    fn without_deletion(self) -> RoleOpts {
+        RoleOpts {
+            delete: DeleteMode::Off,
+            delete_excluded: false,
+            max_delete: None,
+            ..self
+        }
+    }
+
     /// The daemon's options come from `Hello`: the client's preserve flags
     /// (`-l -p -t -g -o -D -H -S`) and, only when the daemon `receives` (the client pushes, which already
     /// requires write access to a writable export), the receiver-side
@@ -1337,11 +1349,8 @@ async fn serve_daemon_inner(
         opts: {
             let mut o = RoleOpts::daemon(req, !sends);
             o.fsync |= export_fsync && !sends;
-            // One file: nothing else in its directory is ever deleted.
             if single.is_some() {
-                o.delete = DeleteMode::Off;
-                o.delete_excluded = false;
-                o.max_delete = None;
+                o = o.without_deletion();
             }
             #[cfg(feature = "test-hooks")]
             if let Some(p) = std::num::NonZeroUsize::new(

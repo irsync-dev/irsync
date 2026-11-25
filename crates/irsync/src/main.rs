@@ -32,7 +32,7 @@ use irsync::index::Index;
 use irsync::location::Location;
 use irsync::manage::{self, PeerSpec};
 use irsync::net::{build_endpoint, client_endpoint_opts};
-use irsync::options::{DeleteMode, Direction, SyncOptions};
+use irsync::options::{Direction, SyncOptions};
 use irsync::session::engine::list_exports;
 use irsync::session::reconnect::{
     describe_dial, explain, never_reached, probe_path, run_with_reconnect, ConnState, NeverReached,
@@ -1251,16 +1251,10 @@ async fn session(
         hello,
         single,
     } = plan;
-    // A single-file copy never deletes anything.
     let single_opts;
     let opts = match single {
         Some(_) => {
-            single_opts = SyncOptions {
-                delete: DeleteMode::Off,
-                delete_excluded: false,
-                max_delete: None,
-                ..opts.clone()
-            };
+            single_opts = opts.without_deletion();
             &single_opts
         }
         None => opts,
