@@ -40,7 +40,7 @@ use crate::net::{build_endpoint, daemon_endpoint_opts};
 use crate::options::Direction;
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::scan::WalkOpts;
-use crate::session::engine::{prepare_root, serve_daemon, Missing, Place};
+use crate::session::engine::{prepare_root, serve_daemon, Missing, Place, HELLO_TIMEOUT};
 use crate::session::single::{is_one_component, FilePlace, PlaceError, SingleFile};
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
@@ -55,10 +55,6 @@ pub use admin::{ADMIN_IDLE, ADMIN_MAX_CHANGES, ADMIN_MAX_PENDING, ADMIN_MAX_REQU
 /// run (so startup stays quick).
 const GC_INTERVAL: Duration = Duration::from_secs(3600);
 const GC_FIRST_RUN: Duration = Duration::from_secs(60);
-
-/// How long a client may take to open the control stream and send `Hello`,
-/// and to open the listing stream after `HelloAck`.
-pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Shared {
     /// Consulted afresh on every connection.

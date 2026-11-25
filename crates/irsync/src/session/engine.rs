@@ -1229,22 +1229,19 @@ async fn serve_daemon_inner(
         conn.closed().await;
         bail!("fault injection: stalled");
     }
-    let listing = match tokio::time::timeout(
-        crate::daemon::HELLO_TIMEOUT,
-        listing_stream::accept(&conn, &session_id),
-    )
-    .await
-    {
-        Ok(Ok(l)) => l,
-        Ok(Err(e)) => {
-            conn.close(2u32.into(), b"rejected");
-            return Err(e);
-        }
-        Err(_) => {
-            conn.close(2u32.into(), b"hello timeout");
-            bail!("timed out waiting for the listing stream");
-        }
-    };
+    let listing =
+        match tokio::time::timeout(HELLO_TIMEOUT, listing_stream::accept(&conn, &session_id)).await
+        {
+            Ok(Ok(l)) => l,
+            Ok(Err(e)) => {
+                conn.close(2u32.into(), b"rejected");
+                return Err(e);
+            }
+            Err(_) => {
+                conn.close(2u32.into(), b"hello timeout");
+                bail!("timed out waiting for the listing stream");
+            }
+        };
     let peer_build = BuildInfo::from_wire(hello.build.as_ref());
     tracing::info!(
         session = %control::hex(&session_id),
@@ -1652,6 +1649,10 @@ async fn run_role(
 /// How long a side waits at a session's end for its writer (and the daemon
 /// for the client to close) while nothing moves on the connection (see
 /// [`await_end`]).
+/// How long a client may take to open the control stream and send `Hello`,
+/// and to open the listing stream after `HelloAck`.
+pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+
 const CLOSE_QUIET: Duration = Duration::from_secs(30);
 
 /// At a session's end: waits for the control writer to write what it
