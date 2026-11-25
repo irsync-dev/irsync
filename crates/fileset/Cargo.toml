@@ -38,7 +38,7 @@ protox = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 
-# Manifest lookups, for both stores: run by hand, see the file.
+# Manifest lookups, for every store: run by hand, see the file.
 [[bench]]
 name = "lookup"
 harness = false

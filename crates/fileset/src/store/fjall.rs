@@ -1,6 +1,9 @@
 //! fjall (LSM) backend with protobuf-encoded entry values.
 
-use super::{check_schema, parse_platform, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
+use super::{
+    check_schema, parse_platform, parse_unfinished, unfinished_text, Meta, OpenMode, Reader, Store,
+    SCHEMA_VERSION,
+};
 use crate::model::{Entry, Flags, Kind, Timespec};
 use crate::platform::Platform;
 use anyhow::{anyhow, bail, Context, Result};
@@ -121,13 +124,8 @@ fn read_meta(ks: &Keyspace) -> Result<Meta> {
         tool_version: get("tool_version")?,
         created_at: get("created_at")?.parse()?,
         updated_at: get("updated_at")?.parse()?,
-        unfinished: ks.get("unfinished")?.is_some(),
-        platform: parse_platform(
-            ks.get("platform")?
-                .map(|v| String::from_utf8(v.to_vec()))
-                .transpose()?
-                .as_deref(),
-        )?,
+        unfinished: parse_unfinished(&get("unfinished")?)?,
+        platform: parse_platform(&get("platform")?)?,
     })
 }
 
@@ -139,11 +137,7 @@ fn write_meta(db: &Database, ks: &Keyspace, m: &Meta) -> Result<()> {
     b.insert(ks, "created_at", m.created_at.to_string());
     b.insert(ks, "updated_at", m.updated_at.to_string());
     b.insert(ks, "platform", m.platform.as_str());
-    if m.unfinished {
-        b.insert(ks, "unfinished", "1");
-    } else {
-        b.remove(ks, "unfinished");
-    }
+    b.insert(ks, "unfinished", unfinished_text(m.unfinished));
     b.commit()?;
     Ok(())
 }
@@ -333,14 +327,6 @@ mod tests {
         db.persist(fjall::PersistMode::SyncAll).unwrap();
     }
 
-    fn raw_platform(p: &Path) -> Option<String> {
-        let db = Database::builder(p).open().unwrap();
-        let ks = db.keyspace("meta", KeyspaceCreateOptions::default).unwrap();
-        ks.get("platform")
-            .unwrap()
-            .map(|v| String::from_utf8(v.to_vec()).unwrap())
-    }
-
     fn new_manifest(dir: &Path) -> PathBuf {
         let p = dir.join("m");
         open(&p, BACKEND, OpenMode::Create)
@@ -359,15 +345,15 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_without_the_key_is_unix() {
+    fn a_manifest_without_the_key_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let p = new_manifest(dir.path());
         set_raw_platform(&p, None);
-        let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
-        assert_eq!(s.meta().unwrap().platform, Platform::Unix);
-        drop(s);
-        // A read-only open writes nothing: the key is still absent.
-        assert_eq!(raw_platform(&p), None);
+        let e = open(&p, BACKEND, OpenMode::ReadOnly)
+            .err()
+            .expect("a manifest without a platform was accepted");
+        let e = format!("{e:#}");
+        assert!(e.contains("manifest meta key 'platform' missing"), "{e}");
     }
 
     #[test]
