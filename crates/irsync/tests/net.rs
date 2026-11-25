@@ -161,90 +161,6 @@ async fn isolated_opts_have_no_relay_and_no_lookup() {
 }
 
 #[test]
-fn client_opts_are_isolated_whenever_addresses_are_given() {
-    use irsync::config::servers::ServerEntry as HostEntry;
-    use irsync::config::settings::ClientSettings;
-    use irsync::net::{client_endpoint_opts, RelayChoice};
-    let cs = ClientSettings::default();
-    // Addresses from the host entry, with relay/dht/mdns set beside them: isolated wins.
-    let he = HostEntry {
-        endpoint_id: SecretKey::generate().public(),
-        relay: Some("https://r.example".parse().unwrap()),
-        relay_mode: None,
-        congestion: None,
-        pq_key_exchange: None,
-        address: vec!["127.0.0.1:1".parse().unwrap()],
-        parallel: None,
-        reconnect: None,
-        dial_retries: None,
-        dht: Some(true),
-        dns: Some(true),
-        mdns: Some(true),
-        ssh: None,
-        ssh_aliases: Vec::new(),
-    };
-    let o = client_endpoint_opts(
-        SecretKey::generate(),
-        None,
-        false,
-        false,
-        &cs,
-        Some(&he),
-        &he.address,
-    )
-    .unwrap();
-    assert_eq!(o.relay, RelayChoice::Disabled);
-    assert!(!o.dht && !o.dns && !o.mdns && !o.portmap && !o.publish);
-    // `--relay` with the host entry's addresses is refused.
-    let e = client_endpoint_opts(
-        SecretKey::generate(),
-        Some("https://c.example"),
-        false,
-        false,
-        &cs,
-        Some(&he),
-        &he.address,
-    )
-    .unwrap_err();
-    assert!(e.to_string().contains("--relay"), "{e}");
-    // Addresses from the command line only.
-    let cli = vec!["localhost:1".parse().unwrap()];
-    let o =
-        client_endpoint_opts(SecretKey::generate(), None, false, false, &cs, None, &cli).unwrap();
-    assert_eq!(o.relay, RelayChoice::Disabled);
-    assert!(!o.dns);
-    // No addresses: the pre-existing defaults.
-    let o = client_endpoint_opts(SecretKey::generate(), None, false, true, &cs, None, &[]).unwrap();
-    assert_eq!(o.relay, RelayChoice::N0Default);
-    assert!(!o.dht && o.dns && o.mdns && o.portmap && !o.publish);
-    let o = client_endpoint_opts(
-        SecretKey::generate(),
-        Some("https://c.example"),
-        false,
-        false,
-        &cs,
-        None,
-        &[],
-    )
-    .unwrap();
-    assert_eq!(
-        o.relay,
-        RelayChoice::Custom("https://c.example".parse().unwrap())
-    );
-    assert!(o.dht);
-    assert!(client_endpoint_opts(
-        SecretKey::generate(),
-        Some("not a url"),
-        false,
-        false,
-        &cs,
-        None,
-        &[]
-    )
-    .is_err());
-}
-
-#[test]
 fn daemon_opts_follow_the_isolated_config() {
     use irsync::config::settings::Settings;
     use irsync::net::{daemon_endpoint_opts, RelayChoice};
@@ -272,56 +188,11 @@ fn daemon_opts_follow_the_isolated_config() {
     );
 }
 
-/// The congestion controller: the host entry's, else the client settings',
-/// else BBR, with or without direct addresses; the daemon's from its own.
+/// The daemon's congestion controller is its own.
 #[test]
-fn opts_carry_the_congestion_controller() {
-    use irsync::config::servers::ServerEntry as HostEntry;
-    use irsync::config::settings::{ClientSettings, Congestion, DaemonSettings};
-    use irsync::net::{client_endpoint_opts, daemon_endpoint_opts};
-    let addr: Vec<irsync::net::addr::HostPort> = vec!["127.0.0.1:1".parse().unwrap()];
-    let cs = ClientSettings::default();
-    let cubic = ClientSettings {
-        congestion: Some(Congestion::Cubic),
-        pq_key_exchange: None,
-        ..ClientSettings::default()
-    };
-    let mut he = HostEntry {
-        endpoint_id: SecretKey::generate().public(),
-        relay: None,
-        relay_mode: None,
-        congestion: None,
-        pq_key_exchange: None,
-        address: vec![],
-        parallel: None,
-        reconnect: None,
-        dial_retries: None,
-        dht: None,
-        dns: None,
-        mdns: None,
-        ssh: None,
-        ssh_aliases: Vec::new(),
-    };
-    for a in [&[][..], &addr[..]] {
-        let o = client_endpoint_opts(SecretKey::generate(), None, false, false, &cs, None, a);
-        assert_eq!(o.unwrap().congestion, Congestion::Bbr);
-        let o = client_endpoint_opts(SecretKey::generate(), None, false, false, &cubic, None, a);
-        assert_eq!(o.unwrap().congestion, Congestion::Cubic);
-        he.congestion = Some(Congestion::Bbr);
-        let o = client_endpoint_opts(
-            SecretKey::generate(),
-            None,
-            false,
-            false,
-            &cubic,
-            Some(&he),
-            a,
-        );
-        assert_eq!(o.unwrap().congestion, Congestion::Bbr);
-        he.congestion = Some(Congestion::Cubic);
-        let o = client_endpoint_opts(SecretKey::generate(), None, false, false, &cs, Some(&he), a);
-        assert_eq!(o.unwrap().congestion, Congestion::Cubic);
-    }
+fn daemon_opts_carry_the_congestion_controller() {
+    use irsync::config::settings::{Congestion, DaemonSettings};
+    use irsync::net::daemon_endpoint_opts;
     let ds = DaemonSettings {
         congestion: Congestion::Cubic,
         ..DaemonSettings::default()
@@ -358,85 +229,6 @@ async fn endpoints_on_cubic_carry_data() {
     let got = within(recv.read_to_end(8 << 20)).await.unwrap();
     assert_eq!(got, data);
     writer.await.unwrap();
-}
-
-#[test]
-fn client_opts_disable_the_relay_but_keep_the_lookups() {
-    use irsync::config::servers::ServerEntry as HostEntry;
-    use irsync::config::settings::{ClientSettings, RelayMode};
-    use irsync::net::{client_endpoint_opts, RelayChoice};
-    let cs = ClientSettings::default();
-    // --no-relay: no relay, lookups and the port mapper as before.
-    let o = client_endpoint_opts(SecretKey::generate(), None, true, false, &cs, None, &[]).unwrap();
-    assert_eq!(o.relay, RelayChoice::Disabled);
-    assert!(o.dht && o.dns && o.mdns && o.portmap);
-    // [defaults] relay_mode = "disabled", even with a relay URL beside it.
-    let off = ClientSettings {
-        relay: Some("https://c.example".parse().unwrap()),
-        relay_mode: Some(RelayMode::Disabled),
-        ..ClientSettings::default()
-    };
-    let o =
-        client_endpoint_opts(SecretKey::generate(), None, false, false, &off, None, &[]).unwrap();
-    assert_eq!(o.relay, RelayChoice::Disabled);
-    // The host entry decides over the client settings, either way round.
-    let mut he = HostEntry {
-        endpoint_id: SecretKey::generate().public(),
-        relay: None,
-        relay_mode: Some(RelayMode::Default),
-        congestion: None,
-        pq_key_exchange: None,
-        address: vec![],
-        parallel: None,
-        reconnect: None,
-        dial_retries: None,
-        dht: None,
-        dns: None,
-        mdns: None,
-        ssh: None,
-        ssh_aliases: Vec::new(),
-    };
-    let o = client_endpoint_opts(
-        SecretKey::generate(),
-        None,
-        false,
-        false,
-        &off,
-        Some(&he),
-        &[],
-    )
-    .unwrap();
-    assert_eq!(
-        o.relay,
-        RelayChoice::Custom("https://c.example".parse().unwrap())
-    );
-    he.relay_mode = Some(RelayMode::Disabled);
-    let o = client_endpoint_opts(
-        SecretKey::generate(),
-        None,
-        false,
-        false,
-        &cs,
-        Some(&he),
-        &[],
-    )
-    .unwrap();
-    assert_eq!(o.relay, RelayChoice::Disabled);
-    // --relay on the command line beats a file's "disabled".
-    let o = client_endpoint_opts(
-        SecretKey::generate(),
-        Some("https://cli.example"),
-        false,
-        false,
-        &cs,
-        Some(&he),
-        &[],
-    )
-    .unwrap();
-    assert_eq!(
-        o.relay,
-        RelayChoice::Custom("https://cli.example".parse().unwrap())
-    );
 }
 
 /// Two irsync endpoints agree on the hybrid key exchange, and both ends
@@ -479,51 +271,4 @@ async fn a_peer_without_the_hybrid_falls_back_to_x25519() {
     }
     ours.close().await;
     old.close().await;
-}
-
-/// `dns` turns the client's DNS lookup off, from the server's table or
-/// `[defaults]`, the server's first.
-#[test]
-fn client_dns_follows_the_server_then_the_defaults() {
-    use irsync::config::servers::ServerEntry;
-    use irsync::config::settings::ClientSettings;
-    use irsync::net::client_endpoint_opts;
-    let server = |dns| ServerEntry {
-        endpoint_id: SecretKey::generate().public(),
-        relay: None,
-        relay_mode: None,
-        congestion: None,
-        pq_key_exchange: None,
-        address: Vec::new(),
-        parallel: None,
-        reconnect: None,
-        dial_retries: None,
-        dht: None,
-        dns,
-        mdns: None,
-        ssh: None,
-        ssh_aliases: Vec::new(),
-    };
-    let dns = |defaults: Option<bool>, entry: Option<bool>| {
-        let cs = ClientSettings {
-            dns: defaults,
-            ..ClientSettings::default()
-        };
-        let s = server(entry);
-        client_endpoint_opts(
-            SecretKey::generate(),
-            None,
-            false,
-            false,
-            &cs,
-            Some(&s),
-            &[],
-        )
-        .unwrap()
-        .dns
-    };
-    assert!(dns(None, None));
-    assert!(!dns(Some(false), None));
-    assert!(dns(Some(false), Some(true)));
-    assert!(!dns(None, Some(false)));
 }

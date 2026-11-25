@@ -5,6 +5,7 @@
 use super::{id_bytes, ManageError};
 use crate::authz::Access;
 use crate::config::clients::RIGHTS;
+use crate::config::dial::Dial;
 use crate::config::settings::{
     Congestion, OtlpProtocol, PqKeyExchange, RelayMode, Settings, Spelled,
 };
@@ -154,23 +155,23 @@ fn as_written(p: &std::path::Path) -> String {
 pub fn default_of(path: &[String]) -> Option<Vec<String>> {
     let parts: Vec<&str> = path.iter().map(String::as_str).collect();
     let s = Settings::default();
+    let dial = Dial::default();
     let one = |v: String| Some(vec![v]);
     match parts.as_slice() {
         ["config_version"] => one(reader::CONFIG_VERSION.to_string()),
         ["unsafe_config_allowed"] => one(s.unsafe_config_allowed.to_string()),
         ["defaults", "identity"] => one(as_written(&s.identity)),
-        // The effective [defaults], as book/src/reference/configuration.md lists them.
-        ["defaults", "parallel"] => one(crate::send::DEFAULT_PARALLEL.to_string()),
-        ["defaults", "reconnect"] => one(duration::format(
-            crate::session::reconnect::ReconnectOpts::default().max,
-        )),
-        ["defaults", "dial_retries"] => one(crate::session::reconnect::ReconnectOpts::default()
-            .dial_retries
-            .to_string()),
-        ["defaults", "dht" | "dns" | "mdns" | "ssh_install"] => one("true".to_string()),
+        // A dial's built-in defaults, which [defaults] overrides.
+        ["defaults", "parallel"] => one(dial.parallel.to_string()),
+        ["defaults", "reconnect"] => one(duration::format(dial.reconnect)),
+        ["defaults", "dial_retries"] => one(dial.dial_retries.to_string()),
+        ["defaults", "ssh_install"] => one(dial.ssh_install.to_string()),
         ["defaults", "relay_mode"] => one(RelayMode::default().as_str().to_string()),
-        ["defaults", "congestion"] => one(Congestion::default().as_str().into()),
-        ["defaults", "pq_key_exchange"] => one(PqKeyExchange::default().as_str().into()),
+        ["defaults", "dht"] => one(dial.dht.to_string()),
+        ["defaults", "dns"] => one(dial.dns.to_string()),
+        ["defaults", "mdns"] => one(dial.mdns.to_string()),
+        ["defaults", "congestion"] => one(dial.congestion.as_str().into()),
+        ["defaults", "pq_key_exchange"] => one(dial.pq_key_exchange.as_str().into()),
         ["state_dir"] => one(as_written(&s.state_dir)),
         ["daemon", "identity"] => one(as_written(&s.daemon.identity)),
         ["daemon", "idle_timeout"] => one(duration::format(s.daemon.idle_timeout)),

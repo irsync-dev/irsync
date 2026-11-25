@@ -5,13 +5,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
-
-use crate::config::servers::ServerEntry;
-use crate::config::settings::{
-    ClientSettings, Congestion, DaemonSettings, RelayMode as DaemonRelayMode,
-};
-use crate::net::addr::HostPort;
+use crate::config::dial::Dial;
+use crate::config::settings::{Congestion, DaemonSettings, RelayMode as DaemonRelayMode};
 
 use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
 use iroh::endpoint::{
@@ -214,79 +209,26 @@ fn transport_config_with(
         .build()
 }
 
-/// The client's endpoint options. Any address in `addresses` (from the
-/// command line, else the host entry) means isolated mode: no relay, no
-/// lookups, no port mapper, whatever the config says; `cli_relay` together
-/// with addresses is an error. Without addresses: the relay from `cli_relay`, else none when
-/// `no_relay` or a `relay_mode = "disabled"` (host entry, then
-/// `[defaults]`) says so, else the host entry's, else `[defaults]`'s,
-/// else n0's; lookups likewise (host entry, then `[defaults]`, then on).
-pub fn client_endpoint_opts(
-    secret: SecretKey,
-    cli_relay: Option<&str>,
-    no_relay: bool,
-    no_dht: bool,
-    client: &ClientSettings,
-    host: Option<&ServerEntry>,
-    addresses: &[HostPort],
-) -> anyhow::Result<EndpointOpts> {
-    let host_relay = host.and_then(|h| h.relay.as_ref());
-    // `--no-relay`, else the host entry's mode, else `[defaults]`'s.
-    let relay_off = no_relay
-        || host
-            .and_then(|h| h.relay_mode)
-            .or(client.relay_mode)
-            .is_some_and(|m| m == DaemonRelayMode::Disabled);
-    let host_dht = host.and_then(|h| h.dht);
-    let host_dns = host.and_then(|h| h.dns);
-    let host_mdns = host.and_then(|h| h.mdns);
-    // The host entry's, else `[defaults]`'s, else BBR.
-    let congestion = host
-        .and_then(|h| h.congestion)
-        .or(client.congestion)
-        .unwrap_or_default();
-    if !addresses.is_empty() {
-        // The host entry's addresses with `--relay` on the command line: the
-        // same contradiction as `--address` with `--relay`.
-        if cli_relay.is_some() {
-            anyhow::bail!(
-                "--relay cannot be used with direct addresses (the server's entry has `address`)"
-            );
-        }
-        if host_relay.is_some()
-            || host_dht.is_some()
-            || host_dns.is_some()
-            || host_mdns.is_some()
-            || client.relay.is_some()
-            || client.dht.is_some()
-            || client.dns.is_some()
-            || client.mdns.is_some()
-        {
-            tracing::debug!("address given: ignoring relay/dht/dns/mdns from the config");
-        }
-        return Ok(EndpointOpts {
-            congestion,
+/// The client's endpoint options for `dial`. Any address in it means
+/// isolated mode: no relay, no lookups, no port mapper.
+pub fn client_endpoint_opts(secret: SecretKey, dial: &Dial) -> EndpointOpts {
+    if !dial.address.is_empty() {
+        return EndpointOpts {
+            congestion: dial.congestion,
             ..EndpointOpts::isolated(secret)
-        });
+        };
     }
-    // A `--relay` on the command line beats a config file's "disabled".
-    let relay = match (cli_relay, host_relay.or(client.relay.as_ref())) {
-        (Some(r), _) => RelayChoice::Custom(r.parse().context("bad --relay URL")?),
-        _ if relay_off => RelayChoice::Disabled,
-        (None, Some(u)) => RelayChoice::Custom(u.clone()),
-        (None, None) => RelayChoice::N0Default,
-    };
-    Ok(EndpointOpts {
+    EndpointOpts {
         secret,
-        relay,
-        dht: !no_dht && host_dht.or(client.dht).unwrap_or(true),
-        dns: host_dns.or(client.dns).unwrap_or(true),
-        mdns: host_mdns.or(client.mdns).unwrap_or(true),
+        relay: dial.relay.clone(),
+        dht: dial.dht,
+        dns: dial.dns,
+        mdns: dial.mdns,
         publish: false,
         bind_addrs: Vec::new(),
         portmap: true,
-        congestion,
-    })
+        congestion: dial.congestion,
+    }
 }
 
 /// The daemon's endpoint options from its settings; `bind_addrs` are the

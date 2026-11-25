@@ -185,25 +185,29 @@ pub fn parse_debug_addr(s: &str) -> Result<SocketAddr, String> {
         .map_err(|_| format!("bad debug address {s:?}: expected PORT or IP:PORT"))
 }
 
+/// `[defaults]` as the file says it, but for `identity` (see
+/// [`Settings::identity`]): a key left out is `None`. A dial decides
+/// each from here, the command line and the server's table in
+/// [`super::dial::Dial::resolve`], which also holds the built-in
+/// defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ClientSettings {
+pub struct Defaults {
     pub parallel: Option<u32>,
     pub reconnect: Option<Duration>,
-    /// Retries for a server that has not answered yet; unset: 4.
+    /// Retries for a server that has not answered yet.
     pub dial_retries: Option<u32>,
-    pub dht: Option<bool>,
-    pub dns: Option<bool>,
-    /// Set the server up over ssh by copying irsync there; unset: true.
-    /// `false` is `--no-install` for every run.
+    /// Set the server up over ssh by copying irsync there. `false` is
+    /// `--no-install` for every run.
     pub ssh_install: Option<bool>,
-    pub mdns: Option<bool>,
     pub relay: Option<Url>,
     /// `"disabled"`: direct connections only, no relay fallback; the lookups
-    /// stay on. Unset: relays as usual.
+    /// stay on.
     pub relay_mode: Option<RelayMode>,
-    /// For pushes; unset: BBR.
+    pub dht: Option<bool>,
+    pub dns: Option<bool>,
+    pub mdns: Option<bool>,
+    /// For pushes.
     pub congestion: Option<Congestion>,
-    /// Unset: prefer.
     pub pq_key_exchange: Option<PqKeyExchange>,
 }
 
@@ -292,7 +296,7 @@ pub struct Settings {
     pub ssh_identity: Option<PathBuf>,
     pub state_dir: PathBuf,
     /// `[defaults]`: this machine's defaults for dialling a server.
-    pub defaults: ClientSettings,
+    pub defaults: Defaults,
     pub daemon: DaemonSettings,
     pub telemetry: TelemetrySettings,
 }
@@ -304,7 +308,7 @@ impl Default for Settings {
             identity: paths::config_dir().join("id_ed25519"),
             ssh_identity: paths::ssh_identity(),
             state_dir: paths::state_dir(),
-            defaults: ClientSettings::default(),
+            defaults: Defaults::default(),
             daemon: DaemonSettings::default(),
             telemetry: TelemetrySettings::default(),
         }
@@ -331,9 +335,9 @@ pub(crate) fn addresses_from(entries: &[pb::Entry]) -> Result<Vec<HostPort>, Str
         .collect()
 }
 
-impl ClientSettings {
-    fn from_message(c: &pb::Defaults) -> Result<ClientSettings, String> {
-        Ok(ClientSettings {
+impl Defaults {
+    fn from_message(c: &pb::Defaults) -> Result<Defaults, String> {
+        Ok(Defaults {
             parallel: c.parallel,
             reconnect: duration_from(c.reconnect.as_ref())?,
             dial_retries: c.dial_retries,
@@ -425,7 +429,7 @@ impl Settings {
             defaults: msg
                 .defaults
                 .as_ref()
-                .map(ClientSettings::from_message)
+                .map(Defaults::from_message)
                 .transpose()
                 .map_err(in_table("defaults"))?
                 .unwrap_or_default(),

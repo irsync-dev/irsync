@@ -2,6 +2,7 @@
 
 pub mod clients;
 mod comments;
+pub mod dial;
 pub mod duration;
 pub mod exports;
 pub mod file;
