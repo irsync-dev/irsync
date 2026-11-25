@@ -134,7 +134,7 @@ jobs:
 
   # filegen, fileset and irsync-glob on Windows. Reports on every pull
   # request and does not block: `CI result` does not need it. It joins the
-  # required jobs when irsync itself builds on Windows. A release run
+  # required jobs when irsync's tests run on Windows. A release run
   # (inputs.plan is set) leaves it out, so it can never hold up a release.
   windows:
     name: ${{ matrix.os }}

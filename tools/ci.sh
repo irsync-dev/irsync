@@ -10,7 +10,7 @@
 #                  with and without OpenTelemetry, every test including
 #                  the slow ones, and the doc tests. On Windows (Git Bash)
 #                  it covers filegen, fileset and irsync-glob only, the
-#                  crates that build there: formatting, one clippy run, their
+#                  crates whose tests run there: formatting, one clippy run, their
 #                  tests and doc tests, then a smoke run of filegen and
 #                  fileset together. It needs only cargo-nextest; the Python
 #                  tests and the fuzz target formatting are
@@ -63,7 +63,8 @@ os=$(uname -s)
 case $os in
     MINGW* | MSYS* | CYGWIN*) os=Windows ;;
 esac
-# The crates that build and test on Windows; check covers only these there.
+# The crates check builds and tests on Windows. irsync and irsync-proto
+# build there too, but their tests do not run there yet.
 windows_packages=(filegen fileset irsync-glob)
 
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
@@ -232,7 +233,7 @@ job_check() {
     if [ "${GITHUB_ACTIONS:-}" = true ] && [ "$os" = Darwin ]; then
         profile=ci-macos
     fi
-    # Only the crates that build on Windows, by name instead of --workspace.
+    # Only windows_packages, by name instead of --workspace.
     if [ "$os" = Windows ]; then
         scope=()
         for p in "${windows_packages[@]}"; do

@@ -67,14 +67,17 @@ tools/ci.sh check
 With plain `cargo test`, `-- --include-ignored` adds them. No other test is
 ignored, so it adds exactly these five.
 
-On Windows only `filegen`, `fileset` and `irsync-glob` build, so name them:
+On Windows, CI builds and tests only `filegen`, `fileset` and `irsync-glob`,
+so name them:
 
 ```sh
 cargo test -q -p filegen -p fileset -p irsync-glob --no-fail-fast
 ```
 
 There, `tools/ci.sh check` in Git Bash is the full regression
-([Windows](setup.md#windows)).
+([Windows](setup.md#windows)). `irsync` and `irsync-proto` build on
+Windows too, tests included (the Unix-only tests are behind `#[cfg(unix)]`),
+but nothing runs those tests there yet.
 
 The syncs through the fault layer in `crates/irsync/tests/netsim.rs` are
 not ignored, though they need minutes of network time: they run client
@@ -296,12 +299,15 @@ Clippy's `undocumented_unsafe_blocks` refuses an `unsafe` block without a
 `// SAFETY:` comment above it. The comment says why that call is sound: which rule
 holds, and what in the code keeps it. The crates with no unsafe code,
 `irsync-glob`, `irsync-proto` and `netstress`, forbid it. `tools/ci.sh
-check` runs clippy. The Windows code has three such blocks, all calls into
-Win32 that no wrapper crate makes: one in `fileset` (`GetFileInformationByHandleEx`,
-for the change time and a reparse point's tag) and two in `filegen` (the same
-call for the tag, and `DeviceIoControl` for sparse files and zeroing a range).
-They are in `platform/windows.rs` of each crate. Miri cannot check them, so
-their tests cover them.
+check` runs clippy. The Windows code of `fileset` and `filegen` has three
+such blocks, all calls into Win32 that no wrapper crate makes: one in
+`fileset` (`GetFileInformationByHandleEx`, for the change time and a reparse
+point's tag) and two in `filegen` (the same call for the tag, and
+`DeviceIoControl` for sparse files and zeroing a range). They are in
+`platform/windows.rs` of each crate. `irsync`'s Windows code keeps all of
+its unsafe blocks in `platform/windows/native.rs`, one small function per
+native call. Miri cannot check them, so their tests cover them; `irsync`'s
+do not run on Windows yet.
 
 **zizmor** looks for security problems in the GitHub workflows, such as a
 token left on disk after a checkout or a workflow with more permissions

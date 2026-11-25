@@ -68,8 +68,12 @@ package manager (`apt`, `brew`, `pkg`). It does not run on Windows; see
 ## Windows
 
 `filegen`, `fileset` and `irsync-glob` build and test on Windows, on x86_64
-and ARM64. The rest of the workspace, `irsync` itself first of all, does not
-yet, so `cargo build --workspace` does not work there. Name the three crates:
+and ARM64. `irsync` and `irsync-proto` build there too, tests included (the
+Unix-only tests are behind `#[cfg(unix)]`), but nothing runs their tests on
+Windows yet, and irsync does not support Windows yet
+([Known limitations](../reference/limitations.md)). The other crates are not
+built there, so `cargo build --workspace` is not the way. Name the three
+crates:
 
 ```sh
 cargo test -q -p filegen -p fileset -p irsync-glob --no-fail-fast

@@ -139,8 +139,10 @@ the fuzz targets in `fuzz/` and runs their seeds; Linux only) and
 `release-build` (after a change to the release build or packaging; Linux
 only).
 
-On Windows only `filegen`, `fileset` and `irsync-glob` build. The everyday run
-is:
+On Windows, CI builds and tests only `filegen`, `fileset` and `irsync-glob`.
+`irsync` and `irsync-proto` build there too, tests included (the Unix-only
+tests are behind `#[cfg(unix)]`), but nothing runs those tests on Windows
+yet. The everyday run is:
 
 ```sh
 cargo test -q -p filegen -p fileset -p irsync-glob --no-fail-fast
