@@ -254,32 +254,32 @@ PathChange { remote: "ip:127.0.0.1:57528" } dir="UNSPECIFIED" stream="UNSPECIFIE
 StreamEvent { kind: OPENED } dir="UNSPECIFIED" stream="CONTROL" quic_stream=0 file=-
 ```
 
-**The handshake.** `Hello` names the protocol version, the remote path, the
-chunking parameters and the rsync flags. The daemon has already checked the
-client's key during the TLS handshake. It answers with `HelloAck` and a new
-session id.
+**The handshake.** `Hello` names the protocol version and asks for a
+`push`: the remote path, the chunking parameters and the rsync flags. The
+daemon has already checked the client's key during the TLS handshake. It
+answers with a `HelloReply` holding a `HelloAck` and a new session id.
 
 ```text
-Hello { protocol_version: 7, path: "photos", chunk_min: 65536, chunk_avg: 262144, chunk_max: 1048576, contents_only: true, build: BuildInfo { … }, preserve: Preserve { links: true, perms: true, times: true, … } } dir="SENT" stream="CONTROL" quic_stream=0 file=-
-HelloAck { session_id: 0x88f83bf9…, protocol_version: 7, build: BuildInfo { … } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=-
+Hello { protocol_version: 8, build: BuildInfo { … }, push: SyncRequest { path: "photos", contents_only: true, chunk_min: 65536, chunk_avg: 262144, chunk_max: 1048576, preserve: Preserve { links: true, perms: true, times: true, … }, recursive: true } } dir="SENT" stream="CONTROL" quic_stream=0 file=-
+HelloReply { ack: HelloAck { session_id: 0x88f83bf9…, build: BuildInfo { … } } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=-
 ```
 
 **The listings.** The client opens the listing stream, QUIC stream 4 (the
 next client bidirectional stream), and names the session on it. Then both
 sides list at once, each on its own half: the client its source directory and
 two files, the daemon its export, which holds only the directory itself. Each
-half ends with `ListingEnd` and the end of the half.
+half ends with a `ListingEnd` and the end of the half.
 
 ```text
 StreamEvent { kind: OPENED } dir="UNSPECIFIED" stream="LISTING" quic_stream=4 file=-
 ListingStreamHeader { session_id: 0x88f83bf9… } dir="SENT" stream="LISTING" quic_stream=4 file=-
-Control { listing: ListingEntry { entry: FileEntry { kind: DIRECTORY, size: 80, … } } } dir="SENT" stream="LISTING" quic_stream=4 file=-
-Control { listing: ListingEntry { entry: FileEntry { path: "a.txt", size: 6, … } } } dir="SENT" stream="LISTING" quic_stream=4 file=-
-Control { listing: ListingEntry { entry: FileEntry { path: "b.txt", size: 12, … } } } dir="SENT" stream="LISTING" quic_stream=4 file=-
-Control { listing_end: ListingEnd { count: 3 } } dir="SENT" stream="LISTING" quic_stream=4 file=-
+ListingFrame { entry: FileEntry { kind: DIRECTORY, size: 80, … } } dir="SENT" stream="LISTING" quic_stream=4 file=-
+ListingFrame { entry: FileEntry { path: "a.txt", size: 6, … } } dir="SENT" stream="LISTING" quic_stream=4 file=-
+ListingFrame { entry: FileEntry { path: "b.txt", size: 12, … } } dir="SENT" stream="LISTING" quic_stream=4 file=-
+ListingFrame { end: ListingEnd { count: 3 } } dir="SENT" stream="LISTING" quic_stream=4 file=-
 StreamEvent { kind: FINISHED } dir="SENT" stream="LISTING" quic_stream=4 file=-
-Control { listing: ListingEntry { entry: FileEntry { kind: DIRECTORY, size: 40, … } } } dir="RECEIVED" stream="LISTING" quic_stream=4 file=-
-Control { listing_end: ListingEnd { count: 1 } } dir="RECEIVED" stream="LISTING" quic_stream=4 file=-
+ListingFrame { entry: FileEntry { kind: DIRECTORY, size: 40, … } } dir="RECEIVED" stream="LISTING" quic_stream=4 file=-
+ListingFrame { end: ListingEnd { count: 1 } } dir="RECEIVED" stream="LISTING" quic_stream=4 file=-
 StreamEvent { kind: FINISHED } dir="RECEIVED" stream="LISTING" quic_stream=4 file=-
 ```
 
@@ -301,8 +301,8 @@ list: here one chunk per file, whose hash equals the whole file's. The daemon
 has none of the chunks and asks for chunk 0 of each.
 
 ```text
-Control { chunk_list_part: ChunkListPart { file_id: 1, size: 6, whole_hash: Hash { bytes: 8e4c7c1b99dbfd50e7a95185fead5ee1448fa904a2fdd778eaf5f2dbfd629a99 }, total: 1, chunks: [ChunkRecord { len: 6, hash: Hash { bytes: 8e4c7c1b… } }], last: true, … } } dir="SENT" stream="CONTROL" quic_stream=0 file=1
-Control { chunk_list_part: ChunkListPart { file_id: 2, size: 12, whole_hash: Hash { bytes: 07c6fb3c62e3e04169dbe5acf2dba4a25213680c5f60e0fc557d94a2085db649 }, total: 1, chunks: [ChunkRecord { len: 12, hash: Hash { bytes: 07c6fb3c… } }], last: true, … } } dir="SENT" stream="CONTROL" quic_stream=0 file=2
+Control { chunk_list_start: ChunkListStart { file_id: 1, whole_hash: Hash { bytes: 8e4c7c1b99dbfd50e7a95185fead5ee1448fa904a2fdd778eaf5f2dbfd629a99 }, total: 1, stat: SourceStat { size: 6, … }, chunks: [ChunkRecord { len: 6, hash: Hash { bytes: 8e4c7c1b… } }], … } } dir="SENT" stream="CONTROL" quic_stream=0 file=1
+Control { chunk_list_start: ChunkListStart { file_id: 2, whole_hash: Hash { bytes: 07c6fb3c62e3e04169dbe5acf2dba4a25213680c5f60e0fc557d94a2085db649 }, total: 1, stat: SourceStat { size: 12, … }, chunks: [ChunkRecord { len: 12, hash: Hash { bytes: 07c6fb3c… } }], … } } dir="SENT" stream="CONTROL" quic_stream=0 file=2
 Control { need: NeedChunks { file_id: 2, chunk_idx: [0] } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=2
 Control { need: NeedChunks { file_id: 1, chunk_idx: [0] } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=1
 ```
@@ -335,9 +335,9 @@ Control { may_place: MayPlace { file_id: 1, gen: 1 } } dir="RECEIVED" stream="CO
 Control { may_place: MayPlace { file_id: 2, gen: 1 } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=2
 Control { place_verdict: PlaceVerdict { file_id: 1, gen: 1 } } dir="SENT" stream="CONTROL" quic_stream=0 file=1
 Control { place_verdict: PlaceVerdict { file_id: 2, gen: 1 } } dir="SENT" stream="CONTROL" quic_stream=0 file=2
-Control { ack: FileAck { file_id: 1 } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=1
+Control { ack: FileAck { file_id: 1, status: DONE } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=1
 Control { list_room: ListRoom { records: 1 } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=-
-Control { ack: FileAck { file_id: 2 } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=2
+Control { ack: FileAck { file_id: 2, status: DONE } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=2
 Control { list_room: ListRoom { records: 1 } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=-
 ```
 
@@ -345,7 +345,7 @@ Control { list_room: ListRoom { records: 1 } } dir="RECEIVED" stream="CONTROL" q
 control stream finish. The connection then closes with code 0, `done`.
 
 ```text
-Control { done: SessionDone { files: 2, bytes: 18, created: 2, transferred_size: 18 } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=-
+Control { done: SessionDone { files_placed: 2, bytes_received: 18, created: 2, placed_size: 18 } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=-
 StreamEvent { kind: FINISHED } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=-
 StreamEvent { kind: FINISHED } dir="SENT" stream="CONTROL" quic_stream=0 file=-
 ```

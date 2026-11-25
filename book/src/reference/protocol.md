@@ -13,6 +13,13 @@ The protocol and the on-disk state (index, session records) change without
 compatibility paths until the first release. A client that speaks another
 version is refused with `VERSION_MISMATCH`.
 
+Any change to the wire format bumps `PROTOCOL_VERSION`
+(`crates/irsync-proto/src/lib.rs`), in the same change: a message or field
+added, removed or renumbered, a field's type changed, an enum value added or
+renumbered, or a field's meaning changed. Two peers of one version always
+read each other's frames the same way. `session.proto` is not on the wire;
+a change to it needs no new version.
+
 ## Constants
 
 | Item | Value |
@@ -232,8 +239,9 @@ export.
 | `Error` | either | The session failed on this side, with `INTERNAL` and why; it ends the session. |
 
 Every message on the control stream is a `Control` frame with exactly one of
-these set. A file costs a `PlanItem`, a `ChunkListStart`, a
-`NeedChunks`, a `MayPlace`, a `PlaceVerdict` and a `FileAck`; the room its list took comes back in a
+these set. A file costs a `PlanItem`, a `ChunkListStart` (and
+`ChunkListMore`s for a long list), a `NeedChunks`, a `MayPlace`, a
+`PlaceVerdict` and a `FileAck`; the room its list took comes back in a
 `ListRoom`, which may cover several files.
 
 ### Chunk lists
@@ -320,8 +328,9 @@ Nothing is listed again, and the sender shows its progress from these. See
 `session.proto` describes what each side stores in its index for a session
 that may resume: the plan (`SessionPlan`, with `PlanEntry` per file) and the
 progress (`SessionProgress`). These messages never go on the wire. Partial
-files are stored as `PartialRanges`: the verified bytes, and the first bytes
-of chunks that did not finish (`held`). See
+files are stored as `PartialRanges` (of `Range`s): the verified bytes, and the
+first bytes of chunks that did not finish (`held`); a `RangeSet` is the
+verified bytes alone. See
 [Sessions and resume](../explanation/sessions-and-resume.md).
 
 ## Cross-implementation check
@@ -332,5 +341,6 @@ of 1 MiB from the xorshift64 generator seeded with `0x9E3779B97F4A7C15` (see
 `crates/irsync-proto/tests/chunk.rs`). An independent implementation must
 reproduce it exactly to interoperate, because chunk boundaries decide which
 chunks a client and a daemon consider equal.
-`crates/irsync-proto/tests/golden_bytes.rs` pins the exact wire bytes of several messages, so a change of field number or
-wire type shows.
+`crates/irsync-proto/tests/golden_bytes.rs` pins `PROTOCOL_VERSION` and the
+exact wire bytes of several messages, so a change of field number or wire
+type shows, and with it a version that was not bumped.
