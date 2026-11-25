@@ -888,6 +888,11 @@ fn parse_bwlimit(s: &str) -> Result<u64, String> {
 }
 
 #[derive(Debug, Default, clap::Args)]
+#[command(group(
+    clap::ArgGroup::new("delete_when")
+        .args(["delete_before", "delete_during", "delete_after"])
+        .multiple(false)
+))]
 pub struct SyncArgs {
     /// Local paths or `HOST:PATH` (HOST: a server name or an EndpointId;
     /// PATH may start with an export name, a directory the daemon shares).

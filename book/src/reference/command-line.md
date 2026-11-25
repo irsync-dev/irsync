@@ -195,7 +195,7 @@ different meaning have a section of their own:
 | `-u`, `--update` | Skip files that are newer on the destination. |
 | `--delete-before` | Delete before the transfer, once both sides are listed. |
 | `--delete-during` | Delete each directory's extraneous entries as the run leaves that directory, so space is freed as the run goes. |
-| `--delete-after` | Delete after the transfer; what `--delete` does. |
+| `--delete-after` | Delete after the transfer; what `--delete` does. Only one of `--delete-before`, `--delete-during` and `--delete-after` may be given. |
 | `--max-delete N` | Stop deleting after `N` removals. The run exits with code 25. |
 | `--exclude PATTERN` | Exclude paths that match an rsync pattern: `*`, `**`, `?`, `[...]`; a leading `/` anchors the pattern to the root, a trailing `/` matches directories only. |
 | `--include PATTERN` | Include paths that match, even if a later `--exclude` would hide them. |

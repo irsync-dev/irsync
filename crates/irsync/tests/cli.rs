@@ -237,6 +237,25 @@ fn delete_alone_means_after() {
     let o = opts(&["--delete-excluded", "a", "h:m"]);
     assert!(o.delete_excluded);
     assert_eq!(o.delete, DeleteMode::After);
+    // `--delete` names no time, so it goes with any one of them.
+    assert_eq!(
+        opts(&["--delete", "--delete-during", "a", "h:m"]).delete,
+        DeleteMode::During
+    );
+}
+
+#[test]
+fn delete_times_exclude_each_other() {
+    for (a, b) in [
+        ("--delete-before", "--delete-during"),
+        ("--delete-before", "--delete-after"),
+        ("--delete-during", "--delete-after"),
+    ] {
+        let e = parse_err(&[a, b, "a", "h:m"]);
+        assert!(e.contains("cannot be used with"), "{a} {b}: {e}");
+        let e = parse_err(&["sync", a, b, "a", "h:m"]);
+        assert!(e.contains("cannot be used with"), "sync {a} {b}: {e}");
+    }
 }
 
 #[test]
