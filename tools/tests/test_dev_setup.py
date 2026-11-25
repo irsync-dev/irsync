@@ -16,6 +16,17 @@ UTILS = ["bash", "env", "sh", "dirname", "uname", "sed", "grep", "awk", "head",
 # a program, macOS's tar has it built in and ships no xz.
 OPTIONAL_UTILS = ["xz"]
 
+
+def typecheck_targets():
+    """The Rust targets tools/typecheck-targets lists, in order."""
+    with open(os.path.join(ROOT, "tools", "typecheck-targets")) as f:
+        return [l.split("#")[0].split()[0] for l in f if l.split("#")[0].strip()]
+
+
+# rustup target list: the musl targets and those tools/ci.sh typecheck needs.
+TARGETS = "\\n".join(dict.fromkeys(["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl",
+                                     *typecheck_targets()]))
+
 GOOD = {
     "cc": "echo cc",
     "git": 'if [ "$1" = -C ]; then echo .githooks; else echo "git version 2.50.0"; fi',
@@ -23,11 +34,12 @@ GOOD = {
     "python3": "echo 'Python 3.12.3'",
     "pandoc": "echo pandoc 3.1.3",
     "mandoc": "echo mandoc",
-    # The pinned toolchain, whatever its version, with rustfmt, clippy and both musl targets.
-    "rustup": """case "$1 $2" in
+    # The pinned toolchain, whatever its version, with rustfmt, clippy, both
+    # musl targets and the typecheck targets.
+    "rustup": f"""case "$1 $2" in
   "run "*) echo "rustc 1.97.0 (abc 2026-10-30)" ;;
   "component list") printf 'rustfmt-x\\nclippy-x\\n' ;;
-  "target list") printf 'x86_64-unknown-linux-musl\\naarch64-unknown-linux-musl\\n' ;;
+  "target list") printf '{TARGETS}\\n' ;;
   *) echo "rustup 1.29.3" ;;
 esac""",
 }
@@ -303,7 +315,7 @@ exit 0""")
     def setup_in_copy(self, nextest, **tools):
         """Runs a copy of the script in a tree whose ci.yml pins another nextest."""
         repo = os.path.join(self.tmp, "repo")
-        files = ["tools/dev-setup.sh", "rust-toolchain.toml", "fuzz/rust-toolchain.toml",
+        files = ["tools/dev-setup.sh", "tools/typecheck-targets", "rust-toolchain.toml", "fuzz/rust-toolchain.toml",
                  "Cargo.toml", "dist-workspace.toml",
                  ".github/workflows/site.yml", ".github/workflows/ci.yml",
                  ".github/scripts/install-packaging-tools.sh"]
@@ -681,6 +693,37 @@ esac""")
 esac""")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("have 1.80.0", out)
+
+    def test_typecheck_targets_are_optional_and_named(self):
+        r, out = self.check(rustup="""case "$1 $2" in
+  "run "*) echo "rustc 1.97.0 (abc 2026-10-30)" ;;
+  "component list") printf 'rustfmt-x\\nclippy-x\\n' ;;
+  "target list") printf 'x86_64-apple-darwin\\n' ;;
+  *) echo "rustup 1.29.3" ;;
+esac""")
+        self.assertEqual(r.returncode, 0, out)
+        want = " ".join(t for t in typecheck_targets() if t != "x86_64-apple-darwin")
+        self.assertRegex(out, rf"missing  targets {re.escape(want)}, for tools/ci\.sh typecheck \(optional\)\n"
+                              rf" {{15}}rustup target add --toolchain \S+ {re.escape(want)}\n")
+
+    def test_typecheck_targets_found(self):
+        r, out = self.check()
+        self.assertRegex(out, r"ok +targets for tools/ci\.sh typecheck\n")
+
+    def test_setup_installs_the_typecheck_targets(self):
+        log = os.path.join(self.tmp, "rustup.log")
+        out, calls = self.setup(uname=LINUX, curl="exit 6", rustup=f"""echo "$*" >> {log}
+case "$1 $2" in
+  "run "*) echo "rustc 1.97.0 (abc 2026-10-30)" ;;
+  "component list") printf 'rustfmt-x\\nclippy-x\\n' ;;
+  "target list") [ -e {log}.done ] && printf '{TARGETS}\\n' || printf 'x86_64-unknown-linux-musl\\n' ;;
+  "target add") case "$*" in *aarch64-pc-windows-msvc*) : > {log}.done ;; esac ;;
+  *) echo "rustup 1.29.3" ;;
+esac""")
+        want = " ".join(t for t in typecheck_targets() if t != "x86_64-unknown-linux-musl")
+        with open(log) as f:
+            self.assertRegex(f.read(), rf"(?m)^target add --toolchain \S+ {re.escape(want)}$")
+        self.assertRegex(out, r"ok +targets for tools/ci\.sh typecheck\n")
 
 
 if __name__ == "__main__":

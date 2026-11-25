@@ -8,6 +8,8 @@ for arg in "$@"; do
     fi
     case $arg in
         -o?*) : >"${arg#-o}" ;;
+        # MSVC targets call it as cl.exe: -FoFILE or /FoFILE.
+        -Fo?* | /Fo?*) : >"${arg#?Fo}" ;;
         --version | -dumpversion) echo 12.0.0 ;;
     esac
     prev=$arg

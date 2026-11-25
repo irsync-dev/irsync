@@ -1,0 +1,15 @@
+# The platforms `tools/ci.sh typecheck` checks, and `tools/dev-setup.sh`
+# installs the Rust targets for. One per line: the Rust target, then the
+# crates to check there. Each is checked with tools/typecheck-target.sh:
+# clippy with warnings as errors, all targets, all features.
+#
+# Windows: only filegen, fileset and irsync-glob build there (see
+# windows_packages in tools/ci.sh).
+x86_64-unknown-linux-musl   irsync irsync-proto
+aarch64-unknown-linux-musl  irsync irsync-proto
+x86_64-apple-darwin         irsync irsync-proto
+aarch64-apple-darwin        irsync irsync-proto
+x86_64-unknown-freebsd      irsync irsync-proto
+aarch64-unknown-freebsd     irsync irsync-proto
+x86_64-pc-windows-msvc      filegen fileset irsync-glob
+aarch64-pc-windows-msvc     filegen fileset irsync-glob

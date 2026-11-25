@@ -34,8 +34,12 @@
 #   miri           the tests of the crates in miri_packages under Miri, which
 #                  catches undefined behaviour, with the nightly in
 #                  fuzz/rust-toolchain.toml; slow, so only when named
+#   typecheck      clippy for every platform in tools/typecheck-targets, from
+#                  this machine (tools/typecheck-target.sh): finds code that
+#                  does not compile there before CI does; only when named
 #
-# With no job it runs all of them but fuzz and miri, the quick ones first.
+# With no job it runs all of them but fuzz, miri and typecheck, the quick
+# ones first.
 # fuzz-build and release-build run on Linux only, freebsd-build on FreeBSD
 # only; a run of everything leaves each out elsewhere.
 #
@@ -69,8 +73,8 @@ jobs=""
 for arg in "$@"; do
     case $arg in
         -h | --help) usage; exit 0 ;;
-        check | deny | deny-license-check | workflows | shell-scripts | fuzz-build | fuzz | miri | release-build | freebsd-build) jobs="$jobs $arg" ;;
-        *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs freebsd-build fuzz miri)" >&2; exit 2 ;;
+        check | deny | deny-license-check | workflows | shell-scripts | fuzz-build | fuzz | miri | release-build | freebsd-build | typecheck) jobs="$jobs $arg" ;;
+        *) echo "ci.sh: unknown job '$arg' (jobs: $all_jobs freebsd-build fuzz miri typecheck)" >&2; exit 2 ;;
     esac
 done
 if [ -z "$jobs" ]; then
@@ -140,6 +144,20 @@ needs_fuzz() { needs_fuzz_build; }
 needs_miri() {
     need "Rust $nightly (fuzz/rust-toolchain.toml)" rustup run "$nightly" rustc --version
     need Miri cargo "+$nightly" miri --version
+}
+# The lines of tools/typecheck-targets, without comments: TARGET CRATE...
+typecheck_lines() {
+    sed 's/#.*//' tools/typecheck-targets | awk 'NF'
+}
+needs_typecheck() {
+    local installed t
+    installed=$(rustup target list --installed 2>/dev/null) || installed=
+    for t in $(typecheck_lines | awk '{ print $1 }'); do
+        if ! printf '%s\n' "$installed" | awk -v t="$t" '$0 == t { found = 1 } END { exit !found }'; then
+            echo "ci.sh: Rust target $t not installed; tools/dev-setup.sh installs it" >&2
+            missing=1
+        fi
+    done
 }
 needs_release_build() {
     if [ "$os" != Linux ]; then
@@ -397,6 +415,27 @@ job_miri() {
     done
     if [ -n "$failed" ]; then
         echo "ci.sh: Miri failed for:$failed" >&2
+        exit 1
+    fi
+}
+
+# Clippy for each platform in tools/typecheck-targets, with the crates its
+# line names, through tools/typecheck-target.sh, which needs no C compiler
+# for the platform. Every platform runs, also after one has failed. It runs
+# nothing, so CI still has to run the tests there.
+job_typecheck() {
+    local target crates p args failed=""
+    while read -r target crates; do
+        args=()
+        for p in $crates; do
+            args+=(-p "$p")
+        done
+        # </dev/null: cargo must not read the list this loop reads.
+        run tools/typecheck-target.sh "$target" "${args[@]}" --all-targets --all-features </dev/null ||
+            failed="$failed $target"
+    done < <(typecheck_lines)
+    if [ -n "$failed" ]; then
+        echo "ci.sh: typecheck failed for:$failed" >&2
         exit 1
     fi
 }
