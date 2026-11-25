@@ -143,6 +143,20 @@ Developer Mode lets them run. Keep the checkout path and `CARGO_TARGET_DIR`
 short (CI uses `C:\t`), because the MSVC linker fails on a path over 260
 characters.
 
+To check that a change still compiles on a platform you are not on, run
+`tools/typecheck-target.sh TARGET`, for example
+`tools/typecheck-target.sh x86_64-unknown-linux-gnu` from Windows. irsync
+has dependencies with C code, so a plain `cargo check --target` stops for
+want of a C compiler for that platform. A check never links, so the script
+gives those build scripts a stand-in compiler that writes empty files, and
+runs clippy with warnings as errors on irsync and all its tests. Install the
+target first (`rustup target add TARGET`). It finds what does not compile or
+lint there; it runs nothing, so CI still has to run the tests. Use it
+before you push a change to code or tests that are behind `#[cfg(unix)]` or
+`#[cfg(windows)]`, for each platform you cannot build on: Linux
+(`x86_64-unknown-linux-gnu`), macOS (`aarch64-apple-darwin`) and FreeBSD
+(`x86_64-unknown-freebsd`) from Windows.
+
 `FUZZ_SECONDS=300 tools/ci.sh fuzz` fuzzes each target for that long; it
 runs only when named. See "Fuzzing" in `book/src/contributing/testing.md`.
 
