@@ -663,6 +663,7 @@ fn irsync_gc_end_to_end() {
 
 /// `irsync gc` that cannot remove a file says so and exits 23, as
 /// `irsync index` does for a file it cannot read.
+#[cfg(unix)]
 #[test]
 fn irsync_gc_exits_23_after_an_error() {
     if irsync::platform::is_root() {
