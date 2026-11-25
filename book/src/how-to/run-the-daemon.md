@@ -181,17 +181,6 @@ one daemon run at a time: the service cannot start while the first daemon
 holds it, so the loop waits until that daemon has exited. These lines are sh
 syntax; from fish or tcsh, run them under `sh`.
 
-### Service files from an older irsync
-
-An older irsync installed itself in `~/.local/share/irsync/bin`, and a service
-file written from its steps names `~/.local/share/irsync/bin/irsync`. `irsync
-pair` warns when it finds such a file (at the two places above). A daemon that
-such a service runs is left alone. It stays on the old version, and it does
-not pick up a grant `pair` adds for a new client. Change the path in the
-service file to `~/.local/bin/irsync`, then restart the service. `pair`
-removes the old copy only when no service file names it. A service file
-`pair` cannot read gets the same warning, since it cannot tell what it names.
-
 ## Under systemd
 
 1. Write `/etc/systemd/system/irsync.service`:

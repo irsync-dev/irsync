@@ -741,11 +741,6 @@ fn nouns_share_add_remove_list() {
     assert!(
         Args::try_parse_from(["irsync", "server", "add", "a", "b", "--client-id", "c"]).is_err()
     );
-    // `host` is hidden, takes anything and is refused when run.
-    assert!(matches!(
-        parse(&["host", "add", "x", "abc", "--client-id", "d"]).cmd,
-        Some(Command::Host(ref h)) if h.rest == ["add", "x", "abc", "--client-id", "d"]
-    ));
     assert!(matches!(
         parse(&["export", "list"]).cmd,
         Some(Command::Export(ref e)) if matches!(e.cmd, Some(ExportCmd::List))
@@ -972,22 +967,6 @@ fn config_noun_parses() {
         Some(Command::Config(ref c)) if c.cmd.is_none()
     ));
     assert!(Args::try_parse_from(["irsync", "config", "get"]).is_err());
-}
-
-#[test]
-fn help_does_not_name_the_old_split_files() {
-    use clap::CommandFactory;
-    fn render(cmd: &mut clap::Command, out: &mut String) {
-        out.push_str(&cmd.render_long_help().to_string());
-        for sub in cmd.get_subcommands_mut() {
-            render(sub, out);
-        }
-    }
-    let mut help = String::new();
-    render(&mut Args::command(), &mut help);
-    for stale in ["exports.toml", "hosts.toml"] {
-        assert!(!help.contains(stale), "{stale:?} still in help");
-    }
 }
 
 #[test]

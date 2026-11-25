@@ -203,16 +203,6 @@ To copy nothing to the server, use `--no-install` (or `ssh_install = false`
 in the config file). `pair` then uses the irsync at `~/.local/bin/irsync`
 there, and stops if it is missing or another version.
 
-## Servers set up by an older irsync
-
-Older versions installed irsync in `~/.local/share/irsync/bin`. `pair` now
-moves a server off that directory: it starts the daemon from `~/.local/bin`
-and removes the old copy. It warns instead when a service file still starts
-the old copy; see
-[Run the daemon](run-the-daemon.md#service-files-from-an-older-irsync).
-A client with an older irsync that also uses this server puts the old copy
-back when it pairs, so update those clients too.
-
 ## Keep the daemon running
 
 `pair` makes the daemon a user service, so it starts again after a reboot.

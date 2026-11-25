@@ -8,7 +8,7 @@ use irsync_proto::config as pb;
 use std::path::Path;
 
 fn msg(s: &str) -> pb::Config {
-    read(s, Path::new("f")).unwrap().config
+    read(s, Path::new("f")).unwrap()
 }
 fn p(s: &str) -> Vec<String> {
     parse_key(s).unwrap()
@@ -52,8 +52,6 @@ fn kinds_of_known_keys() {
     assert_eq!(kind_of(&p("daemon.discovery")), Some(Kind::Table));
     assert_eq!(kind_of(&p("exports.photos.rw")), Some(Kind::StrArray));
     // The old tables of rights are no keys any more.
-    assert!(kind_of(&p("all.rw")).is_none() && kind_of(&p("immediate")).is_none());
-    assert!(kind_of(&p("daemon.immediate")).is_none());
     assert_eq!(kind_of(&p("identity")), Some(Kind::Path));
     assert!(kind_of(&p("daemon.nope")).is_none() && kind_of(&p("nope")).is_none());
     assert!(kind_of(&p("servers.home.nope")).is_none());
@@ -61,36 +59,20 @@ fn kinds_of_known_keys() {
     assert!(kind_of(&p("servers.home.client_id")).is_none());
     assert!(kind_of(&p("clients.home.endpoint_id")).is_none());
     assert!(kind_of(&p("clients.home.relay")).is_none());
-    for key in [
-        "hosts",
-        "hosts.home",
-        "hosts.home.endpoint_id",
-        "hosts.home.client_id",
-    ] {
-        assert!(kind_of(&p(key)).is_none(), "{key}");
-    }
 }
 
-/// The keys of the old `[hosts]` table are unknown, with a pointer to
-/// where they went.
+/// A key the file does not have is an unknown key, for get, set and unset.
 #[test]
-fn hosts_keys_point_to_servers_and_clients() {
+fn unknown_keys_are_refused() {
     let mut m = pb::Config::default();
-    for key in ["hosts", "hosts.home", "hosts.home.endpoint_id"] {
+    for key in ["hosts", "all.rw", "daemon.nope"] {
         let e = get(&m, &p(key)).unwrap_err();
         assert!(matches!(e, ManageError::UnknownKey(_)), "{key}");
-        assert_eq!(
-            e.to_string(),
-            format!("unknown key {key:?}; hosts are now servers.NAME and clients.NAME")
-        );
+        assert_eq!(e.to_string(), format!("unknown key {key:?}"));
         let e = set(&mut m, &p(key), Value::Text(id())).unwrap_err();
-        assert!(e
-            .to_string()
-            .ends_with("hosts are now servers.NAME and clients.NAME"));
+        assert_eq!(e.to_string(), format!("unknown key {key:?}"));
         let e = unset(&mut m, &p(key)).unwrap_err();
-        assert!(e
-            .to_string()
-            .ends_with("hosts are now servers.NAME and clients.NAME"));
+        assert_eq!(e.to_string(), format!("unknown key {key:?}"));
     }
     assert_eq!(
         get(&m, &p("daemon.nope")).unwrap_err().to_string(),

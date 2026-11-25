@@ -1,6 +1,9 @@
 //! SQLite backend.
 
-use super::{check_schema, parse_platform, Meta, OpenMode, Reader, Store, SCHEMA_VERSION};
+use super::{
+    check_schema, parse_platform, parse_unfinished, unfinished_text, Meta, OpenMode, Reader, Store,
+    SCHEMA_VERSION,
+};
 use crate::model::{Entry, Flags, Kind, Timespec};
 use crate::platform::Platform;
 use anyhow::{anyhow, bail, Context, Result};
@@ -110,14 +113,8 @@ fn read_meta(conn: &Connection) -> Result<Meta> {
         tool_version: get("tool_version")?,
         created_at: get("created_at")?.parse()?,
         updated_at: get("updated_at")?.parse()?,
-        unfinished: get("unfinished").is_ok(),
-        platform: parse_platform(
-            conn.query_row("SELECT value FROM meta WHERE key = 'platform'", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?
-            .as_deref(),
-        )?,
+        unfinished: parse_unfinished(&get("unfinished")?)?,
+        platform: parse_platform(&get("platform")?)?,
     })
 }
 
@@ -130,11 +127,7 @@ fn write_meta_rows(conn: &Connection, m: &Meta) -> Result<()> {
     st.execute(params!["created_at", m.created_at.to_string()])?;
     st.execute(params!["updated_at", m.updated_at.to_string()])?;
     st.execute(params!["platform", m.platform.as_str()])?;
-    if m.unfinished {
-        st.execute(params!["unfinished", "1"])?;
-    } else {
-        conn.execute("DELETE FROM meta WHERE key = 'unfinished'", [])?;
-    }
+    st.execute(params!["unfinished", unfinished_text(m.unfinished)])?;
     Ok(())
 }
 
@@ -601,16 +594,6 @@ mod tests {
         };
     }
 
-    fn raw_platform(p: &Path) -> Option<String> {
-        Connection::open(p)
-            .unwrap()
-            .query_row("SELECT value FROM meta WHERE key = 'platform'", [], |r| {
-                r.get(0)
-            })
-            .optional()
-            .unwrap()
-    }
-
     fn new_manifest(dir: &Path) -> PathBuf {
         let p = dir.join("m");
         open(&p, BACKEND, OpenMode::Create)
@@ -629,15 +612,15 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_without_the_key_is_unix() {
+    fn a_manifest_without_the_key_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let p = new_manifest(dir.path());
         set_raw_platform(&p, None);
-        let s = open(&p, BACKEND, OpenMode::ReadOnly).unwrap();
-        assert_eq!(s.meta().unwrap().platform, Platform::Unix);
-        drop(s);
-        // A read-only open writes nothing: the key is still absent.
-        assert_eq!(raw_platform(&p), None);
+        let e = open(&p, BACKEND, OpenMode::ReadOnly)
+            .err()
+            .expect("a manifest without a platform was accepted");
+        let e = format!("{e:#}");
+        assert!(e.contains("manifest meta key 'platform' missing"), "{e}");
     }
 
     #[test]

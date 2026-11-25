@@ -272,7 +272,7 @@ the release. It puts the programs in `~/.local/bin` and the three man
 pages in `~/.local/share/man/man1` and `man5`, and has no updater. It writes no
 receipt and never edits the shell's startup files. If `~/.local/bin` is not
 on `PATH`, it prints the line to add. `--uninstall` removes the two
-programs, the three pages and an old receipt file. Before it places
+programs and the three pages. Before it places
 anything, it checks that it can write to `~/.local/bin` and both man
 directories. If it cannot write to `~/.local/bin`, it stops and changes
 nothing. If it cannot write to a man directory, it installs the programs

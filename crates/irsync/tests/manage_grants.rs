@@ -21,7 +21,7 @@ fn peer(n: u8) -> PeerSpec {
     }
 }
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("f")).unwrap().config
+    reader::read(text, Path::new("f")).unwrap()
 }
 /// The typed config the message builds; panics when it does not load.
 fn typed(m: &pb::Config) -> Config {
@@ -764,7 +764,6 @@ fn odd_shapes_are_refused_by_the_reader() {
         "all = 5\n".to_string(),
         "exports = \"x\"\n".to_string(),
         "[exports]\np = 1\n".to_string(),
-        "immediate = []\n".to_string(),
         "[[all]]\nrw = []\n".to_string(),
     ] {
         assert!(reader::read(&body, Path::new("f")).is_err(), "{body:?}");

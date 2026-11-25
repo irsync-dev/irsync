@@ -16,7 +16,7 @@ use irsync::config::writer::write;
 use irsync::daemon_lock::probe;
 use irsync::platform::testutil::{send_signal, Signal};
 use irsync::ssh::setup::{
-    check_client_name, grant_client, Created, DaemonOutcome, Dht, GrantOutcome, OldBin, SetupReport,
+    check_client_name, grant_client, Created, DaemonOutcome, Dht, GrantOutcome, SetupReport,
 };
 use irsync_proto::config as pb;
 
@@ -150,8 +150,6 @@ fn report_roundtrips() {
                     } else {
                         Vec::new()
                     },
-                    stale_services: Vec::new(),
-                    old_bin: OldBin::Absent,
                     service: irsync::ssh::service::ServiceOutcome::Skipped,
                 };
                 let text = r.to_lines();
@@ -176,7 +174,6 @@ fn fresh_home_generates_grants_starts() {
     assert_eq!(r.log, home.state().join("daemon.log"));
     let doc = read_config(&home);
     // The client is saved under its host name, with all_paths = "rw".
-    assert!(!doc.contains_key("immediate"));
     assert_eq!(doc["clients"]["myclient"]["all_paths"].as_str(), Some("rw"));
     assert_eq!(
         doc["clients"]["myclient"]["client_id"].as_str().unwrap(),
@@ -388,7 +385,7 @@ fn setup_leaves_foreign_daemon() {
         return;
     }
     let home = Home::new("");
-    // A newer irsync than this one: it reads what setup writes.
+    // Another irsync, not this one.
     let mut helper = hold_lock(&home.state(), "/usr/bin/other", "9.9.9 (abc)");
     let r = home.setup(&client_id());
     assert_eq!(
@@ -400,25 +397,6 @@ fn setup_leaves_foreign_daemon() {
     );
     assert!(helper.0.try_wait().unwrap().is_none(), "helper was stopped");
     assert_eq!(probe(&home.state()).unwrap().pid, helper.0.id());
-}
-
-#[test]
-fn setup_refuses_to_write_past_an_old_foreign_daemon() {
-    if !have_flock() {
-        eprintln!("skipping: flock(1) not installed");
-        return;
-    }
-    let home = Home::new("");
-    let before = std::fs::read_to_string(home.config()).unwrap();
-    // Setup leaves a foreign daemon running, and this one cannot read
-    // config_version 2.
-    let mut helper = hold_lock(&home.state(), "/usr/bin/other", "0.1.0-beta.1 (abc)");
-    let out = home.try_setup(&client_id(), "myclient", &[]);
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("restart the daemon"), "{stderr}");
-    assert_eq!(std::fs::read_to_string(home.config()).unwrap(), before);
-    assert!(helper.0.try_wait().unwrap().is_none(), "helper was stopped");
 }
 
 #[test]
@@ -458,9 +436,9 @@ fn config_from(text: &str) -> Config {
     Config::parse(text, Path::new("/x/irsync.toml")).unwrap()
 }
 
-/// The message of `text`, whatever its layout.
+/// The message of `text`.
 fn read(text: &str, path: &Path) -> Result<pb::Config, irsync::config::ConfigError> {
-    reader::read(text, path).map(|r| r.config)
+    reader::read(text, path)
 }
 
 #[test]
@@ -558,7 +536,6 @@ fn grants_the_name() {
     assert!(t["clients"]["myclient"].get("endpoint_id").is_none());
     assert!(!t.contains_key("servers"));
     assert_eq!(t["clients"]["myclient"]["all_paths"].as_str(), Some("rw"));
-    assert!(!t.contains_key("immediate"));
 }
 
 /// Whatever a client calls itself, the config stays valid TOML and the

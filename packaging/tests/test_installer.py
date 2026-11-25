@@ -36,8 +36,6 @@ TARGETS = {  # target -> (uname -s, uname -m)
 FILES = [".local/bin/irsync", ".local/bin/fileset",
          ".local/share/man/man1/irsync.1", ".local/share/man/man1/fileset.1",
          ".local/share/man/man5/irsync.toml.5"]
-RECEIPT = ".config/irsync/irsync-receipt.json"
-ENV_SH = ".config/irsync/env.sh"
 
 # What the installer runs, besides uname, a downloader and a checksum tool.
 # GNU tar runs xz to read .tar.xz; bsdtar reads it on its own.
@@ -334,7 +332,6 @@ class InstallTests(Base):
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.home, FILES[1])).st_mode), 0o755)
         for f in FILES[2:]:
             self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.home, f)).st_mode), 0o644, f)
-        self.assertFalse(os.path.exists(os.path.join(self.home, RECEIPT)))
         self.assertEqual(self.under_home(), set(FILES))
         self.assertIn(f"installed irsync {VERSION}", r.stderr)
         self.assertIn("man irsync", r.stderr)
@@ -407,8 +404,6 @@ class InstallTests(Base):
     def test_upgrade_over_dist_install(self):
         self.put(".local/bin/irsync", "#!/bin/sh\necho old\n")
         self.put(".local/bin/fileset", "#!/bin/sh\necho old\n")
-        self.put(RECEIPT, '{"version": "0.1.0-beta.1"}\n')
-        self.put(ENV_SH, 'export PATH="$HOME/.local/bin:$PATH"\n')
         before = self.snapshot()
         r = self.install()
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -417,9 +412,7 @@ class InstallTests(Base):
                              capture_output=True, text=True).stdout
         self.assertEqual(out, "irsync x86_64-unknown-linux-musl\n")
         self.assertNotEqual(after[".local/bin/fileset"], before[".local/bin/fileset"])
-        self.assertEqual(after[RECEIPT], before[RECEIPT])
-        self.assertEqual(after[ENV_SH], before[ENV_SH])
-        self.assertEqual(set(after), set(FILES) | {RECEIPT, ENV_SH})
+        self.assertEqual(set(after), set(FILES))
 
     def test_path_hint_only_when_needed(self):
         r = self.install()
@@ -963,7 +956,6 @@ class TerminalTests(Base):
 class UninstallTests(Base):
     def test_removes_what_install_placed(self):
         self.assertEqual(self.install().returncode, 0)
-        self.put(RECEIPT, "{}\n")
         self.put(".config/irsync/irsync.toml", "# config\n")
         r = self.install("--uninstall")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -1012,18 +1004,6 @@ class UninstallTests(Base):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertIn("removed", r.stderr)
                 self.assertEqual(self.under_home(), set())
-
-    def test_notes_old_env_file(self):
-        self.put(ENV_SH, "# env\n")
-        r = self.install("--uninstall")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("env.sh", r.stderr)
-        self.assertTrue(os.path.exists(os.path.join(self.home, ENV_SH)))
-
-    def test_no_env_note_without_env_file(self):
-        r = self.install("--uninstall")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertNotIn("env.sh", r.stderr)
 
 
 class ShellTests(Base):

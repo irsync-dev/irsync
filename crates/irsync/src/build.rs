@@ -52,7 +52,7 @@ impl BuildInfo {
         }
     }
 
-    /// From a peer's `Hello` or `HelloAck`; an older peer sends none.
+    /// From a peer's `Hello` or `HelloAck`; "unknown" for one that sends none.
     pub fn from_wire(wire: Option<&v1::BuildInfo>) -> Self {
         let Some(w) = wire else {
             return BuildInfo::from_parts("unknown", None, None);

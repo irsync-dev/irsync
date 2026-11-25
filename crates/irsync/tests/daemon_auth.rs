@@ -26,6 +26,7 @@ fn hello(path: &[u8], dir: Direction) -> Hello {
         chunk_avg: CHUNK_PARAMS.avg,
         chunk_max: CHUNK_PARAMS.max,
         contents_only: false,
+        preserve: Some(Default::default()),
         ..Default::default()
     }
 }
@@ -280,6 +281,16 @@ async fn wrong_chunk_params_rejected() {
     let mut h = hello(b"rw", Direction::ClientSends);
     h.chunk_avg += 1;
     expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
+}
+
+/// A push or a pull must say what to preserve; a probe need not.
+#[tokio::test]
+async fn hello_without_preserve_flags_rejected() {
+    for dir in [Direction::ClientSends, Direction::DaemonSends] {
+        let mut h = hello(b"rw", dir);
+        h.preserve = None;
+        expect_err(exchange(Access::ReadWrite, h).await, Code::VersionMismatch);
+    }
 }
 
 /// A daemon started with an empty exports file serves an export added
@@ -574,7 +585,7 @@ async fn list_exports_names_only_what_the_key_may_use() {
     let _ = within(d.task).await;
 }
 
-fn immediate() -> Grants {
+fn all_paths() -> Grants {
     Grants {
         all_paths: Some(Access::ReadWrite),
         ..Grants::default()
@@ -592,13 +603,13 @@ async fn spawn_memory(authz: &Arc<MemoryAuthorizer>) -> DaemonHandle {
 }
 
 #[tokio::test]
-async fn immediate_push_creates_auto_export() {
+async fn all_paths_push_creates_auto_export() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();
     let dest = tmp.path().join("dest");
     std::fs::create_dir(&dest).unwrap();
     let client = client_endpoint().await;
-    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), all_paths()));
     let d = spawn_memory(&authz).await;
     let r = exchange_against(&d, &client, hello(&bytes(&dest), Direction::ClientSends)).await;
     assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)));
@@ -615,13 +626,13 @@ async fn immediate_push_creates_auto_export() {
 }
 
 #[tokio::test]
-async fn immediate_reuses_containing_auto_export() {
+async fn all_paths_reuses_containing_auto_export() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();
     let dest = tmp.path().join("dest");
     std::fs::create_dir(&dest).unwrap();
     let client = client_endpoint().await;
-    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), all_paths()));
     let d = spawn_memory(&authz).await;
     for path in [dest.clone(), dest.join("sub")] {
         let r = exchange_against(&d, &client, hello(&bytes(&path), Direction::ClientSends)).await;
@@ -634,7 +645,7 @@ async fn immediate_reuses_containing_auto_export() {
 }
 
 #[tokio::test]
-async fn immediate_off_rejects_unexported_path() {
+async fn all_paths_off_rejects_unexported_path() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();
     let (exported, elsewhere) = (tmp.path().join("exported"), tmp.path().join("elsewhere"));
@@ -673,12 +684,12 @@ async fn immediate_off_rejects_unexported_path() {
 }
 
 #[tokio::test]
-async fn immediate_push_to_missing_dir_creates_and_exports_it() {
+async fn all_paths_push_to_missing_dir_creates_and_exports_it() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();
     let new = tmp.path().join("new");
     let client = client_endpoint().await;
-    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), all_paths()));
     let d = spawn_memory(&authz).await;
     let r = exchange_against(&d, &client, hello(&bytes(&new), Direction::ClientSends)).await;
     assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)));
@@ -691,13 +702,13 @@ async fn immediate_push_to_missing_dir_creates_and_exports_it() {
 }
 
 #[tokio::test]
-async fn immediate_refuses_root_and_non_utf8_roots() {
+async fn all_paths_refuses_root_and_non_utf8_roots() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();
     let mut bad = bytes(tmp.path());
     bad.extend_from_slice(b"/caf\xe9");
     let client = client_endpoint().await;
-    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), all_paths()));
     let d = spawn_memory(&authz).await;
     let cases = [
         (
@@ -721,11 +732,11 @@ async fn immediate_refuses_root_and_non_utf8_roots() {
 }
 
 #[tokio::test]
-async fn immediate_missing_path_is_bad_path() {
+async fn all_paths_missing_path_is_bad_path() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();
     let client = client_endpoint().await;
-    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), all_paths()));
     let d = spawn_memory(&authz).await;
     let path = bytes(&tmp.path().join("nope"));
     let e = reply(exchange_against(&d, &client, hello(&path, Direction::DaemonSends)).await);
@@ -805,11 +816,11 @@ async fn all_grant_does_not_reach_auto_exports() {
     let _ = within(d.task).await;
 }
 
-/// An immediate peer's relative path names another client's export: the
+/// An `all_paths` peer's relative path names another client's export: the
 /// short name only counts for exports this peer may use, so the path
 /// resolves under the home instead and the shared export is untouched.
 #[tokio::test]
-async fn immediate_relative_path_does_not_take_another_clients_export() {
+async fn all_paths_relative_path_does_not_take_another_clients_export() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();
     let base = std::fs::canonicalize(tmp.path()).unwrap();
@@ -819,7 +830,7 @@ async fn immediate_relative_path_does_not_take_another_clients_export() {
     let client = client_endpoint().await;
     let other = client_endpoint().await;
     let authz = Arc::new(
-        MemoryAuthorizer::single(client.id(), immediate())
+        MemoryAuthorizer::single(client.id(), all_paths())
             .with(
                 other.id(),
                 Grants {
@@ -863,7 +874,7 @@ async fn immediate_relative_path_does_not_take_another_clients_export() {
 /// says why it failed, as the OS put it, not "no such file".
 #[tokio::test]
 #[cfg(unix)]
-async fn immediate_push_under_unwritable_parent_says_why() {
+async fn all_paths_push_under_unwritable_parent_says_why() {
     use irsync::authz::Authorizer;
     use irsync::platform::testutil::set_mode;
     if irsync::platform::is_root() {
@@ -876,7 +887,7 @@ async fn immediate_push_under_unwritable_parent_says_why() {
     set_mode(&parent, 0o555).unwrap();
     let new = parent.join("photos");
     let client = client_endpoint().await;
-    let authz = Arc::new(MemoryAuthorizer::single(client.id(), immediate()));
+    let authz = Arc::new(MemoryAuthorizer::single(client.id(), all_paths()));
     let d = spawn_memory(&authz).await;
     let e = reply(exchange_against(&d, &client, hello(&bytes(&new), Direction::ClientSends)).await);
     set_mode(&parent, 0o755).unwrap();

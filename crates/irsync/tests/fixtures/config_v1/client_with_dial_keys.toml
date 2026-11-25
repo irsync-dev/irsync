@@ -1,8 +1,0 @@
-[hosts.phone]
-client_id = "92d89d1be7daf279e1e1446df1442e5a49c6e7c5d77be07c1f0b89e5d2aadd18"
-relay = "https://relay.example/"
-address = ["phone.lan:4433"]
-ssh = "me@phone"
-
-[all]
-ro = ["phone"]

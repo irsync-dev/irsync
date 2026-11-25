@@ -10,10 +10,6 @@ hand.
 Every command takes `--config PATH` to use another file. Unknown keys and
 tables are errors that name the file, the line and the key.
 
-A `hosts.toml` or `exports.toml` beside the config file is ignored, with a
-warning. Earlier versions read them as part of the config. Move their tables
-into `irsync.toml`.
-
 ## Values
 
 - A **duration** is `N[s|m|h|d]`, such as `90s`, `30m`, `1h` or `7d`; a
@@ -193,7 +189,7 @@ irsync always offers a key exchange that also holds against a quantum
 computer (`X25519MLKEM768`, see
 [Networking](../explanation/networking.md#tls-13-inside-quic)), and uses it
 when the other side offers it too. `pq_key_exchange` says what happens when
-the other side does not, as irsync 0.1.0-beta.6 and older do not:
+the other side does not:
 
 - `prefer`, the default: the connection is made with the classical key
   exchange. Someone who records it could decrypt it once a large quantum
@@ -254,33 +250,11 @@ two ids a machine has: its daemon's, which you dial, and its own as a client,
 which grants are for. `irsync pair` writes both sides: the server's name on the
 client, and the client's host name on the server.
 
-## Config versions
+## Config version
 
 The file starts with `config_version = 2`. irsync writes it first, every time
-it saves the file. You do not set it, and `irsync config set` refuses it.
-
-Version 1 had one table, `[hosts.NAME]`, for servers and clients alike. An old
-file works as it is. irsync reads it as before, and it grants the same access.
-The first change rewrites it as version 2. That change is any `irsync` command
-that edits the file, `irsync pair`, or the daemon adding an automatic export.
-Comments stay.
-
-The rewrite splits each `[hosts.NAME]`:
-
-- A host with an `endpoint_id` becomes `[servers.NAME]`.
-- When a grant names that host, and the host has no `client_id`, it also
-  becomes `[clients.NAME]`, with that same id and a comment that says so. The
-  grant was for that id before, and still is.
-- A host with a `client_id` becomes `[clients.NAME]`. If it also has an
-  `endpoint_id`, it is a server too.
-- A host with only a `client_id` has no use as a server. Its dial keys and its
-  `ssh` keys are dropped. The command names them on stderr, in lines that start
-  with `irsync: note:`.
-
-An older irsync cannot read a version 2 file. While an older daemon is running
-on the file, irsync refuses to rewrite it, and says to restart the daemon
-first. The daemon needs a restart, not a new config. Do that, then run the
-command again.
+it saves the file. You do not set it, and `irsync config set` refuses it. A
+file without it is read as version 2. Any other version is an error.
 
 ## Daemon
 
@@ -326,7 +300,7 @@ The `OTEL_EXPORTER_OTLP_*` environment variables take precedence.
 
 `[exports.NAME]` shares a directory under `NAME`. The name is the first
 segment of a `HOST:PATH`, so it may not be empty or contain `/`, and it may not
-be `all`, `immediate`, `all_exports`, `all_paths` or `admin`. Those words are reserved.
+be `all`, `all_exports`, `all_paths` or `admin`. Those words are reserved.
 
 | Key | Default | Meaning |
 | --- | --- | --- |

@@ -74,19 +74,11 @@ It removes these files, and says so for each one it finds:
 - `~/.local/bin/irsync` and `~/.local/bin/fileset`
 - `~/.local/share/man/man1/irsync.1` and `~/.local/share/man/man1/fileset.1`
 - `~/.local/share/man/man5/irsync.toml.5`
-- `~/.config/irsync/irsync-receipt.json`, which older installers wrote
 
 It leaves the directories, your config (`~/.config/irsync`) and your state
 (`~/.local/state/irsync` by default, or wherever `state_dir` points).
 Delete those by hand when you want them gone. If you installed with
 Homebrew, apt or dnf, remove irsync with that tool instead.
-
-Releases up to `0.1.0-beta.3` came with an installer that did more. It added
-a line that sources `~/.config/irsync/env.sh` to your shell startup files
-(`.profile`, `.zshrc`, `.zshenv` and bash's files), and wrote
-`~/.config/fish/conf.d/irsync.env.fish`. `--uninstall` does not remove
-these. Delete those lines and that file before you delete `~/.config/irsync`,
-or your shell will complain about the missing `env.sh`.
 
 ## See also
 

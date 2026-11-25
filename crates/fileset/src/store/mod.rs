@@ -54,10 +54,9 @@ pub struct Meta {
     /// Unix seconds.
     pub updated_at: i64,
     /// Being created by an `init` that has not finished; such a manifest holds nothing
-    /// worth keeping. Absent in manifests written before this flag existed.
+    /// worth keeping.
     pub unfinished: bool,
-    /// The platform family that made the manifest. A manifest without the key was made on
-    /// Unix, before the key existed.
+    /// The platform family that made the manifest.
     pub platform: Platform,
 }
 
@@ -97,13 +96,28 @@ pub trait Store: Send {
     fn close(self: Box<Self>) -> anyhow::Result<Option<String>>;
 }
 
-/// The platform a manifest names in its meta table: `None`, a manifest from before the key
-/// existed, is Unix. Any value other than exactly `unix` or `windows` is refused.
-pub(crate) fn parse_platform(value: Option<&str>) -> anyhow::Result<Platform> {
+/// The platform a manifest names in its meta table. Any value other than exactly `unix` or
+/// `windows` is refused.
+pub(crate) fn parse_platform(value: &str) -> anyhow::Result<Platform> {
+    Platform::parse(value)
+        .ok_or_else(|| anyhow::anyhow!("manifest platform '{value}' is not known to this fileset"))
+}
+
+/// The `unfinished` value of the meta table: `1` while an `init` runs, `0` after.
+pub(crate) fn unfinished_text(unfinished: bool) -> &'static str {
+    if unfinished {
+        "1"
+    } else {
+        "0"
+    }
+}
+
+/// The `unfinished` value [`unfinished_text`] wrote; anything else is refused.
+pub(crate) fn parse_unfinished(value: &str) -> anyhow::Result<bool> {
     match value {
-        None => Ok(Platform::Unix),
-        Some(v) => Platform::parse(v)
-            .ok_or_else(|| anyhow::anyhow!("manifest platform '{v}' is not known to this fileset")),
+        "1" => Ok(true),
+        "0" => Ok(false),
+        v => anyhow::bail!("manifest meta key 'unfinished' is '{v}', not 0 or 1"),
     }
 }
 

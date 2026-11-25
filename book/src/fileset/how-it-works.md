@@ -57,12 +57,8 @@ symlinks. A Windows manifest holds these values:
   symlink or a junction in its place is refused.
 - **A manifest belongs to one family.** It records whether Unix or Windows
   made it, in a `platform` key. `check`, `update` and `list` refuse a manifest
-  from the other family. The format has no new schema version for this: a
-  manifest without the key is a Unix manifest, which every older one is. The
-  cost is that a `fileset` from before the key does not refuse a Windows
-  manifest and reports false differences in `mode`, `uid` and `gid`, so use a
-  current `fileset` on both sides. The message and the details are in the
-  [reference](reference.md#windows).
+  from the other family, and a manifest without the key. The message and the
+  details are in the [reference](reference.md#windows).
 - **The path may be long.** The tree's root is resolved to the extended form
   (`\\?\`), so the 260-character limit does not apply.
 - **The volume's own folders are skipped.** At the root of the tree,

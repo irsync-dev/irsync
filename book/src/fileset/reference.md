@@ -535,9 +535,8 @@ manifest for writing, no other program can read it either, and a `check`,
 ### Manifests from the other platform family
 
 A manifest has a `platform` key, `unix` or `windows`. `init` writes it and
-`update` keeps it, in all three backends. The manifest's schema version is
-unchanged. A manifest without the key is a Unix manifest, which is what every
-manifest made before the key was.
+`update` keeps it, in all three backends. A manifest without the key is
+refused: `manifest meta key 'platform' missing`.
 
 `check`, `update` and `list` refuse a manifest made on the other family, with
 exit code 2 and a message that starts `this manifest was made on unix, and
@@ -545,10 +544,6 @@ this is windows` (or `made on windows, and this is unix`) and ends
 `fileset cannot use a manifest across the two yet`. A `platform`
 value other than `unix` or `windows` is refused too: `manifest platform
 '<value>' is not known to this fileset`.
-
-Use a current `fileset` on both sides. A `fileset` from before the key does
-not refuse a Windows manifest. On Unix it takes it for a Unix manifest and
-reports false differences in `mode`, `uid` and `gid`.
 
 ### What is not recorded
 

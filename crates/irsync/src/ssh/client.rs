@@ -18,9 +18,6 @@ use crate::config::names::short_host_name;
 /// installer puts it.
 pub const REMOTE_BIN: &str = ".local/bin/irsync";
 
-/// Where irsync put its copy on the server before it used the installer.
-pub const OLD_REMOTE_BIN: &str = ".local/share/irsync/bin/irsync";
-
 /// Where the book explains the setup without ssh.
 const BY_HAND_URL: &str = "https://irsync.org/book/tutorial/first-sync#set-the-server-up-by-hand";
 
@@ -466,9 +463,6 @@ pub fn setup_command(client: EndpointId, client_name: &str, flags: SetupFlags) -
     if flags.no_dht {
         cmd.push_str(" --no-dht");
     }
-    if flags.no_install {
-        cmd.push_str(" --keep-old");
-    }
     if flags.no_service {
         cmd.push_str(" --no-service");
     }
@@ -478,7 +472,6 @@ pub fn setup_command(client: EndpointId, client_name: &str, flags: SetupFlags) -
 /// Run `ssh-setup` on the server and parse what it reports; `recheck`
 /// passes `--recheck` (a saved host: never add back a removed grant),
 /// `no_dht` passes `--no-dht` (turn the daemon's DHT publishing off),
-/// `no_install` passes `--keep-old` (nothing was installed this run),
 /// `no_service` passes `--no-service` (no user service).
 pub fn run_setup(
     rsh: &Rsh,

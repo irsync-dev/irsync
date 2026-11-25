@@ -43,13 +43,10 @@ pub struct RunFile {
     /// Lossy UTF-8 of the OsStrings.
     pub client_args: Vec<String>,
     /// `--concurrent`: filegen writes to the source during each sync.
-    #[serde(default)]
     pub concurrent: bool,
     /// `--pace`, when one pace is fixed for the whole run.
-    #[serde(default)]
     pub pace: Option<String>,
     /// `--replay-rounds`: the rounds file this run replays.
-    #[serde(default)]
     pub replay_rounds: Option<String>,
     pub tools: ToolVersions,
     /// Filled in once the daemon is known.

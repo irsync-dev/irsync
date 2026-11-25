@@ -586,7 +586,7 @@ async fn handle(
     let validated = match validate(&snap, &grants, shared.home.as_deref(), &hello) {
         Ok(Some(v)) => Ok(v),
         Ok(None) if grants.all_paths.is_some() => {
-            match serve_immediate(&shared, &snap, id, &hello).await {
+            match serve_all_paths(&shared, &snap, id, &hello).await {
                 Ok((s, abs)) => {
                     fresh = s;
                     let grants = fresh.grants(&id);
@@ -755,7 +755,7 @@ fn no_access(hello: &Hello) -> (Code, String) {
 
 /// `Ok(None)` when no export the key may use contains the path: the caller
 /// replies [`no_access`], or, for a key with `all_paths`, adds an
-/// automatic export ([`serve_immediate`]).
+/// automatic export ([`serve_all_paths`]).
 fn validate<'a>(
     snap: &'a Snapshot,
     grants: &Grants,
@@ -763,6 +763,13 @@ fn validate<'a>(
     hello: &Hello,
 ) -> Result<Option<(Resolved<'a>, RelPath)>, (Code, String)> {
     version_check(hello)?;
+    // Every client sends its preserve flags for a push or a pull.
+    if hello.preserve.is_none() && hello.direction != Direction::Probe as i32 {
+        return Err((
+            Code::VersionMismatch,
+            "a Hello for a push or a pull must hold the preserve flags".into(),
+        ));
+    }
     // The path is resolved (export name, home, absolute) and the export
     // containing it chosen before anything is said about it. Only a key
     // that may use the containing export learns that the path is invalid
@@ -782,7 +789,7 @@ fn validate<'a>(
 /// it. Such a key can reach the server over SSH anyway, so a missing path
 /// is reported as such. The filesystem and config work runs off the async
 /// runtime: it may wait for the config lock.
-async fn serve_immediate(
+async fn serve_all_paths(
     shared: &Arc<Shared>,
     snap: &Snapshot,
     id: iroh::EndpointId,
@@ -820,16 +827,16 @@ async fn serve_immediate(
     let file_dest = hello.single_file && push && !hello.contents_only;
     let (shared, path) = (shared.clone(), hello.path.clone());
     tokio::task::spawn_blocking(move || {
-        add_immediate(&shared, abs, push, file_dest, id, level, &path)
+        add_auto_export(&shared, abs, push, file_dest, id, level, &path)
     })
     .await
     .unwrap_or_else(|e| Err((Code::Internal, format!("adding the export failed: {e}"))))
 }
 
-/// The blocking part of [`serve_immediate`] for `abs`, the resolved form
+/// The blocking part of [`serve_all_paths`] for `abs`, the resolved form
 /// of `path` (as typed, for messages); the export lists `id` with
 /// `level`. `file_dest`: see [`auto_root`].
-fn add_immediate(
+fn add_auto_export(
     shared: &Shared,
     abs: PathBuf,
     push: bool,

@@ -77,7 +77,6 @@ fn main() {
         Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d, log, files)),
         Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, log, files)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix, log, files)),
-        Some(Command::Host(_)) => std::process::exit(run_host()),
         Some(Command::Server(s)) => std::process::exit(run_server(s, files)),
         Some(Command::Client(c)) => std::process::exit(run_client(c, files)),
         Some(Command::Export(e)) => std::process::exit(run_export(e, log, files)),
@@ -95,14 +94,12 @@ fn main() {
             client_name_hex,
             recheck,
             no_dht,
-            keep_old,
             no_service,
         }) => std::process::exit(run_ssh_setup(
             client,
             client_name_hex,
             *recheck,
             *no_dht,
-            *keep_old,
             *no_service,
             files,
         )),
@@ -1751,7 +1748,6 @@ fn run_ssh_setup(
     client_name_hex: &str,
     recheck: bool,
     no_dht: bool,
-    keep_old: bool,
     no_service: bool,
     files: &FilesArgs,
 ) -> i32 {
@@ -1781,15 +1777,7 @@ fn run_ssh_setup(
             }
             let name =
                 irsync::ssh::client::decode_name(client_name_hex).context("--client-name-hex")?;
-            irsync::ssh::setup::run(
-                &file_paths(files),
-                id,
-                &name,
-                recheck,
-                no_dht,
-                keep_old,
-                no_service,
-            )
+            irsync::ssh::setup::run(&file_paths(files), id, &name, recheck, no_dht, no_service)
         });
     match result {
         Ok(report) => {
@@ -1983,15 +1971,6 @@ fn grant_list_text(
         &label,
         &id,
     ))
-}
-
-/// `irsync host`: gone, replaced by `server` and `client`.
-fn run_host() -> i32 {
-    eprintln!(
-        "irsync host: hosts are now two things: `irsync server` (machines this one connects to) \
-         and `irsync client` (machines its daemon lets in)"
-    );
-    1
 }
 
 /// A file that does not load is that error, not a refused save.

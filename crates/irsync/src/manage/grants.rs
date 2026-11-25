@@ -283,9 +283,9 @@ pub fn grant_add(
     Ok(())
 }
 
-/// Refuses the exports `grant add` takes no grant on: `all` and
-/// `immediate`, which are rights of a client now. `ro`: the grant asked
-/// for was read-only.
+/// Refuses the export `grant add` takes no grant on: `all`, which is a
+/// right of a client (`all_exports`). `ro`: the grant asked for was
+/// read-only.
 pub fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError> {
     if export == "all" {
         return Err(ManageError::BadValue(format!(
@@ -293,17 +293,11 @@ pub fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError> {
             if ro { "ro" } else { "rw" }
         )));
     }
-    if export == "immediate" {
-        return Err(ManageError::BadValue(
-            "\"immediate\" is not an export: give a client any path with: irsync client set NAME all_paths=rw"
-                .to_string(),
-        ));
-    }
     Ok(())
 }
 
 /// Refuses what `grant remove EXPORT WHO` does not take: `*` for a peer
-/// (`all` is everyone) and `immediate` for an export.
+/// (`all` is everyone).
 pub fn check_remove(export: &str, who: &str) -> Result<(), ManageError> {
     if who == "*" {
         return Err(ManageError::BadValue(format!(
@@ -314,12 +308,6 @@ pub fn check_remove(export: &str, who: &str) -> Result<(), ManageError> {
                 format!("on {export}")
             }
         )));
-    }
-    if export == "immediate" {
-        return Err(ManageError::BadValue(
-            "\"immediate\" is not an export: take a client's any-path right away with: irsync client set NAME all_paths=none"
-                .to_string(),
-        ));
     }
     Ok(())
 }

@@ -50,8 +50,8 @@ const ALLOWED: [(&str, &str, &str); 10] = [
     ),
     (
         "onboard_e2e.rs",
-        r#"std::fs::copy(env!("CARGO_BIN_EXE_irsync"), &old).unwrap();"#,
-        "copies the binary to an old install path (Unix only; that copy is \
+        r#"std::fs::copy(env!("CARGO_BIN_EXE_irsync"), &other).unwrap();"#,
+        "copies the binary to another install path (Unix only; that copy is \
          started with a temporary HOME the test sets)",
     ),
     (

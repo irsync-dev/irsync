@@ -96,7 +96,7 @@ fn build_info_survives_the_wire_and_an_absent_one_is_unknown() {
     assert_eq!(BuildInfo::from_wire(Some(&b.to_wire())), b);
     let dirty = BuildInfo::from_parts("0.2.0", Some("def5678"), Some("true"));
     assert_eq!(BuildInfo::from_wire(Some(&dirty.to_wire())), dirty);
-    // An older peer sends no build info at all.
+    // A peer that sends no build info at all.
     let none = BuildInfo::from_wire(None);
     assert_eq!(
         (none.version.as_str(), none.commit.as_str()),

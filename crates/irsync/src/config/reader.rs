@@ -256,105 +256,35 @@ pub fn dotted_key(key: &str) -> Option<Vec<String>> {
     Some(keys.into_iter().map(|k| k.get().to_string()).collect())
 }
 
-/// The layout of the config file this irsync writes: `[servers]` and
-/// `[clients]`. Every save writes it as `config_version`.
+/// The layout of the config file this irsync writes and reads. Every
+/// save writes it as `config_version`; a file without the key is read as
+/// this layout too.
 pub const CONFIG_VERSION: u32 = 2;
 
-/// A config file read into the message of the current layout.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Read {
-    /// The message, with its comments.
-    pub config: pb::Config,
-    /// The layout of the file as it was: 1 for one with `[hosts]`, read by
-    /// [`super::legacy_v1`], else [`CONFIG_VERSION`].
-    pub version: u32,
-    /// What a conversion from layout 1 left out, one note each; see
-    /// [`super::legacy_v1::Converted::dropped`].
-    pub dropped: Vec<String>,
-}
-
 /// Reads the text of the config file into the message, with its
-/// comments. A file of layout 1 is read by [`super::legacy_v1`] and
-/// converted. `path` is the file named in errors.
-///
-/// The layout is told by the top-level keys: `config_version` when the
-/// file has it, else `[hosts]` without `[servers]` and `[clients]` is
-/// layout 1. A file that mixes the two, or has a `config_version` this
-/// irsync does not know, is an error at that key.
-pub fn read(text: &str, path: &Path) -> Result<Read, ConfigError> {
-    if layout(text, path)? == 1 {
-        let c = super::legacy_v1::read(text, path)?;
-        return Ok(Read {
-            config: c.config,
-            version: 1,
-            dropped: c.dropped,
-        });
-    }
+/// comments. `path` is the file named in errors.
+pub fn read(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
     let mut config = read_values(text, path)?;
     super::comments::attach(text, path, &mut config)?;
-    Ok(Read {
-        config,
-        version: CONFIG_VERSION,
-        dropped: Vec::new(),
-    })
+    Ok(config)
 }
 
-/// Reads the text of the config file into the message, of any layout,
-/// as [`read`] does but without the comments: for a typed view, which
-/// needs none. The same layout is chosen, with the same errors.
-pub fn read_values_any(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
-    if layout(text, path)? == 1 {
-        return super::legacy_v1::read_values(text, path);
-    }
-    read_values(text, path)
-}
-
-/// The message for `[hosts]` in a file of the current layout.
-const HOSTS_NOT_READ: &str = "[hosts] is not read since config_version 2: hosts are now [servers.NAME] (to connect to) and [clients.NAME] (to let in)";
-
-/// The layout of `text`, from a shape pass over its top-level keys.
-fn layout(text: &str, path: &Path) -> Result<u32, ConfigError> {
-    let shape: BTreeMap<String, Spanned<toml::Value>> =
-        toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
-    let at = |v: &Spanned<toml::Value>, message: String| ConfigError::File {
-        path: path.to_path_buf(),
-        line: Some(line_of(text, v.span().start)),
-        message,
-    };
-    let hosts = shape.get("hosts");
-    let new = shape.contains_key("servers") || shape.contains_key("clients");
-    match (shape.get("config_version"), hosts) {
-        (Some(v), hosts) => match (version_of(v.get_ref()).map_err(|m| at(v, m))?, hosts) {
-            (1, _) => Ok(1),
-            (_, Some(h)) => Err(at(h, HOSTS_NOT_READ.to_string())),
-            (n, None) => Ok(n),
-        },
-        (None, Some(h)) if new => Err(at(
-            h,
-            "this file has [hosts] and also [servers] or [clients]: move each [hosts.NAME] into [servers.NAME] (its endpoint_id and how to reach it) or [clients.NAME] (its client_id)".to_string(),
-        )),
-        (None, Some(_)) => Ok(1),
-        (None, None) => Ok(CONFIG_VERSION),
-    }
-}
-
-/// The layout a `config_version` value names, or the message when it
-/// names none this irsync reads.
-fn version_of(v: &toml::Value) -> Result<u32, String> {
+/// Checks a `config_version` value: only [`CONFIG_VERSION`] is read.
+fn version_problem(v: &toml::Value) -> Option<String> {
     match v.as_integer() {
-        Some(n @ 1..=2) => Ok(n as u32),
-        Some(n) if n > 2 => Err(format!(
-            "config_version {n}: this file was written by a newer irsync, which reads up to config_version {CONFIG_VERSION}; upgrade irsync"
+        Some(n) if n == i64::from(CONFIG_VERSION) => None,
+        Some(n) if n > i64::from(CONFIG_VERSION) => Some(format!(
+            "config_version {n}: this file was written by a newer irsync, which reads config_version {CONFIG_VERSION}; upgrade irsync"
         )),
-        Some(n) => Err(format!("config_version: expected 1 or 2, found {n}")),
-        None => Err(format!(
-            "config_version: expected 1 or 2, found {}",
+        Some(n) => Some(format!("config_version: expected {CONFIG_VERSION}, found {n}")),
+        None => Some(format!(
+            "config_version: expected {CONFIG_VERSION}, found {}",
             v.type_str()
         )),
     }
 }
 
-/// Reads the text of a config file of the current layout into the
+/// Reads the text of a config file into the
 /// message, without its comments. `path` is the file named in errors.
 pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
     let at = |offset: usize, message: String| ConfigError::File {
@@ -385,26 +315,19 @@ pub fn read_values(text: &str, path: &Path) -> Result<pb::Config, ConfigError> {
     Ok(config)
 }
 
-/// The shape pass over the top-level keys, with the old-layout hints.
+/// The shape pass over the top-level keys.
 fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
     let shape: BTreeMap<String, Spanned<toml::Value>> =
         toml::from_str(text).map_err(|e| toml_err(text, path, e))?;
     let mut keys: Vec<_> = shape.iter().collect();
     keys.sort_by_key(|(_, v)| v.span().start);
     for (name, value) in keys {
-        let mut start = value.span().start;
+        let start = value.span().start;
         let value = value.get_ref();
         let message = match name.as_str() {
-            "all" => old_table("all", Right::AllExports),
-            "immediate" => old_table("immediate", Right::AllPaths),
-            "daemon" if value.get("immediate").is_some() => {
-                start = daemon_immediate_at(text).unwrap_or(start);
-                "[daemon] immediate is now allow_all_paths".to_string()
-            }
-            "hosts" => HOSTS_NOT_READ.to_string(),
-            "config_version" => match version_of(value) {
-                Ok(_) => continue,
-                Err(m) => m,
+            "config_version" => match version_problem(value) {
+                None => continue,
+                Some(m) => m,
             },
             "servers" | "clients" | "exports" | "client" | "daemon" | "telemetry"
                 if value.is_table() =>
@@ -422,25 +345,6 @@ fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
             "identity" | "state_dir" => {
                 format!("{name}: expected a string, found {}", value.type_str())
             }
-            // A bare table is an old-layout host or export: say which
-            // by its keys, all of them when it has none.
-            _ if value.is_table() => {
-                let t = value.as_table().expect("checked");
-                if t.contains_key("endpoint_id") || t.contains_key("client_id") {
-                    format!(
-                        "unknown table {name:?}; servers live under [servers.{name}], clients under [clients.{name}]"
-                    )
-                } else if t.contains_key("path") {
-                    format!("unknown table {name:?}; exports live under [exports.{name}]")
-                } else {
-                    format!(
-                        "unknown table {name:?}; servers live under [servers.{name}], clients under [clients.{name}], exports under [exports.{name}]"
-                    )
-                }
-            }
-            "rw" | "ro" => format!(
-                "unknown key {name:?}; a client's right over every export is all_exports under [clients.NAME]"
-            ),
             _ => format!("unknown key {name:?}"),
         };
         return Err(ConfigError::File {
@@ -450,29 +354,6 @@ fn check_shape(text: &str, path: &Path) -> Result<(), ConfigError> {
         });
     }
     Ok(())
-}
-
-/// The message for `[all]` or `[immediate]`, whose grants are now the
-/// right `right` of each client.
-fn old_table(name: &str, right: Right) -> String {
-    let key = right.key();
-    format!(
-        "[{name}] is not read any more: give a client {key} = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME {key}=rw)"
-    )
-}
-
-/// Where `immediate` of `[daemon]` starts in `text`, which has it.
-fn daemon_immediate_at(text: &str) -> Option<usize> {
-    #[derive(Deserialize)]
-    struct File {
-        daemon: Option<Daemon>,
-    }
-    #[derive(Deserialize)]
-    struct Daemon {
-        immediate: Option<Spanned<serde::de::IgnoredAny>>,
-    }
-    let file: File = toml::from_str(text).ok()?;
-    Some(file.daemon?.immediate?.span().start)
 }
 
 fn client(r: RawClient) -> pb::Client {

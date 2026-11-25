@@ -1,6 +1,6 @@
 use irsync::config::clients::Clients;
 use irsync::config::exports::Exports;
-use irsync::config::file::{first_sighting, ignored_split_files, Config};
+use irsync::config::file::Config;
 use irsync::config::names::{short_host_name, valid_alias};
 use irsync::config::paths::Paths;
 use irsync::config::servers::Servers;
@@ -168,8 +168,8 @@ fn servers_parse_and_clients_resolve_a_name_before_an_id() {
 }
 
 #[test]
-fn hosts_entry_without_endpoint_id_is_error_with_line() {
-    let e = parse_servers("[hosts.home]\nparallel = 4\n", p())
+fn server_without_endpoint_id_is_error_with_line() {
+    let e = parse_servers("[servers.home]\nparallel = 4\n", p())
         .unwrap_err()
         .to_string();
     assert!(
@@ -243,24 +243,6 @@ fn server_by_ssh_destination() {
     );
 }
 
-/// Hosts saved as clients only had no daemon to reach over ssh: in an old
-/// file their `ssh` value is dropped, and no destination finds them.
-#[test]
-fn client_only_hosts_are_no_ssh_destination() {
-    let text = format!(
-        "[hosts.a]\nclient_id = \"{}\"\nssh = \"box\"\n\
-         [hosts.b]\nclient_id = \"{}\"\nssh = \"box\"\n\
-         [hosts.c]\nclient_id = \"{}\"\nssh = \"alone\"\n",
-        id(1),
-        id(2),
-        id(3)
-    );
-    let c = Config::parse(&text, p()).unwrap();
-    assert_eq!(c.servers.by_ssh("box"), Ok(None));
-    assert_eq!(c.servers.by_ssh("alone"), Ok(None));
-    assert_eq!(c.clients.entries.len(), 3);
-}
-
 /// `ssh_aliases` lists other destinations typed for a host: they find it the
 /// way its `ssh` value does.
 #[test]
@@ -312,42 +294,56 @@ fn a_machine_as_a_server_and_a_client() {
     assert_eq!(clients.alias_of(&id(3)), Some("phone"));
     assert_eq!(clients.alias_of(&id(4)), None);
     assert!(servers.get("phone").is_none());
-    // An old entry needs one of the two ids; a bad client id names its line.
-    let e = parse_servers("[hosts.x]\nssh = \"x\"\n", p())
-        .unwrap_err()
-        .to_string();
-    assert!(e.contains("endpoint_id") && e.contains("client_id"), "{e}");
-    let e = parse_servers("[hosts.x]\nclient_id = \"nope\"\n", p())
+    // A bad client id names its line.
+    let e = parse_clients("[clients.x]\nclient_id = \"nope\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(e.contains(":2:") && e.contains("\"x\""), "{e}");
 }
 
 #[test]
-fn hosts_old_layout_names_the_new_location() {
-    let e = parse_servers("\n[home]\nendpoint_id = \"x\"\n", p())
-        .unwrap_err()
-        .to_string();
-    assert!(
-        e.contains("unknown table \"home\"; servers live under [servers.home], clients under [clients.home]")
-            && e.contains(":2:"),
-        "{e}"
-    );
-    let e = parse_servers("x = 1\n", p()).unwrap_err().to_string();
-    assert!(e.contains("unknown key \"x\""), "{e}");
-    assert!(parse_servers("[hosts]\n", p()).unwrap().entries.is_empty());
-    assert!(parse_clients("[hosts]\n", p()).unwrap().entries.is_empty());
-    // The first offender in the file is reported, not the first by name.
-    let e = parse_servers(
-        "[zzz]\nendpoint_id = \"x\"\n[aaa]\nendpoint_id = \"x\"\n",
-        p(),
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(
-        e.contains("unknown table \"zzz\"") && e.contains(":1:"),
-        "{e}"
-    );
+fn unknown_top_level_keys_and_tables_are_refused_with_their_line() {
+    for (text, line, name) in [
+        ("\n[home]\nendpoint_id = \"x\"\n", 2, "home"),
+        ("x = 1\n", 1, "x"),
+        ("[hosts]\n", 1, "hosts"),
+        (
+            "[exports.p]\npath = \"/p\"\n[all]\nrw = [\"a\"]\n",
+            3,
+            "all",
+        ),
+        // The first offender in the file is reported, not the first by name.
+        ("[zzz]\npath = \"/x\"\n[aaa]\npath = \"/x\"\n", 1, "zzz"),
+    ] {
+        let e = Config::parse(text, p()).unwrap_err().to_string();
+        assert_eq!(
+            e,
+            format!("/x/f.toml:{line}: unknown key {name:?}"),
+            "{text:?}"
+        );
+    }
+}
+
+/// Only the current `config_version` is read; a file without it is read
+/// as that version.
+#[test]
+fn only_the_current_config_version_is_read() {
+    assert!(Config::parse("config_version = 2\n", p()).is_ok());
+    assert!(Config::parse("", p()).is_ok());
+    for (v, want) in [
+        ("1", "config_version: expected 2, found 1"),
+        ("0", "config_version: expected 2, found 0"),
+        ("\"2\"", "config_version: expected 2, found string"),
+        (
+            "3",
+            "config_version 3: this file was written by a newer irsync, which reads config_version 2; upgrade irsync",
+        ),
+    ] {
+        let e = Config::parse(&format!("\nconfig_version = {v}\n"), p())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(e, format!("/x/f.toml:2: {want}"), "{v}");
+    }
 }
 
 #[test]
@@ -378,36 +374,6 @@ fn exports_all_is_reserved() {
         "{e}"
     );
     assert!(e.contains(":2:"), "{e}");
-}
-
-#[test]
-fn exports_old_layout_names_the_new_location() {
-    let e = parse_exports("\n[photos]\npath = \"/x\"\n", p())
-        .unwrap_err()
-        .to_string();
-    assert!(
-        e.contains("unknown table \"photos\"; exports live under [exports.photos]")
-            && e.contains(":2:"),
-        "{e}"
-    );
-    let e = parse_exports("rw = [\"a\"]\n", p())
-        .unwrap_err()
-        .to_string();
-    assert!(
-        e.contains("unknown key \"rw\"; a client's right over every export is all_exports under [clients.NAME]")
-            && e.contains(":1:"),
-        "{e}"
-    );
-    let e = parse_exports("x = 1\n", p()).unwrap_err().to_string();
-    assert!(e.contains("unknown key \"x\""), "{e}");
-    // The first offender in the file is reported, not the first by name.
-    let e = parse_exports("[zzz]\npath = \"/x\"\n[aaa]\npath = \"/x\"\n", p())
-        .unwrap_err()
-        .to_string();
-    assert!(
-        e.contains("unknown table \"zzz\"") && e.contains(":1:"),
-        "{e}"
-    );
 }
 
 #[test]
@@ -455,31 +421,31 @@ fn exports_missing_file_is_empty() {
 
 #[test]
 fn syntax_error_carries_its_line() {
-    let e = parse_servers("[hosts.a]\nendpoint_id = \n", p())
+    let e = parse_servers("[servers.a]\nendpoint_id = \n", p())
         .unwrap_err()
         .to_string();
     assert!(e.starts_with("/x/f.toml:2:"), "{e}");
 }
 
 #[test]
-fn hosts_invalid_alias_in_file_is_error_with_line() {
+fn servers_invalid_name_in_file_is_error_with_line() {
     let t = format!(
-        "[hosts.ok]\nendpoint_id = \"{}\"\n[hosts.\"a:b\"]\nendpoint_id = \"{}\"\n",
+        "[servers.ok]\nendpoint_id = \"{}\"\n[servers.\"a:b\"]\nendpoint_id = \"{}\"\n",
         id(1),
         id(2)
     );
     let e = parse_servers(&t, p()).unwrap_err().to_string();
     assert!(e.contains("/x/f.toml:3:") && e.contains("a:b"), "{e}");
-    let t = format!("[hosts.{}]\nendpoint_id = \"{}\"\n", id(1), id(1));
+    let t = format!("[servers.{}]\nendpoint_id = \"{}\"\n", id(1), id(1));
     assert!(parse_servers(&t, p())
         .unwrap_err()
         .to_string()
-        .contains("invalid host alias"));
+        .contains("invalid name"));
 }
 
 #[test]
-fn hosts_bad_endpoint_id_has_line() {
-    let e = parse_servers("[hosts.a]\nendpoint_id = \"zzz\"\n", p())
+fn servers_bad_endpoint_id_has_line() {
+    let e = parse_servers("[servers.a]\nendpoint_id = \"zzz\"\n", p())
         .unwrap_err()
         .to_string();
     assert!(e.contains("/x/f.toml:2:"), "{e}");
@@ -535,87 +501,6 @@ fn merged_file_holds_every_table() {
         (c.servers.path.clone(), c.exports.path.clone()),
         (d.path().join("irsync.toml"), d.path().join("irsync.toml"))
     );
-}
-
-#[test]
-fn merged_shape_errors_keep_the_old_layout_hints() {
-    let d = tempfile::tempdir().unwrap();
-    for (text, needle) in [
-        (
-            "[home]\nendpoint_id = \"x\"\n",
-            "unknown table \"home\"; servers live under [servers.home], clients under [clients.home]",
-        ),
-        (
-            "[photos]\npath = \"/x\"\n",
-            "unknown table \"photos\"; exports live under [exports.photos]",
-        ),
-        (
-            "rw = [\"a\"]\n",
-            "unknown key \"rw\"; a client's right over every export is all_exports under [clients.NAME]",
-        ),
-        (
-            "[nothing]\nx = 1\n",
-            "servers live under [servers.nothing], clients under [clients.nothing], exports under [exports.nothing]",
-        ),
-        ("[daemon]\nnope = 1\n", "nope"),
-        ("[exports.all]\npath = \"/x\"\n", "\"all\" is reserved"),
-        (
-            "[hosts.all]\nendpoint_id = \"x\"\n",
-            "invalid host alias \"all\"",
-        ),
-    ] {
-        let e = merged(d.path(), text).unwrap_err().to_string();
-        assert!(
-            e.contains(needle) && e.contains("irsync.toml"),
-            "{text:?}: {e}"
-        );
-    }
-}
-
-#[test]
-fn split_files_are_ignored() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = dir.path().join("irsync.toml");
-    irsync::fs::private::write(&config, "").unwrap();
-    irsync::fs::private::write(
-        dir.path().join("hosts.toml"),
-        format!("[hosts.box]\nendpoint_id = \"{}\"\n", id(1)),
-    )
-    .unwrap();
-    irsync::fs::private::write(
-        dir.path().join("exports.toml"),
-        "[exports.p]\npath = \"/p\"\n",
-    )
-    .unwrap();
-    let c = Config::load(&Paths::resolve(Some(&config))).unwrap();
-    assert!(c.servers.entries.is_empty());
-    assert!(c.exports.exports.is_empty());
-    assert_eq!(
-        ignored_split_files(&config),
-        vec![
-            dir.path().join("hosts.toml"),
-            dir.path().join("exports.toml")
-        ]
-    );
-    // A split file that would not parse is ignored all the same.
-    irsync::fs::private::write(dir.path().join("hosts.toml"), "not toml [").unwrap();
-    assert!(Config::load(&Paths::resolve(Some(&config))).is_ok());
-}
-
-#[test]
-fn no_split_files_nothing_ignored() {
-    let dir = tempfile::tempdir().unwrap();
-    assert!(ignored_split_files(&dir.path().join("irsync.toml")).is_empty());
-}
-
-#[test]
-fn a_split_file_is_reported_once_per_process() {
-    let dir = tempfile::tempdir().unwrap();
-    let a = dir.path().join("hosts.toml");
-    let b = dir.path().join("exports.toml");
-    assert!(first_sighting(&a));
-    assert!(!first_sighting(&a));
-    assert!(first_sighting(&b));
 }
 
 #[test]
@@ -676,37 +561,6 @@ fn daemon_debug_addr_bare_port() {
     assert!(e.contains("nope"), "{e}");
 }
 
-/// The error of each text, with and without `config_version = 2` above it
-/// (two lines more).
-fn refusals(body: &str) -> [String; 2] {
-    [body.to_string(), format!("config_version = 2\n\n{body}")]
-        .map(|t| Config::parse(&t, p()).unwrap_err().to_string())
-}
-
-#[test]
-fn old_all_table_is_refused_with_a_hint() {
-    let hint = "[all] is not read any more: give a client all_exports = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME all_exports=rw)";
-    let [plain, versioned] = refusals("[exports.p]\npath = \"/p\"\n[all]\nrw = [\"laptop\"]\n");
-    assert_eq!(plain, format!("/x/f.toml:3: {hint}"));
-    assert_eq!(versioned, format!("/x/f.toml:5: {hint}"));
-}
-
-#[test]
-fn old_immediate_table_is_refused_with_a_hint() {
-    let hint = "[immediate] is not read any more: give a client all_paths = \"rw\" or \"ro\" under [clients.NAME] (irsync client set NAME all_paths=rw)";
-    let [plain, versioned] = refusals("[immediate]\nrw = [\"laptop\"]\n");
-    assert_eq!(plain, format!("/x/f.toml:1: {hint}"));
-    assert_eq!(versioned, format!("/x/f.toml:3: {hint}"));
-}
-
-#[test]
-fn old_daemon_immediate_is_refused_with_a_hint() {
-    let hint = "[daemon] immediate is now allow_all_paths";
-    let [plain, versioned] = refusals("[daemon]\nportmap = false\nimmediate = false\n");
-    assert_eq!(plain, format!("/x/f.toml:3: {hint}"));
-    assert_eq!(versioned, format!("/x/f.toml:5: {hint}"));
-}
-
 #[test]
 fn client_rights_are_read_and_written_back() {
     use irsync::authz::Access;
@@ -720,7 +574,7 @@ fn client_rights_are_read_and_written_back() {
     let laptop = c.clients.get("laptop").unwrap();
     assert_eq!(laptop.all_exports, Some(Access::ReadOnly));
     assert_eq!(laptop.all_paths, Some(Access::ReadWrite));
-    let msg = read(&text, Path::new("c")).unwrap().config;
+    let msg = read(&text, Path::new("c")).unwrap();
     assert_eq!(write(&msg), text);
 }
 
@@ -780,10 +634,6 @@ fn daemon_allow_root_defaults_off() {
 #[test]
 fn export_names_of_rights_are_reserved() {
     for (name, why) in [
-        (
-            "immediate",
-            "it used to name grants to any path; use irsync client set NAME all_paths=rw",
-        ),
         (
             "all_exports",
             "`irsync grant list all_exports` lists the clients with that right",
@@ -867,23 +717,18 @@ fn a_config_open_to_other_users_is_refused_unless_it_says_otherwise() {
     assert!(lock.load().is_err());
 }
 
-/// `Config::parse` reads the values only, of either layout, and gives the
-/// typed view the full read gives, and the same errors.
+/// `Config::parse` reads the values only, and gives the typed view the
+/// full read gives, and the same errors.
 #[test]
 fn parse_reads_values_only_with_the_same_view_and_errors() {
-    use irsync::config::reader::{read, read_values_any};
-    let v1 = format!(
-        "# top\n[hosts.nas] # the nas\nendpoint_id = \"{}\"\n[hosts.lap]\nclient_id = \"{}\"\nmdns = false\n",
-        id(1),
-        id(2)
-    );
-    let v2 = format!(
+    use irsync::config::reader::{read, read_values};
+    let text = format!(
         "config_version = 2\n# top\n[servers.nas] # the nas\nendpoint_id = \"{}\"\n",
         id(1)
     );
-    for text in [v1.as_str(), v2.as_str(), "# only a comment\n"] {
-        let full = read(text, p()).unwrap().config;
-        let values = read_values_any(text, p()).unwrap();
+    for text in [text.as_str(), "# only a comment\n"] {
+        let full = read(text, p()).unwrap();
+        let values = read_values(text, p()).unwrap();
         assert_ne!(values, full, "{text}");
         assert!(values.header.is_empty(), "{text}");
         assert_eq!(
@@ -897,13 +742,13 @@ fn parse_reads_values_only_with_the_same_view_and_errors() {
         );
     }
     for bad in [
-        "[hosts.a]\nendpoint_id = \"x\"\n",
+        "[servers.a]\nendpoint_id = \"x\"\n",
         "config_version = 3\n",
-        "[hosts.a]\n[servers.b]\n",
+        "[hosts.a]\n",
         "x = [\n",
     ] {
         assert_eq!(
-            read_values_any(bad, p()).unwrap_err().to_string(),
+            read_values(bad, p()).unwrap_err().to_string(),
             read(bad, p()).unwrap_err().to_string(),
             "{bad}"
         );
@@ -924,7 +769,7 @@ fn admin_is_read_and_written_back() {
         c.clients.get("laptop").unwrap().admin,
         Some(Access::ReadOnly)
     );
-    let msg = read(&text, Path::new("c")).unwrap().config;
+    let msg = read(&text, Path::new("c")).unwrap();
     assert_eq!(write(&msg), text);
     let bad = format!(
         "[clients.laptop]\nclient_id = \"{}\"\nadmin = \"yes\"\n",
