@@ -1,7 +1,8 @@
 //! Receiver write path: verified chunks go into `.irsync.<name>.part`, the whole
 //! file's hash is folded from them, and only then is it renamed over its final
 //! name. Progress is recorded in the index so a later session can adopt a
-//! half-written file. Where the filesystem clones files (`FICLONE`), a fresh
+//! half-written file. Where the filesystem can clone files (how is up to
+//! each platform: `FICLONE` on Linux, for example), a fresh
 //! `.part` for a changed file starts as a clone of the old file, so the
 //! chunks the old file already holds at the same offset are verified in
 //! place and never copied.

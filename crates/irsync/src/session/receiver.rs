@@ -1,7 +1,7 @@
-//! The receiver role: walks its own tree, merge-joins it with the sender's
-//! listing and decides per path (rsync-generator style). Directories,
-//! symlinks, specials and metadata are applied locally; regular files are
-//! requested with `PlanItem`, opened as verified `.part` writers when their
+//! The receiver role: walks its own tree and feeds both listings to the
+//! planner (`planner.rs`), which merge-joins them, decides per path
+//! (rsync-generator style) and applies directories, symlinks, specials and
+//! metadata. The regular files it requests with `PlanItem` are opened as verified `.part` writers when their
 //! chunk list arrives, filled from local copies and data streams, and
 //! verified; then the sender is asked whether the source is unchanged
 //! (`MayPlace`), and only on its `PlaceVerdict` saying so is the file

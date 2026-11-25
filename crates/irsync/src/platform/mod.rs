@@ -1,7 +1,6 @@
 //! Every call into the operating system: what its errors mean and how names
-//! become bytes. The rest of the crate is moving here; once it has,
-//! `tests/platform_rule.rs` holds the rest of the crate to naming no
-//! platform API, so a new platform is one new file here.
+//! become bytes. `tests/platform_rule.rs` holds the rest of the crate to
+//! naming no platform API, so a new platform is one new file here.
 //!
 //! The interface is plain functions and [`Dir`], a directory held open
 //! that every operation below a root goes through by a single name; one
