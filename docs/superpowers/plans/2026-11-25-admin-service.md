@@ -72,7 +72,7 @@ The SSH setup's `grant_client` returns true when it changed either right (it set
 **Files:**
 - Create: `proto/irsync/v1/admin.proto`
 - Modify: `proto/irsync/v1/common.proto` (`Hello.Direction`: `ADMIN = 4;` with a comment: the control stream becomes an admin session; `path` empty)
-- Modify: `crates/irsync-proto/src/lib.rs` (`PROTOCOL_VERSION = 6`, include the new file in the build as the others are)
+- Modify: `crates/irsync-proto/src/lib.rs` (`PROTOCOL_VERSION = 7`, include the new file in the build as the others are)
 - Modify: `crates/irsync-proto/build.rs` if it lists proto files; `crates/pbwalk` if it walks every message type
 - Modify: `crates/irsync/src/daemon.rs`: an ADMIN Hello is answered `UNAUTHORIZED` "not allowed" for now (task 4 serves it), and does not bump the test-hooks `hellos` counter (like LIST_EXPORTS and PROBE)
 - Test: `crates/irsync-proto/tests/roundtrip.rs`, `crates/irsync-proto/tests/golden_bytes.rs`
@@ -121,7 +121,7 @@ message ClientView { string name = 1; bytes id = 2; map<string, string> rights =
 message ConfigText { repeated string lines = 1; }
 ```
 
-- [ ] **Step 1: Write the failing tests.** `roundtrip.rs` `admin_messages_round_trip`: an `AdminRequest` with each `Change` variant, a `Commit` and each `Read` encodes and decodes equal; same for `AdminReply` variants. `golden_bytes.rs`: one golden for `AdminRequest{commit}` and one for `Nack{change: 2, reason: "x"}`, and the Hello golden with `protocol_version 6`.
+- [ ] **Step 1: Write the failing tests.** `roundtrip.rs` `admin_messages_round_trip`: an `AdminRequest` with each `Change` variant, a `Commit` and each `Read` encodes and decodes equal; same for `AdminReply` variants. `golden_bytes.rs`: one golden for `AdminRequest{commit}` and one for `Nack{change: 2, reason: "x"}`, and the Hello golden with `protocol_version 7`.
 - [ ] **Step 2: Run them and see them fail.** `cargo test -q -p irsync-proto` → unresolved types.
 - [ ] **Step 3: Implement**; update every test that pins `5`.
 - [ ] **Step 4: Run all tests** → PASS.
