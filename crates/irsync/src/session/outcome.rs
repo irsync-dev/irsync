@@ -10,7 +10,9 @@ pub struct Outcome {
     pub session_id: [u8; 16],
     /// The daemon resumed an existing session (`HelloAck.resumed`).
     pub resumed: bool,
-    /// Files placed (receiver) or acknowledged as placed (sender) on this connection.
+    /// Files placed (receiver) or acknowledged as placed (sender) on this
+    /// connection: `SessionDone.files_placed`, named as rsync's `--stats`
+    /// names it.
     pub files_transferred: u64,
     /// File data bytes that crossed the network on data streams.
     pub bytes_transferred: u64,
@@ -23,7 +25,8 @@ pub struct Outcome {
     pub listed: crate::scan::ListStats,
     /// Items created new at the destination (files, dirs, links, specials).
     pub created: u64,
-    /// Sum of the sizes of the regular files transferred.
+    /// Sum of the sizes of the regular files transferred
+    /// (`SessionDone.placed_size`).
     pub transferred_size: u64,
     /// Bytes this side's connection sent and received (QUIC level).
     pub bytes_sent: u64,
