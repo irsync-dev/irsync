@@ -27,8 +27,9 @@ use crate::cli::Direction;
 use crate::config::exports::Export;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
-use crate::config::settings::Relay;
-use crate::config::settings::{listen_sockets, DaemonSettings, PqKeyExchange, Settings};
+use crate::config::settings::{
+    listen_sockets, DaemonSettings, PqKeyExchange, Relay, Settings, TelemetrySettings,
+};
 use crate::filter::FilterSet;
 use crate::fs::paths::{escape_path, RelPath};
 use crate::identity::PassphraseSource;
@@ -141,6 +142,49 @@ pub struct Daemon {
     /// Indexes opened by `new` whose background tasks `run` starts.
     startup: Vec<(String, Export, IndexHandle)>,
     reload: Option<Reloader>,
+    /// The settings read once at start, which a reload cannot change.
+    started: StartOnly,
+}
+
+/// The settings a daemon reads once, at start: a reload that finds them
+/// changed says that they take effect at the next start.
+#[derive(Debug, Clone, PartialEq)]
+struct StartOnly {
+    state_dir: PathBuf,
+    debug_addr: Option<SocketAddr>,
+    telemetry: TelemetrySettings,
+}
+
+impl StartOnly {
+    fn of(settings: &Settings) -> StartOnly {
+        StartOnly {
+            state_dir: settings.state_dir.clone(),
+            debug_addr: settings.daemon.debug_addr,
+            telemetry: settings.telemetry.clone(),
+        }
+    }
+
+    /// A warning for each setting `now` changes from these.
+    fn changed_in(&self, now: &Settings) -> Vec<String> {
+        let now = StartOnly::of(now);
+        let mut changed = Vec::new();
+        if now.state_dir != self.state_dir {
+            changed.push(format!("state_dir changed to {}", now.state_dir.display()));
+        }
+        if now.debug_addr != self.debug_addr {
+            changed.push(match now.debug_addr {
+                Some(a) => format!("debug_addr changed to {a}"),
+                None => "debug_addr was removed".to_string(),
+            });
+        }
+        if now.telemetry != self.telemetry {
+            changed.push("[telemetry] changed".to_string());
+        }
+        changed
+            .into_iter()
+            .map(|c| format!("{c}; it takes effect at the next start"))
+            .collect()
+    }
 }
 
 /// Counts the connection handlers an endpoint has running.
@@ -216,6 +260,7 @@ impl Daemon {
             shared,
             startup,
             reload: None,
+            started: StartOnly::of(settings),
         })
     }
 
@@ -361,11 +406,8 @@ impl Daemon {
                 "the daemon identity changed: clients must use the new id"
             );
         }
-        if settings.state_dir != self.shared.state_dir {
-            tracing::warn!(
-                "state_dir changed to {}; it takes effect at the next start",
-                settings.state_dir.display()
-            );
+        for warning in self.started.changed_in(&settings) {
+            tracing::warn!("{warning}");
         }
         self.shared.apply(&settings.daemon);
         // Log first, announce last: the `listening on:` line tells a watcher
@@ -1742,6 +1784,34 @@ pub async fn gc_if_due_skipping(
 #[cfg(test)]
 mod banner_tests {
     use super::*;
+
+    #[test]
+    fn a_reload_names_each_setting_that_waits_for_a_restart() {
+        let before = Settings::default();
+        let started = StartOnly::of(&before);
+        assert!(started.changed_in(&before).is_empty());
+        let mut after = before.clone();
+        after.state_dir = PathBuf::from("/elsewhere");
+        after.daemon.debug_addr = Some(SocketAddr::from(([127, 0, 0, 1], 9464)));
+        after.telemetry.otlp_endpoint = Some("http://c:4318".parse().unwrap());
+        // A setting a reload applies is not named.
+        after.daemon.portmap = !before.daemon.portmap;
+        assert_eq!(
+            started.changed_in(&after),
+            [
+                "state_dir changed to /elsewhere; it takes effect at the next start",
+                "debug_addr changed to 127.0.0.1:9464; it takes effect at the next start",
+                "[telemetry] changed; it takes effect at the next start",
+            ]
+        );
+        let started = StartOnly::of(&after);
+        let mut removed = after.clone();
+        removed.daemon.debug_addr = None;
+        assert_eq!(
+            started.changed_in(&removed),
+            ["debug_addr was removed; it takes effect at the next start"]
+        );
+    }
 
     #[test]
     fn banner_names_version_and_network() {

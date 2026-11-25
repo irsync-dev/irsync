@@ -102,7 +102,8 @@ keeps running as it was.
 | Change | When it applies |
 | --- | --- |
 | `state_dir` | At the next start. A reload logs that it changed. |
-| `debug_addr` | At the next start. |
+| `debug_addr` | At the next start. A reload logs that it changed. |
+| `[telemetry]` | At the next start. A reload logs that it changed. |
 | `warm_index` on an export the daemon has already opened | At the next start. |
 | Removing an export | At once for new connections; the export's index stays open, and its hourly collection keeps running, until the next start. |
 

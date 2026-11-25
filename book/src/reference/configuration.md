@@ -263,8 +263,9 @@ file without it is read as version 2. Any other version is an error.
 ## Daemon
 
 `[daemon]` configures `irsync daemon`. On SIGHUP the daemon re-reads this
-table and rebinds; changes to `debug_addr` and to the top-level `state_dir`
-take effect at the next start.
+table and rebinds. Changes to `debug_addr`, to `[telemetry]` and to the
+top-level `state_dir` take effect at the next start; the reload logs each at
+`warn`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
