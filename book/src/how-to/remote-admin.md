@@ -88,6 +88,11 @@ logged at `warn`, with the name. Reads are not logged.
 A client without `admin` gets only `not allowed`. It learns nothing about the
 server.
 
+The text trace (`-vvvvv`) and the capture file show the admin messages, on
+both sides, like any other. A capture of an admin session holds the config
+contents it carries: export paths, client names and ids. It holds no secrets.
+See [Trace and capture the protocol](../contributing/protocol-debugging.md).
+
 ## See also
 
 - [Management commands](../reference/management.md)

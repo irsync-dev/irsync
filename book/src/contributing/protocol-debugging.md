@@ -135,6 +135,11 @@ read it:
 
 The text trace always shows the whole message, apart from file content.
 
+Admin sessions (`irsync remote`) are traced and captured too: their
+`AdminRequest` and `AdminReply` messages appear like the others. A
+capture of an admin session holds the config contents it carries (export
+paths, client names and ids), and no secrets.
+
 ### Addresses and ports
 
 The packets carry made-up addresses and ports, so that Wireshark's

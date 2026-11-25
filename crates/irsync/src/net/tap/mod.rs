@@ -16,8 +16,8 @@ use iroh::endpoint::{Connection, WeakConnectionHandle};
 use iroh::EndpointId;
 use irsync_proto::capture::v1::{record, stream_event, Direction, PathChange, Record, StreamEvent};
 use irsync_proto::v1::{
-    control, Control, DataChunk, DataStreamHeader, Error, ExportList, Hello, HelloAck,
-    ListingStreamHeader, PathInfo,
+    control, AdminReply, AdminRequest, Control, DataChunk, DataStreamHeader, Error, ExportList,
+    Hello, HelloAck, ListingStreamHeader, PathInfo,
 };
 
 mod capture;
@@ -55,6 +55,8 @@ wire_msg! {
     PathInfo => PathInfo,
     ListingStreamHeader => ListingStreamHeader,
     DataChunk => DataChunk,
+    AdminRequest => AdminRequest,
+    AdminReply => AdminReply,
 }
 
 impl WireMsg for Control {
@@ -551,6 +553,38 @@ mod tests {
             .is_none());
         assert_eq!(last_event(&records), Some(stream_event::Kind::Finished));
     }
+    #[tokio::test]
+    async fn capped_tapped_read_reports_the_message_and_the_overflow() {
+        use crate::net::frame::{read_msg_max_tapped, write_msg, FrameTooLarge};
+        let msg = irsync_proto::v1::AdminRequest {
+            msg: Some(irsync_proto::v1::admin_request::Msg::Commit(
+                irsync_proto::v1::Commit {},
+            )),
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &msg).await.unwrap();
+        let (tap, records) = collecting_stream_tap(StreamKind::Control, 0);
+        let got = read_msg_max_tapped::<irsync_proto::v1::AdminRequest, _>(
+            &mut buf.as_slice(),
+            100,
+            &tap,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got.as_ref(), Some(&msg));
+        assert_eq!(
+            records.lock().unwrap()[1].msg,
+            Some(record::Msg::AdminRequest(msg))
+        );
+        let (tap, records) = collecting_stream_tap(StreamKind::Control, 0);
+        let err =
+            read_msg_max_tapped::<irsync_proto::v1::AdminRequest, _>(&mut buf.as_slice(), 0, &tap)
+                .await
+                .unwrap_err();
+        assert!(FrameTooLarge::of(&err).is_some());
+        assert_eq!(last_event(&records), Some(stream_event::Kind::Reset));
+    }
+
     #[tokio::test]
     async fn same_connection_same_tap_until_closed() {
         let _on = force_on_for_test();

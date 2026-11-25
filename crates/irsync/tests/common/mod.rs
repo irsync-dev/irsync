@@ -897,8 +897,19 @@ pub fn irsync_bin_in(
     cwd: Option<&std::path::Path>,
     args: &[&str],
 ) -> std::process::Output {
+    irsync_bin_env(home, cwd, &[], args)
+}
+
+/// [`irsync_bin_in`] with extra environment variables.
+pub fn irsync_bin_env(
+    home: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+    env: &[(&str, &std::path::Path)],
+    args: &[&str],
+) -> std::process::Output {
     use std::process::Stdio;
     let mut cmd = irsync_command(home);
+    cmd.envs(env.iter().copied());
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -939,6 +950,17 @@ pub struct BinaryDaemon {
 impl BinaryDaemon {
     pub fn pid(&self) -> u32 {
         self.guard.0.id()
+    }
+
+    /// Ends the daemon with `SIGTERM`, as a service manager does, and waits
+    /// for it: it writes out its protocol capture first.
+    pub fn stop(mut self) {
+        let status = std::process::Command::new("kill")
+            .args(["-TERM", &self.pid().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success(), "kill -TERM failed");
+        let _ = self.guard.0.wait();
     }
 
     /// Sends `SIGHUP`: the daemon re-reads its settings.

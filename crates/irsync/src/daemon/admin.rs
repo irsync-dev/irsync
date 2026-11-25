@@ -5,8 +5,8 @@
 //! answered at once from the saved file. The client's `admin` right is
 //! checked again at every commit and every read.
 //!
-//! The admin messages go past the stream's tap: a wire trace or capture
-//! shows the Hello and the end of the stream, not the config they carry.
+//! Every admin message goes through the stream's tap, so a wire trace or
+//! capture shows the config it carries.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use crate::config::clients::Clients;
 use crate::config::file::Config;
 use crate::manage::admin::{self as engine, Committer, NOT_ALLOWED};
 use crate::manage::{load_message, ManageError};
-use crate::net::frame::{read_msg_max, write_msg, FrameTooLarge};
+use crate::net::frame::{read_msg_max_tapped, write_msg_tapped, FrameTooLarge};
 use crate::net::tap::StreamTap;
 
 /// The most changes one transaction holds. A transaction that passes it
@@ -122,7 +122,7 @@ pub(super) async fn serve_admin(
     };
     let mut pending = Pending::default();
     let reason = loop {
-        let read = read_msg_max(&mut recv, ADMIN_MAX_REQUEST);
+        let read = read_msg_max_tapped(&mut recv, ADMIN_MAX_REQUEST, &tap);
         let req = match tokio::time::timeout(ADMIN_IDLE, read).await {
             Err(_) => break &b"idle"[..],
             Ok(Ok(None)) => break b"done",
@@ -180,7 +180,7 @@ pub(super) async fn serve_admin(
                 }
             },
         };
-        write_msg(&mut send, &AdminReply { msg: Some(reply) }).await?;
+        write_msg_tapped(&mut send, &AdminReply { msg: Some(reply) }, &tap).await?;
     };
     send.finish()?;
     tap.finished();
@@ -384,7 +384,7 @@ async fn close_with(
         code: code as i32,
         message: message.to_string(),
     });
-    write_msg(send, &AdminReply { msg: Some(refused) }).await?;
+    write_msg_tapped(send, &AdminReply { msg: Some(refused) }, tap).await?;
     send.finish()?;
     tap.finished();
     // An acknowledgement is not a read: a peer that is slow to read loses

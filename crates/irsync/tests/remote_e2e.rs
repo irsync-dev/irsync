@@ -5,8 +5,11 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{irsync_bin as irsync, spawn_daemon_binary, BinaryDaemon};
+use common::{irsync_bin as irsync, irsync_bin_env, spawn_daemon_binary_env, BinaryDaemon};
 use irsync::authz::Access;
+use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
+use irsync_proto::v1::{admin_reply, admin_request, hello};
+use prost::Message as _;
 
 fn stderr(o: &std::process::Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
@@ -33,12 +36,17 @@ struct Setup {
 /// A running daemon, and a client that has saved it as `myserver`. The
 /// client holds `admin` as `admin` says.
 fn setup(admin: Option<Access>) -> Setup {
+    setup_env(admin, &[])
+}
+
+/// [`setup`], the daemon started with the environment `env`.
+fn setup_env(admin: Option<Access>, env: &[(&str, &str)]) -> Setup {
     let dir = tempfile::tempdir().unwrap();
     let server = dir.path().join("server/home");
     let client = dir.path().join("client/home");
     std::fs::create_dir_all(server.join("Photos")).unwrap();
     std::fs::create_dir_all(&client).unwrap();
-    let daemon = spawn_daemon_binary(&server);
+    let daemon = spawn_daemon_binary_env(&server, env);
     let client_id = ok(&client, &["id", "show"])
         .lines()
         .last()
@@ -306,4 +314,102 @@ async fn an_older_daemon_is_told_to_update() {
         stderr(&o)
     );
     serve.abort();
+}
+
+/// Every record of a capture file.
+fn read_capture(path: &Path) -> Vec<Record> {
+    let file = std::fs::read(path).unwrap();
+    pbcap::Reader::new(&file[..])
+        .expect("a capture file")
+        .map(|p| Record::decode(&p.expect("a whole block").body[..]).expect("a record"))
+        .collect()
+}
+
+/// The admin messages of a capture, as (side, direction, message).
+fn admin_msgs(recs: &[Record]) -> Vec<(Side, Direction, &Msg)> {
+    recs.iter()
+        .filter_map(|r| match r.msg.as_ref()? {
+            m @ (Msg::AdminRequest(_) | Msg::AdminReply(_)) => Some((r.side(), r.direction(), m)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn admin_traffic_is_captured_on_both_sides() {
+    let dir = tempfile::tempdir().unwrap();
+    let dcap = dir.path().join("daemon.pcapng");
+    let (c1, c2) = (dir.path().join("c1.pcapng"), dir.path().join("c2.pcapng"));
+    let s = setup_env(
+        Some(Access::ReadWrite),
+        &[("IRSYNC_CAPTURE", dcap.to_str().unwrap())],
+    );
+    // One change with its commit, then one read: two client processes.
+    for (cap, args) in [
+        (
+            &c1,
+            vec!["remote", "myserver", "export", "add", "photos:~/Photos"],
+        ),
+        (&c2, vec!["remote", "myserver", "export", "list"]),
+    ] {
+        let o = irsync_bin_env(&s.client, None, &[("IRSYNC_CAPTURE", cap)], &args);
+        assert!(o.status.success(), "{args:?}: {}", stderr(&o));
+    }
+    s.daemon.stop();
+
+    let change = read_capture(&c1);
+    let read = read_capture(&c2);
+    let daemon = read_capture(&dcap);
+
+    let is_change = |m: &Msg| matches!(m, Msg::AdminRequest(r) if matches!(r.msg, Some(admin_request::Msg::Change(_))));
+    let is_commit = |m: &Msg| matches!(m, Msg::AdminRequest(r) if matches!(r.msg, Some(admin_request::Msg::Commit(_))));
+    let is_read = |m: &Msg| matches!(m, Msg::AdminRequest(r) if matches!(r.msg, Some(admin_request::Msg::Read(_))));
+    let is_ack = |m: &Msg| matches!(m, Msg::AdminReply(r) if matches!(r.msg, Some(admin_reply::Msg::Ack(_))));
+    let is_view = |m: &Msg| matches!(m, Msg::AdminReply(r) if matches!(r.msg, Some(admin_reply::Msg::View(_))));
+    fn shape(recs: &[Record], me: Side, mine: Direction, theirs: Direction) -> Vec<&Msg> {
+        // The client sends requests and receives replies; the daemon the reverse.
+        let (req, rep) = if me == Side::Client {
+            (mine, theirs)
+        } else {
+            (theirs, mine)
+        };
+        let msgs = admin_msgs(recs);
+        assert!(msgs.iter().all(|(side, _, _)| *side == me), "{msgs:?}");
+        for (_, dir, m) in &msgs {
+            let want = if matches!(m, Msg::AdminRequest(_)) {
+                req
+            } else {
+                rep
+            };
+            assert_eq!(*dir, want, "{m:?}");
+        }
+        msgs.into_iter().map(|(_, _, m)| m).collect()
+    }
+
+    // The client's change: Change, Commit sent; Ack received.
+    let m = shape(&change, Side::Client, Direction::Sent, Direction::Received);
+    assert_eq!(m.len(), 3, "{m:?}");
+    assert!(is_change(m[0]) && is_commit(m[1]) && is_ack(m[2]), "{m:?}");
+    // The client's read: Read sent; View received.
+    let m = shape(&read, Side::Client, Direction::Sent, Direction::Received);
+    assert_eq!(m.len(), 2, "{m:?}");
+    assert!(is_read(m[0]) && is_view(m[1]), "{m:?}");
+    // Both clients' Hello says ADMIN.
+    for recs in [&change, &read] {
+        assert!(recs.iter().any(|r| matches!(
+            &r.msg,
+            Some(Msg::Hello(h)) if h.direction == hello::Direction::Admin as i32
+                && r.direction() == Direction::Sent
+        )));
+    }
+    // The daemon saw all five, in the other directions.
+    let m = shape(&daemon, Side::Daemon, Direction::Sent, Direction::Received);
+    assert_eq!(m.len(), 5, "{m:?}");
+    assert!(is_change(m[0]) && is_commit(m[1]) && is_ack(m[2]), "{m:?}");
+    assert!(is_read(m[3]) && is_view(m[4]), "{m:?}");
+    // What the change carries is in the capture.
+    assert!(change.iter().any(|r| matches!(
+        &r.msg,
+        Some(Msg::AdminRequest(q)) if format!("{q:?}").contains("photos:~/Photos")
+    )));
 }

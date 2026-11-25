@@ -16,7 +16,8 @@ use irsync::config::file::Config;
 use irsync::config::servers::Servers;
 use irsync::fs::paths::escape_text;
 use irsync::manage::{self, PeerSpec};
-use irsync::net::frame::{read_body, write_msg};
+use irsync::net::frame::{read_body, write_msg_tapped};
+use irsync::net::tap::{ConnTap, StreamKind, StreamTap};
 use irsync::session::engine::SessionRefused;
 use irsync_proto::config as pb;
 use irsync_proto::v1::{
@@ -216,6 +217,7 @@ async fn converse(
     req: RemoteRequest,
 ) -> anyhow::Result<RemoteOutcome> {
     let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
+    let tap = ConnTap::of(conn).stream(StreamKind::Control, u64::from(send.id()));
     let hello = Hello {
         protocol_version: PROTOCOL_VERSION,
         direction: Direction::Admin as i32,
@@ -245,11 +247,12 @@ async fn converse(
     // A daemon that refuses answers without waiting for the requests, and
     // may be gone when they are written: the answer, not the write, says why.
     let sent = async {
-        write_msg(&mut send, &hello).await?;
+        write_msg_tapped(&mut send, &hello, &tap).await?;
         for msg in requests {
-            write_msg(&mut send, &AdminRequest { msg: Some(msg) }).await?;
+            write_msg_tapped(&mut send, &AdminRequest { msg: Some(msg) }, &tap).await?;
         }
         send.finish()?;
+        tap.finished();
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -269,19 +272,35 @@ async fn converse(
             }
         }
     };
-    decode_reply(server, &body, what)
+    decode_reply(server, &body, what, &tap)
 }
 
 /// The outcome of the reply `body` to a request; `what` says which
 /// (`None`: a change, `Some(false)`: a view, `Some(true)`: config lines).
-fn decode_reply(server: &str, body: &[u8], what: Option<bool>) -> anyhow::Result<RemoteOutcome> {
+/// The reply is reported to `tap` as received: as an `AdminReply`, or as
+/// an `Error` when that is what the daemon sent.
+fn decode_reply(
+    server: &str,
+    body: &[u8],
+    what: Option<bool>,
+    tap: &StreamTap,
+) -> anyhow::Result<RemoteOutcome> {
     let msg = match AdminReply::decode(body) {
-        Ok(AdminReply { msg: Some(m) }) => m,
+        Ok(reply @ AdminReply { msg: Some(_) }) => {
+            tap.received(&reply, body.len());
+            reply.msg.expect("checked above")
+        }
         // A daemon that does not know the admin service answers with a
         // plain Error, which does not decode as a reply.
         _ => match Error::decode(body) {
-            Ok(e) => admin_reply::Msg::Refused(e),
-            Err(_) => bail!("malformed reply from {server}"),
+            Ok(e) => {
+                tap.received(&e, body.len());
+                admin_reply::Msg::Refused(e)
+            }
+            Err(_) => {
+                tap.reset("malformed reply");
+                bail!("malformed reply from {server}")
+            }
         },
     };
     match (msg, what) {
@@ -463,7 +482,7 @@ mod tests {
     fn an_older_daemons_version_error_decodes_to_update_it() {
         for what in [None, Some(false), Some(true)] {
             let body = version_error(PROTOCOL_VERSION - 1).encode_to_vec();
-            let Err(e) = decode_reply("myserver", &body, what) else {
+            let Err(e) = decode_reply("myserver", &body, what, &StreamTap::off()) else {
                 panic!("a version error decoded as an answer");
             };
             assert_eq!(

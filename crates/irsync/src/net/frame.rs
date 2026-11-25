@@ -178,7 +178,21 @@ where
     M: WireMsg,
     R: AsyncRead + Unpin,
 {
-    let res = match read_body(r).await {
+    read_msg_max_tapped(r, MAX_FRAME, tap).await
+}
+
+/// [`read_msg_tapped`] for frames of at most `max` bytes; see
+/// [`read_body_max`]. A frame over the cap is reported as a reset.
+pub async fn read_msg_max_tapped<M, R>(
+    r: &mut R,
+    max: usize,
+    tap: &StreamTap,
+) -> io::Result<Option<M>>
+where
+    M: WireMsg,
+    R: AsyncRead + Unpin,
+{
+    let res = match read_body_max(r, max).await {
         Ok(None) => Ok(None),
         Ok(Some(body)) => M::decode(body.as_slice())
             .map(|m| Some((body.len(), m)))

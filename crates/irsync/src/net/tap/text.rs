@@ -150,6 +150,8 @@ fn inner(msg: &record::Msg) -> DynamicMessage {
         M::ListingStreamHeader(m) => ("irsync.v1.ListingStreamHeader", m.encode_to_vec()),
         M::DataStreamHeader(m) => ("irsync.v1.DataStreamHeader", m.encode_to_vec()),
         M::DataChunk(m) => ("irsync.v1.DataChunk", m.encode_to_vec()),
+        M::AdminRequest(m) => ("irsync.v1.AdminRequest", m.encode_to_vec()),
+        M::AdminReply(m) => ("irsync.v1.AdminReply", m.encode_to_vec()),
         M::StreamEvent(m) => ("irsync.capture.v1.StreamEvent", m.encode_to_vec()),
         M::PathChange(m) => ("irsync.capture.v1.PathChange", m.encode_to_vec()),
     };
@@ -283,6 +285,8 @@ mod tests {
             M::ListingStreamHeader(Default::default()),
             M::DataStreamHeader(Default::default()),
             M::DataChunk(Default::default()),
+            M::AdminRequest(Default::default()),
+            M::AdminReply(Default::default()),
             M::StreamEvent(Default::default()),
             M::PathChange(Default::default()),
         ];
@@ -297,6 +301,8 @@ mod tests {
                 M::ListingStreamHeader(_) => "ListingStreamHeader",
                 M::DataStreamHeader(_) => "DataStreamHeader",
                 M::DataChunk(_) => "DataChunk",
+                M::AdminRequest(_) => "AdminRequest",
+                M::AdminReply(_) => "AdminReply",
                 M::StreamEvent(_) => "StreamEvent",
                 M::PathChange(_) => "PathChange",
             };
