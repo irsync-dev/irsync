@@ -1494,6 +1494,7 @@ impl World {
             let spawned = Command::new(&other)
                 .args(["daemon", "-vv"])
                 .env("HOME", self.server.path())
+                .env("XDG_CONFIG_HOME", self.server.path().join(".config"))
                 .env("XDG_STATE_HOME", self.server.path().join("xdg"))
                 .env_remove("IRSYNC_PASSPHRASE")
                 .env_remove("RUST_LOG")

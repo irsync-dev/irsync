@@ -43,11 +43,11 @@ if [ -n "$FAKE_SSH_UNAME" ] || [ -n "$FAKE_SSH_HOSTNAME" ] || [ -n "$FAKE_SSH_ID
         chmod 755 "$bin/$FAKE_SSH_HIDE"
     fi
     # shellcheck disable=SC2153 # the test sets FAKE_SSH_HOME
-    HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" SHELL=/nonexistent/shell \
+    HOME="$FAKE_SSH_HOME" XDG_CONFIG_HOME="$FAKE_SSH_HOME/.config" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" SHELL=/nonexistent/shell \
         PATH="$bin:$PATH" sh -c "$cmd"
     status=$?
     rm -rf "$bin"
     exit $status
 fi
-HOME="$FAKE_SSH_HOME" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" SHELL=/nonexistent/shell \
+HOME="$FAKE_SSH_HOME" XDG_CONFIG_HOME="$FAKE_SSH_HOME/.config" XDG_STATE_HOME="$FAKE_SSH_HOME/xdg" SHELL=/nonexistent/shell \
     exec sh -c "$cmd"

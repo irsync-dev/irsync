@@ -1,6 +1,7 @@
 # Configuration
 
-One file holds everything: `~/.config/irsync/irsync.toml`. It is optional; a
+One file holds everything: `~/.config/irsync/irsync.toml`, or
+`$XDG_CONFIG_HOME/irsync/irsync.toml` when that is set. It is optional; a
 missing file is the same as an empty one, and every key has a default except
 where noted. The [management commands](management.md) edit it for you and keep
 its comments and the order of its servers, clients and exports (they rewrite the rest in

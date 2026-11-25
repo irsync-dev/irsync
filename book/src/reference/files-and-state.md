@@ -5,13 +5,14 @@ inside them.
 
 ## Config directory
 
-All under `~/.config/irsync/`, all optional. There is no lookup under `/etc`; a
-daemon run system-wide is given `--config` (see
+All under `~/.config/irsync/`, or `$XDG_CONFIG_HOME/irsync/` when that is
+set, all optional. There is no lookup under `/etc`; a daemon run system-wide
+is given `--config` (see
 [Run the daemon](../how-to/run-the-daemon.md#run-it-as-its-own-account)).
 
 | File | Holds |
 | --- | --- |
-| `irsync.toml` | The whole configuration: `state_dir`, `[defaults]`, `[daemon]`, `[telemetry]`, the `[servers.*]` and `[clients.*]` tables, and the `[exports.*]` tables. `--config PATH` names another file, and its lock sits beside it. The keys below stay in `~/.config/irsync/` all the same, unless `[defaults] identity` and `[daemon] identity` in that file name other paths. See [Configuration](configuration.md). |
+| `irsync.toml` | The whole configuration: `state_dir`, `[defaults]`, `[daemon]`, `[telemetry]`, the `[servers.*]` and `[clients.*]` tables, and the `[exports.*]` tables. `--config PATH` names another file, and its lock sits beside it. The keys below stay in the config directory all the same, unless `[defaults] identity` and `[daemon] identity` in that file name other paths. See [Configuration](configuration.md). |
 | `irsync.toml.lock` | Present only while a management command edits the file. See [Management commands](management.md#editing-rules). |
 | `id_ed25519`, `id_ed25519.pub` | The client's key, generated when no other key serves. See [Configuration](configuration.md#identity-and-state). |
 | `daemon_ed25519`, `daemon_ed25519.pub` | The daemon's key, `[daemon] identity`, generated when missing by the daemon or `irsync export add`, or on demand by `irsync id generate --daemon`. |
@@ -31,7 +32,12 @@ unless the file sets `unsafe_config_allowed = true`.
 ## State directory
 
 `state_dir` defaults to `~/.local/state/irsync`, or `$XDG_STATE_HOME/irsync` when
-that is set. The client and the daemon use the same layout.
+that is set.
+
+irsync reads `XDG_CONFIG_HOME` and `XDG_STATE_HOME` only when they hold an
+absolute path, as the XDG rules say, and only on Linux, macOS and the other
+Unix systems. On Windows the config directory is `%APPDATA%\irsync` and the
+state directory `%LOCALAPPDATA%\irsync`. The client and the daemon use the same layout.
 
 | Path | Holds |
 | --- | --- |

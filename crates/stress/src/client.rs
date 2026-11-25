@@ -159,6 +159,7 @@ pub fn run_sync_with_env(
         Command::new(irsync)
             .args(args)
             .env("HOME", &setup.home)
+            .env_remove("XDG_CONFIG_HOME")
             .env("XDG_STATE_HOME", &setup.xdg_state)
             .env_remove("IRSYNC_PASSPHRASE")
             .env("RUST_LOG", log_level)

@@ -1,8 +1,8 @@
 //! The built `irsync` for tests, never with the real home or profile.
 //!
 //! Every test starts the binary through [`irsync_command`], which points
-//! every default location at a temporary home: `HOME` and `XDG_STATE_HOME`
-//! (Unix), and
+//! every default location at a temporary home: `HOME`, `XDG_CONFIG_HOME`
+//! and `XDG_STATE_HOME` (Unix), and
 //! `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` (Windows, where `HOME` means
 //! nothing to irsync). The Windows ones are laid out as the Unix ones are,
 //! so a test sees the same files on both: `APPDATA` is `<home>/.config`,
@@ -27,9 +27,10 @@ pub fn irsync_command(home: impl AsRef<Path>) -> Command {
     let home = isolated(home.as_ref());
     let state = home.join(".local").join("state");
     let mut cmd = Command::new(IRSYNC_EXE);
-    // `XDG_STATE_HOME` too, where the default without it would be, so a
-    // developer's own one never reaches the child.
+    // The XDG variables too, where the defaults without them would be, so
+    // a developer's own ones never reach the child.
     cmd.env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_STATE_HOME", &state)
         .env("USERPROFILE", &home)
         .env("APPDATA", home.join(".config"))

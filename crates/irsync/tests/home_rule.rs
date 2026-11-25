@@ -10,8 +10,8 @@
 //!   builder's private `IRSYNC_EXE`, `cargo_bin(`), in any test file, Unix
 //!   only or not, except on the lines of [`ALLOWED`]: read-only uses
 //!   (copying the binary, comparing a path with it), each with its reason.
-//! - A location variable (`HOME`, `XDG_STATE_HOME`, `USERPROFILE`,
-//!   `APPDATA`, `LOCALAPPDATA`) is not set by hand. Files compiled only on
+//! - A location variable (`HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
+//!   `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`) is not set by hand. Files compiled only on
 //!   Unix (`#![cfg(unix)]`) are exempt from this one: their fake-ssh worlds
 //!   set `HOME` for the remote side on purpose, and they never run on
 //!   Windows.
@@ -22,8 +22,9 @@ use std::path::{Path, PathBuf};
 const BINARY_NAMES: [&str; 3] = ["CARGO_BIN_EXE_irsync", "IRSYNC_EXE", "cargo_bin("];
 
 /// The environment variables that hold a default location.
-const LOCATION_VARS: [&str; 5] = [
+const LOCATION_VARS: [&str; 6] = [
     "\"HOME\"",
+    "\"XDG_CONFIG_HOME\"",
     "\"XDG_STATE_HOME\"",
     "\"USERPROFILE\"",
     "\"APPDATA\"",

@@ -114,6 +114,7 @@ pub fn client_id_generate(irsync: &Path, config_dir: &Path) -> Result<(PathBuf, 
             .args(["id", "generate", "--out"])
             .arg(&key)
             .env("HOME", &home)
+            .env_remove("XDG_CONFIG_HOME")
             .env_remove("IRSYNC_PASSPHRASE")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
