@@ -57,6 +57,25 @@ impl Platform {
             Platform::Windows => false,
         }
     }
+
+    /// The separator this kind of system writes between the components of
+    /// a path: `/` on Unix, `\` on Windows.
+    pub const fn separator(self) -> u8 {
+        match self {
+            Platform::Unix => b'/',
+            Platform::Windows => b'\\',
+        }
+    }
+
+    /// Whether the byte `b` separates the components of a path on this kind
+    /// of system: `/` on Unix; `\` and `/` on Windows. Both are ASCII, so
+    /// they never occur inside a longer UTF-8 or WTF-8 sequence.
+    pub const fn is_separator(self, b: u8) -> bool {
+        match self {
+            Platform::Unix => b == b'/',
+            Platform::Windows => b == b'/' || b == b'\\',
+        }
+    }
 }
 
 /// What an operating-system error means to the caller, as [`cause`] reads

@@ -239,7 +239,9 @@ async fn a_refused_key_exchange_is_not_retried() {
 
 /// The real binaries: the flag is accepted, a wrong value is refused before
 /// anything is dialled, and two current builds sync with `require` on
-/// both sides.
+/// both sides. Unix only: it reloads the daemon with `SIGHUP`, which
+/// Windows does not have (a Windows daemon is restarted instead).
+#[cfg(unix)]
 #[test]
 fn the_binaries_sync_with_require_on_both_sides() {
     use common::{irsync_bin, spawn_daemon_binary};

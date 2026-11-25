@@ -176,6 +176,8 @@ async fn delete_pass_is_timed() {
     assert!(out.usage.busy(Activity::Plan) > Duration::ZERO);
 }
 
+/// Process usage is Unix only: Windows reports none yet (`platform::process_usage`).
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn push_usage_samples_process_and_rtt() {
     irsync::telemetry::set_enabled(true);

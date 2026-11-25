@@ -95,12 +95,14 @@ Getting started by hand (irsync installed on both sides):
 
 impl Args {
     /// The command with the help template applied to the subcommands too,
-    /// at every level (`irsync server add --help` included).
+    /// at every level (`irsync server add --help` included). Usage names
+    /// the program `irsync` on every system: clap would take the name from
+    /// the first argument, `irsync.exe` on Windows.
     fn command_tree() -> clap::Command {
         fn apply(c: clap::Command) -> clap::Command {
             c.help_template(HELP_TEMPLATE).mut_subcommands(apply)
         }
-        Args::command().mut_subcommands(apply)
+        Args::command().bin_name("irsync").mut_subcommands(apply)
     }
 
     /// Like `Parser::try_parse_from`, but also records the command-line order
@@ -222,10 +224,16 @@ fn sub_matches<'a>(m: &'a clap::ArgMatches, name: &str) -> &'a clap::ArgMatches 
 /// is a usage error. The operands of a sync are checked here, so that
 /// every usage error exits 2.
 fn sync_or_list(s: SyncArgs, m: &clap::ArgMatches) -> Result<Command, clap::Error> {
+    // One operand is a listing's, read as `list` reads it.
+    let parse = if s.paths.len() == 1 {
+        Location::parse_listed
+    } else {
+        Location::parse
+    };
     let locations = s
         .paths
         .iter()
-        .map(|p| Location::parse(p))
+        .map(|p| parse(p))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| usage_error(&e))?;
     if let [one] = locations.as_slice() {
@@ -288,7 +296,7 @@ fn list_operand(mut l: ListArgs) -> Result<ListArgs, clap::Error> {
     if !op.contains(':') && !op.contains('/') && op != "." && op != ".." {
         op.push(':');
     }
-    let remote = Location::parse(op)
+    let remote = Location::parse_listed(op)
         .map_err(|e| list_error(clap::error::ErrorKind::ValueValidation, &e.0))?
         .is_remote();
     if !remote {

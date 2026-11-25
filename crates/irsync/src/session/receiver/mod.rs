@@ -1565,7 +1565,7 @@ impl Receiver {
 /// `--partial-dir` inside the root, as a path to leave out of the listing.
 fn partial_dir_rel(pd: Option<&Path>) -> Option<RelPath> {
     let pd = pd.filter(|p| p.is_relative())?;
-    RelPath::new(&crate::platform::os_to_bytes(pd.as_os_str())).ok()
+    RelPath::from_os(pd.as_os_str()).ok()
 }
 
 /// Runs the receiver role to completion: `SessionDone` is sent once the

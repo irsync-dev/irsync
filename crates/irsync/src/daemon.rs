@@ -29,7 +29,7 @@ use crate::config::paths::Paths;
 use crate::config::settings::{
     listen_sockets, DaemonSettings, PqKeyExchange, Relay, Settings, TelemetrySettings,
 };
-use crate::fs::paths::{escape_path, RelPath};
+use crate::fs::paths::{escape_os_path, RelPath};
 use crate::gc::{gc_if_due_skipping, nested_roots};
 use crate::identity::PassphraseSource;
 use crate::index::{Index, IndexHandle};
@@ -929,7 +929,7 @@ fn sync_check(req: &SyncRequest) -> Result<(), (Code, String)> {
 fn no_access(path: &[u8]) -> (Code, String) {
     (
         Code::Unauthorized,
-        format!("no access to {}", escape_path(path)),
+        format!("no access to {}", escape_os_path(path)),
     )
 }
 
@@ -1061,7 +1061,7 @@ fn add_auto_export(
     let refuse = |e: AutoExportError| match e {
         AutoExportError::NotFound => (
             Code::BadPath,
-            format!("no such file or directory: {}", escape_path(path)),
+            format!("no such file or directory: {}", escape_os_path(path)),
         ),
         e => (Code::BadPath, e.to_string()),
     };
@@ -1092,7 +1092,7 @@ fn inside_export(path: &[u8], name: &str) -> (Code, String) {
         Code::BadPath,
         format!(
             "{} is inside export {name}; ask for it by that export",
-            escape_path(path)
+            escape_os_path(path)
         ),
     )
 }

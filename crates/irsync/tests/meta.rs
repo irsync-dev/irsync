@@ -1,8 +1,10 @@
 mod common;
 
 #[cfg(unix)]
+use irsync::fs::meta::create_special;
+use irsync::fs::meta::lstat_entry;
+#[cfg(unix)]
 use irsync::fs::meta::{apply_metadata, ApplyOpts};
-use irsync::fs::meta::{create_special, lstat_entry};
 use irsync::fs::paths::{is_contained, RelPath};
 #[cfg(unix)]
 use irsync::platform::file_id;
@@ -90,6 +92,8 @@ fn sparse_only_for_regular_files_with_holes() {
     assert!(!l.sparse);
 }
 
+/// Unix only: Windows has no FIFOs or device nodes.
+#[cfg(unix)]
 #[test]
 fn create_special_fifo() {
     let d = tempfile::tempdir().unwrap();

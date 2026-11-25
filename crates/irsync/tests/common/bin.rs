@@ -38,6 +38,24 @@ pub fn irsync_command(home: impl AsRef<Path>) -> Command {
     cmd
 }
 
+/// The default locations a command from [`irsync_command`] with `home`
+/// sees, as the product computes them from the environment it is given:
+/// the config file, the state directory and the key it falls back to
+/// (`~/.ssh/id_ed25519` on Unix; `%USERPROFILE%\.irsync\id_ed25519` on
+/// Windows, which does not look in `.ssh`).
+pub fn locations(home: impl AsRef<Path>) -> irsync::platform::Locations {
+    let home = home.as_ref().to_path_buf();
+    let env = |k: &str| -> Option<std::ffi::OsString> {
+        match k {
+            "HOME" | "USERPROFILE" => Some(home.clone().into()),
+            "XDG_STATE_HOME" | "LOCALAPPDATA" => Some(home.join(".local").join("state").into()),
+            "APPDATA" => Some(home.join(".config").into()),
+            _ => None,
+        }
+    };
+    irsync::platform::default_locations(&env).expect("a home gives every location")
+}
+
 /// The state directory of a command from [`irsync_command`].
 pub trait StateHome {
     /// Keeps irsync's state in `dir/irsync`: `XDG_STATE_HOME` (Unix) and

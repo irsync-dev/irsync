@@ -20,7 +20,7 @@ use irsync::config::dial::{Dial, DialFlags};
 use irsync::config::file::Config;
 use irsync::config::paths::Paths;
 use irsync::config::settings::Settings;
-use irsync::fs::paths::{escape_path, escape_text};
+use irsync::fs::paths::{escape_os_path, escape_path, escape_text};
 use irsync::identity::{load_or_generate, parse_endpoint_id, KeySource, PassphraseSource};
 use irsync::index::Index;
 use irsync::location::Location;
@@ -604,7 +604,7 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
         unreachable!("run_list takes a list command")
     };
     let operand = list.operand.clone();
-    let dir_listing = match Location::parse(&operand) {
+    let dir_listing = match Location::parse_listed(&operand) {
         Ok(Location::Remote { path, .. }) => !path.is_empty(),
         _ => false,
     };
@@ -666,7 +666,11 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
                 } else {
                     "ro"
                 };
-                println!("{} {} {access}", escape_text(&e.name), escape_path(&e.path));
+                println!(
+                    "{} {} {access}",
+                    escape_text(&e.name),
+                    escape_os_path(&e.path)
+                );
             }
             0
         }

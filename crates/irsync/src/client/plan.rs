@@ -68,7 +68,11 @@ pub(super) fn pull_plan(
     if kind != path_info::Kind::File {
         return Ok(dir);
     }
-    let basename = rpath.rsplit(|&b| b == b'/').next().unwrap_or_default();
+    // The path as typed here: `/` separates, and on Windows `\` too.
+    let basename = rpath
+        .rsplit(|&b| crate::platform::Platform::CURRENT.is_separator(b))
+        .next()
+        .unwrap_or_default();
     if !is_one_component(basename) || basename == b"~" {
         bail!("cannot tell the file's name from {}", escape_path(rpath));
     }

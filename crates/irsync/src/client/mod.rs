@@ -359,7 +359,7 @@ pub async fn list_exports(
     opts: &SyncOptions,
     say: &dyn Fn(&str),
 ) -> anyhow::Result<Vec<ExportEntry>> {
-    let Location::Remote { host, .. } = Location::parse(operand)? else {
+    let Location::Remote { host, .. } = Location::parse_listed(operand)? else {
         bail!("internal: a listing takes a remote operand");
     };
     let c = connect(&host, opts, say).await?;

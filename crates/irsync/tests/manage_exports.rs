@@ -1,3 +1,6 @@
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::authz::Access;
 use irsync::config::file::Config;
 use irsync::config::reader;
@@ -15,7 +18,7 @@ fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("f")).unwrap()
+    reader::read(&fixture::toml(text), Path::new("f")).unwrap()
 }
 fn typed(m: &pb::Config) -> Config {
     Config::from_message(m, Path::new("f")).unwrap()
@@ -27,14 +30,14 @@ fn add_writes_only_what_was_asked_updates_an_existing_one_and_refuses_reserved()
     add_export(
         &mut m,
         "photos",
-        Path::new("/srv/photos"),
+        &fixture::abs_path("/srv/photos"),
         ExportFlags::default(),
     )
     .unwrap();
     add_export(
         &mut m,
         "docs",
-        Path::new("/srv/docs"),
+        &fixture::abs_path("/srv/docs"),
         ExportFlags {
             read_only: true,
             index_at_start: true,
@@ -58,19 +61,19 @@ fn add_writes_only_what_was_asked_updates_an_existing_one_and_refuses_reserved()
     let old = add_export(
         &mut m,
         "docs",
-        Path::new("/x"),
+        &fixture::abs_path("/x"),
         ExportFlags {
             fsync: true,
             ..ExportFlags::default()
         },
     )
     .unwrap();
-    assert_eq!(old.as_deref(), Some("/srv/docs"));
+    assert_eq!(old.as_deref(), fixture::abs_path("/srv/docs").to_str());
     let docs = &typed(&m).exports.exports["docs"];
-    assert_eq!(docs.path, Path::new("/x"));
+    assert_eq!(docs.path, fixture::abs_path("/x"));
     assert!(docs.read_only && docs.index_at_start && docs.fsync);
     assert!(matches!(
-        add_export(&mut m, "all", Path::new("/x"), ExportFlags::default()),
+        add_export(&mut m, "all", &fixture::abs_path("/x"), ExportFlags::default()),
         Err(ManageError::Reserved(_))
     ));
 }
@@ -122,17 +125,20 @@ fn add_writes_under_exports_as_a_dotted_header_and_refuses_all() {
     add_export(
         &mut m,
         "photos",
-        Path::new("/srv/photos"),
+        &fixture::abs_path("/srv/photos"),
         ExportFlags::default(),
     )
     .unwrap();
-    assert_eq!(write(&m), "[exports.photos]\npath = \"/srv/photos\"\n");
-    let e = add_export(&mut m, "all", Path::new("/srv/all"), ExportFlags::default()).unwrap_err();
+    assert_eq!(
+        write(&m),
+        fixture::toml("[exports.photos]\npath = \"/srv/photos\"\n")
+    );
+    let e = add_export(&mut m, "all", &fixture::abs_path("/srv/all"), ExportFlags::default()).unwrap_err();
     assert_eq!(
         e.to_string(),
         "\"all\" is reserved: it is the word `grant remove all WHO` and `index --export all` use for every export"
     );
-    assert!(add_export(&mut m, "rw", Path::new("/srv/rw"), ExportFlags::default()).is_ok());
+    assert!(add_export(&mut m, "rw", &fixture::abs_path("/srv/rw"), ExportFlags::default()).is_ok());
 }
 
 #[test]
@@ -163,7 +169,7 @@ fn remove_last_export_leaves_a_loadable_file() {
 fn remove_drops_table_and_its_grants() {
     let mut m = msg("[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n[exports.b]\npath = \"/b\"\n");
     remove_export(&mut m, "a").unwrap();
-    assert_eq!(write(&m), "[exports.b]\npath = \"/b\"\n");
+    assert_eq!(write(&m), fixture::toml("[exports.b]\npath = \"/b\"\n"));
     assert!(matches!(
         remove_export(&mut m, "a"),
         Err(ManageError::NotFound(_))
@@ -190,7 +196,8 @@ fn remove_only_removes_an_export() {
 #[test]
 fn auto_export_names() {
     let mut m = pb::Config::default();
-    let mut n = |p: &str| add_auto_export(&mut m, Path::new(p), id(1), Access::ReadWrite).unwrap();
+    let mut n =
+        |p: &str| add_auto_export(&mut m, &fixture::abs_path(p), id(1), Access::ReadWrite).unwrap();
     assert_eq!(n("/srv/photos"), "auto-srv-photos");
     assert_eq!(n("/"), "auto-root");
     assert_eq!(n("/a b/\u{e7}"), "auto-a_b-__");
@@ -201,10 +208,10 @@ fn auto_export_names() {
     assert_eq!(e.rw[0].value, id(1).to_string());
     assert!(typed(&m).exports.exports["auto-srv-photos"].auto);
     let text = write(&m);
-    let want = format!(
+    let want = fixture::toml(&format!(
         "[exports.auto-srv-photos]\npath = \"/srv/photos\"\nauto = true\nrw = [\"{}\"]\n",
         id(1)
-    );
+    ));
     assert!(text.contains(&want), "{text}");
 }
 
@@ -252,20 +259,66 @@ fn add_target_forms() {
     ));
 }
 
+/// A directory name with a colon: Unix only, as NTFS holds no `:` in a name.
+#[cfg(unix)]
 #[test]
-fn add_target_edge_cases() {
+fn add_target_of_an_absolute_path_with_a_colon_in_a_name() {
     let d = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(d.path().join("a:b")).unwrap();
-    std::fs::create_dir_all(d.path().join("sub/x")).unwrap();
-    assert!(matches!(
-        parse_add_target(":docs", d.path()),
-        Err(ManageError::BadExportName(_))
-    ));
     let abs = d.path().join("a:b");
     assert_eq!(
         parse_add_target(abs.to_str().unwrap(), Path::new("/elsewhere")).unwrap(),
         ("a:b".into(), abs)
     );
+}
+
+/// On Windows a drive path is a bare `PATH`, never `NAME:PATH`; on Unix
+/// `C:` before the path is a name.
+#[test]
+fn a_drive_path_is_a_bare_path_on_windows_only() {
+    use irsync::manage::exports::parse_add_target_on;
+    use irsync::platform::Platform::{Unix, Windows};
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("srv").join("photos")).unwrap();
+    let photos = d.path().join("srv").join("photos");
+    let abs = photos.to_str().unwrap();
+    if cfg!(windows) {
+        assert_eq!(
+            parse_add_target_on(abs, Path::new("/elsewhere"), Windows).unwrap(),
+            ("photos".into(), photos.clone())
+        );
+        let slashed = abs.replace('\\', "/");
+        assert_eq!(
+            parse_add_target_on(&slashed, Path::new("/elsewhere"), Windows)
+                .unwrap()
+                .0,
+            "photos"
+        );
+        assert_eq!(
+            parse_add_target_on(&format!("p:{abs}"), Path::new("/elsewhere"), Windows).unwrap(),
+            ("p".into(), photos.clone())
+        );
+    }
+    // Read as on Unix, `C:` before a path is a name, wherever this runs.
+    let cwd = d.path().join("srv");
+    assert_eq!(
+        parse_add_target_on("C:photos", &cwd, Unix).unwrap(),
+        ("C".into(), photos.clone())
+    );
+    assert_eq!(
+        parse_add_target_on("C:photos", &cwd, Windows).unwrap(),
+        ("C".into(), photos)
+    );
+}
+
+#[test]
+fn add_target_edge_cases() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("sub/x")).unwrap();
+    assert!(matches!(
+        parse_add_target(":docs", d.path()),
+        Err(ManageError::BadExportName(_))
+    ));
     let sub = d.path().join("sub");
     assert_eq!(
         parse_add_target("..", &sub.join("x")).unwrap(),
@@ -331,16 +384,18 @@ fn an_edit_that_makes_the_message_invalid_is_refused_on_load() {
 #[test]
 fn add_and_remove_keep_an_inline_exports_table() {
     let mut m = msg("exports = { photos = { path = \"/p\", rw = [\"x\"] } }\n");
-    add_export(&mut m, "q", Path::new("/q"), ExportFlags::default()).unwrap();
+    add_export(&mut m, "q", &fixture::abs_path("/q"), ExportFlags::default()).unwrap();
     let c = typed(&m).exports;
     assert_eq!(c.exports["photos"].rw, vec!["x"]);
-    assert_eq!(c.exports["q"].path, Path::new("/q"));
+    assert_eq!(c.exports["q"].path, fixture::abs_path("/q"));
     assert_eq!(
         write(&m),
-        "[exports.photos]\npath = \"/p\"\nrw = [\"x\"]\n\n[exports.q]\npath = \"/q\"\n"
+        fixture::toml(
+            "[exports.photos]\npath = \"/p\"\nrw = [\"x\"]\n\n[exports.q]\npath = \"/q\"\n"
+        )
     );
     remove_export(&mut m, "photos").unwrap();
-    assert_eq!(write(&m), "[exports.q]\npath = \"/q\"\n");
+    assert_eq!(write(&m), fixture::toml("[exports.q]\npath = \"/q\"\n"));
 }
 
 #[test]

@@ -3,6 +3,7 @@
 
 pub mod bin;
 pub use bin::{irsync_command, StateHome};
+pub mod fixture;
 
 /// Creates a file named with raw non-UTF-8 `name` bytes in `dir`. Returns `None`
 /// (after a note on stderr) when the filesystem refuses such names, so callers

@@ -258,7 +258,7 @@ pub(crate) fn place_single(
         .root
         .strip_prefix(export_root)
         .ok()
-        .and_then(|r| RelPath::new(&crate::platform::os_to_bytes(r.as_os_str())).ok());
+        .and_then(|r| RelPath::from_os(r.as_os_str()).ok());
     let name = RelPath::new(&placed.name)
         .ok()
         .filter(|_| is_one_component(&placed.name));

@@ -1,3 +1,6 @@
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::config::clients::Clients;
 use irsync::config::exports::Exports;
 use irsync::config::file::Config;
@@ -21,7 +24,7 @@ fn client(n: u8) -> ClientSpec {
     }
 }
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("f")).unwrap()
+    reader::read(&fixture::toml(text), Path::new("f")).unwrap()
 }
 /// The typed config the message builds; panics when it does not load.
 fn typed(m: &pb::Config) -> Config {
@@ -138,7 +141,10 @@ fn grant_remove_matches_a_dangling_name_by_literal_text() {
         1
     );
     // The emptied list stays in the file, as today.
-    assert_eq!(write(&m), "[exports.p]\npath = \"/p\"\nrw = []\n");
+    assert_eq!(
+        write(&m),
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = []\n")
+    );
 }
 
 #[test]
@@ -504,10 +510,10 @@ fn duplicate_removal_keeps_other_comments() {
     );
     assert_eq!(
         text,
-        format!(
+        fixture::toml(&format!(
             "[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # one\n    \"{}\", # two\n]\n",
             id(2)
-        )
+        ))
     );
 }
 
@@ -708,7 +714,7 @@ fn parse_exports(
     text: &str,
     path: &std::path::Path,
 ) -> Result<irsync::config::exports::Exports, irsync::config::ConfigError> {
-    irsync::config::file::Config::parse(text, path).map(|c| c.exports)
+    irsync::config::file::Config::parse(&fixture::toml(text), path).map(|c| c.exports)
 }
 
 #[test]

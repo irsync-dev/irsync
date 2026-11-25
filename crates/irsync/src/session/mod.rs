@@ -138,8 +138,9 @@ pub(crate) fn resolve_roots(
             (local.to_path_buf(), name)
         }
         Direction::DaemonSends => {
+            // Split as typed here: at `/`, and on Windows at `\` too.
             let last = remote
-                .rsplit(|&b| b == b'/')
+                .rsplit(|&b| crate::platform::Platform::CURRENT.is_separator(b))
                 .find(|c| !c.is_empty() && *c != b"." && *c != b"~");
             let root = match last {
                 // The remote path was typed here as text (`Location::parse`

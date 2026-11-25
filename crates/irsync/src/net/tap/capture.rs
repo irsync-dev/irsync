@@ -416,15 +416,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("precious");
         std::fs::write(&target, b"keep me").unwrap();
+        // The mode half is Unix only: Windows has no modes to change.
+        #[cfg(unix)]
         crate::platform::set_mode_path_following(&target, 0o644).unwrap();
         let link = dir.path().join("f.pcapng");
         crate::platform::testutil::symlink(&target, &link).unwrap();
         assert!(Recorder::open(&link).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"keep me");
-        let mode = crate::platform::mode_of(&std::fs::metadata(&target).unwrap());
-        assert_eq!(mode & 0o777, 0o644);
+        #[cfg(unix)]
+        {
+            let mode = crate::platform::mode_of(&std::fs::metadata(&target).unwrap());
+            assert_eq!(mode & 0o777, 0o644);
+        }
     }
 
+    /// The file's mode: Unix only, as Windows has none.
+    #[cfg(unix)]
     #[test]
     fn file_is_owner_only() {
         let dir = tempfile::tempdir().unwrap();

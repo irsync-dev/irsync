@@ -1,3 +1,6 @@
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::config::clients::Clients;
 use irsync::config::exports::Exports;
 use irsync::config::file::Config;
@@ -6,7 +9,7 @@ use irsync::config::paths::Paths;
 use irsync::config::servers::Servers;
 use irsync::config::settings::{Relay, Settings};
 use irsync::config::ConfigError;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 fn id(n: u8) -> iroh::EndpointId {
@@ -19,7 +22,7 @@ fn parse_clients(text: &str, path: &Path) -> Result<Clients, ConfigError> {
     Config::parse(text, path).map(|c| c.clients)
 }
 fn parse_exports(text: &str, path: &Path) -> Result<Exports, ConfigError> {
-    Config::parse(text, path).map(|c| c.exports)
+    Config::parse(&fixture::toml(text), path).map(|c| c.exports)
 }
 fn p() -> &'static Path {
     Path::new("/x/f.toml")
@@ -28,8 +31,15 @@ fn p() -> &'static Path {
 #[test]
 fn settings_defaults_when_empty() {
     let s = Settings::parse("", p()).unwrap();
-    assert!(s.identity.ends_with(".config/irsync/id_ed25519"));
-    assert!(s.daemon.identity.ends_with(".config/irsync/daemon_ed25519"));
+    // The config directory: `~/.config/irsync` on Unix, `%APPDATA%\irsync`
+    // (`AppData\Roaming` in the profile) on Windows.
+    let dir = if cfg!(windows) {
+        Path::new("AppData").join("Roaming").join("irsync")
+    } else {
+        Path::new(".config/irsync").to_path_buf()
+    };
+    assert!(s.identity.ends_with(dir.join("id_ed25519")));
+    assert!(s.daemon.identity.ends_with(dir.join("daemon_ed25519")));
     assert_eq!(s.daemon.idle_timeout, Duration::from_secs(30 * 60));
     assert_eq!(
         s.daemon.dormant_session_timeout,
@@ -355,7 +365,7 @@ fn exports_parse_exports_tables() {
     assert_eq!(x.exports["photos"].ro, vec!["b2e1"]);
     assert!(x.exports["docs"].read_only && x.exports["docs"].index_at_start);
     assert!(x.exports["docs"].fsync && !x.exports["photos"].fsync);
-    assert_eq!(x.exports["docs"].path, Path::new("/srv/docs"));
+    assert_eq!(x.exports["docs"].path, fixture::abs_path("/srv/docs"));
 }
 
 #[test]
@@ -473,7 +483,7 @@ fn exports_schema_errors_have_lines() {
 }
 
 fn merged(dir: &Path, text: &str) -> Result<Config, ConfigError> {
-    irsync::fs::private::write(dir.join("irsync.toml"), text).unwrap();
+    irsync::fs::private::write(dir.join("irsync.toml"), fixture::toml(text)).unwrap();
     Config::load(&Paths::resolve(Some(&dir.join("irsync.toml"))))
 }
 
@@ -489,7 +499,7 @@ fn merged_file_holds_every_table() {
         ),
     )
     .unwrap();
-    assert_eq!(c.settings.state_dir, PathBuf::from("/var/lib/irsync"));
+    assert_eq!(c.settings.state_dir, fixture::abs_path("/var/lib/irsync"));
     assert_eq!(c.settings.defaults.parallel, Some(4));
     assert_eq!(c.servers.get("home").unwrap().endpoint_id, id(1));
     assert_eq!(c.clients.get("home").unwrap().client_id, id(1));

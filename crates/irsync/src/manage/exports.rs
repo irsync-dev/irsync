@@ -4,8 +4,10 @@
 
 use super::ManageError;
 use crate::authz::Access;
+use crate::location::is_drive_path;
 use crate::config::exports::RESERVED;
 use crate::config::paths::Paths;
+use crate::platform::Platform;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::path::{Component, Path, PathBuf};
@@ -231,19 +233,44 @@ pub fn remove_export(msg: &mut pb::Config, name: &str) -> Result<(), ManageError
 }
 
 /// `NAME:PATH` or a bare `PATH` (named by its final component). The text
-/// before the first `:` is a name only when it contains no `/`. A path
+/// before the first `:` is a name only when it contains no `/`, and on
+/// Windows not when the whole is a drive path (`C:\srv`, `c:/srv`, `C:`;
+/// see [`is_drive_path`]): that is a bare `PATH`. A path
 /// that is `~` or starts with `~/` is under the home directory (the shell
 /// does not expand `~` after the colon); otherwise the path is joined onto
 /// `cwd`. `.` and `..` are resolved lexically (symlinks are left alone),
 /// and the result must be an existing directory.
 pub fn parse_add_target(arg: &str, cwd: &Path) -> Result<(String, PathBuf), ManageError> {
-    add_target_in(arg, cwd, crate::config::paths::home_dir().as_deref())
+    parse_add_target_on(arg, cwd, Platform::CURRENT)
 }
 
-/// The name, if any, and the path of an `export add` target: the text
-/// before the first `:` is a name only when it contains no `/`.
+/// [`parse_add_target`] as it reads `arg` on `platform`.
+pub fn parse_add_target_on(
+    arg: &str,
+    cwd: &Path,
+    platform: Platform,
+) -> Result<(String, PathBuf), ManageError> {
+    add_target_in(
+        arg,
+        cwd,
+        crate::config::paths::home_dir().as_deref(),
+        platform,
+    )
+}
+
+/// The name, if any, and the path of an `export add` target, read on this
+/// platform (see [`split_target_on`]).
 pub fn split_target(arg: &str) -> (Option<&str>, &str) {
+    split_target_on(arg, Platform::CURRENT)
+}
+
+/// The name, if any, and the path of an `export add` target as `platform`
+/// reads it: the text before the first `:` is a name only when it contains
+/// no `/`, and on Windows not when the whole is a drive path (`C:\srv`,
+/// `c:/srv`, `C:`; see [`is_drive_path`]).
+pub fn split_target_on(arg: &str, platform: Platform) -> (Option<&str>, &str) {
     match arg.split_once(':') {
+        _ if is_drive_path(arg, platform) => (None, arg),
         Some((n, p)) if !n.contains('/') => (Some(n), p),
         _ => (None, arg),
     }
@@ -283,7 +310,7 @@ pub(crate) fn parse_remote_target(
             "the path must be absolute or start with ~".to_string(),
         ));
     }
-    let (name, path) = add_target_in(arg, Path::new("/"), home)?;
+    let (name, path) = add_target_in(arg, Path::new("/"), home, Platform::CURRENT)?;
     let rest = home
         .filter(|_| tilde)
         .and_then(|h| path.strip_prefix(h).ok());
@@ -325,13 +352,14 @@ pub(crate) fn removed_line(name: &str, config: &Path) -> String {
     format!("removed export {name} from {}", config.display())
 }
 
-/// [`parse_add_target`] with `home` for `~`.
+/// [`parse_add_target_on`] with `home` for `~`.
 fn add_target_in(
     arg: &str,
     cwd: &Path,
     home: Option<&Path>,
+    platform: Platform,
 ) -> Result<(String, PathBuf), ManageError> {
-    let (name, raw) = match split_target(arg) {
+    let (name, raw) = match split_target_on(arg, platform) {
         (Some(n), p) => {
             if n.is_empty() {
                 return Err(ManageError::BadExportName(n.to_string()));

@@ -2,11 +2,13 @@ use irsync::fs::meta::ApplyOpts;
 use irsync::fs::paths::RelPath;
 use irsync::index::{Index, IndexHandle};
 use irsync::part_file::{FileWriter, FinalizeError};
+#[cfg(unix)]
+use irsync::platform::mode_of;
+use irsync::platform::mtime_of;
 use irsync::platform::testutil::file_id;
 use irsync::platform::testutil::symlink;
 #[cfg(unix)]
 use irsync::platform::testutil::{blocks_of, errno, mkfifo, set_mode};
-use irsync::platform::{mode_of, mtime_of};
 use irsync_proto::chunk::{digest_bytes, ChunkRecord, FileDigest};
 use irsync_proto::v1::{self, file_entry::Kind, FileEntry};
 use std::fs;
@@ -376,6 +378,8 @@ async fn finalize_applies_mtime_and_mode() {
     ent.mtime_nsec = 500;
     w.finalize(&ent, &OPTS).await.unwrap();
     let m = fs::metadata(final_path(&e.root)).unwrap();
+    // The mode half: Unix only, as Windows has no modes to apply.
+    #[cfg(unix)]
     assert_eq!(mode_of(&m) & 0o7777, 0o640);
     assert_eq!(mtime_of(&m).0, 1_234_567_890);
     assert_eq!(mtime_of(&m).1, 500);
@@ -1178,7 +1182,9 @@ async fn finalize_flushes_only_when_asked() {
 
 /// Until a file is placed, its `.part` is for the owner only: the content
 /// may belong in a file other users must not read. Placed without `-p`, it
-/// gets the mode any new file gets; with `-p`, the sender's.
+/// gets the mode any new file gets; with `-p`, the sender's. Unix only:
+/// Windows has no modes.
+#[cfg(unix)]
 #[tokio::test]
 async fn part_file_is_private_until_placed() {
     let e = env();

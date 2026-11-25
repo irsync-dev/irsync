@@ -1,3 +1,6 @@
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::authz::Access;
 use irsync::config::clients::Right;
 use irsync::config::reader;
@@ -16,7 +19,7 @@ fn id(n: u8) -> iroh::EndpointId {
 /// The message of `text`; `config_version` stays unset, so `write` does
 /// not print it.
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("f")).unwrap()
+    reader::read(&fixture::toml(text), Path::new("f")).unwrap()
 }
 
 fn named_everywhere() -> String {
@@ -91,10 +94,12 @@ fn force_removes_the_grants_then_the_client() {
     assert!(m.clients.is_empty());
     assert_eq!(
         write(&m),
-        "[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n\n\
+        fixture::toml(
+            "[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n\n\
          [exports.b]\npath = \"/b\"\nrw = []\n\n\
          [exports.p]\npath = \"/p\"\nro = [\"y\"]\n\n\
          [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n"
+        )
     );
 }
 

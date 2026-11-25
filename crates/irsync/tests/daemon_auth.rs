@@ -68,7 +68,7 @@ fn export_dir() -> (tempfile::TempDir, Vec<u8>, Vec<u8>) {
 }
 
 fn no_access(path: &[u8]) -> String {
-    format!("no access to {}", irsync::fs::paths::escape_path(path))
+    format!("no access to {}", irsync::fs::paths::escape_os_path(path))
 }
 
 fn reply(r: Result<HelloAckOrError, String>) -> (i32, String) {
@@ -828,7 +828,13 @@ async fn all_paths_refuses_root_and_non_utf8_roots() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();
     let mut bad = bytes(tmp.path());
-    bad.extend_from_slice(b"/caf\xe9");
+    // A name that is not UTF-8: any bytes on Unix; on Windows, where names
+    // are UTF-16 and stored as WTF-8, an unpaired surrogate (U+D800).
+    bad.extend_from_slice(if cfg!(windows) {
+        &b"/caf\xed\xa0\x80"[..]
+    } else {
+        &b"/caf\xe9"[..]
+    });
     let client = client_endpoint().await;
     let authz = Arc::new(MemoryAuthorizer::single(client.id(), all_paths()));
     let d = spawn_memory(&authz).await;
@@ -868,7 +874,7 @@ async fn all_paths_missing_path_is_bad_path() {
             Code::BadPath as i32,
             format!(
                 "no such file or directory: {}",
-                irsync::fs::paths::escape_path(&path)
+                irsync::fs::paths::escape_os_path(&path)
             )
         )
     );

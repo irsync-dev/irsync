@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 fn acquire_writes_info_and_probe_sees_it() {
     let home = tempfile::tempdir().unwrap();
     let d = spawn_daemon_binary(home.path());
-    let info = probe(&home.path().join("xdg/irsync")).expect("lock held");
+    let info = probe(&home.path().join("xdg").join("irsync")).expect("lock held");
     assert_eq!(info.pid, d.pid());
     assert_eq!(
         info.exe,
@@ -31,7 +31,7 @@ fn second_daemon_refuses() {
         "another irsync daemon (pid {}, {}) is already running for {}",
         _d.pid(),
         env!("CARGO_BIN_EXE_irsync"),
-        home.path().join("xdg/irsync").display()
+        home.path().join("xdg").join("irsync").display()
     );
     assert!(err.contains(&want), "stderr: {err}\nwanted: {want}");
 }
@@ -56,5 +56,5 @@ fn probe_none_after_sigterm() {
     };
     // A clean exit (not killed by the signal) shows the shutdown path ran.
     assert!(status.success(), "daemon exit status: {status:?}");
-    assert!(probe(&home.path().join("xdg/irsync")).is_none());
+    assert!(probe(&home.path().join("xdg").join("irsync")).is_none());
 }

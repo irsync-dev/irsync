@@ -255,7 +255,7 @@ pub(crate) fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: 
         .partial_dir
         .as_deref()
         .filter(|p| p.is_relative())
-        .map(|p| crate::platform::os_to_bytes(p.as_os_str()))
+        .map(|p| crate::fs::paths::slash_separators(p.as_os_str()))
         .unwrap_or_default();
     req.filters = filters
         .rules()
@@ -315,9 +315,7 @@ pub(crate) fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: 
 pub(crate) fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
     if direction == Direction::ClientSends {
         if let Some(pd) = &o.partial_dir {
-            if pd.is_absolute()
-                || RelPath::new(&crate::platform::os_to_bytes(pd.as_os_str())).is_err()
-            {
+            if pd.is_absolute() || RelPath::from_os(pd.as_os_str()).is_err() {
                 bail!(
                     "--partial-dir {} is not supported when pushing: it would name a directory \
                      outside the destination on the daemon's side; use a relative path inside it",

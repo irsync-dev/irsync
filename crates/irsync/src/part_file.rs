@@ -215,7 +215,7 @@ fn paths(
         ));
     }
     let (part_root, mut part_rel, skip) = match partial_dir {
-        Some(pd) => match RelPath::new(&crate::platform::os_to_bytes(pd.dir.as_os_str())) {
+        Some(pd) => match RelPath::from_os(pd.dir.as_os_str()) {
             Ok(below) if pd.dir.is_relative() => {
                 (root.to_path_buf(), below.as_bytes().to_vec(), pd.skip)
             }

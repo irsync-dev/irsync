@@ -1,3 +1,6 @@
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::{load_message, lock_config, save_config, ClientSpec, ManageError};
@@ -9,14 +12,14 @@ fn id(n: u8) -> iroh::EndpointId {
 }
 
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("irsync.toml")).unwrap()
+    reader::read(&fixture::toml(text), Path::new("irsync.toml")).unwrap()
 }
 
 /// A `state_dir` line for a config in `dir`: a save then looks for a
 /// running daemon in a state folder of the test's own, never in the default
 /// one of whoever runs the tests (#275).
 fn state_line(dir: &Path) -> String {
-    format!("state_dir = {:?}\n", state(dir))
+    format!("state_dir = {}\n", fixture::toml_string(&state(dir)))
 }
 
 fn state(dir: &Path) -> String {
@@ -26,7 +29,7 @@ fn state(dir: &Path) -> String {
 fn export(name: &str, path: &str) -> pb::Export {
     pb::Export {
         name: name.into(),
-        path: path.into(),
+        path: fixture::abs(path),
         ..Default::default()
     }
 }
@@ -50,10 +53,10 @@ fn load_missing_is_empty_and_save_creates_parent_atomically() {
     save_config(&p, &mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
-        format!(
+        fixture::toml(&format!(
             "config_version = 2\n{}\n[exports.x]\npath = \"/x\"\n",
             state_line(d.path())
-        )
+        ))
     );
     assert!(
         std::fs::read_dir(p.parent().unwrap()).unwrap().count() == 1,
@@ -67,10 +70,10 @@ fn save_preserves_comments_and_order() {
     let p = d.path().join("e.toml");
     irsync::fs::private::write(
         &p,
-        format!(
+        fixture::toml(&format!(
             "{}# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\n",
             state_line(d.path())
-        ),
+        )),
     )
     .unwrap();
     let mut m = load_message(&p).unwrap();
@@ -78,10 +81,10 @@ fn save_preserves_comments_and_order() {
     save_config(&p, &mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
-        format!(
+        fixture::toml(&format!(
             "config_version = 2\n{}\n# top\n[exports.b]\npath = \"/b\" # keep\n\n[exports.a]\npath = \"/a\"\nread_only = true\n",
             state_line(d.path())
-        )
+        ))
     );
 }
 
@@ -113,7 +116,7 @@ fn a_save_keeps_comments_and_writes_the_writers_form() {
 fn a_save_that_would_not_load_leaves_the_file_and_frees_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("irsync.toml");
-    irsync::fs::private::write(&path, "[exports.p]\npath = \"/p\"\n").unwrap();
+    irsync::fs::private::write(&path, fixture::toml("[exports.p]\npath = \"/p\"\n")).unwrap();
     let mut lock = lock_config(&path).unwrap();
     let mut m = lock.load().unwrap();
     m.exports[0].path = "rel".into();
@@ -123,7 +126,7 @@ fn a_save_that_would_not_load_leaves_the_file_and_frees_the_lock() {
     ));
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "[exports.p]\npath = \"/p\"\n"
+        fixture::toml("[exports.p]\npath = \"/p\"\n")
     );
     lock_config(&path).unwrap();
 }

@@ -1,3 +1,6 @@
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::authz::{Access, Authorizer, FileAuthorizer, Snapshot};
 use std::path::Path;
 
@@ -76,7 +79,10 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     assert!(a.snapshot().unwrap().exports.is_empty()); // missing = empty
     irsync::fs::private::write(
         &e,
-        format!("[exports.x]\npath = \"/x\"\nrw = [\"{}\"]\n", id(1)),
+        fixture::toml(&format!(
+            "[exports.x]\npath = \"/x\"\nrw = [\"{}\"]\n",
+            id(1)
+        )),
     )
     .unwrap();
     assert!(a.snapshot().unwrap().allows(&id(1), "x", true));
@@ -84,10 +90,10 @@ fn file_authorizer_reads_fresh_each_call_and_fails_closed() {
     assert!(a.snapshot().is_err()); // broken = error, not stale
     irsync::fs::private::write(
         &e,
-        format!(
+        fixture::toml(&format!(
             "[exports.x]\npath = \"/x\"\nrw = [\"lap\"]\n[clients.lap]\nclient_id = \"{}\"\n",
             id(1)
-        ),
+        )),
     )
     .unwrap();
     assert!(a.snapshot().unwrap().allows(&id(1), "x", true));
@@ -256,7 +262,7 @@ fn parse_exports(
     text: &str,
     path: &std::path::Path,
 ) -> Result<irsync::config::exports::Exports, irsync::config::ConfigError> {
-    irsync::config::file::Config::parse(text, path).map(|c| c.exports)
+    irsync::config::file::Config::parse(&fixture::toml(text), path).map(|c| c.exports)
 }
 
 #[test]

@@ -773,6 +773,8 @@ mod tests {
 
     /// A relative `$HOME` is no home: nothing is looked up or removed
     /// relative to the current directory.
+    /// Unix only: `ssh-setup` runs on a Unix server, and `/home/u` is no absolute path on Windows.
+    #[cfg(unix)]
     #[test]
     fn relative_home_is_no_home() {
         assert_eq!(usable_home(Some(PathBuf::from("relative/home"))), None);

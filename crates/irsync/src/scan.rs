@@ -133,7 +133,7 @@ fn is_below(path: &RelPath, dir: &RelPath) -> bool {
 
 fn rel_of(root: &Path, full: &Path) -> Option<RelPath> {
     let rest = full.strip_prefix(root).ok()?;
-    RelPath::new(&os_to_bytes(rest.as_os_str())).ok()
+    RelPath::from_os(rest.as_os_str()).ok()
 }
 
 /// Walk `root`, sending every non-filtered entry (root first) in increasing `RelPath`
