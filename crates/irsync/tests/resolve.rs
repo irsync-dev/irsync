@@ -8,7 +8,7 @@ fn export(p: &str, ro: bool) -> Export {
     Export {
         path: PathBuf::from(p),
         read_only: ro,
-        warm_index: false,
+        index_at_start: false,
         fsync: false,
         auto: false,
         rw: vec![],

@@ -754,7 +754,7 @@ fn grant_remove_all_all_empties_the_exports_but_keeps_client_rights() {
 }
 
 #[test]
-fn export_update_hashes_the_named_export_into_the_daemon_state() {
+fn index_export_hashes_the_named_export_into_the_daemon_state() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("srv/photos")).unwrap();
@@ -767,14 +767,14 @@ fn export_update_hashes_the_named_export_into_the_daemon_state() {
     let text = std::fs::read_to_string(&config).unwrap();
     irsync::fs::private::write(&config, format!("state_dir = {:?}\n{text}", state)).unwrap();
     // A dry run reads nothing and creates no index.
-    let o = irsync(&home, &["export", "update", "-n", "all"]);
+    let o = irsync(&home, &["index", "-n", "--export", "all"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(
         out.contains("2 file(s), 2 to hash (12288 bytes)"),
         "{out:?}"
     );
-    let o = irsync(&home, &["export", "update", "photos"]);
+    let o = irsync(&home, &["index", "--export", "photos"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(out.contains("2 file(s), 2 hashed (12288 bytes)"), "{out:?}");
@@ -783,23 +783,23 @@ fn export_update_hashes_the_named_export_into_the_daemon_state() {
         .next()
         .is_some());
     // A second run finds every row fresh.
-    let o = irsync(&home, &["export", "update", "all"]);
+    let o = irsync(&home, &["index", "--export", "all"]);
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(out.contains("2 file(s), 0 hashed (0 bytes)"), "{out:?}");
     // `all` stands alone.
-    let o = irsync(&home, &["export", "update", "all", "photos"]);
+    let o = irsync(&home, &["index", "--export", "all", "--export", "photos"]);
     assert_eq!(o.status.code(), Some(1));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("irsync export update: all names every export; give it alone"),
+        err.contains("irsync index: --export all names every export; give it alone"),
         "{err}"
     );
     // An unknown name fails and names the file.
-    let o = irsync(&home, &["export", "update", "music"]);
+    let o = irsync(&home, &["index", "--export", "music"]);
     assert_eq!(o.status.code(), Some(1));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("irsync export update: no export \"music\" in"),
+        err.contains("irsync index: no export \"music\" in"),
         "{err}"
     );
     assert!(err.contains("irsync.toml"), "{err}");

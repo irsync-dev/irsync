@@ -24,8 +24,8 @@ fn add_writes_only_what_was_asked_and_refuses_duplicates_and_reserved() {
     add_export(&mut m, "photos", Path::new("/srv/photos"), false, false).unwrap();
     add_export(&mut m, "docs", Path::new("/srv/docs"), true, true).unwrap();
     let x = typed(&m).exports;
-    assert!(!x.exports["photos"].read_only && !x.exports["photos"].warm_index);
-    assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
+    assert!(!x.exports["photos"].read_only && !x.exports["photos"].index_at_start);
+    assert!(x.exports["docs"].read_only && x.exports["docs"].index_at_start);
     assert_eq!(m.exports[0].read_only, None);
     assert_eq!(m.exports[1].read_only, Some(true));
     assert!(
@@ -51,7 +51,7 @@ fn add_writes_under_exports_as_a_dotted_header_and_refuses_all() {
     let e = add_export(&mut m, "all", Path::new("/srv/all"), false, false).unwrap_err();
     assert_eq!(
         e.to_string(),
-        "\"all\" is reserved: it is the word `grant remove all WHO` and `export update all` use for every export"
+        "\"all\" is reserved: it is the word `grant remove all WHO` and `index --export all` use for every export"
     );
     assert!(add_export(&mut m, "rw", Path::new("/srv/rw"), false, false).is_ok());
 }

@@ -338,7 +338,7 @@ the value can be changed back later the same way.
 | `irsync pair` | Set a server up over ssh and save it as a server. See [irsync pair](#irsync-pair). |
 | `irsync remote` | Manage a server's exports, clients and grants from this client. See [irsync remote](#irsync-remote). |
 | `irsync daemon` | Run the daemon. Its flags are under [irsync daemon](#irsync-daemon). |
-| `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
+| `irsync index` | Hash the files under local roots, or of the daemon's exports, into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions, stale index entries and the index files of older irsync builds. See [Clean up state](../how-to/clean-up.md). |
 | `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config`, `--passphrase-file` and `--identity` too. `irsync client set NAME all_paths=rw` lets a client reach any path, read-write; it is what `irsync pair` sets. |
 
@@ -431,7 +431,8 @@ first prints a banner with its version, relay and discovery settings.
 ### irsync index
 
 ```text
-irsync index [-n] [-v] [-q] [--config PATH] ROOT...
+irsync index [-n] [-v] [-q] [--config PATH]
+             [--export NAME]... [ROOT]...
 ```
 
 | Flag | Meaning |
@@ -439,7 +440,10 @@ irsync index [-n] [-v] [-q] [--config PATH] ROOT...
 | `-n`, `--dry-run` | Walk and count what would be hashed; read nothing. |
 | `-v`, `--verbose` | Nothing extra; `-vv` and up log more. |
 | `-q`, `--quiet` | Log errors only and print no summary. |
-| `--config PATH` | The config file, for `state_dir`. |
+| `--config PATH` | The config file, for `state_dir` and the exports. |
+| `--export NAME` | Hash the files of the daemon's export `NAME` too; `all` for every export. Repeatable. Run it as the daemon's account, with its `--config`, so the rows land where the daemon reads them. |
+
+Give at least one `ROOT` or `--export`.
 
 ### irsync gc
 
@@ -482,7 +486,7 @@ When several apply, 1 wins over 25, 25 over 23, and 23 over 24. A file listing, 
 uses the same codes; the export listing, `irsync HOST:`, exits 0 or 1.
 
 The other commands exit 0 on success and 1 on an error, with these
-additions: `irsync index` and `irsync export update` exit 23 when a file could
+additions: `irsync index` exits 23 when a file could
 not be read or a directory could not be listed, `irsync gc` exits 23 when
 something could not be read or removed (it goes on with the rest), and `irsync config get` exits
 1 for a key that is not set and has no default.

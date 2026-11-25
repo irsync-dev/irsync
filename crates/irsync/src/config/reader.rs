@@ -143,7 +143,7 @@ impl RawClientEntry {
 struct RawExport {
     path: PathBuf,
     read_only: Option<bool>,
-    warm_index: Option<bool>,
+    index_at_start: Option<bool>,
     fsync: Option<bool>,
     auto: Option<bool>,
     rw: Option<Vec<String>>,
@@ -560,7 +560,7 @@ fn exports(
             name,
             path: written,
             read_only: e.read_only,
-            warm_index: e.warm_index,
+            index_at_start: e.index_at_start,
             fsync: e.fsync,
             auto: e.auto,
             rw,

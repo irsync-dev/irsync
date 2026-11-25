@@ -501,21 +501,22 @@ fn daemon_flags() {
 }
 
 #[test]
-fn export_update_takes_the_noun_file_flags_in_either_position() {
-    use irsync::cli::ExportCmd;
+fn index_takes_the_file_flags_and_exports_in_any_position() {
     for args in [
-        &["export", "update", "--config", "/c", "photos"][..],
-        &["export", "--config", "/c", "update", "photos"][..],
+        &["index", "--config", "/c", "--export", "photos"][..],
+        &["index", "--export", "photos", "--config", "/c"][..],
+        &["--config", "/c", "index", "--export=photos"][..],
     ] {
         let a = parse(args);
-        let Some(Command::Export(e)) = a.cmd else {
+        let Some(Command::Index(ix)) = a.cmd else {
             panic!("{args:?}")
         };
         assert_eq!(a.files.config, Some(PathBuf::from("/c")));
-        assert!(
-            matches!(e.cmd, Some(ExportCmd::Update { ref names, dry_run: false, .. }) if names == &["photos"])
-        );
+        assert_eq!(ix.exports, ["photos"]);
+        assert!(ix.targets.is_empty() && !ix.dry_run);
     }
+    // `export update` is gone: `index --export` hashes exports.
+    assert!(Args::try_parse_from(["irsync", "export", "update", "photos"]).is_err());
     // The old spelling is gone: `index` has no --daemon and no --exports;
     // its --config names the file to read `state_dir` from, as elsewhere.
     assert!(Args::try_parse_from(["irsync", "index", "--daemon", "photos"]).is_err());
@@ -787,37 +788,32 @@ fn index_parses_local_roots_and_requires_one() {
 }
 
 #[test]
-fn export_update_parses_export_names_or_all() {
-    use irsync::cli::ExportCmd;
-    let a = parse(&["export", "update", "-n", "-v", "photos", "music"]);
+fn index_parses_exports_and_roots_together() {
+    let a = parse(&[
+        "index", "-n", "-v", "--export", "photos", "--export", "music", "/srv/a",
+    ]);
     match a.cmd {
-        Some(Command::Export(e)) => match e.cmd.unwrap() {
-            ExportCmd::Update { names, dry_run } => {
-                assert_eq!(names, ["photos", "music"]);
-                assert!(dry_run && a.log.verbose == 1 && !a.log.quiet);
-            }
-            c => panic!("{c:?}"),
-        },
+        Some(Command::Index(ix)) => {
+            assert_eq!(ix.exports, ["photos", "music"]);
+            assert_eq!(ix.targets, [PathBuf::from("/srv/a")]);
+            assert!(ix.dry_run && a.log.verbose == 1 && !a.log.quiet);
+        }
         other => panic!("{other:?}"),
     }
-    // `all` is the word for every export; a name is required.
-    let a = parse(&["export", "update", "all"]);
     assert!(matches!(
-        a.cmd,
-        Some(Command::Export(ref e)) if matches!(e.cmd, Some(ExportCmd::Update { ref names, dry_run: false, .. }) if names == &["all"])
+        parse(&["index", "--export", "all"]).cmd,
+        Some(Command::Index(ref ix)) if ix.exports == ["all"] && ix.targets.is_empty()
     ));
-    assert!(Args::try_parse_from(["irsync", "export", "update"]).is_err());
-    assert!(Args::try_parse_from(["irsync", "export", "update", "-n"]).is_err());
-    assert!(Args::try_parse_from(["irsync", "export", "update", "-v", "-q"]).is_err());
+    assert!(Args::try_parse_from(["irsync", "index", "--export"]).is_err());
 }
 
 #[test]
 fn nouns_share_add_remove_list() {
     use irsync::cli::{ClientCmd, ExportCmd, GrantCmd, ServerCmd};
     assert!(matches!(
-        parse(&["export", "add", "photos:/srv/photos", "--read-only", "--warm-index"]).cmd,
+        parse(&["export", "add", "photos:/srv/photos", "--read-only", "--index-at-start"]).cmd,
         Some(Command::Export(ref e))
-            if matches!(e.cmd, Some(ExportCmd::Add(ref a)) if a.target == "photos:/srv/photos" && a.read_only && a.warm_index)
+            if matches!(e.cmd, Some(ExportCmd::Add(ref a)) if a.target == "photos:/srv/photos" && a.read_only && a.index_at_start)
     ));
     assert!(matches!(
         parse(&["export", "remove", "photos"]).cmd,

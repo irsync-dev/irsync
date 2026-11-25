@@ -715,7 +715,7 @@ async fn outer_gc_leaves_a_nested_export_alone() {
     let export = |path: &Path| Export {
         path: path.to_path_buf(),
         read_only: false,
-        warm_index: false,
+        index_at_start: false,
         fsync: false,
         auto: false,
         rw: Vec::new(),

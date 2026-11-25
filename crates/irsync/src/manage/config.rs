@@ -464,7 +464,7 @@ fn slot<'a>(msg: &'a mut pb::Config, path: &[String], create: bool) -> Option<Sl
             let f = match *key {
                 "path" => ExportPath(&mut e.path),
                 "read_only" => Bool(&mut e.read_only),
-                "warm_index" => Bool(&mut e.warm_index),
+                "index_at_start" => Bool(&mut e.index_at_start),
                 "fsync" => Bool(&mut e.fsync),
                 "auto" => Bool(&mut e.auto),
                 "rw" => List(&mut e.rw, &mut e.rw_set),

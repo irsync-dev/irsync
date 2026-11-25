@@ -358,10 +358,10 @@ pub enum Command {
         #[arg(short = 'n', long)]
         dry_run: bool,
     },
-    /// Hash the files under local roots into their index, so a
-    /// destination irsync did not create contributes chunks and rename
-    /// candidates from the first session on (`export update` does the
-    /// same for the daemon's exports).
+    /// Hash the files under local roots, or of the daemon's exports, into
+    /// their index, so a destination irsync did not create contributes
+    /// chunks and rename candidates from the first session on. Exits 23
+    /// when a file could not be read or a directory could not be listed.
     Index(IndexArgs),
     /// Manage the servers this machine connects to (edits irsync.toml).
     /// With no subcommand, runs `list`.
@@ -661,17 +661,6 @@ pub enum ExportCmd {
     },
     /// List the exports with their paths, flags and grants.
     List,
-    /// Hash the exports' files into their indexes under the daemon's
-    /// state directory, so files irsync did not place are reused from
-    /// the next session on (what `warm_index` does at every start).
-    Update {
-        /// Walk and count what would be hashed; read nothing.
-        #[arg(short = 'n', long)]
-        dry_run: bool,
-        /// Export names, or `all` for every export.
-        #[arg(value_name = "NAME", required = true)]
-        names: Vec<String>,
-    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -853,17 +842,28 @@ pub struct ExportAddArgs {
     /// Hash the export's files into its index whenever the daemon starts,
     /// so files irsync did not place are reused from the first session on.
     #[arg(long)]
-    pub warm_index: bool,
+    pub index_at_start: bool,
 }
 
 #[derive(Debug, clap::Args)]
+#[command(group(
+    clap::ArgGroup::new("what")
+        .args(["targets", "exports"])
+        .required(true)
+        .multiple(true)
+))]
 pub struct IndexArgs {
     /// Walk and count what would be hashed; read nothing.
     #[arg(short = 'n', long)]
     pub dry_run: bool,
     /// Local roots to index.
-    #[arg(value_name = "ROOT", required = true)]
+    #[arg(value_name = "ROOT")]
     pub targets: Vec<PathBuf>,
+    /// An export of this machine's daemon to index, by name; `all` for
+    /// every export (repeatable). Run it as the daemon's account, with its
+    /// --config, so that the rows go where the daemon reads them.
+    #[arg(long = "export", value_name = "NAME")]
+    pub exports: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]

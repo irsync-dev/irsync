@@ -38,7 +38,7 @@ pub fn grant_lines(out: &mut String, rw: &[String], ro: &[String], clients: &Cli
 }
 
 /// One block per export: `name: path`, then `    read_only`,
-/// `    warm_index` and `    fsync` when set, then its grant lines.
+/// `    index_at_start` and `    fsync` when set, then its grant lines.
 pub fn export_blocks(exports: &Exports, clients: &Clients) -> String {
     let mut out = String::new();
     for (name, e) in &exports.exports {
@@ -46,8 +46,8 @@ pub fn export_blocks(exports: &Exports, clients: &Clients) -> String {
         if e.read_only {
             out.push_str("    read_only\n");
         }
-        if e.warm_index {
-            out.push_str("    warm_index\n");
+        if e.index_at_start {
+            out.push_str("    index_at_start\n");
         }
         if e.fsync {
             out.push_str("    fsync\n");

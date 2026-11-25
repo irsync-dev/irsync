@@ -126,7 +126,7 @@ fn export_add(name: &str, path: &Path) -> Op {
     Op::ExportAdd(ExportAdd {
         target: format!("{name}:{}", path.display()),
         read_only: false,
-        warm_index: false,
+        index_at_start: false,
     })
 }
 

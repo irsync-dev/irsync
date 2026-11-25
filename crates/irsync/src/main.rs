@@ -1331,19 +1331,20 @@ async fn session(
 /// index (see `irsync::warm`). Exit code 23 when something could not be
 /// read or listed, 1 when a target could not be resolved at all.
 fn run_index(a: &IndexArgs, log: LogArgs, files: &FilesArgs) -> i32 {
-    let state = match Config::load(&file_paths(files)) {
-        Ok(c) => c.settings.state_dir,
-        Err(e) => {
-            eprintln!("irsync index: {e:#}");
-            return 1;
+    let result = (|| -> anyhow::Result<i32> {
+        let config = Config::load(&file_paths(files))?;
+        let state = config.settings.state_dir;
+        let mut targets: Vec<(PathBuf, PathBuf)> = a
+            .targets
+            .iter()
+            .map(|t| (state.clone(), t.clone()))
+            .collect();
+        for root in export_roots(&config.exports, &a.exports)? {
+            targets.push((state.clone(), root));
         }
-    };
-    let targets = a
-        .targets
-        .iter()
-        .map(|t| (state.clone(), t.clone()))
-        .collect();
-    match index_roots(targets, a.dry_run, log.quiet) {
+        index_roots(targets, a.dry_run, log.quiet)
+    })();
+    match result {
         Ok(code) => code,
         Err(e) => {
             eprintln!("irsync index: {e:#}");
@@ -1352,37 +1353,32 @@ fn run_index(a: &IndexArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-/// `export update`: the named exports (`all`: every export) under the
-/// daemon's state directory.
-fn export_update(paths: &Paths, names: &[String], dry_run: bool, log: LogArgs) -> i32 {
-    let result = (|| -> anyhow::Result<i32> {
-        let config = Config::load(paths)?;
-        let (settings, exports) = (config.settings, config.exports);
-        let names: Vec<&str> = if names.iter().any(|n| n == "all") {
-            anyhow::ensure!(names.len() == 1, "all names every export; give it alone");
-            exports.exports.keys().map(String::as_str).collect()
-        } else {
-            names.iter().map(String::as_str).collect()
-        };
-        let targets = names
-            .into_iter()
-            .map(|n| {
-                let m = exports
-                    .exports
-                    .get(n)
-                    .with_context(|| format!("no export {n:?} in {}", exports.path.display()))?;
-                Ok((settings.state_dir.clone(), m.path.clone()))
-            })
-            .collect::<anyhow::Result<_>>()?;
-        index_roots(targets, dry_run, log.quiet)
-    })();
-    match result {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("irsync export update: {e:#}");
-            1
+/// The paths of the exports `names` gives (`all`: every export), each
+/// once, in the order given.
+fn export_roots(
+    exports: &irsync::config::exports::Exports,
+    names: &[String],
+) -> anyhow::Result<Vec<PathBuf>> {
+    let names: Vec<&str> = if names.iter().any(|n| n == "all") {
+        anyhow::ensure!(
+            names.len() == 1,
+            "--export all names every export; give it alone"
+        );
+        exports.exports.keys().map(String::as_str).collect()
+    } else {
+        names.iter().map(String::as_str).collect()
+    };
+    let mut roots = Vec::new();
+    for n in names {
+        let e = exports
+            .exports
+            .get(n)
+            .with_context(|| format!("no export {n:?} in {}", exports.path.display()))?;
+        if !roots.contains(&e.path) {
+            roots.push(e.path.clone());
         }
     }
+    Ok(roots)
 }
 
 /// Hashes each `(state directory, root)` into the root's index and prints
@@ -1805,7 +1801,7 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                     .with_context(|| format!("identity {}", daemon_key.display()))?;
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                manage::exports::add_export(&mut msg, &name, &path, a.read_only, a.warm_index)?;
+                manage::exports::add_export(&mut msg, &name, &path, a.read_only, a.index_at_start)?;
                 // The daemon identity comes first: when it cannot be had, the
                 // export is not added either.
                 let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
@@ -1835,7 +1831,6 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 Ok(())
             })(),
         ),
-        ExportCmd::Update { dry_run, names } => export_update(&paths, names, *dry_run, log),
         ExportCmd::List => finish(
             "export list",
             (|| {

@@ -282,7 +282,7 @@ async fn after_index_root_a_rename_costs_no_hashing_in_the_session() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_daemon_with_warm_index_hashes_its_export_at_start() {
+async fn a_daemon_with_index_at_start_hashes_its_export_at_start() {
     within30(async {
         let content = data(MIB + 17, 15);
         let h = Harness::warm(|export| write(export, "attic/a.bin", &content)).await;

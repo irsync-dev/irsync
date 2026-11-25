@@ -349,11 +349,11 @@ fn only_the_current_config_version_is_read() {
 
 #[test]
 fn exports_parse_exports_tables() {
-    let t = "[exports.photos]\npath = \"/srv/photos\"\nrw = [\"laptop\"]\nro = [\"b2e1\"]\n[exports.docs]\npath = \"/srv/docs\"\nread_only = true\nwarm_index = true\nfsync = true\n";
+    let t = "[exports.photos]\npath = \"/srv/photos\"\nrw = [\"laptop\"]\nro = [\"b2e1\"]\n[exports.docs]\npath = \"/srv/docs\"\nread_only = true\nindex_at_start = true\nfsync = true\n";
     let x = parse_exports(t, p()).unwrap();
     assert_eq!(x.exports["photos"].rw, vec!["laptop"]);
     assert_eq!(x.exports["photos"].ro, vec!["b2e1"]);
-    assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
+    assert!(x.exports["docs"].read_only && x.exports["docs"].index_at_start);
     assert!(x.exports["docs"].fsync && !x.exports["photos"].fsync);
     assert_eq!(x.exports["docs"].path, Path::new("/srv/docs"));
 }
@@ -371,7 +371,7 @@ fn exports_all_is_reserved() {
     assert!(matches!(e, ConfigError::File { .. }), "{e:?}");
     let e = e.to_string();
     assert!(
-        e.contains("\"all\" is reserved: it is the word `grant remove all WHO` and `export update all` use for every export"),
+        e.contains("\"all\" is reserved: it is the word `grant remove all WHO` and `index --export all` use for every export"),
         "{e}"
     );
     assert!(e.contains(":2:"), "{e}");

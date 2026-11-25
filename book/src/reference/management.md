@@ -3,7 +3,7 @@
 These commands read and edit the config file, `~/.config/irsync/irsync.toml`
 (see [Configuration](configuration.md)). There are four nouns, `server`,
 `client`, `export` and `grant`, each with `add`, `remove` and `list` (`server`
-and `client` also `rename`), plus `export update`; `id` for the identities; `config` for any key by its dotted
+and `client` also `rename`); `id` for the identities; `config` for any key by its dotted
 path; and `show` for an overview.
 
 A noun on its own runs its `list`: `irsync server`, `irsync client`, `irsync export`,
@@ -48,10 +48,10 @@ the how-to "Manage a server from your client". It needs
 
 | Remote | Not remote |
 | --- | --- |
-| `export list`, `add`, `remove` | `export update` |
-| `grant list`, `add`, `remove` | `config set`, `config unset` |
-| `client list`, `add`, `remove`, `rename`, `set` | `id` |
-| `show`, `config get`, `config list` | `server` |
+| `export list`, `add`, `remove` | `config set`, `config unset` |
+| `grant list`, `add`, `remove` | `id` |
+| `client list`, `add`, `remove`, `rename`, `set` | `server` |
+| `show`, `config get`, `config list` | |
 
 A remote `export add` takes an absolute path or one that starts with `~`,
 quoted so that your shell leaves it alone. A client cannot remove or lower its
@@ -93,17 +93,18 @@ entries.
 
 | Command | Effect |
 | --- | --- |
-| `irsync export add NAME:PATH [--read-only] [--warm-index]` | Export a directory under `NAME`. Prints the daemon's `EndpointId` on stdout, generating the daemon's key if it does not exist yet. |
-| `irsync export add PATH [--read-only] [--warm-index]` | The same, named after the directory's last component. |
+| `irsync export add NAME:PATH [--read-only] [--index-at-start]` | Export a directory under `NAME`. Prints the daemon's `EndpointId` on stdout, generating the daemon's key if it does not exist yet. |
+| `irsync export add PATH [--read-only] [--index-at-start]` | The same, named after the directory's last component. |
 | `irsync export remove NAME` | Stop exporting a directory. Its grants go with it. |
-| `irsync export list` | One block per export: `NAME: PATH`, then `read_only`, `warm_index` and `fsync` when set, then its grant lines. |
-| `irsync export update [-n] [-v] [-q] NAME...` | Hash the files of the named exports into their indexes, so that files `irsync` did not place are reused from the next session on. `all` names every export. `-n` counts what would be hashed. See [Seed the index](../how-to/seed-the-index.md). |
+| `irsync export list` | One block per export: `NAME: PATH`, then `read_only`, `index_at_start` and `fsync` when set, then its grant lines. |
 
 `export add` joins a relative `PATH` onto the working directory, expands a
 leading `~` (`irsync export add home:~` exports the home directory), and
 requires an existing directory. The text before the first `:` is a name only
 when it has no `/`. `--read-only` sets `read_only`, which refuses pushes from
-everyone; `--warm-index` sets `warm_index`.
+everyone; `--index-at-start` sets `index_at_start`, which hashes the export's
+files into its index whenever the daemon starts. To hash them once, now, run
+`irsync index --export NAME`. See [Seed the index](../how-to/seed-the-index.md).
 
 ## grant
 

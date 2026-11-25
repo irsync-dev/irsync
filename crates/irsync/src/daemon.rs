@@ -67,7 +67,7 @@ struct Shared {
     /// The home directory relative paths resolve against; `None` = unknown.
     home: Option<PathBuf>,
     /// One open index per export path, opened on first use and kept (with
-    /// its GC and warm-up tasks) even if the export is later removed.
+    /// its GC and index-at-start tasks) even if the export is later removed.
     indexes: Mutex<HashMap<PathBuf, IndexHandle>>,
     /// Cancels the per-index background tasks; cancelled when `run` ends.
     tasks: CancellationToken,
@@ -469,11 +469,11 @@ fn open_index(shared: &Shared, name: &str, export: &Export) -> Result<(IndexHand
     Ok((index, true))
 }
 
-/// Starts the GC loop of `index` and, with `warm_index`, its warm-up, both
-/// stopped by `shared.tasks`.
+/// Starts the GC loop of `index` and, with `index_at_start`, the hashing of
+/// the export's files into it, both stopped by `shared.tasks`.
 fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHandle) {
     let (name, root) = (name.to_string(), export.path.clone());
-    if export.warm_index {
+    if export.index_at_start {
         let (index, name, root, stop) = (
             index.clone(),
             name.clone(),
@@ -481,19 +481,19 @@ fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHa
             shared.tasks.clone(),
         );
         tokio::spawn(async move {
-            let warm = crate::warm::index_root(index, &root, HASH_WORKERS, false);
+            let indexing = crate::warm::index_root(index, &root, HASH_WORKERS, false);
             tokio::select! {
                 _ = stop.cancelled() => {}
-                r = warm => match r {
+                r = indexing => match r {
                     Ok(r) => tracing::info!(
                         export = %name,
                         examined = r.examined,
                         hashed = r.hashed,
                         bytes = r.bytes,
                         errors = r.errors.len(),
-                        "index warmed"
+                        "export indexed"
                     ),
-                    Err(e) => tracing::warn!(export = %name, "index warm-up failed: {e}"),
+                    Err(e) => tracing::warn!(export = %name, "indexing the export at start failed: {e}"),
                 },
             }
         });

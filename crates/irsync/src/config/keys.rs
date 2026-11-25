@@ -196,7 +196,7 @@ pub static KEYS: &[Key] = &[
     key("exports.*.path", Path),
     // A flag left out of an export is off.
     with("exports.*.read_only", Bool, || one(false)),
-    with("exports.*.warm_index", Bool, || one(false)),
+    with("exports.*.index_at_start", Bool, || one(false)),
     with("exports.*.fsync", Bool, || one(false)),
     with("exports.*.auto", Bool, || one(false)),
     key("exports.*.rw", StrArray),

@@ -89,7 +89,7 @@ pub fn plan(server: &str, cmd: &RemoteCmd) -> anyhow::Result<Plan> {
                 change(Op::ExportAdd(ExportAdd {
                     target: a.target.clone(),
                     read_only: a.read_only,
-                    warm_index: a.warm_index,
+                    index_at_start: a.index_at_start,
                 }))
             }
             RemoteExportCmd::Remove { name } => {
@@ -382,7 +382,7 @@ pub fn view_to_config(v: &View) -> pb::Config {
                 name: e.name.clone(),
                 path: e.path.clone(),
                 read_only: e.read_only.then_some(true),
-                warm_index: e.warm_index.then_some(true),
+                index_at_start: e.index_at_start.then_some(true),
                 fsync: e.fsync.then_some(true),
                 auto: e.is_auto.then_some(true),
                 rw: entries(&e.rw),

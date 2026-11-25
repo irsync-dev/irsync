@@ -64,7 +64,7 @@ admin = "ro"
 [exports.photos]
 path = "/srv/photos"
 read_only = true
-warm_index = true
+index_at_start = true
 fsync = true
 auto = true
 rw = ["nas"]

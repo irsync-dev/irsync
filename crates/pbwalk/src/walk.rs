@@ -667,7 +667,7 @@ mod tests {
                     op: Some(v1::change::Op::ExportAdd(v1::ExportAdd {
                         target: "photos:~/Photos".into(),
                         read_only: true,
-                        warm_index: false,
+                        index_at_start: false,
                     })),
                 })),
             }

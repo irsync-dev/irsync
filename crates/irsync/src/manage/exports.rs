@@ -15,7 +15,7 @@ pub fn add_export(
     name: &str,
     path: &Path,
     read_only: bool,
-    warm_index: bool,
+    index_at_start: bool,
 ) -> Result<(), ManageError> {
     if RESERVED.contains(&name) {
         return Err(ManageError::Reserved(name.to_string()));
@@ -27,7 +27,7 @@ pub fn add_export(
         name: name.to_string(),
         path: path.to_string_lossy().into_owned(),
         read_only: read_only.then_some(true),
-        warm_index: warm_index.then_some(true),
+        index_at_start: index_at_start.then_some(true),
         ..Default::default()
     });
     Ok(())
