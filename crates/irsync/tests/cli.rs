@@ -741,11 +741,6 @@ fn nouns_share_add_remove_list() {
     assert!(
         Args::try_parse_from(["irsync", "server", "add", "a", "b", "--client-id", "c"]).is_err()
     );
-    // `host` is hidden, takes anything and is refused when run.
-    assert!(matches!(
-        parse(&["host", "add", "x", "abc", "--client-id", "d"]).cmd,
-        Some(Command::Host(ref h)) if h.rest == ["add", "x", "abc", "--client-id", "d"]
-    ));
     assert!(matches!(
         parse(&["export", "list"]).cmd,
         Some(Command::Export(ref e)) if matches!(e.cmd, Some(ExportCmd::List))

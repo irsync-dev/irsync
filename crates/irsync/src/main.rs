@@ -77,7 +77,6 @@ fn main() {
         Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d, log, files)),
         Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, log, files)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix, log, files)),
-        Some(Command::Host(_)) => std::process::exit(run_host()),
         Some(Command::Server(s)) => std::process::exit(run_server(s, files)),
         Some(Command::Client(c)) => std::process::exit(run_client(c, files)),
         Some(Command::Export(e)) => std::process::exit(run_export(e, log, files)),
@@ -1972,15 +1971,6 @@ fn grant_list_text(
         &label,
         &id,
     ))
-}
-
-/// `irsync host`: gone, replaced by `server` and `client`.
-fn run_host() -> i32 {
-    eprintln!(
-        "irsync host: hosts are now two things: `irsync server` (machines this one connects to) \
-         and `irsync client` (machines its daemon lets in)"
-    );
-    1
 }
 
 /// A file that does not load is that error, not a refused save.

@@ -333,9 +333,6 @@ pub enum Command {
     /// Manage the clients this machine's daemon lets in (edits irsync.toml).
     /// With no subcommand, runs `list`.
     Client(ClientArgs),
-    /// Replaced by `server` and `client`.
-    #[command(hide = true)]
-    Host(HostArgs),
     /// Manage exports (edits irsync.toml).
     /// With no subcommand, runs `list`.
     Export(ExportArgs),
@@ -539,13 +536,6 @@ pub enum IdCmd {
         #[arg(short, long)]
         force: bool,
     },
-}
-
-/// The old `irsync host`: any arguments, all refused.
-#[derive(Debug, clap::Args)]
-pub struct HostArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
-    pub rest: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]

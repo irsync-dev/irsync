@@ -84,8 +84,7 @@ server when it does not offer post-quantum key exchange.
 | `irsync client set NAME KEY=VALUE...` | Set the server-wide rights of a client. `KEY` is `all_exports`, `all_paths` or `admin`, and `VALUE` is `rw`, `ro` or `none` (`none` removes the right). Give several pairs to change them together: if one is wrong, nothing changes. `irsync client set myclient all_paths=rw` lets `myclient` reach any path this account can. Prints the client's rights afterwards. See [Rights on a client](configuration.md#rights-on-a-client). |
 | `irsync client list` | One `NAME: ID` line per client, followed by `all_exports=VALUE` `all_paths=VALUE` and `admin=VALUE` for each right it has. |
 
-The old `host` noun is gone: it prints a pointer to `server` and `client`. A server and
-a client may have the same name; the two commands do not touch each other's
+A server and a client may have the same name; the two commands do not touch each other's
 entries.
 
 ## export

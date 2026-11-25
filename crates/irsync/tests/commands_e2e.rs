@@ -2617,32 +2617,6 @@ fn a_key_or_passphrase_file_open_to_other_users_stops_the_command() {
     assert_eq!(ok(&home, &["id", "show", "--passphrase-file", pf_s]), shown);
 }
 
-/// `irsync host` is gone: any use exits 1 with a pointer, and a line that
-/// starts with it is no sync.
-#[test]
-fn host_is_gone_with_a_pointer() {
-    let d = tempfile::tempdir().unwrap();
-    let (home, file) = home_with(&d, "");
-    let id = peer_id(5);
-    for args in [
-        vec!["host", "add", "x", id.as_str()],
-        vec!["host", "list"],
-        vec!["host"],
-        vec!["host", "add", "x", id.as_str(), "--client-id", id.as_str()],
-    ] {
-        let o = irsync(&home, &args);
-        assert_eq!(o.status.code(), Some(1), "{args:?}");
-        assert_eq!(
-            String::from_utf8_lossy(&o.stderr),
-            "irsync host: hosts are now two things: `irsync server` (machines this one \
-             connects to) and `irsync client` (machines its daemon lets in)\n",
-            "{args:?}"
-        );
-        assert_eq!(o.stdout, b"");
-    }
-    assert!(!file.exists());
-}
-
 #[test]
 fn server_commands_print_and_report() {
     let d = tempfile::tempdir().unwrap();
