@@ -32,7 +32,9 @@ use super::control::{
     Persister,
 };
 use super::engine::{blocking, Ctx, Events, PeerError, PeerEvents, TransferPhase, TransportError};
-use super::limits::{basis_budget, basis_wire_len, link_backlog, link_wire_len, list_budget};
+use super::limits::{
+    basis_budget, basis_wire_len, link_backlog, link_wire_len, list_budget, NEED_PIECE,
+};
 use super::listing_stream::ListingOut;
 use super::parts::{records_at_most, split, ListCredit, ListStat, PART_RECORDS};
 use super::planner::MAX_INFLIGHT;
@@ -42,6 +44,7 @@ use crate::filter::{FilterSet, Verdict as FilterVerdict};
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed};
 use crate::platform::clone::{Cloned, Clones};
+use crate::recv::MAX_HELD_CHUNKS;
 use crate::scan::{ScanItem, ScanSummary};
 use crate::send::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
 use crate::telemetry::meter::Counter;
@@ -878,11 +881,26 @@ impl SenderRole {
         Ok(())
     }
 
-    fn on_need(&mut self, n: NeedChunks) {
+    /// A request for chunks of a file. One that names more chunks than a
+    /// receiver puts in one `NeedChunks` (`NEED_PIECE`), or more held
+    /// chunks than it keeps (`MAX_HELD_CHUNKS`), is a protocol error.
+    fn on_need(&mut self, n: NeedChunks) -> anyhow::Result<()> {
         let file_id = n.file_id;
+        if n.chunk_idx.len() > NEED_PIECE {
+            bail!(
+                "protocol error: NeedChunks for file id {file_id} names {} chunks (at most {NEED_PIECE})",
+                n.chunk_idx.len()
+            );
+        }
+        if n.held.len() > MAX_HELD_CHUNKS {
+            bail!(
+                "protocol error: NeedChunks for file id {file_id} holds {} partial chunks (at most {MAX_HELD_CHUNKS})",
+                n.held.len()
+            );
+        }
         let Some(f) = self.files.get_mut(&file_id) else {
             tracing::debug!(file_id, "NeedChunks for a file no longer in flight");
-            return;
+            return Ok(());
         };
         // Any request, empty or not, takes the file's bases: those of its
         // chunks are used, the rest dropped. A basis serves only the
@@ -897,7 +915,7 @@ impl SenderRole {
         // Without a digest a fresh chunk list is on its way and will be
         // answered with a new request.
         let Some(digest) = f.digest.clone() else {
-            return;
+            return Ok(());
         };
         let idxs: Vec<u32> = n
             .chunk_idx
@@ -907,11 +925,15 @@ impl SenderRole {
         // What the receiver holds of the chunks it asks for: those start
         // there (`send::split_ranges` ignores a count that is not less
         // than the chunk).
-        let from: BTreeMap<u32, u32> = n
-            .held
-            .into_iter()
-            .filter(|(i, n)| *n > 0 && idxs.contains(i))
-            .collect();
+        let from: BTreeMap<u32, u32> = if n.held.is_empty() {
+            BTreeMap::new()
+        } else {
+            let asked: HashSet<u32> = idxs.iter().copied().collect();
+            n.held
+                .into_iter()
+                .filter(|(i, n)| *n > 0 && asked.contains(i))
+                .collect()
+        };
         // Everything not requested so far is matched. An empty request says
         // nothing (it may be "nothing for now", with chunks that have a
         // basis still to come), so it reports nothing: a file the receiver
@@ -935,7 +957,7 @@ impl SenderRole {
                 .emit(super::Event::FileMatched(f.path.clone(), matched));
         }
         if idxs.is_empty() {
-            return; // The receiver has everything; wait for its ack.
+            return Ok(()); // The receiver has everything; wait for its ack.
         }
         let bases: HashMap<u32, Basis> = idxs
             .iter()
@@ -957,9 +979,10 @@ impl SenderRole {
             p.idxs.extend(idxs);
             p.bases.extend(bases);
             p.held.extend(from);
-            return;
+            return Ok(());
         }
         self.spawn_send(file_id, idxs, bases, from);
+        Ok(())
     }
 
     /// Starts the file's send task for `idxs` (the file is in flight, with
@@ -2123,10 +2146,7 @@ pub(super) async fn run(
             }
             Ev::Ctrl(Msg::ChunkBasis(b)) => s.on_basis(b),
             Ev::Ctrl(Msg::MayPlace(m)) => s.on_may_place(m),
-            Ev::Ctrl(Msg::Need(n)) => {
-                s.on_need(n);
-                Ok(())
-            }
+            Ev::Ctrl(Msg::Need(n)) => s.on_need(n),
             Ev::Ctrl(Msg::Ack(a)) => {
                 s.on_ack(a);
                 Ok(())
@@ -2509,11 +2529,40 @@ mod tests {
         s.on_need(NeedChunks {
             file_id: 1,
             ..NeedChunks::default()
-        });
+        })
+        .unwrap();
         assert_eq!(s.basis_held, 0);
         assert_eq!(s.files[&1].bases_held, 0);
         assert!(s.files[&1].bases.is_empty());
         assert_eq!(s.tasks.len(), 0, "an empty request sends nothing");
+    }
+
+    /// A `NeedChunks` beyond what a receiver ever sends in one, by chunks or
+    /// by held chunks, is a protocol error; one at the limits is served.
+    #[tokio::test]
+    async fn an_oversized_need_is_a_protocol_error() {
+        let (mut s, _t) = role().await;
+        s.files.insert(1, in_flight("a", Some(empty_digest())));
+        let too_many = NeedChunks {
+            file_id: 1,
+            chunk_idx: (0..=NEED_PIECE as u32).collect(),
+            ..NeedChunks::default()
+        };
+        let e = s.on_need(too_many).unwrap_err();
+        assert!(e.to_string().starts_with("protocol error"), "{e:#}");
+        let held = NeedChunks {
+            file_id: 1,
+            chunk_idx: (0..=MAX_HELD_CHUNKS as u32).collect(),
+            held: (0..=MAX_HELD_CHUNKS as u32).map(|i| (i, 1)).collect(),
+        };
+        let e = s.on_need(held).unwrap_err();
+        assert!(e.to_string().starts_with("protocol error"), "{e:#}");
+        let at_limits = NeedChunks {
+            file_id: 1,
+            chunk_idx: (0..NEED_PIECE as u32).collect(),
+            held: (0..MAX_HELD_CHUNKS as u32).map(|i| (i, 1)).collect(),
+        };
+        s.on_need(at_limits).unwrap();
     }
 
     /// A `MayPlace` is about one chunk list. One about a list older than
