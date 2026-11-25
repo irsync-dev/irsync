@@ -1,11 +1,7 @@
 //! Command line of `irsync-netstress`.
 
-use std::ffi::OsString;
-use std::path::PathBuf;
-
-use ::filegen::pace::Pace;
 use clap::Parser;
-use stress::cli::Direction;
+use stress::cli::{Defaults, RunArgs};
 
 use crate::profile::Profile;
 
@@ -51,34 +47,12 @@ impl Acks {
 #[derive(Debug, Parser)]
 #[command(name = "irsync-netstress", version)]
 pub struct Cli {
-    /// Working directory root for all iterations.
-    pub root: PathBuf,
-    #[arg(long, value_enum)]
-    pub direction: Direction,
-    /// Network profile to run under.
+    #[command(flatten)]
+    pub run: RunArgs,
+    /// Network profile to run under; it also gives the defaults of
+    /// --iterations, --steps, --max-total-size and --max-file-size.
     #[arg(long, value_enum)]
     pub profile: Profile,
-    /// Defaults to the profile's.
-    #[arg(long)]
-    pub iterations: Option<u64>,
-    #[arg(long)]
-    pub seed: Option<u64>,
-    /// Defaults to the profile's.
-    #[arg(long)]
-    pub steps: Option<u64>,
-    /// Passed through to filegen verbatim. Defaults to the profile's.
-    #[arg(long)]
-    pub max_total_size: Option<String>,
-    /// Passed through to filegen verbatim. Defaults to the profile's.
-    #[arg(long)]
-    pub max_file_size: Option<String>,
-    /// Extra filegen `--set KEY=VALUE`; repeatable.
-    #[arg(long, value_name = "KEY=VALUE")]
-    pub filegen_set: Vec<String>,
-    #[arg(long, default_value = "debug")]
-    pub log_level: String,
-    #[arg(long)]
-    pub keep_going: bool,
     /// QUIC congestion controller for both sides (written to the client's
     /// `[defaults]` and the daemon's `[daemon]` config). Unset: irsync's
     /// default.
@@ -88,66 +62,26 @@ pub struct Cli {
     /// Unset: irsync's own (immediate).
     #[arg(long, value_enum)]
     pub acks: Option<Acks>,
-    /// Run filegen against the source while each sync runs, then judge
-    /// the destination against every state the source held.
-    #[arg(long)]
-    pub concurrent: bool,
-    /// filegen's pace for every round (fast, steady:N or bursts:ON:OFF);
-    /// drawn from the seed per round when not given.
-    #[arg(long, value_name = "PACE", requires = "concurrent")]
-    pub pace: Option<Pace>,
-    /// A run's `logs/rounds.tsv`: replay its paces and step counts.
-    #[arg(long, value_name = "FILE", requires = "concurrent")]
-    pub replay_rounds: Option<PathBuf>,
-    #[arg(long)]
-    pub irsync: Option<PathBuf>,
-    #[arg(long)]
-    pub filegen: Option<PathBuf>,
-    #[arg(long)]
-    pub fileset: Option<PathBuf>,
-    /// Extra arguments for the irsync client, after `--`.
-    #[arg(last = true, allow_hyphen_values = true)]
-    pub client_args: Vec<OsString>,
 }
 
 impl Cli {
-    /// The equivalent `irsync-stress` command line, with whatever was not
-    /// given filled in from the profile.
+    /// The equivalent `irsync-stress` run, with whatever was not given
+    /// filled in from the profile.
     pub fn to_stress(&self) -> stress::cli::Cli {
         let d = self.profile.defaults();
-        stress::cli::Cli {
-            root: self.root.clone(),
-            direction: self.direction,
-            iterations: self.iterations.unwrap_or(d.iterations),
-            seed: self.seed,
-            steps: self.steps.unwrap_or(d.steps),
-            max_total_size: Some(
-                self.max_total_size
-                    .clone()
-                    .unwrap_or_else(|| d.max_total_size.to_string()),
-            ),
-            max_file_size: Some(
-                self.max_file_size
-                    .clone()
-                    .unwrap_or_else(|| d.max_file_size.to_string()),
-            ),
-            filegen_set: self.filegen_set.clone(),
-            log_level: self.log_level.clone(),
-            keep_going: self.keep_going,
-            irsync: self.irsync.clone(),
-            filegen: self.filegen.clone(),
-            fileset: self.fileset.clone(),
-            concurrent: self.concurrent,
-            pace: self.pace,
-            replay_rounds: self.replay_rounds.clone(),
-            client_args: self.client_args.clone(),
-        }
+        self.run.resolve(Defaults {
+            iterations: d.iterations,
+            steps: d.steps,
+            max_total_size: Some(d.max_total_size),
+            max_file_size: Some(d.max_file_size),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn profile_defaults_fill_what_was_not_given() {

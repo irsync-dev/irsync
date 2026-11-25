@@ -1230,7 +1230,7 @@ mod tests {
     #[test]
     fn rerun_command_has_a_fresh_root_and_the_rounds_file() {
         use clap::Parser;
-        let cli = Cli::try_parse_from([
+        let cli = crate::cli::Args::try_parse_from([
             "irsync-stress",
             "--direction",
             "pull",
@@ -1247,7 +1247,8 @@ mod tests {
             "--",
             "--paranoid",
         ])
-        .unwrap();
+        .unwrap()
+        .into_cli();
         let c = rerun_command(
             "irsync-stress",
             &[],

@@ -1,22 +1,11 @@
 use std::process::exit;
 
-use clap::error::ErrorKind;
 use clap::Parser;
 use filegen::cli::{Cli, Command, RunArgs};
 use filegen::run::{opts_from_args, run, Outcome, RunError};
 
 fn main() {
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
-        Err(e) => {
-            let code = match e.kind() {
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
-                _ => 2,
-            };
-            let _ = e.print();
-            exit(code);
-        }
-    };
+    let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => exit(run_command(args)),
     }
