@@ -19,6 +19,26 @@ project's foundational issue: the goal the rest of the work serves. It
 stays open and has no status block on purpose. Do not suggest it, or flag
 it, when looking for the next thing to work on.
 
+## Links to GitHub
+
+When you tell the user about an issue, pull request, repository,
+commit, workflow run or anything else on GitHub, keep the short name in
+the text, such as `[#123]`, and add a footnote that holds the full URL:
+
+```markdown
+The fix for [#123] is in review.
+
+123: https://github.com/irsync-dev/irsync/issues/123
+```
+
+Put the footnotes at the end of the message, one per line, with the bare
+URL on that one line and nothing after it. The user often reads through
+several layers of terminal emulator, mosh and tmux, where only a whole,
+visible URL can be clicked, so a link that hides its URL behind other
+words does not work. This is about what you say in the conversation;
+files keep their own conventions, such as `[#123]` alone in
+`CHANGELOG.md`.
+
 ## Pull requests
 
 All work goes through a pull request. Work on a branch, push the branch,
