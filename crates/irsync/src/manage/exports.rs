@@ -120,17 +120,95 @@ pub fn remove_export(msg: &mut pb::Config, name: &str) -> Result<(), ManageError
 /// `cwd`. `.` and `..` are resolved lexically (symlinks are left alone),
 /// and the result must be an existing directory.
 pub fn parse_add_target(arg: &str, cwd: &Path) -> Result<(String, PathBuf), ManageError> {
-    let (name, raw) = match arg.split_once(':') {
-        Some((n, p)) if !n.contains('/') => {
+    add_target_in(arg, cwd, crate::config::paths::home_dir().as_deref())
+}
+
+/// The name, if any, and the path of an `export add` target: the text
+/// before the first `:` is a name only when it contains no `/`.
+pub fn split_target(arg: &str) -> (Option<&str>, &str) {
+    match arg.split_once(':') {
+        Some((n, p)) if !n.contains('/') => (Some(n), p),
+        _ => (None, arg),
+    }
+}
+
+/// Whether `raw` is `~` or starts with `~/`: a path under the home
+/// directory.
+fn under_home(raw: &str) -> bool {
+    raw == "~" || raw.starts_with("~/")
+}
+
+/// The name an `export add` target gives, without looking at the disk:
+/// the one before the `:`, else the final component of the path as typed.
+pub fn target_name(arg: &str) -> String {
+    match split_target(arg) {
+        (Some(n), _) => n.to_string(),
+        (None, raw) => Path::new(raw)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| raw.to_string()),
+    }
+}
+
+/// An `export add` target sent by a remote client: as
+/// [`parse_add_target`] with `home` as the home directory, but the path
+/// must be absolute or start with `~`, since there is no working
+/// directory to join it onto. The name and the path as the file is to
+/// hold it: under `~` when it was typed so and stays under `home`.
+pub fn parse_remote_target(
+    arg: &str,
+    home: Option<&Path>,
+) -> Result<(String, String), ManageError> {
+    let (_, raw) = split_target(arg);
+    let tilde = under_home(raw);
+    if !tilde && !raw.starts_with('/') {
+        return Err(ManageError::BadValue(
+            "the path must be absolute or start with ~".to_string(),
+        ));
+    }
+    let (name, path) = add_target_in(arg, Path::new("/"), home)?;
+    let rest = home
+        .filter(|_| tilde)
+        .and_then(|h| path.strip_prefix(h).ok());
+    let written = match rest {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    };
+    Ok((name, written))
+}
+
+/// What `export add` reports once the export is saved.
+pub fn added_line(name: &str, path: &Path, config: &Path) -> String {
+    format!(
+        "added export {name} ({}) to {}",
+        path.display(),
+        config.display()
+    )
+}
+
+/// What `export remove` reports once the export is gone.
+pub fn removed_line(name: &str, config: &Path) -> String {
+    format!("removed export {name} from {}", config.display())
+}
+
+/// [`parse_add_target`] with `home` for `~`.
+fn add_target_in(
+    arg: &str,
+    cwd: &Path,
+    home: Option<&Path>,
+) -> Result<(String, PathBuf), ManageError> {
+    let (name, raw) = match split_target(arg) {
+        (Some(n), p) => {
             if n.is_empty() {
                 return Err(ManageError::BadName(n.to_string()));
             }
             (Some(n.to_string()), p)
         }
-        _ => (None, arg),
+        (None, p) => (None, p),
     };
     let joined = match raw.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => crate::config::paths::home_dir()
+        Some(rest) if under_home(raw) => home
             .ok_or(ManageError::NoHome)?
             .join(rest.trim_start_matches('/')),
         _ => cwd.join(raw),

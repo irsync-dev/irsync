@@ -283,6 +283,58 @@ pub fn grant_add(
     Ok(())
 }
 
+/// Refuses the exports `grant add` takes no grant on: `all` and
+/// `immediate`, which are rights of a client now. `ro`: the grant asked
+/// for was read-only.
+pub fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError> {
+    if export == "all" {
+        return Err(ManageError::BadValue(format!(
+            "\"all\" is not an export: give a client every export with: irsync client set NAME all_exports={}",
+            if ro { "ro" } else { "rw" }
+        )));
+    }
+    if export == "immediate" {
+        return Err(ManageError::BadValue(
+            "\"immediate\" is not an export: give a client any path with: irsync client set NAME all_paths=rw"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses what `grant remove EXPORT WHO` does not take: `*` for a peer
+/// (`all` is everyone) and `immediate` for an export.
+pub fn check_remove(export: &str, who: &str) -> Result<(), ManageError> {
+    if who == "*" {
+        return Err(ManageError::BadValue(format!(
+            "\"*\" names no peer: irsync grant remove {export} all removes every grant {}",
+            if export == "all" {
+                "in the file".to_string()
+            } else {
+                format!("on {export}")
+            }
+        )));
+    }
+    if export == "immediate" {
+        return Err(ManageError::BadValue(
+            "\"immediate\" is not an export: take a client's any-path right away with: irsync client set NAME all_paths=none"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// What `grant add` reports once the grant is saved.
+pub fn added_line(who: &PeerSpec, clients: &Clients, export: &str, ro: bool) -> String {
+    let mode = if ro { "ro" } else { "rw" };
+    format!("{}: {mode} on {export}", who.written(clients))
+}
+
+/// What `grant remove` reports once `n` entries are removed.
+pub fn removed_line(n: usize) -> String {
+    format!("removed {n} {}", if n == 1 { "entry" } else { "entries" })
+}
+
 /// Removes the grants of `who` (`None`: everyone) from both lists.
 fn remove_in(lists: &mut Lists, who: Option<&PeerSpec>, resolve: Resolve) -> usize {
     match who {

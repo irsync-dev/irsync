@@ -108,6 +108,28 @@ pub fn parse_key(key: &str) -> Result<Vec<String>, ManageError> {
     Ok(keys)
 }
 
+/// `KEY` as `config get` takes it: parsed (see [`parse_key`]) and known
+/// (see [`kind_of`]).
+pub fn key_path(key: &str) -> Result<Vec<String>, ManageError> {
+    let path = parse_key(key)?;
+    if kind_of(&path).is_none() {
+        return Err(unknown_key(key));
+    }
+    Ok(path)
+}
+
+/// The lines `config get` prints for `path`: its value, else its
+/// default; `None` for a key unset and without a default.
+pub fn get_or_default(
+    msg: &pb::Config,
+    path: &[String],
+) -> Result<Option<Vec<String>>, ManageError> {
+    Ok(match get(msg, path)? {
+        Got::Lines(lines) => Some(lines),
+        Got::Unset => default_of(path),
+    })
+}
+
 /// A default path as the file would hold it: the home directory as `~`.
 fn as_written(p: &std::path::Path) -> String {
     match crate::config::paths::home_dir().and_then(|h| p.strip_prefix(h).ok()) {
