@@ -337,14 +337,16 @@ pub(super) fn place_hardlink(
 /// way. Its parent is reached without following a symlink below the root.
 pub(super) fn mkdir_replacing(at: &Beneath) -> io::Result<()> {
     if at.rel.as_bytes().is_empty() {
-        // The root: a name this side trusts.
-        return match std::fs::symlink_metadata(&at.root) {
+        // The root: a name this side trusts, opened as written (see
+        // `native_path`: on Windows no trailing dot or space is dropped).
+        let root = crate::platform::native_path(&at.root)?;
+        return match std::fs::symlink_metadata(&root) {
             Ok(m) if m.is_dir() => Ok(()),
             Ok(_) => {
-                std::fs::remove_file(&at.root)?;
-                std::fs::create_dir(&at.root)
+                std::fs::remove_file(&root)?;
+                std::fs::create_dir(&root)
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => std::fs::create_dir(&at.root),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => std::fs::create_dir(&root),
             Err(e) => Err(e),
         };
     }
@@ -478,6 +480,17 @@ impl Planner {
                 &path,
                 "refusing a name reserved for irsync's temporary files",
             );
+            if is_dir {
+                self.failed_dirs.insert(path);
+            }
+            return;
+        }
+        // A name this system cannot hold fails its entry, before any join
+        // or conversion (`a:b`, `a\b` on Windows). On Unix `refused_path`
+        // is `None` for every path.
+        if let Some(why) = crate::fs::names::refused_path(&path, crate::platform::Platform::CURRENT)
+        {
+            self.error(&path, why);
             if is_dir {
                 self.failed_dirs.insert(path);
             }
@@ -724,6 +737,15 @@ impl Planner {
                 blocking(move || apply_metadata_beneath(&at, &entry, &apply)).await
             }
             Decision::Symlink => {
+                // A target this system would read as a network or device
+                // path is never made into a link (on Unix every target is).
+                if let Some(why) = crate::fs::names::link_target_refused(
+                    &entry.link_target,
+                    crate::platform::Platform::CURRENT,
+                ) {
+                    self.error(&path, why);
+                    return;
+                }
                 self.touch_parent(&path);
                 drop(planning);
                 let _placing = meter.start(Activity::Place);

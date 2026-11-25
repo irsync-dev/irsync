@@ -1646,25 +1646,25 @@ fn host_add_renames_existing_grants() {
     let id = peer_id(5);
     let (home, file) = home_with(
         &d,
-        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"),
+        &common::fixture::toml(&format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n")),
     );
     // A server is no client: the grant keeps the id.
     ok(&home, &["server", "add", "box", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert_eq!(
         text,
-        format!(
+        common::fixture::toml(&format!(
             "config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"
-        )
+        ))
     );
     ok(&home, &["client", "add", "box", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert_eq!(
         text,
-        format!(
+        common::fixture::toml(&format!(
             "config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n\
              [clients.box]\nclient_id = \"{id}\"\n\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
-        )
+        ))
     );
 }
 
@@ -1674,14 +1674,16 @@ fn unrelated_config_set_cleans_the_file() {
     let id = peer_id(5);
     let (home, file) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "[clients.box]\nclient_id = \"{id}\"\n[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"
-        ),
+        )),
     );
     ok(&home, &["config", "set", "defaults.parallel", "4"]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
-        text.contains("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"),
+        text.contains(&common::fixture::toml(
+            "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
+        )),
         "{text}"
     );
 }
@@ -1692,12 +1694,14 @@ fn name_set_through_config_renames_grants() {
     let id = peer_id(5);
     let (home, file) = home_with(
         &d,
-        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"),
+        &common::fixture::toml(&format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n")),
     );
     ok(&home, &["config", "set", "clients.box.client_id", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
-        text.contains("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"),
+        text.contains(&common::fixture::toml(
+            "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
+        )),
         "{text}"
     );
 }
@@ -1725,10 +1729,10 @@ fn key_comment_stays_beside_the_name() {
 fn client_remove_counts_a_hand_written_id_as_a_grant() {
     let d = tempfile::tempdir().unwrap();
     let id = peer_id(5);
-    let before = format!(
+    let before = common::fixture::toml(&format!(
         "[servers.box]\nendpoint_id = \"{id}\"\n[clients.box]\nclient_id = \"{id}\"\n\
          [exports.a]\npath = \"/a\"\nrw = [\"{id}\"]\n[exports.b]\npath = \"/b\"\nrw = [\"box\"]\n"
-    );
+    ));
     let (home, file) = home_with(&d, &before);
     let o = irsync(&home, &["client", "remove", "box"]);
     let err = String::from_utf8_lossy(&o.stderr);
@@ -1747,14 +1751,14 @@ fn client_remove_counts_a_hand_written_id_as_a_grant() {
     );
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!("config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[exports.a]\npath = \"/a\"\nrw = []\n\n[exports.b]\npath = \"/b\"\nrw = []\n")
+        common::fixture::toml(&format!("config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[exports.a]\npath = \"/a\"\nrw = []\n\n[exports.b]\npath = \"/b\"\nrw = []\n"))
     );
     // One grant: singular.
     let (home, file) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "[clients.box]\nclient_id = \"{id}\"\n[exports.p]\npath = \"/p\"\nro = [\"box\"]\n"
-        ),
+        )),
     );
     let o = irsync(&home, &["client", "remove", "--force", "box"]);
     assert_eq!(
@@ -1767,12 +1771,12 @@ fn client_remove_counts_a_hand_written_id_as_a_grant() {
 fn config_unset_does_not_remove_a_client_that_grants_name() {
     let d = tempfile::tempdir().unwrap();
     let id = peer_id(5);
-    let before = format!(
+    let before = common::fixture::toml(&format!(
         "[servers.box]\nendpoint_id = \"{id}\"\n\
          [clients.box]\nclient_id = \"{id}\"\n[clients.free]\nclient_id = \"{}\"\n\
          [exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n",
         peer_id(6)
-    );
+    ));
     let (home, file) = home_with(&d, &before);
     for key in ["clients.box.client_id", "clients.box", "clients"] {
         let o = irsync(&home, &["config", "unset", key]);
@@ -1829,27 +1833,27 @@ fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
     };
     let (home, file) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "{}[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n",
             hosts(&["amy", "zed"])
-        ),
+        )),
     );
     // The id is not amy's alone: zed still names the client.
     ok(&home, &["client", "remove", "amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!(
+        common::fixture::toml(&format!(
             "config_version = 2\n\n{}\n[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n",
             hosts(&["zed"])
-        )
+        ))
     );
     // A grant that names amy itself still stops the removal.
     std::fs::write(
         &file,
-        format!(
+        common::fixture::toml(&format!(
             "{}[exports.p]\npath = \"/p\"\nrw = [\"amy\"]\n",
             hosts(&["amy", "zed"])
-        ),
+        )),
     )
     .unwrap();
     let o = irsync(&home, &["server", "remove", "amy"]);
@@ -1857,19 +1861,19 @@ fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
     // The same through config unset.
     std::fs::write(
         &file,
-        format!(
+        common::fixture::toml(&format!(
             "{}[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n",
             hosts(&["amy", "zed"])
-        ),
+        )),
     )
     .unwrap();
     ok(&home, &["config", "unset", "clients.amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!(
+        common::fixture::toml(&format!(
             "config_version = 2\n\n{}\n[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n",
             hosts(&["zed"])
-        )
+        ))
     );
 }
 
@@ -2575,10 +2579,10 @@ fn host_add_leaves_the_grants_with_the_client() {
     let (daemon, client, new) = (peer_id(5), peer_id(6), peer_id(7));
     let (home, config) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "[servers.box]\nendpoint_id = \"{daemon}\"\n[clients.box]\nclient_id = \"{client}\"\n\
              [clients.phone]\nclient_id = \"{client}\"\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
-        ),
+        )),
     );
     let o = irsync(&home, &["server", "add", "box", &new]);
     assert!(o.status.success());
@@ -2605,11 +2609,11 @@ fn config_says_when_a_clients_grants_move_to_another_id() {
     let (daemon, client, new) = (peer_id(5), peer_id(6), peer_id(7));
     let (home, file) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "[servers.box]\nendpoint_id = \"{daemon}\"\n[clients.box]\nclient_id = \"{client}\"\n\
              [clients.free]\nclient_id = \"{client}\"\n\
              [exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
-        ),
+        )),
     );
     let note = |cmd: &str, from: &str, to: &str| {
         format!(

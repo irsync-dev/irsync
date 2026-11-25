@@ -23,13 +23,13 @@ fn msg(text: &str) -> pb::Config {
 }
 
 fn named_everywhere() -> String {
-    format!(
+    fixture::toml(&format!(
         "[clients.box]\nclient_id = \"{}\"\n[exports.a]\npath = \"/a\"\nrw = [\"box\", \"x\"]\n\
          [exports.b]\npath = \"/b\"\nrw = [\"box\"]\n\
          [exports.p]\npath = \"/p\"\nro = [\"y\", \"box\"]\n\
          [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n",
         id(1)
-    )
+    ))
 }
 
 #[test]
@@ -60,12 +60,15 @@ fn add_refuses_an_invalid_name() {
 
 #[test]
 fn remove_without_grants() {
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "[clients.box]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n",
         id(1)
-    ));
+    )));
     assert_eq!(client_remove(&mut m, "box", false).unwrap(), 0);
-    assert_eq!(write(&m), "[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n");
+    assert_eq!(
+        write(&m),
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n")
+    );
     assert!(matches!(
         client_remove(&mut m, "box", false),
         Err(ManageError::NotFound(_))

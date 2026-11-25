@@ -213,10 +213,13 @@ impl RoleOpts {
             update_only: receives && req.update_only,
             reuse_local: !(receives && req.no_rename_detection),
             // Validated by `serve_daemon` before this is used.
+            // Built from the checked relative path, never from the raw
+            // bytes: a peer's partial dir is relative and below the
+            // destination (on Unix the same bytes as before).
             partial_dir: (receives && !req.partial_dir.is_empty())
-                .then(|| crate::platform::bytes_to_os(&req.partial_dir).ok())
+                .then(|| crate::fs::names::peer_path(&req.partial_dir).ok())
                 .flatten()
-                .map(PathBuf::from),
+                .map(|p| PathBuf::from(p.to_os())),
             parallel: DEFAULT_PARALLEL,
             // The sending side paces the data: honoured when the daemon
             // sends. It only slows what this client is sent.
@@ -683,6 +686,10 @@ pub(super) async fn run_client_inner(
         bail!("a single-file session needs both SyncRequest.single_file and the local file name");
     }
     set_sync_options(&mut hello.req, opts, &local.filters);
+    #[cfg(feature = "test-hooks")]
+    if let Some(tamper) = local.hooks.tamper_hello {
+        tamper(&mut hello);
+    }
     // The daemon's `session` span joins this one's trace.
     (hello.traceparent, hello.tracestate) = telemetry::inject(session);
     let key = client_session_key(conn.remote_id(), &hello, &local, opts).await?;
@@ -739,7 +746,7 @@ pub(super) async fn run_client_inner(
 
     if !sends && !opts.dry_run {
         let root = local.root.clone();
-        blocking(move || std::fs::create_dir_all(&root))
+        blocking(move || crate::platform::native_path(&root).and_then(std::fs::create_dir_all))
             .await
             .with_context(|| format!("creating {}", local.root.display()))?;
     }
@@ -908,9 +915,23 @@ pub(crate) fn prepare_root(
                     Err(e) => Err(e),
                 },
                 Missing::Allow => {
-                    // Nothing below a missing component can exist.
+                    // Nothing below a missing component can exist. The
+                    // rest is joined one name at a time, each checked
+                    // again, so the system never reads a component as
+                    // more than one name (on Unix the same bytes as one
+                    // join of the whole path).
                     p = export_root.to_path_buf();
-                    p.push(rel.to_os());
+                    for c in rel.components() {
+                        if let Some(why) =
+                            crate::fs::names::refused(c, crate::platform::Platform::CURRENT)
+                        {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                format!("{}: {why}", String::from_utf8_lossy(c)),
+                            ));
+                        }
+                        p.push(crate::platform::bytes_to_os(c)?);
+                    }
                     return Ok(p);
                 }
             },
@@ -1214,7 +1235,12 @@ async fn accept_session(
     };
     // A partial dir from the client names a place on this side: only a
     // canonical relative path, kept inside the destination, is acceptable.
-    if !sends && !req.partial_dir.is_empty() && RelPath::new(&req.partial_dir).is_err() {
+    // On Unix `peer_path` is `RelPath::new`; on Windows it also refuses a
+    // component Windows would read as more than a name (`..\x`, `C:\x`).
+    if !sends
+        && !req.partial_dir.is_empty()
+        && crate::fs::names::peer_path(&req.partial_dir).is_err()
+    {
         let msg = format!(
             "bad partial-dir {:?}: must be a relative path inside the destination",
             String::from_utf8_lossy(&req.partial_dir)

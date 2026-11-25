@@ -790,7 +790,7 @@ async fn admit_target<'a>(
         }
         None => return Err(no_access(t.path)),
     };
-    inner_export_check(snap, grants, id, t, resolved, rel).await
+    inner_export_check(shared, snap, grants, id, t, resolved, rel).await
 }
 
 /// A request must not reach another export's directory through an outer
@@ -799,6 +799,7 @@ async fn admit_target<'a>(
 /// only `/srv` matches it by name. Every kind of session passes here, a
 /// probe too.
 async fn inner_export_check<'a>(
+    shared: &Arc<Shared>,
     snap: &Snapshot,
     grants: &Permissions,
     id: iroh::EndpointId,
@@ -818,7 +819,21 @@ async fn inner_export_check<'a>(
         .collect();
     let (root, r) = (resolved.export.path.clone(), rel.clone());
     let auto = resolved.export.auto;
+    #[cfg(feature = "test-hooks")]
+    let (fail, fail_io) = {
+        let h = shared.hosting().daemon_hooks;
+        let h = h.lock().unwrap_or_else(PoisonError::into_inner);
+        (h.fail_inner_export_check, h.inner_export_check_io_error)
+    };
+    #[cfg(not(feature = "test-hooks"))]
+    let _ = shared;
     let crossed = tokio::task::spawn_blocking(move || {
+        #[cfg(feature = "test-hooks")]
+        assert!(!fail, "test hook: the inner export check fails");
+        #[cfg(feature = "test-hooks")]
+        if fail_io {
+            return Err(io::Error::other("test hook: an error inside the check"));
+        }
         if auto {
             inner::auto_export_reaches(&root, &r, &others)
         } else {
@@ -981,6 +996,13 @@ async fn serve_all_paths(
         .filter(|(name, e)| grants.access_to(name, e).is_some())
         .map(|(name, e)| (name.clone(), e.clone()))
         .collect();
+    // On Windows only a path on a local drive (on Unix every path).
+    if !crate::resolve::auto_export_path_allowed(t.path, crate::platform::Platform::CURRENT) {
+        return Err((
+            Code::BadPath,
+            "automatic exports need a path on a local drive (like C:\\dir)".into(),
+        ));
+    }
     let abs = match resolve_path(t.path, shared.home.as_deref(), &usable) {
         Ok(Some((abs, _))) => abs,
         Ok(None) => return Err(no_access(t.path)),
@@ -1067,8 +1089,22 @@ fn add_auto_export(
     };
     let root = auto_export_dir(&abs, push, file_dest).map_err(refuse)?;
     // A symlink may lead to `/` or to a name that is not UTF-8.
-    let canonical = std::fs::canonicalize(&root).map_err(|_| refuse(AutoExportError::NotFound))?;
+    let canonical = crate::platform::native_path(&root)
+        .and_then(std::fs::canonicalize)
+        .map_err(|_| refuse(AutoExportError::NotFound))?;
     check_root(&canonical).map_err(refuse)?;
+    // The rule for the typed path, again for where it leads: a link on a
+    // local drive may lead to a network share (on Unix every root may).
+    let canonical_bytes = crate::platform::os_to_bytes(canonical.as_os_str());
+    if !crate::resolve::auto_export_root_allowed(
+        &canonical_bytes,
+        crate::platform::Platform::CURRENT,
+    ) {
+        return Err((
+            Code::BadPath,
+            "automatic exports need a path on a local drive (like C:\\dir)".into(),
+        ));
+    }
     let abs = match abs.strip_prefix(&root) {
         Ok(rest) if !rest.as_os_str().is_empty() => canonical.join(rest),
         _ => canonical.clone(),
@@ -1110,6 +1146,11 @@ fn admit<'a>(
     t: &Target<'_>,
 ) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
     // A single file's name is placed by `place_single`, not joined here.
+    // A name Windows cannot hold (`..\x`, `a:b`) is an invalid name; on
+    // Unix `refused` is `None` for every name.
+    if crate::fs::names::refused(t.name, crate::platform::Platform::CURRENT).is_some() {
+        return Err((Code::BadPath, "invalid name".into()));
+    }
     let rel = if t.single_file {
         if !is_one_component(t.name) {
             return Err((Code::BadPath, "invalid name".into()));
@@ -1325,5 +1366,33 @@ mod banner_tests {
         assert!(b.starts_with("irsync daemon 9.9.9 started\n"));
         assert!(b.contains("relay: disabled"));
         assert!(b.contains("discovery: dns, mdns"));
+    }
+}
+
+#[cfg(test)]
+mod inner_export_tests {
+    /// The answer from the check: a check that could not finish (here an
+    /// injected error) refuses, without naming any export; a reached
+    /// export is named; nothing found goes ahead.
+    #[test]
+    fn a_check_that_fails_refuses_the_request() {
+        use super::{check_answer, Code};
+        let path: &[u8] = b"C:/x";
+        let peer = iroh::SecretKey::from_bytes(&[3; 32]).public();
+        let err = std::io::Error::other("injected");
+        assert_eq!(
+            check_answer(path, peer, Err(err)),
+            Err((
+                Code::Internal,
+                "checking the path failed: injected".to_string()
+            ))
+        );
+        let (code, message) = check_answer(path, peer, Ok(Some("ro".into()))).unwrap_err();
+        assert_eq!(code, Code::BadPath);
+        assert!(
+            message.ends_with("is inside export ro; ask for it by that export"),
+            "{message}"
+        );
+        assert_eq!(check_answer(path, peer, Ok(None)), Ok(()));
     }
 }

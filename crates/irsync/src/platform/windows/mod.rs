@@ -203,6 +203,168 @@ fn one_name(name: &[u8]) -> io::Result<Vec<u16>> {
 }
 
 // ---------------------------------------------------------------------------
+// Paths as the system opens them.
+
+/// A path the local user typed (on the command line) or wrote (in the
+/// config), as Windows means it, made absolute once where it comes in and
+/// kept: `std::path::absolute`, which is `GetFullPathNameW`. Win32 strips
+/// trailing dots and spaces from the last name, resolves `.` and `..`,
+/// reads `/` as `\` and puts a relative path below the current directory,
+/// so `dst.` is `C:\…\dst`, as every Windows program reads it. Every later
+/// open of the result ([`native_path`]) then opens the same directory. A
+/// path that cannot be made absolute (empty) is kept as it is.
+pub fn local_path(path: &Path) -> std::path::PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// `path` in the verbatim form (`\\?\C:\…`, `\\?\UNC\server\share\…`), the
+/// form every function here that opens by path hands to the system. Win32
+/// changes a path in the other forms before it opens it: it strips trailing
+/// dots and spaces from a name (`ro.` opens `ro`), reads `CON` or `NUL` as
+/// a device, and stops at 260 characters. In the verbatim form each name
+/// is opened as it is written, so what was checked by name and what is
+/// opened agree.
+///
+/// - `/` becomes `\` (it separates nothing in a verbatim path).
+/// - A relative path is put below the current directory, a path rooted on
+///   the current drive (`\x`) on that drive, a drive-relative one (`C:x`)
+///   below that drive's current directory (`std::path::absolute` of the
+///   drive alone; the names after it are taken as written).
+/// - `.` is dropped and `..` takes the name before it away, as Win32 does
+///   (never above the root): every caller here takes a path the user or
+///   the configuration wrote, where `..` means that, or one built from
+///   names already checked, which holds no `..` (the name rule and
+///   [`RelPath`](crate::fs::paths::RelPath) refuse it).
+/// - A path already verbatim, or a device path (`\\.\…`), is returned as
+///   it is. A current directory that is itself verbatim (`\\?\C:\…`,
+///   `\\?\UNC\…`) is taken as it is, with the names below it.
+/// - An empty path is an error (`InvalidInput`), as is one that cannot be
+///   made absolute (no current directory).
+///
+/// Only what is opened changes: callers keep the path as given for their
+/// messages, and the errors of these calls carry no path.
+pub fn native_path(path: &Path) -> io::Result<std::borrow::Cow<'_, Path>> {
+    if path.as_os_str().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "an empty path"));
+    }
+    if passes_through(path) {
+        return Ok(std::borrow::Cow::Borrowed(path));
+    }
+    let (root, names) = verbatim_parts(path).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the path cannot be made absolute",
+        )
+    })?;
+    let mut out = root;
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            out.push("\\");
+        }
+        out.push(n);
+    }
+    Ok(std::borrow::Cow::Owned(out.into()))
+}
+
+/// Whether `path` is verbatim already or a device path: given to the
+/// system as it is.
+fn passes_through(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(p)) if !matches!(p.kind(), Prefix::Disk(_) | Prefix::UNC(..))
+    )
+}
+
+/// [`native_path`]'s pieces for a path that does not pass through: the
+/// verbatim root (`\\?\C:\`, `\\?\UNC\server\share\`) and the names below
+/// it; `None` when it cannot be made absolute.
+fn verbatim_parts(path: &Path) -> Option<(OsString, Vec<OsString>)> {
+    use std::path::{Component, Prefix};
+    let mut comps = path.components().peekable();
+    let (root, mut names) = match comps.peek().copied() {
+        Some(Component::Prefix(p)) => {
+            comps.next();
+            let rooted = comps.peek() == Some(&Component::RootDir);
+            if rooted {
+                comps.next();
+            }
+            match p.kind() {
+                Prefix::Disk(d) if rooted => (
+                    OsString::from(format!(r"\\?\{}:\", char::from(d).to_ascii_uppercase())),
+                    Vec::new(),
+                ),
+                Prefix::Disk(d) => {
+                    let drive = format!("{}:", char::from(d));
+                    base_parts(&std::path::absolute(Path::new(&drive)).ok()?)?
+                }
+                Prefix::UNC(server, share) => (unc_root(server, share), Vec::new()),
+                _ => return None,
+            }
+        }
+        Some(Component::RootDir) => {
+            comps.next();
+            let (root, _) = base_parts(&std::env::current_dir().ok()?)?;
+            (root, Vec::new())
+        }
+        _ => base_parts(&std::env::current_dir().ok()?)?,
+    };
+    for c in comps {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                names.pop();
+            }
+            Component::Normal(n) => names.push(n.to_os_string()),
+            Component::Prefix(_) | Component::RootDir => return None,
+        }
+    }
+    Some((root, names))
+}
+
+/// `\\?\UNC\server\share\`.
+fn unc_root(server: &OsStr, share: &OsStr) -> OsString {
+    let mut r = OsString::from(r"\\?\UNC\");
+    r.push(server);
+    r.push("\\");
+    r.push(share);
+    r.push("\\");
+    r
+}
+
+/// The pieces of `dir`, an absolute directory the system gave (the current
+/// directory, or a drive's): as [`verbatim_parts`], and when it is verbatim
+/// already, its own root and names as they are (the system made them).
+fn base_parts(dir: &Path) -> Option<(OsString, Vec<OsString>)> {
+    use std::path::{Component, Prefix};
+    let mut comps = dir.components();
+    let Some(Component::Prefix(p)) = comps.next() else {
+        return None;
+    };
+    let root = match p.kind() {
+        Prefix::Disk(_) | Prefix::UNC(..) => return verbatim_parts(dir),
+        Prefix::VerbatimDisk(d) => {
+            OsString::from(format!(r"\\?\{}:\", char::from(d).to_ascii_uppercase()))
+        }
+        Prefix::VerbatimUNC(server, share) => unc_root(server, share),
+        Prefix::Verbatim(name) => {
+            let mut r = OsString::from(r"\\?\");
+            r.push(name);
+            r.push("\\");
+            r
+        }
+        Prefix::DeviceNS(_) => return None,
+    };
+    let names = comps
+        .filter_map(|c| match c {
+            Component::Normal(n) => Some(n.to_os_string()),
+            _ => None,
+        })
+        .collect();
+    Some((root, names))
+}
+
+// ---------------------------------------------------------------------------
 // `Dir`: a directory held open, and files opened by path.
 
 /// A directory held open. Every operation takes one name (stored bytes,
@@ -332,7 +494,7 @@ impl Dir {
                 .access_mode(DIR_ACCESS)
                 .share_mode(SHARE_ALL)
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | flags)
-                .open(path)?,
+                .open(native_path(path)?)?,
         );
         let (a, _) = attribute_tag(h.as_handle())?;
         if flags & FILE_FLAG_OPEN_REPARSE_POINT != 0 && is_reparse(a) {
@@ -667,7 +829,7 @@ pub fn open_read_nofollow(path: &Path) -> io::Result<File> {
 fn open_nofollow(mut options: std::fs::OpenOptions, path: &Path) -> io::Result<File> {
     let file = match options
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
+        .open(native_path(path)?)
     {
         Ok(file) => file,
         // Only says which error it was: what is there is not used.
@@ -788,7 +950,7 @@ pub fn lstat(path: &Path) -> io::Result<Stat> {
         .access_mode(FILE_READ_ATTRIBUTES)
         .share_mode(SHARE_ALL)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
+        .open(native_path(path)?)?;
     stat_of(file.as_handle())
 }
 
@@ -1115,7 +1277,9 @@ pub fn no_space_error() -> io::Error {
 pub fn symlink_path(target: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
     let (target, link) = (target.as_ref(), link.as_ref());
     let base = link.parent().unwrap_or(Path::new("."));
-    if base.join(target).is_dir() {
+    // The target is stored as given; only where the link goes is opened.
+    let link = native_path(link)?;
+    if native_path(&base.join(target))?.is_dir() {
         std::os::windows::fs::symlink_dir(target, link)
     } else {
         std::os::windows::fs::symlink_file(target, link)
@@ -1168,7 +1332,7 @@ pub fn set_mtime_path(path: &Path, mtime: (i64, u32)) -> io::Result<()> {
         .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
         .share_mode(SHARE_ALL)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
+        .open(native_path(path)?)?;
     set_mtime_handle(file.as_handle(), mtime)
 }
 
@@ -1336,12 +1500,17 @@ pub fn home_dir(env: &dyn Fn(&str) -> Option<OsString>) -> Option<std::path::Pat
 /// (roaming app data, local app data, the profile). `None` only when the
 /// system has no config or state folder either; no key without a home.
 pub fn default_locations(env: &dyn Fn(&str) -> Option<OsString>) -> Option<super::Locations> {
+    // Each as Windows means it ([`local_path`]), as a configured path is.
     Some(super::Locations {
-        config: env_or_system(env, "APPDATA", dirs::config_dir)?
-            .join("irsync")
-            .join("irsync.toml"),
-        state: env_or_system(env, "LOCALAPPDATA", dirs::data_local_dir)?.join("irsync"),
-        key: home_dir(env).map(|h| h.join(".irsync").join("id_ed25519")),
+        config: local_path(
+            &env_or_system(env, "APPDATA", dirs::config_dir)?
+                .join("irsync")
+                .join("irsync.toml"),
+        ),
+        state: local_path(
+            &env_or_system(env, "LOCALAPPDATA", dirs::data_local_dir)?.join("irsync"),
+        ),
+        key: home_dir(env).map(|h| local_path(&h.join(".irsync").join("id_ed25519"))),
     })
 }
 

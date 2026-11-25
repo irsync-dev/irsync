@@ -1,3 +1,6 @@
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::servers::{
@@ -15,7 +18,7 @@ fn id(n: u8) -> iroh::EndpointId {
 /// The message of `text`; `config_version` stays unset, so `write` does
 /// not print it.
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("f")).unwrap()
+    reader::read(&fixture::toml(text), Path::new("f")).unwrap()
 }
 use std::time::Duration;
 

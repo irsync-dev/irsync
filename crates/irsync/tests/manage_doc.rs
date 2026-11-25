@@ -94,10 +94,10 @@ fn a_save_keeps_comments_and_writes_the_writers_form() {
     let path = dir.path().join("irsync.toml");
     irsync::fs::private::write(
         &path,
-        format!(
+        fixture::toml(&format!(
             "{}[exports.p]\npath=\"/p\"\nrw=[]   # nobody yet\n\n\n# the daemon\n[daemon]\nportmap=false\n",
             state_line(dir.path())
-        ),
+        )),
     )
     .unwrap();
     let mut lock = lock_config(&path).unwrap();
@@ -105,10 +105,10 @@ fn a_save_keeps_comments_and_writes_the_writers_form() {
     lock.save(&mut m).unwrap();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        format!(
+        fixture::toml(&format!(
             "config_version = 2\n{}\n# the daemon\n[daemon]\nportmap = false\n\n[exports.p]\npath = \"/p\"\nrw = [] # nobody yet\n",
             state_line(dir.path())
-        )
+        ))
     );
 }
 
@@ -281,17 +281,17 @@ fn parse_clients(
 fn save_writes_names_for_ids() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("irsync.toml");
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "[clients.box]\nclient_id = \"{0}\"\n[exports.p]\npath = \"/p\"\nrw = [\"{0}\"]\n",
         id(1)
-    ));
+    )));
     m.state_dir = Some(state(d.path()));
     lock_config(&path).unwrap().save(&mut m).unwrap();
-    let want = format!(
+    let want = fixture::toml(&format!(
         "config_version = 2\n{}\n[clients.box]\nclient_id = \"{}\"\n\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n",
         state_line(d.path()),
         id(1)
-    );
+    ));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
     // The caller's message is the one that was written.
     assert_eq!(write(&m), want);
@@ -301,10 +301,10 @@ fn save_writes_names_for_ids() {
 fn canonicalize_doc_uses_the_clients_of_the_message() {
     use irsync::manage::canonicalize_doc;
     let path = Path::new("irsync.toml");
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "[clients.box]\nclient_id = \"{0}\"\n[exports.p]\npath = \"/p\"\nrw = [\"{0}\"]\n",
         id(1)
-    ));
+    )));
     assert!(canonicalize_doc(&mut m, path).unwrap());
     assert_eq!(m.exports[0].rw[0].value, "box");
     assert!(!canonicalize_doc(&mut m, path).unwrap());

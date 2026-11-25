@@ -779,6 +779,10 @@ fn list_single(
 ) -> ScanSummary {
     use crate::fs::meta::{lstat_at, lstat_entry_with_ctime};
     let anchored = !prefix.as_bytes().is_empty();
+    // Looked at as written (see `native_path`).
+    if let Ok(native) = crate::platform::native_path(&root) {
+        root = native.into_owned();
+    }
     let mut sum = ScanSummary::default();
     let gap = |sum: &mut ScanSummary, path: RelPath, message: String| {
         sum.incomplete = true;

@@ -1687,9 +1687,13 @@ pub(super) async fn run(
         }
         let (local_tx, local_rx) = mpsc::channel(LISTING_QUEUE);
         let root = ctx.root.clone();
-        let root_missing = blocking(move || Ok(std::fs::symlink_metadata(&root).is_err()))
-            .await
-            .unwrap_or(false);
+        let root_missing = blocking(move || {
+            Ok(crate::platform::native_path(&root)
+                .and_then(std::fs::symlink_metadata)
+                .is_err())
+        })
+        .await
+        .unwrap_or(false);
         if ctx.opts.dry_run && root_missing {
             // A dry run does not create the root: there is nothing to list.
             drop(local_tx);

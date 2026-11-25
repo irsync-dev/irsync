@@ -90,6 +90,21 @@ pub fn bytes_to_os(bytes: &[u8]) -> io::Result<OsString> {
     Ok(OsString::from_vec(bytes.to_vec()))
 }
 
+/// A path the local user typed or wrote in the config, as this system
+/// means it, to keep and open from then on: on Unix the path as it is
+/// (every name means what it says; nothing changes at any caller). See the
+/// Windows version for what it does there.
+pub fn local_path(path: &Path) -> std::path::PathBuf {
+    path.to_path_buf()
+}
+
+/// `path` as the system opens it: on Unix the path itself (Unix opens
+/// every name as it is written). See the Windows version for what it does
+/// there.
+pub fn native_path(path: &Path) -> io::Result<std::borrow::Cow<'_, Path>> {
+    Ok(std::borrow::Cow::Borrowed(path))
+}
+
 /// `name` if it is one component: not empty, `.` or `..`, and without `/`
 /// or NUL. Checked before any call, so no operation of [`Dir`] can reach
 /// past the directory it holds.

@@ -56,7 +56,8 @@ macro_rules! say_out {
 }
 
 fn main() {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    args.local_paths();
     // The receiver holds a descriptor per file in flight; see
     // `platform::raise_handle_limit`.
     let _ = irsync::platform::raise_handle_limit();

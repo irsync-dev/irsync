@@ -401,3 +401,102 @@ fn the_listing_parser_checks_every_length() {
         );
     }
 }
+
+#[test]
+fn a_path_is_opened_in_its_verbatim_form() {
+    let n = |p: &str| {
+        native_path(Path::new(p))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+    assert_eq!(n(r"C:\x\ro."), r"\\?\C:\x\ro.");
+    assert_eq!(n(r"c:/x/ro /y"), r"\\?\C:\x\ro \y");
+    assert_eq!(n(r"C:\x\NUL"), r"\\?\C:\x\NUL");
+    assert_eq!(n(r"C:\x\.\y\..\z"), r"\\?\C:\x\z");
+    assert_eq!(n(r"C:\.."), r"\\?\C:\");
+    assert_eq!(n(r"C:\"), r"\\?\C:\");
+    assert_eq!(n(r"\\server\share\x."), r"\\?\UNC\server\share\x.");
+    // Already verbatim, or a device: as given.
+    assert_eq!(n(r"\\?\C:\x."), r"\\?\C:\x.");
+    assert_eq!(n(r"\\?\UNC\s\h\x"), r"\\?\UNC\s\h\x");
+    assert_eq!(n(r"\\.\pipe\x"), r"\\.\pipe\x");
+    // Relative, rooted on the current drive, and drive-relative.
+    let cwd = native_path(&std::env::current_dir().unwrap())
+        .unwrap()
+        .into_owned();
+    assert_eq!(native_path(Path::new("a/b.")).unwrap(), cwd.join(r"a\b."));
+    assert_eq!(
+        n(r"\x."),
+        format!(r"{}x.", &cwd.to_string_lossy()[..7]),
+        "the current drive's root"
+    );
+    let drive = &std::env::current_dir().unwrap().to_string_lossy()[..2].to_string();
+    assert_eq!(
+        native_path(Path::new(&format!("{drive}y."))).unwrap(),
+        cwd.join("y.")
+    );
+    // An empty path is no path.
+    assert_eq!(
+        native_path(Path::new("")).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    // A verbatim current directory is taken as it is (here as the
+    // directory std gives, the way `base_parts` reads it).
+    let (root, names) = base_parts(Path::new(r"\\?\C:\x.\y ")).unwrap();
+    assert_eq!(root, OsString::from(r"\\?\C:\"));
+    assert_eq!(names, [OsString::from("x."), OsString::from("y ")]);
+    let (root, names) = base_parts(Path::new(r"\\?\UNC\s\h\d")).unwrap();
+    assert_eq!(root, OsString::from(r"\\?\UNC\s\h\"));
+    assert_eq!(names, [OsString::from("d")]);
+}
+
+/// Win32 would open `x` for `x.` and `x `; the verbatim form opens the
+/// name as written.
+#[test]
+fn a_root_with_a_trailing_dot_or_space_is_that_directory() {
+    let t = tempfile::tempdir().unwrap();
+    let base = native_path(t.path()).unwrap().into_owned();
+    std::fs::create_dir(base.join("x")).unwrap();
+    for name in ["x.", "x "] {
+        std::fs::create_dir(base.join(name)).unwrap();
+        // Given in the ordinary form, as a caller holds it.
+        let d = Dir::open_root(&t.path().join(name)).unwrap();
+        let (want, other) = (
+            lstat(&base.join(name)).unwrap(),
+            lstat(&base.join("x")).unwrap(),
+        );
+        let got = d.stat_self().unwrap();
+        assert_eq!(got.ino, want.ino, "{name:?}");
+        assert_ne!(got.ino, other.ino, "{name:?}");
+        assert_eq!(lstat(&t.path().join(name)).unwrap().ino, want.ino);
+        assert!(Dir::open_root_nofollow(&t.path().join(name)).is_ok());
+    }
+}
+
+/// A root named like a device is an ordinary directory, and a root path
+/// longer than 260 characters opens.
+#[test]
+fn device_names_and_long_paths_are_ordinary_paths() {
+    let t = tempfile::tempdir().unwrap();
+    let base = native_path(t.path()).unwrap().into_owned();
+    for name in ["NUL", "CON", "aux"] {
+        std::fs::create_dir(base.join(name)).unwrap();
+        let d = Dir::open_root(&t.path().join(name)).unwrap();
+        d.create_dir(b"in", 0).unwrap();
+        assert!(base.join(name).join("in").is_dir(), "{name}");
+        assert_eq!(lstat(&t.path().join(name)).unwrap().kind, Kind::Dir);
+    }
+    let mut long = t.path().to_path_buf();
+    while long.as_os_str().len() < 300 {
+        long.push("a-long-directory-name-0123456789");
+    }
+    create_private_dir_all(&long).unwrap();
+    let d = Dir::open_root(&long).unwrap();
+    d.create_dir(b"deep", 0).unwrap();
+    write_private(&long.join("f"), b"x").unwrap();
+    let f = open_read_nofollow(&long.join("f")).unwrap();
+    assert_eq!(fstat(&f).unwrap().size, 1);
+    set_mtime_path(&long.join("f"), (1_600_000_000, 0)).unwrap();
+    assert_eq!(lstat(&long.join("f")).unwrap().mtime, (1_600_000_000, 0));
+}

@@ -280,7 +280,8 @@ fn defaults_for_settings_keys() {
     } else {
         Path::new(".config/irsync").to_path_buf()
     };
-    let under_home = |name: &str| format!("~/{}", dir.join(name).display());
+    let sep = if cfg!(windows) { '\\' } else { '/' };
+    let under_home = |name: &str| format!("~{sep}{}", dir.join(name).display());
     assert_eq!(
         default_of(&p("defaults.identity")),
         Some(vec![under_home("id_ed25519")])

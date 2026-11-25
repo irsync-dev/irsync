@@ -59,15 +59,18 @@ pub(crate) fn endpoint_id_from(
         })
 }
 
-/// Expand a leading `~` or `~/` using the user's home directory.
+/// Expand a leading `~` or `~/` (on Windows also `~\`) using the user's
+/// home directory.
 pub(crate) fn expand_tilde(p: &str) -> PathBuf {
     let home = || paths::home_dir().unwrap_or_else(|| PathBuf::from("."));
     if p == "~" {
-        home()
-    } else if let Some(rest) = p.strip_prefix("~/") {
-        home().join(rest)
-    } else {
-        PathBuf::from(p)
+        return home();
+    }
+    match p.strip_prefix('~').map(|r| (r.bytes().next(), r)) {
+        Some((Some(b), rest)) if crate::platform::Platform::CURRENT.is_separator(b) => {
+            home().join(&rest[1..])
+        }
+        _ => PathBuf::from(p),
     }
 }
 

@@ -93,7 +93,7 @@ pub fn lstat_entry_with_ctime(root: &Path, rel: &RelPath) -> io::Result<(FileEnt
     };
     let st = platform::lstat(&full)?;
     let link_target = if st.kind == platform::Kind::Symlink {
-        platform::os_to_bytes(std::fs::read_link(&full)?.as_os_str())
+        platform::os_to_bytes(std::fs::read_link(platform::native_path(&full)?)?.as_os_str())
     } else {
         Vec::new()
     };

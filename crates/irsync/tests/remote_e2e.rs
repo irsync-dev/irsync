@@ -5,10 +5,15 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{irsync_bin as irsync, irsync_bin_env, spawn_daemon_binary_env, BinaryDaemon};
+#[cfg(unix)]
+use common::irsync_bin_env;
+use common::{irsync_bin as irsync, spawn_daemon_binary_env, BinaryDaemon};
 use irsync::authz::Access;
+#[cfg(unix)]
 use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
+#[cfg(unix)]
 use irsync_proto::v1::{admin_reply, admin_request, hello};
+#[cfg(unix)]
 use prost::Message as _;
 
 fn stderr(o: &std::process::Output) -> String {
@@ -95,6 +100,25 @@ fn remote_export_add_then_list() {
     let local = ok(&s.server, &["export", "list"]);
     assert!(remote.contains("photos: "), "{remote}");
     assert_eq!(remote, local);
+}
+
+/// An absolute path of the server's system (`/…` on Unix, `C:\…` on
+/// Windows) is sent as typed and added as the server reads it.
+#[test]
+fn remote_export_add_of_an_absolute_path_then_list() {
+    let s = setup(Some(Access::ReadWrite));
+    // Built from its components: one separator throughout on Windows too.
+    let photos: PathBuf = s.server.join("Photos").components().collect();
+    let target = format!("pics:{}", photos.display());
+    let o = irsync(&s.client, &["remote", "myserver", "export", "add", &target]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let remote = ok(&s.client, &["remote", "myserver", "export", "list"]);
+    let local = ok(&s.server, &["export", "list"]);
+    assert_eq!(remote, local);
+    assert!(
+        remote.contains(&format!("pics: {}", photos.display())),
+        "{remote}"
+    );
 }
 
 #[test]
@@ -320,6 +344,7 @@ async fn an_older_daemon_is_told_to_update() {
 }
 
 /// Every record of a capture file.
+#[cfg(unix)]
 fn read_capture(path: &Path) -> Vec<Record> {
     let file = std::fs::read(path).unwrap();
     pbcap::Reader::new(&file[..])
@@ -329,6 +354,7 @@ fn read_capture(path: &Path) -> Vec<Record> {
 }
 
 /// The admin messages of a capture, as (side, direction, message).
+#[cfg(unix)]
 fn admin_msgs(recs: &[Record]) -> Vec<(Side, Direction, &Msg)> {
     recs.iter()
         .filter_map(|r| match r.msg.as_ref()? {
@@ -338,6 +364,9 @@ fn admin_msgs(recs: &[Record]) -> Vec<(Side, Direction, &Msg)> {
         .collect()
 }
 
+/// Unix only: the daemon writes its capture when SIGTERM asks it to stop; a
+/// test on Windows can only end it with TerminateProcess, which writes none.
+#[cfg(unix)]
 #[test]
 fn admin_traffic_is_captured_on_both_sides() {
     let dir = tempfile::tempdir().unwrap();

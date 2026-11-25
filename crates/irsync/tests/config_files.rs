@@ -387,6 +387,19 @@ fn exports_all_is_reserved() {
     assert!(e.contains(":2:"), "{e}");
 }
 
+/// On Windows `~\` is the home too, as `get` prints a default there; on
+/// Unix a backslash is part of a name, so `~\c` is no home path.
+#[test]
+fn a_tilde_and_a_backslash_is_the_home_on_windows_only() {
+    let parsed = parse_exports("[exports.c]\npath = '~\\c'\n", p());
+    if cfg!(windows) {
+        let path = &parsed.unwrap().exports["c"].path;
+        assert_eq!(path, &dirs::home_dir().unwrap().join("c"));
+    } else {
+        assert!(parsed.is_err(), "a relative path is refused");
+    }
+}
+
 #[test]
 fn exports_relative_path_is_error_with_file_and_line() {
     let e = parse_exports(

@@ -286,6 +286,18 @@ pub struct SideHooks {
     /// [`crate::hasher::HashHook`]; a test changes the file mid-pass).
     #[cfg(feature = "test-hooks")]
     pub during_hash: Option<crate::hasher::HashHook>,
+    /// Daemon: its check for an inner export (see `daemon::inner`) fails
+    /// (it panics): the request must be refused.
+    #[cfg(feature = "test-hooks")]
+    pub fail_inner_export_check: bool,
+    /// Daemon: its check for an inner export meets an I/O error: the
+    /// request must be refused.
+    #[cfg(feature = "test-hooks")]
+    pub inner_export_check_io_error: bool,
+    /// Client: changes its `Hello` after the options are set and checked
+    /// (crafts a hostile request the client itself would refuse).
+    #[cfg(feature = "test-hooks")]
+    pub tamper_hello: Option<fn(&mut crate::session::SyncHello)>,
 }
 
 /// Test hook: a connection drop after a number of frames of one kind

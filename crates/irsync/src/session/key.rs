@@ -29,7 +29,9 @@ fn location_bytes(l: &Location) -> Vec<u8> {
             path,
             contents_only,
         } => {
-            let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            let canon = crate::platform::native_path(path)
+                .and_then(std::fs::canonicalize)
+                .unwrap_or_else(|_| path.clone());
             v.extend_from_slice(b"local\0");
             v.push(*contents_only as u8);
             v.extend_from_slice(&os_to_bytes(canon.as_os_str()));

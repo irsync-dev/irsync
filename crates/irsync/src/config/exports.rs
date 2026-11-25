@@ -76,18 +76,41 @@ impl Exports {
     /// and no name twice. `path` is the file named in errors (and
     /// recorded as `Exports.path`).
     pub fn from_message(msg: &pb::Config, path: &Path) -> Result<Exports, ConfigError> {
+        Self::read(msg, path, |name, written| {
+            let expanded = expand_tilde(written);
+            if !expanded.is_absolute() {
+                return Err(file_error(path, not_absolute(name, &expanded)));
+            }
+            // As this system means it (on Unix the path as written).
+            Ok(crate::platform::local_path(&expanded))
+        })
+    }
+
+    /// The exports of a message another machine sent (what `irsync remote`
+    /// shows of a server's): names checked as [`Exports::from_message`]
+    /// checks them, but each path kept as the server wrote it. It is a
+    /// path of the server's system, which may be another kind than this
+    /// one (`C:\srv` is not absolute on Unix, nor `/srv` on Windows), so
+    /// this system's rules neither check nor change it; it is only shown.
+    pub fn as_sent(msg: &pb::Config, path: &Path) -> Result<Exports, ConfigError> {
+        Self::read(msg, path, |_, written| Ok(PathBuf::from(written)))
+    }
+
+    /// The exports of `msg`, with each export's path as `path_of` (given
+    /// the name and the path as written) makes it.
+    fn read(
+        msg: &pb::Config,
+        path: &Path,
+        path_of: impl Fn(&str, &str) -> Result<PathBuf, ConfigError>,
+    ) -> Result<Exports, ConfigError> {
         let mut exports = BTreeMap::new();
         for e in &msg.exports {
             let name = &e.name;
             if let Some(problem) = name_problem(name) {
                 return Err(file_error(path, problem));
             }
-            let expanded = expand_tilde(&e.path);
-            if !expanded.is_absolute() {
-                return Err(file_error(path, not_absolute(name, &expanded)));
-            }
             let export = Export {
-                path: expanded,
+                path: path_of(name, &e.path)?,
                 read_only: e.read_only.unwrap_or(false),
                 index_at_start: e.index_at_start.unwrap_or(false),
                 fsync: e.fsync.unwrap_or(false),
@@ -103,5 +126,36 @@ impl Exports {
             path: path.to_path_buf(),
             exports,
         })
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    /// An export root written with a trailing dot or space is the
+    /// directory Windows names by it (`x.` is `x`), and that is what the
+    /// daemon opens.
+    #[test]
+    fn a_written_root_is_read_as_windows_reads_it() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::create_dir(t.path().join("x")).unwrap();
+        std::fs::write(t.path().join("x").join("f"), b"f").unwrap();
+        for tail in [".", " "] {
+            let written = format!("{}{tail}", t.path().join("x").display());
+            let msg = pb::Config {
+                exports: vec![pb::Export {
+                    name: "m".into(),
+                    path: written.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let e = Exports::from_message(&msg, Path::new("irsync.toml")).unwrap();
+            let path = &e.exports["m"].path;
+            assert_eq!(path, &t.path().join("x"), "{written:?}");
+            let d = crate::platform::Dir::open_root_nofollow(path).unwrap();
+            assert_eq!(d.stat(b"f").unwrap().size, 1);
+        }
     }
 }

@@ -2,6 +2,9 @@
 //! a config message, the self-protection of the committing client, and
 //! the reads.
 
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::authz::Access;
 use irsync::config::reader::read;
 use irsync::manage::admin::{admin_of, apply, config_text, summary, view, Committer};
@@ -310,7 +313,7 @@ fn grant_remove_refuses_as_the_cli_does() {
 
 #[test]
 fn view_lists_exports_and_clients_with_rights() {
-    let m = msg(&format!(
+    let m = msg(&fixture::toml(&format!(
         "[clients.me]\nclient_id = \"{}\"\nadmin = \"rw\"\n\
          [clients.laptop]\nclient_id = \"{}\"\nall_paths = \"ro\"\nall_exports = \"rw\"\n\
          [clients.nas]\nclient_id = \"{}\"\n\
@@ -318,7 +321,7 @@ fn view_lists_exports_and_clients_with_rights() {
         id(1),
         id(2),
         id(3)
-    ));
+    )));
     let v = view(&m, id(9), true, None);
     assert_eq!(v.daemon_id, id(9).as_bytes().to_vec());
     assert!(v.allow_all_paths);
@@ -326,7 +329,7 @@ fn view_lists_exports_and_clients_with_rights() {
         v.exports,
         [v1::ExportView {
             name: "photos".into(),
-            path: "/srv/photos".into(),
+            path: fixture::abs("/srv/photos"),
             read_only: true,
             index_at_start: false,
             fsync: false,
@@ -374,8 +377,11 @@ fn view_expands_a_tilde_path_with_the_daemons_home() {
             .collect()
     };
     assert_eq!(
-        paths(Some(Path::new("/srv/daemon"))),
-        ["/srv/daemon", "/srv/daemon/Photos"]
+        paths(Some(&fixture::abs_path("/srv/daemon"))),
+        [
+            fixture::abs("/srv/daemon"),
+            fixture::abs("/srv/daemon/Photos")
+        ]
     );
     assert_eq!(paths(None), ["~", "~/Photos"]);
 }
@@ -539,4 +545,143 @@ fn export_rename_to_a_taken_name_nacks() {
     let nack = run(&mut m, &[export_rename("a", "b")]).unwrap_err();
     assert_eq!(nack.change, 1);
     assert_eq!(m, before);
+}
+
+/// What a server takes as the path of a remote `export add` that is not
+/// under `~`, by its own kind of system, wherever the test runs.
+#[test]
+fn a_remote_export_path_is_read_by_the_servers_rules() {
+    use irsync::platform::Platform::{Unix, Windows};
+    use irsync::resolve::{
+        remote_export_path_problem as problem, REMOTE_NOT_ABSOLUTE, REMOTE_NOT_LOCAL,
+        REMOTE_NO_DRIVE,
+    };
+    // Unix: absolute means a leading `/`, as before.
+    assert_eq!(problem("/srv/photos", Unix), None);
+    for p in ["Photos", "./Photos", r"C:\srv", "C:/srv", r"\srv"] {
+        assert_eq!(problem(p, Unix), Some(REMOTE_NOT_ABSOLUTE), "{p}");
+    }
+    // Windows: a drive and its root.
+    for p in [r"C:\srv\photos", "c:/srv/photos", r"C:\", r"\\?\C:\srv"] {
+        assert_eq!(problem(p, Windows), None, "{p}");
+    }
+    for p in ["Photos", r".\Photos", "C:", "C:srv", r"~nobody\x"] {
+        assert_eq!(problem(p, Windows), Some(REMOTE_NOT_ABSOLUTE), "{p}");
+    }
+    for p in [r"\srv\photos", "/srv/photos"] {
+        assert_eq!(problem(p, Windows), Some(REMOTE_NO_DRIVE), "{p}");
+    }
+    for p in [
+        r"\\server\share\photos",
+        "//server/share/photos",
+        r"\\?\UNC\server\share\photos",
+        r"\\.\C:\srv",
+        r"\\.\pipe\x",
+        r"\\?\GLOBALROOT\Device\x",
+    ] {
+        assert_eq!(problem(p, Windows), Some(REMOTE_NOT_LOCAL), "{p}");
+    }
+}
+
+/// A Windows server takes a drive path, or one under `~` with either
+/// separator, and refuses one without a drive, a share and a device.
+#[cfg(windows)]
+#[test]
+fn a_windows_server_takes_a_drive_path_or_one_under_home() {
+    use irsync::resolve::{REMOTE_NOT_ABSOLUTE, REMOTE_NOT_LOCAL, REMOTE_NO_DRIVE};
+    let d = tempfile::tempdir().unwrap();
+    let photos = d.path().join("srv").join("photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("Photos").join("2024")).unwrap();
+    let add = |target: &str| {
+        let mut m = config_with("admin = \"rw\"");
+        apply(
+            &mut m,
+            Path::new(FILE),
+            Some(&home),
+            &me(),
+            &[export_add(target)],
+        )
+        .map(|_| m.exports[0].clone())
+    };
+    let abs = photos.to_str().unwrap();
+    for target in [
+        format!("p:{abs}"),
+        format!("p:{}", abs.replace('\\', "/")),
+        format!(r"p:{abs}\.\x\.."),
+    ] {
+        let e = add(&target).unwrap();
+        assert_eq!((e.name.as_str(), e.path.as_str()), ("p", abs), "{target}");
+    }
+    // A bare drive path is named by its last component, never `C`.
+    assert_eq!(add(abs).unwrap().name, "photos");
+    for (target, written) in [
+        ("h:~", "~"),
+        ("p:~/Photos", "~/Photos"),
+        (r"p:~\Photos", "~/Photos"),
+        (r"p:~\Photos\2024", "~/Photos/2024"),
+    ] {
+        assert_eq!(add(target).unwrap().path, written, "{target}");
+    }
+    let refused = |target: &str, why: &str| {
+        let nack = add(target).unwrap_err();
+        assert_eq!(nack.change, 1, "{target}");
+        assert!(nack.reason.contains(why), "{target}: {}", nack.reason);
+    };
+    refused(r"pics:\srv\photos", REMOTE_NO_DRIVE);
+    refused("pics:/srv/photos", REMOTE_NO_DRIVE);
+    refused("pics:C:", REMOTE_NOT_ABSOLUTE);
+    refused("pics:Photos", REMOTE_NOT_ABSOLUTE);
+    refused(r"pics:\\server\share\x", REMOTE_NOT_LOCAL);
+    refused(r"pics:\\.\C:\srv", REMOTE_NOT_LOCAL);
+    // A letter and `:` before a separator is a drive (P:), never a name.
+    refused(r"p:\srv\photos", "not a directory");
+    // The view shows a `~\` path under the daemon's home, as a `~/` one.
+    let m = msg("[exports.a]\npath = '~\\Photos'\n[exports.b]\npath = \"~/Photos\"\n");
+    let shown: Vec<String> = view(&m, id(9), false, Some(&home))
+        .exports
+        .into_iter()
+        .map(|e| e.path)
+        .collect();
+    let want = home.join("Photos").to_string_lossy().into_owned();
+    assert_eq!(shown, [want.clone(), want]);
+}
+
+/// What `irsync remote` shows of a server's exports is each path as the
+/// server sent it: a path of the server's system, which this one neither
+/// checks nor changes (`C:\srv` from a Windows server on a Unix client,
+/// `/srv` from a Unix server on a Windows client).
+#[test]
+fn a_servers_export_paths_are_shown_as_sent() {
+    use irsync::config::exports::Exports;
+    let m = pb::Config {
+        exports: ["/srv/photos", r"C:\srv\photos", "~/Photos"]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| pb::Export {
+                name: format!("e{i}"),
+                path: p.to_string(),
+                ..pb::Export::default()
+            })
+            .collect(),
+        ..pb::Config::default()
+    };
+    let shown: Vec<String> = Exports::as_sent(&m, Path::new("myserver"))
+        .unwrap()
+        .exports
+        .values()
+        .map(|e| e.path.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(shown, ["/srv/photos", r"C:\srv\photos", "~/Photos"]);
+    // Names are still checked.
+    let bad = pb::Config {
+        exports: vec![pb::Export {
+            name: "a/b".into(),
+            path: "/srv".into(),
+            ..pb::Export::default()
+        }],
+        ..pb::Config::default()
+    };
+    assert!(Exports::as_sent(&bad, Path::new("myserver")).is_err());
 }

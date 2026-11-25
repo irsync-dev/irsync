@@ -495,18 +495,22 @@ impl Harness {
     /// A harness whose export and local dirs are created under `base`
     /// (a filesystem with properties the default temp dir may lack).
     pub async fn new_in(base: &std::path::Path) -> Harness {
-        Self::build(Some(base), |_| {}, |_| {}).await.0
+        Self::build(Some(base), |_| {}, |_| {}, |_| Vec::new())
+            .await
+            .0
     }
 
     /// A harness plus a second client endpoint the daemon also authorises.
     pub async fn with_guest() -> (Harness, Endpoint) {
-        Self::build(None, |_| {}, |_| {}).await
+        Self::build(None, |_| {}, |_| {}, |_| Vec::new()).await
     }
 
     /// A harness whose export is filled by `seed` before the daemon starts,
     /// with `index_at_start` set on it.
     pub async fn warm(seed: impl FnOnce(&std::path::Path)) -> Harness {
-        Self::build(None, |e| e.index_at_start = true, seed).await.0
+        Self::build(None, |e| e.index_at_start = true, seed, |_| Vec::new())
+            .await
+            .0
     }
 
     /// A harness whose export is first adjusted by `configure`.
@@ -514,13 +518,66 @@ impl Harness {
     pub async fn with_export(
         configure: impl FnOnce(&mut irsync::config::exports::Export),
     ) -> Harness {
-        Self::build(None, configure, |_| {}).await.0
+        Self::build(None, configure, |_| {}, |_| Vec::new()).await.0
+    }
+
+    /// A harness whose export `m` holds a second export, `name`, at the
+    /// directory `dir` below it (made here), adjusted by `configure`.
+    #[allow(dead_code)]
+    pub async fn with_inner_export(
+        name: &'static str,
+        dir: &'static str,
+        configure: impl FnOnce(&mut irsync::config::exports::Export),
+    ) -> Harness {
+        Self::with_other_export(
+            name,
+            move |m| {
+                let path = m.join(dir);
+                std::fs::create_dir_all(&path).unwrap();
+                path
+            },
+            configure,
+        )
+        .await
+    }
+
+    /// A harness with a second export, `name`, at the path `path` gives for
+    /// the root of `m` (`path` makes what it wants made), adjusted by
+    /// `configure`.
+    #[allow(dead_code)]
+    pub async fn with_other_export(
+        name: &'static str,
+        path: impl FnOnce(&std::path::Path) -> std::path::PathBuf,
+        configure: impl FnOnce(&mut irsync::config::exports::Export),
+    ) -> Harness {
+        Self::build(
+            None,
+            |_| {},
+            |_| {},
+            move |m| {
+                let path = path(m);
+                let mut e = irsync::config::exports::Export {
+                    path,
+                    read_only: false,
+                    index_at_start: false,
+                    fsync: false,
+                    auto: false,
+                    rw: Vec::new(),
+                    ro: Vec::new(),
+                };
+                configure(&mut e);
+                vec![(name, e)]
+            },
+        )
+        .await
+        .0
     }
 
     async fn build(
         base: Option<&std::path::Path>,
         configure: impl FnOnce(&mut irsync::config::exports::Export),
         seed: impl FnOnce(&std::path::Path),
+        extra: impl FnOnce(&std::path::Path) -> Vec<(&'static str, irsync::config::exports::Export)>,
     ) -> (Harness, Endpoint) {
         let tmp = || match base {
             Some(b) => tempfile::tempdir_in(b).unwrap(),
@@ -546,7 +603,9 @@ impl Harness {
             ro: Vec::new(),
         };
         configure(&mut m);
-        let daemon = spawn_daemon_exports(vec![("m", m)], authz).await;
+        let mut exports = vec![("m", m)];
+        exports.extend(extra(export.path()));
+        let daemon = spawn_daemon_exports(exports, authz).await;
         let h = Harness {
             daemon,
             client,

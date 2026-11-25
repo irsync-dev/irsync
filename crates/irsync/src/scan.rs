@@ -294,6 +294,11 @@ fn run_walk(
     tx: mpsc::Sender<ScanEvent>,
     meter: Option<Arc<Meter>>,
 ) -> ScanSummary {
+    // Walked as written (see `native_path`: on Windows a trailing dot or
+    // space of a name is kept); names below it are the walk's own.
+    if let Ok(native) = crate::platform::native_path(&root) {
+        root = native.into_owned();
+    }
     // Timed while the walk works; released while it waits for room in the channel.
     let timing = RefCell::new(meter.as_deref().map(|m| m.start(Activity::Walk)));
     let emit = |ev: ScanEvent| -> bool {

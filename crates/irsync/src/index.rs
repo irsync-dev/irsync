@@ -757,7 +757,8 @@ pub(crate) fn cutoff(age: Duration) -> i64 {
 /// names after it: the path it has once created. Anything else that stops
 /// the path resolving is an error rather than a key for the path as given.
 fn canonical_root(root: &Path) -> std::io::Result<PathBuf> {
-    let abs = std::path::absolute(root)?;
+    // As every platform open reads it (on Unix the path as it is).
+    let abs = std::path::absolute(&*crate::platform::native_path(root)?)?;
     let mut missing = Vec::new();
     let mut cur = abs.as_path();
     loop {

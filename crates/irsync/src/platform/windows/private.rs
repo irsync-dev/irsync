@@ -12,12 +12,12 @@ use crate::platform::{Create, Open};
 /// [`std::fs::create_dir_all`]: each directory gets the access its parent
 /// passes on.
 pub fn create_private_dir_all(dir: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(dir)
+    std::fs::create_dir_all(super::native_path(dir)?)
 }
 
 /// Writes `contents` to `path`, replacing what is there ([`std::fs::write`]).
 pub fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-    std::fs::write(path, contents)
+    std::fs::write(super::native_path(path)?, contents)
 }
 
 /// Opens `path` as `how` says (`how.mode` and `how.nonblock` mean nothing

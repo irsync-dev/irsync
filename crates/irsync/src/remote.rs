@@ -12,6 +12,7 @@ use anyhow::{bail, Context};
 use irsync::authz::Access;
 use irsync::cli::{ClientCmd, GrantCmd, RemoteCmd, RemoteConfigCmd, RemoteExportCmd};
 use irsync::config::clients::{Clients, RIGHTS};
+use irsync::config::exports::Exports;
 use irsync::config::file::Config;
 use irsync::config::servers::Servers;
 use irsync::fs::paths::escape_text;
@@ -609,6 +610,19 @@ fn print_indexed(server: &str, r: &IndexRun, quiet: bool) -> i32 {
     code
 }
 
+/// The config the printers read from `msg`, the view of `server`
+/// ([`view_to_config`]). The export paths are the server's, kept as it
+/// sent them ([`Exports::as_sent`]): they are shown, never opened here.
+pub fn view_config(msg: &pb::Config, server: &str) -> anyhow::Result<Config> {
+    let without_exports = pb::Config {
+        exports: Vec::new(),
+        ..msg.clone()
+    };
+    let mut config = Config::from_message(&without_exports, Path::new(server))?;
+    config.exports = Exports::as_sent(msg, Path::new(server))?;
+    Ok(config)
+}
+
 /// Prints `outcome` the way the local command does; the exit code.
 pub fn print(
     shape: &Shape,
@@ -641,8 +655,8 @@ pub fn print(
         }
         RemoteOutcome::View(v) => {
             let msg = view_to_config(&v);
-            let config = Config::from_message(&msg, Path::new(server))
-                .with_context(|| format!("the answer of {server}"))?;
+            let config =
+                view_config(&msg, server).with_context(|| format!("the answer of {server}"))?;
             match shape {
                 Shape::ExportList => {
                     print!(
@@ -853,7 +867,7 @@ mod tests {
             ..Default::default()
         };
         let msg = view_to_config(&v);
-        let config = Config::from_message(&msg, Path::new("server")).unwrap();
+        let config = view_config(&msg, "server").unwrap();
         let text = manage::show::export_blocks(&config.exports, &config.clients);
         assert!(text.contains("photos: /srv/photos"), "{text}");
         assert!(text.contains("read_only"), "{text}");

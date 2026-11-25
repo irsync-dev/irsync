@@ -67,6 +67,19 @@ impl Platform {
         }
     }
 
+    /// Whether two different spellings may name one directory: on Windows
+    /// a name in another case (NTFS folds case by default) or an 8.3 short
+    /// name. Where they may, the daemon also checks the directories a
+    /// request passes through by identity (see `daemon::inner_export`).
+    /// Not on Unix, where irsync makes no such check (a case-insensitive
+    /// macOS volume has the same gap; recorded, not handled here).
+    pub const fn names_may_alias(self) -> bool {
+        match self {
+            Platform::Unix => false,
+            Platform::Windows => true,
+        }
+    }
+
     /// Whether the byte `b` separates the components of a path on this kind
     /// of system: `/` on Unix; `\` and `/` on Windows. Both are ASCII, so
     /// they never occur inside a longer UTF-8 or WTF-8 sequence.

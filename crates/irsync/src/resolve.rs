@@ -3,6 +3,7 @@
 //! that contains it.
 
 use crate::authz::{Access, Permissions};
+use crate::location::is_drive_path;
 use crate::config::exports::Export;
 use crate::fs::paths::RelPath;
 use crate::platform::{bytes_to_os, os_to_bytes, Platform};
@@ -96,6 +97,10 @@ fn windows_start<'p>(path: &'p [u8], sep: &impl Fn(&u8) -> bool) -> (Start, &'p 
                 return unc(rest, sep);
             }
             // `\\?\C:\`, `\\?\UNC\server\share\` or a device (`\\.\name`).
+            // The extended drive form folds to the plain drive. That is
+            // safe because the daemon never opens the request's spelling:
+            // it opens the export's own configured path and the checked
+            // components below it (`containing` gives `rel` from the parts).
             if let Some((d, rest)) = drive(after, sep) {
                 return (Start::Prefix(d), rest);
             }
@@ -144,14 +149,85 @@ fn components(path: &[u8], platform: Platform) -> Result<(Start, Vec<&[u8]>), Re
         return Err(ResolveError::BadPath);
     }
     let (start, parts) = split_path(path, platform);
-    let windows = platform == Platform::Windows;
+    // The name rule of `fs::names` (on Unix it refuses nothing).
     if parts
         .iter()
-        .any(|c| *c == b".." || (windows && c.contains(&b':')))
+        .any(|c| *c == b".." || crate::fs::names::refused(c, platform).is_some())
     {
         return Err(ResolveError::BadPath);
     }
     Ok((start, parts))
+}
+
+/// Whether `path`, as a peer typed it, may become an automatic export: on
+/// Windows a relative path, one on a plain drive (`C:\...`, also as
+/// `\\?\C:\...`) or one rooted on the daemon's current drive (`\x`), never
+/// a device (`\\.\...`, `\\?\GLOBALROOT\...`) or a network share: roots
+/// are on a local volume. On Unix every path may, as before.
+///
+/// A path rooted on the current drive (`\x`, `/x`) is kept: it lies on the
+/// drive of the daemon's working directory, so which drive it names
+/// depends on where the daemon was started. Where any typed path leads
+/// is judged again, on its canonical form ([`auto_export_root_allowed`]).
+pub fn auto_export_path_allowed(path: &[u8], platform: Platform) -> bool {
+    match (platform, split_path(path, platform).0) {
+        (Platform::Unix, _) | (Platform::Windows, Start::Relative | Start::Root) => true,
+        (Platform::Windows, Start::Prefix(p)) => is_drive(&p),
+    }
+}
+
+/// Whether `root`, the canonical path an automatic export would get (the
+/// bytes of what `canonicalize` gave), is on a plain local drive: on
+/// Windows only `\\?\C:\...` (or `C:\...`), so a link on a local drive
+/// that leads to a network share (`\\?\UNC\...`) or a device does not
+/// become an export. On Unix every root may, as before.
+pub fn auto_export_root_allowed(root: &[u8], platform: Platform) -> bool {
+    match (platform, split_path(root, platform).0) {
+        (Platform::Unix, _) => true,
+        (Platform::Windows, Start::Prefix(p)) => is_drive(&p),
+        (Platform::Windows, Start::Relative | Start::Root) => false,
+    }
+}
+
+/// The refusal of an `export add` path that is neither absolute nor under
+/// `~`.
+pub const REMOTE_NOT_ABSOLUTE: &str = "the path must be absolute or start with ~";
+
+/// The refusal of a Windows path rooted on no drive (`\srv`).
+pub const REMOTE_NO_DRIVE: &str = "the path must start with a drive (such as C:\\srv) or with ~: \
+     without one it depends on the server's current drive";
+
+/// The refusal of a network share or a device as an export path.
+pub const REMOTE_NOT_LOCAL: &str =
+    "the path must be on a local drive, not a network share or a device";
+
+/// Why `raw`, the path of an `export add` a remote administrator sent that
+/// is not under `~`, cannot become an export on `platform`; `None` when it
+/// may. On Unix it must be absolute (start with `/`), as always. On Windows
+/// it must start with a drive and its root (`C:\srv`, `C:/srv`, also
+/// `\\?\C:\srv`), the local drives an automatic export may be on: not
+/// relative (also not `C:` or `C:srv`, which lean on the drive's current
+/// directory), not rooted without a drive (`\srv` would be on the server's
+/// current drive), and never a network share or a device (also not the
+/// device form of a drive, `\\.\C:\srv`).
+pub fn remote_export_path_problem(raw: &str, platform: Platform) -> Option<&'static str> {
+    match platform {
+        Platform::Unix => (!raw.starts_with('/')).then_some(REMOTE_NOT_ABSOLUTE),
+        Platform::Windows if is_drive_path(raw, platform) => {
+            (raw.len() < 3).then_some(REMOTE_NOT_ABSOLUTE)
+        }
+        Platform::Windows => match split_path(raw.as_bytes(), platform).0 {
+            Start::Relative => Some(REMOTE_NOT_ABSOLUTE),
+            Start::Root => Some(REMOTE_NO_DRIVE),
+            Start::Prefix(p) if is_drive(&p) && raw.starts_with(r"\\?\") => None,
+            Start::Prefix(_) => Some(REMOTE_NOT_LOCAL),
+        },
+    }
+}
+
+/// Whether a [`Start::Prefix`] is a drive (`C:`).
+fn is_drive(prefix: &[u8]) -> bool {
+    prefix.len() == 2 && prefix[1] == b':'
 }
 
 /// The directory a path that starts at `start` is below: `/` on Unix; on
@@ -394,6 +470,54 @@ mod tests {
         assert_eq!(&target[..export.len()], &export[..]);
         let other_drive = parts(r"D:\Users\d\srv\m\T", w);
         assert_ne!(&other_drive[..export.len()], &export[..]);
+    }
+
+    #[test]
+    fn an_automatic_export_on_windows_is_on_a_plain_drive() {
+        let w = Platform::Windows;
+        for ok in [
+            &br"C:\x"[..],
+            b"c:/x",
+            br"\\?\C:\x",
+            b"rel/x",
+            b"",
+            br"\x",
+            b"/",
+        ] {
+            assert!(auto_export_path_allowed(ok, w), "{ok:?}");
+        }
+        for bad in [
+            &br"\\.\PhysicalDrive0"[..],
+            br"\\?\GLOBALROOT\Device\x",
+            br"\\server\share\x",
+            br"\\?\UNC\server\share\x",
+        ] {
+            assert!(!auto_export_path_allowed(bad, w), "{bad:?}");
+        }
+        for any in [&b"/x"[..], br"\\server\share", b"rel"] {
+            assert!(auto_export_path_allowed(any, Platform::Unix), "{any:?}");
+        }
+    }
+
+    #[test]
+    fn an_automatic_exports_canonical_root_is_on_a_plain_drive_on_windows() {
+        let w = Platform::Windows;
+        for ok in [&br"\\?\C:\x"[..], br"\\?\d:\x\y", br"C:\x"] {
+            assert!(auto_export_root_allowed(ok, w), "{ok:?}");
+        }
+        for bad in [
+            &br"\\?\UNC\server\share\x"[..],
+            br"\\server\share\x",
+            br"\\?\GLOBALROOT\Device\x",
+            br"\\.\PhysicalDrive0",
+            br"\x",
+            b"rel",
+        ] {
+            assert!(!auto_export_root_allowed(bad, w), "{bad:?}");
+        }
+        for any in [&b"/x"[..], br"\\?\UNC\s\h", b"rel"] {
+            assert!(auto_export_root_allowed(any, Platform::Unix), "{any:?}");
+        }
     }
 
     /// The root a request path is joined below, on this system.

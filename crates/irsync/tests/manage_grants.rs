@@ -44,10 +44,10 @@ const INJECTED: &str = "laptop\n]\n[etc]\npath = \"/etc\"\nrw = [\"x\"";
 
 #[test]
 fn grant_add_moves_between_arrays_replaces_other_spelling_and_keeps_comment() {
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "[exports.p]\npath = \"/p\"\nrw = [\"{}\"]\n",
         id(1)
-    ));
+    )));
     let resolve = |s: &str| (s == "laptop").then(|| id(1));
     let laptop = ClientSpec::Name("laptop".into());
     grant_add(&mut m, "p", &laptop, false, &resolve).unwrap(); // replaces the raw id
@@ -76,7 +76,7 @@ fn grant_add_moves_between_arrays_replaces_other_spelling_and_keeps_comment() {
 
 #[test]
 fn grant_remove_by_export_by_all_and_everywhere() {
-    let text = format!("[exports.p]\npath = \"/p\"\nrw = [\"{a}\", \"{b}\"]\nro = [\"lap\"]\n[exports.q]\npath = \"/q\"\nro = [\"{a}\"]\n", a = id(1), b = id(2));
+    let text = fixture::toml(&format!("[exports.p]\npath = \"/p\"\nrw = [\"{a}\", \"{b}\"]\nro = [\"lap\"]\n[exports.q]\npath = \"/q\"\nro = [\"{a}\"]\n", a = id(1), b = id(2)));
     let resolve = |s: &str| (s == "lap").then(|| id(1));
     let mut m = msg(&text);
     assert_eq!(
@@ -117,10 +117,10 @@ fn a_second_grant_add_after_a_comment_keeps_the_comment_and_valid_toml() {
 
 #[test]
 fn removing_an_entry_takes_its_comment_and_leaves_the_others() {
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "[exports.p]\npath = \"/p\"\nrw = [\n    # above a\n    \"a\", # one\n    \"{}\", # two\n    \"c\", # three\n]\n",
         id(1)
-    ));
+    )));
     assert_eq!(
         grant_remove(&mut m, Some("p"), Some(&client(1)), &|_| None).unwrap(),
         1
@@ -199,11 +199,11 @@ fn a_name_or_comment_with_brackets_makes_no_second_table() {
 
 #[test]
 fn grant_remove_all_all_empties_every_array_in_the_file() {
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "[exports.p]\npath = \"/p\"\nrw = [\"{a}\"]\nro = [\"{b}\"]\n[exports.q]\npath = \"/q\"\nro = [\"lap\"]\n",
         a = id(1),
         b = id(2)
-    ));
+    )));
     assert_eq!(grant_remove(&mut m, None, None, &|_| None).unwrap(), 3);
     let x = typed(&msg(&write(&m))).exports;
     assert!(
@@ -222,10 +222,10 @@ fn grant_remove_all_all_empties_every_array_in_the_file() {
 #[test]
 fn grant_edits_reach_inline_tables() {
     // Inline tables read into the same message as headers do.
-    let text = format!(
+    let text = fixture::toml(&format!(
         "exports = {{ photos = {{ path = \"/p\", rw = [\"{a}\"] }} }}\n",
         a = id(1)
-    );
+    ));
     let mut m = msg(&text);
     assert_eq!(
         grant_remove(&mut m, None, Some(&client(1)), &|_| None).unwrap(),
@@ -236,10 +236,10 @@ fn grant_edits_reach_inline_tables() {
     grant_add(&mut m, "photos", &client(2), true, &|_| None).unwrap();
     let x = typed(&m).exports;
     assert_eq!(x.exports["photos"].ro, vec![id(2).to_string()]);
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "[exports]\nphotos = {{ path = \"/p\", rw = [\"{a}\"] }}\n[exports.q]\npath = \"/q\"\nrw = [\"{a}\"]\n",
         a = id(1)
-    ));
+    )));
     assert_eq!(
         grant_remove(&mut m, None, Some(&client(1)), &|_| None).unwrap(),
         2
@@ -315,9 +315,15 @@ const BOX: &[(&str, u8)] = &[("box", 1)];
 fn id_becomes_name() {
     let (text, changed) = canon(
         BOX,
-        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{}\"]\n", id(1)),
+        &fixture::toml(&format!(
+            "[exports.p]\npath = \"/p\"\nrw = [\"{}\"]\n",
+            id(1)
+        )),
     );
-    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
+    assert_eq!(
+        text,
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n")
+    );
     assert!(changed);
 }
 
@@ -326,11 +332,11 @@ fn every_grant_list_is_visited() {
     let i = id(1);
     let (text, _) = canon(
         BOX,
-        &format!(
+        &fixture::toml(&format!(
             "[exports.a]\npath = \"/a\"\nro = [\"{i}\"]\n[exports.b]\npath = \"/b\"\nrw = [\"{i}\"]\n\
              [exports.p]\npath = \"/p\"\nrw = [\"{i}\"]\n\
              [exports.q]\npath = \"/q\"\nro = [\"{i}\"]\n"
-        ),
+        )),
     );
     assert_eq!(
         text,
@@ -342,10 +348,10 @@ fn every_grant_list_is_visited() {
     );
     // Inline tables count, as for the other editors; top-level keys come
     // before the clients tables.
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "exports = {{ p = {{ path = \"/p\", rw = [\"{i}\"] }}, q = {{ path = \"/q\", ro = [\"{i}\"] }} }}\n{}",
         host_tables(BOX)
-    ));
+    )));
     assert!(canonicalize(&mut m, &known(BOX)));
     m.clients.clear();
     assert_eq!(
@@ -358,26 +364,32 @@ fn every_grant_list_is_visited() {
 fn first_name_in_order_wins() {
     let (text, _) = canon(
         &[("zed", 1), ("amy", 1)],
-        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{}\"]\n", id(1)),
+        &fixture::toml(&format!(
+            "[exports.p]\npath = \"/p\"\nrw = [\"{}\"]\n",
+            id(1)
+        )),
     );
-    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"amy\"]\n");
+    assert_eq!(
+        text,
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"amy\"]\n")
+    );
 }
 
 #[test]
 fn existing_name_is_left_alone() {
-    let body = "[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n";
+    let body = fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n");
     assert_eq!(
-        canon(&[("zed", 1), ("amy", 1)], body),
+        canon(&[("zed", 1), ("amy", 1)], &body),
         (body.to_string(), false)
     );
 }
 
 #[test]
 fn unknown_entries_are_left_alone() {
-    let body = format!(
+    let body = fixture::toml(&format!(
         "[exports.p]\npath = \"/p\"\nrw = [\"{}\", \"ghost\"]\n",
         id(2)
-    );
+    ));
     assert_eq!(canon(BOX, &body), (body.clone(), false));
 }
 
@@ -385,27 +397,36 @@ fn unknown_entries_are_left_alone() {
 fn duplicate_in_one_list_keeps_the_first() {
     let (text, changed) = canon(
         BOX,
-        &format!(
+        &fixture::toml(&format!(
             "[exports.p]\npath = \"/p\"\nrw = [\"box\", \"{}\"]\n",
             id(1)
-        ),
+        )),
     );
-    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
+    assert_eq!(
+        text,
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n")
+    );
     assert!(changed);
     let (text, _) = canon(
         BOX,
-        &format!(
+        &fixture::toml(&format!(
             "[exports.p]\npath = \"/p\"\nrw = [\"{}\", \"box\"]\n",
             id(1)
-        ),
+        )),
     );
-    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
+    assert_eq!(
+        text,
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n")
+    );
     // Duplicates that were already there go too.
     let (text, changed) = canon(
         BOX,
         "[exports.p]\npath = \"/p\"\nrw = [\"box\", \"x\", \"box\"]\n",
     );
-    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\", \"x\"]\n");
+    assert_eq!(
+        text,
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"box\", \"x\"]\n")
+    );
     assert!(changed);
 }
 
@@ -413,26 +434,27 @@ fn duplicate_in_one_list_keeps_the_first() {
 fn rw_wins_over_ro() {
     let (text, _) = canon(
         BOX,
-        &format!(
+        &fixture::toml(&format!(
             "[exports.p]\npath = \"/p\"\nro = [\"box\", \"x\"]\nrw = [\"{}\"]\n",
             id(1)
-        ),
+        )),
     );
     assert_eq!(
         text,
         written("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\nro = [\"x\"]\n")
     );
     // Each export on its own: rw in one does not touch ro of another.
-    let body =
-        "[exports.a]\npath = \"/a\"\nrw = [\"box\"]\n[exports.p]\npath = \"/p\"\nro = [\"box\"]\n";
-    assert_eq!(canon(BOX, body), (written(body), false));
+    let body = fixture::toml(
+        "[exports.a]\npath = \"/a\"\nrw = [\"box\"]\n[exports.p]\npath = \"/p\"\nro = [\"box\"]\n",
+    );
+    assert_eq!(canon(BOX, &body), (written(&body), false));
 }
 
 #[test]
 fn two_names_of_one_id_both_stay() {
-    let body = "[exports.p]\npath = \"/p\"\nrw = [\"amy\", \"zed\"]\n";
+    let body = fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"amy\", \"zed\"]\n");
     assert_eq!(
-        canon(&[("zed", 1), ("amy", 1)], body),
+        canon(&[("zed", 1), ("amy", 1)], &body),
         (body.to_string(), false)
     );
 }
@@ -441,25 +463,25 @@ fn two_names_of_one_id_both_stay() {
 fn comments_are_kept() {
     let (text, _) = canon(
         BOX,
-        &format!(
+        &fixture::toml(&format!(
             "# who may write\n[exports.p]\npath = \"/p\"\nrw = [\n    \"{}\", # laptop\n    \"{}\",   # other\n] # end\n",
             id(1),
             id(2)
-        ),
+        )),
     );
     assert_eq!(
         text,
-        format!(
+        fixture::toml(&format!(
             "# who may write\n[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # laptop\n    \"{}\", # other\n] # end\n",
             id(2)
-        )
+        ))
     );
 }
 
 #[test]
 fn canonicalize_keeps_the_comment_of_the_entry_that_stays() {
     // rw holds the id (with a comment) and its name: the first stays, renamed to the name, with its comment.
-    let mut m = msg(&format!("[clients.laptop]\nclient_id = \"{0}\"\n[exports.p]\npath = \"/p\"\nrw = [\n    \"{0}\", # mine\n    \"laptop\",\n]\n", id(1)));
+    let mut m = msg(&fixture::toml(&format!("[clients.laptop]\nclient_id = \"{0}\"\n[exports.p]\npath = \"/p\"\nrw = [\n    \"{0}\", # mine\n    \"laptop\",\n]\n", id(1))));
     let hosts = Config::from_message(&m, Path::new("f")).unwrap().clients;
     assert!(canonicalize(&mut m, &hosts));
     let rw = &export(&m, "p").rw;
@@ -475,11 +497,11 @@ fn canonicalize_keeps_the_comment_of_the_entry_that_stays() {
 
 #[test]
 fn second_run_changes_nothing() {
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "{}[exports.p]\npath = \"/p\"\nrw = [\"{1}\", \"box\"]\nro = [\"{1}\"]\n[exports.q]\npath = \"/q\"\nrw = [\"{1}\"]\n",
         host_tables(BOX),
         id(1)
-    ));
+    )));
     let hosts = known(BOX);
     assert!(canonicalize(&mut m, &hosts));
     let once = m.clone();
@@ -493,20 +515,23 @@ fn other_spelling_of_an_id_is_rewritten() {
     assert_ne!(z32, id(1).to_string());
     let (text, _) = canon(
         BOX,
-        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{z32}\"]\n"),
+        &fixture::toml(&format!("[exports.p]\npath = \"/p\"\nrw = [\"{z32}\"]\n")),
     );
-    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
+    assert_eq!(
+        text,
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n")
+    );
 }
 
 #[test]
 fn duplicate_removal_keeps_other_comments() {
     let (text, _) = canon(
         BOX,
-        &format!(
+        &fixture::toml(&format!(
             "[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # one\n    \"{}\", # two\n    \"{}\", # three\n]\n",
             id(2),
             id(1)
-        ),
+        )),
     );
     assert_eq!(
         text,
@@ -534,7 +559,9 @@ fn removing_a_middle_entry_keeps_the_lines_above_it_on_the_next() {
     );
     assert_eq!(
         text,
-        "[exports.p]\npath = \"/p\"\nrw = [\n    \"a\",\n    # about b\n    \"c\",\n]\n"
+        fixture::toml(
+            "[exports.p]\npath = \"/p\"\nrw = [\n    \"a\",\n    # about b\n    \"c\",\n]\n"
+        )
     );
 }
 
@@ -548,7 +575,7 @@ fn removing_the_last_entry_moves_the_lines_before_the_bracket_above_the_one_befo
     );
     assert_eq!(
         text,
-        "[exports.p]\npath = \"/p\"\nrw = [\n    # tail\n    \"a\",\n]\n"
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\n    # tail\n    \"a\",\n]\n")
     );
 }
 
@@ -560,21 +587,24 @@ fn removing_the_only_entry_moves_its_lines_above_the_key() {
             assert_eq!(remove_named(m, "b"), 1);
         },
     );
-    assert_eq!(text, "[exports.p]\npath = \"/p\"\n# heading\nrw = []\n");
+    assert_eq!(
+        text,
+        fixture::toml("[exports.p]\npath = \"/p\"\n# heading\nrw = []\n")
+    );
 }
 
 #[test]
 fn a_duplicate_dropped_by_canonicalize_leaves_its_lines_above() {
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "{}[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # mine\n    # the id\n    \"{}\", # dup\n    \"x\",\n]\n",
         host_tables(BOX),
         id(1)
-    ));
+    )));
     assert!(canonicalize(&mut m, &known(BOX)));
     m.clients.clear();
     assert_eq!(
         write(&m),
-        "[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # mine\n    # the id\n    \"x\",\n]\n"
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # mine\n    # the id\n    \"x\",\n]\n")
     );
 }
 
@@ -588,19 +618,21 @@ fn grant_add_moves_an_entry_with_its_comment_and_replaces_another_spelling() {
     );
     assert_eq!(
         text,
-        "[exports.p]\npath = \"/p\"\nrw = [\"x\"]\nro = [\n    # the laptop\n    \"lap\", # mine\n]\n"
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"x\"]\nro = [\n    # the laptop\n    \"lap\", # mine\n]\n")
     );
     // Another spelling: replaced, the lines above it stay.
     let text = after(
-        &format!(
+        &fixture::toml(&format!(
             "[exports.p]\npath = \"/p\"\nrw = [\n    \"x\",\n    # the laptop\n    \"{}\", # old\n]\n",
             id(1)
-        ),
+        )),
         |m| grant_add(m, "p", &ClientSpec::Name("lap".into()), false, &resolve).unwrap(),
     );
     assert_eq!(
         text,
-        "[exports.p]\npath = \"/p\"\nrw = [\n    # the laptop\n    \"x\",\n    \"lap\",\n]\n"
+        fixture::toml(
+            "[exports.p]\npath = \"/p\"\nrw = [\n    # the laptop\n    \"x\",\n    \"lap\",\n]\n"
+        )
     );
 }
 
@@ -614,10 +646,10 @@ fn fixture() -> (Clients, Exports) {
     )
     .unwrap();
     let e = parse_exports(
-        &format!(
+        &fixture::toml(&format!(
             "[exports.backups]\npath = \"/b\"\n[exports.docs]\npath = \"/d\"\nread_only = true\nrw = [\"laptop\"]\n[exports.photos]\npath = \"/p\"\nro = [\"{}\"]\n",
             id(2)
-        ),
+        )),
         Path::new("e"),
     )
     .unwrap();
@@ -735,36 +767,39 @@ fn a_comment_line_after_a_removed_last_entry_stays() {
     // entry goes they stay, above the entry before it.
     let (text, _) = canon(
         BOX,
-        &format!(
+        &fixture::toml(&format!(
             "[exports.p]\npath = \"/p\"\nrw = [\n    \"box\",\n    \"{}\"\n    # tail\n]\n",
             id(1)
-        ),
+        )),
     );
     assert_eq!(
         text,
-        "[exports.p]\npath = \"/p\"\nrw = [\n    # tail\n    \"box\",\n]\n"
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\n    # tail\n    \"box\",\n]\n")
     );
     // The removed entry's own comment goes with it; the line after stays.
     let (text, _) = canon(
         BOX,
-        &format!(
+        &fixture::toml(&format!(
             "[exports.p]\npath = \"/p\"\nrw = [\n    \"box\", # one\n    \"{}\" # two\n    # tail\n]\n",
             id(1)
-        ),
+        )),
     );
     assert_eq!(
         text,
-        "[exports.p]\npath = \"/p\"\nrw = [\n    # tail\n    \"box\", # one\n]\n"
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\n    # tail\n    \"box\", # one\n]\n")
     );
     // On one line there is nothing to keep.
     let (text, _) = canon(
         BOX,
-        &format!(
+        &fixture::toml(&format!(
             "[exports.p]\npath = \"/p\"\nrw = [\"box\", \"{}\" ]\n",
             id(1)
-        ),
+        )),
     );
-    assert_eq!(text, "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n");
+    assert_eq!(
+        text,
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n")
+    );
 }
 
 /// Shapes the old editor met in a file and had to step around: the reader
@@ -772,8 +807,11 @@ fn a_comment_line_after_a_removed_last_entry_stays() {
 #[test]
 fn odd_shapes_are_refused_by_the_reader() {
     for body in [
-        format!("[exports.p]\npath = \"/p\"\nrw = [1, \"{}\"]\n", id(1)),
-        "[exports.p]\npath = \"/p\"\nro = \"x\"\n".to_string(),
+        fixture::toml(&format!(
+            "[exports.p]\npath = \"/p\"\nrw = [1, \"{}\"]\n",
+            id(1)
+        )),
+        fixture::toml("[exports.p]\npath = \"/p\"\nro = \"x\"\n").to_string(),
         "all = 5\n".to_string(),
         "exports = \"x\"\n".to_string(),
         "[exports]\np = 1\n".to_string(),

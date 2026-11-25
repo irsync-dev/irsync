@@ -147,7 +147,13 @@ pub async fn sync(
         else {
             bail!("internal: unexpected location kinds");
         };
-        let (root, name) = resolve_roots(direction, path, *local_co, rpath, *remote_co);
+        // The local path as this system means it, kept for every open
+        // that follows (on Unix the path as typed); messages name it as
+        // typed, and whether it names an entry or only its contents (`.`)
+        // is read from it as typed.
+        let typed = path;
+        let path = &crate::platform::local_path(path);
+        let (root, name) = resolve_roots(direction, typed, path, *local_co, rpath, *remote_co);
         let dir_plan = Plan {
             root,
             local_contents_only: *local_co,
@@ -248,7 +254,7 @@ pub async fn sync(
                 // Keep what earlier sources achieved; report this one and go on.
                 // The error may carry the daemon's own words.
                 let e = escape_text(&format!("{e:#}"));
-                say(&format!("irsync: {}: {e}", path.display()));
+                say(&format!("irsync: {}: {e}", typed.display()));
                 failed += 1;
                 continue;
             }
@@ -298,7 +304,8 @@ async fn session(
         move || -> anyhow::Result<_> {
             // A dry run creates nothing (the receiver lists a missing root as empty).
             if direction == Direction::DaemonSends && !dry_run {
-                std::fs::create_dir_all(&root)
+                crate::platform::native_path(&root)
+                    .and_then(std::fs::create_dir_all)
                     .with_context(|| format!("creating {}", root.display()))?;
             }
             Ok(Index::open(&state, &root)

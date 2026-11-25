@@ -496,7 +496,8 @@ impl Settings {
             &mut settings.state_dir,
             &mut settings.daemon.identity,
         ] {
-            *p = expand_tilde(&p.to_string_lossy());
+            // As this system means it (on Unix the path as written).
+            *p = crate::platform::local_path(&expand_tilde(&p.to_string_lossy()));
         }
         Ok(settings)
     }

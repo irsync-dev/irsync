@@ -116,13 +116,29 @@ pub(crate) fn record_file(m: &Meter, since: Option<std::time::Instant>, size: u6
     metrics::histogram!("irsync_file_size_bytes", m.labels()).record(size as f64);
 }
 
+/// Whether the local operand `typed`, as the user typed it, names an
+/// entry (`src`, `a/src`, `src/.`) or only a directory's contents (`.`,
+/// `..`, `a/..`, a root, and on Windows a drive alone, `C:`): rsync's
+/// meaning, which only the path as typed still shows. Making it absolute
+/// first ([`crate::platform::local_path`]) would turn `.` into the current
+/// directory's own name.
+pub fn operand_names_itself(typed: &Path) -> bool {
+    typed.file_name().is_some()
+}
+
 /// Applies rsync's trailing-slash rule. On a push, `src` without a slash
 /// copies the directory itself: its basename is returned as `Hello.name`
 /// for the daemon to join after resolving `remote`. On a pull, the last
 /// component of `remote` names the local directory. The remote path is
 /// never changed here: the daemon resolves it.
+///
+/// `local` is the local path as it is opened, `typed` the same operand as
+/// the user typed it (on Unix the two are the same path): whether a push
+/// sends a name is decided from `typed` ([`operand_names_itself`]), the
+/// name itself is the last one of `local`, the directory that is read.
 pub(crate) fn resolve_roots(
     direction: Direction,
+    typed: &Path,
     local: &Path,
     local_contents_only: bool,
     remote: &[u8],
@@ -130,7 +146,7 @@ pub(crate) fn resolve_roots(
 ) -> (PathBuf, Vec<u8>) {
     match direction {
         Direction::ClientSends => {
-            let name = (!local_contents_only)
+            let name = (!local_contents_only && operand_names_itself(typed))
                 .then(|| local.file_name())
                 .flatten()
                 .map(os_to_bytes)
@@ -158,11 +174,93 @@ pub(crate) fn resolve_roots(
 mod tests {
     use super::*;
 
+    /// What an operand names is read from it as typed: `.`, `..` and
+    /// `a/..` send only the contents (no name), whatever directory they
+    /// are once made absolute.
+    #[test]
+    fn whether_an_operand_names_itself_is_read_as_typed() {
+        for (typed, names) in [
+            (".", false),
+            ("..", false),
+            ("a/..", false),
+            ("src", true),
+            ("src/", true),
+            ("src/.", true),
+            ("a/src", true),
+        ] {
+            assert_eq!(operand_names_itself(Path::new(typed)), names, "{typed}");
+        }
+        // A push of `.` from the directory `/w/photos`: the directory read
+        // is `/w/photos`, but no name is sent, so its contents land in the
+        // remote directory itself. `src/.` sends `src`.
+        let opened = Path::new("/w/photos");
+        for typed in [".", "..", "a/.."] {
+            let (root, name) = resolve_roots(
+                Direction::ClientSends,
+                Path::new(typed),
+                opened,
+                false,
+                b"m",
+                false,
+            );
+            assert_eq!((root.as_path(), name), (opened, vec![]), "{typed}");
+        }
+        let (_, name) = resolve_roots(
+            Direction::ClientSends,
+            Path::new("photos/."),
+            opened,
+            false,
+            b"m",
+            false,
+        );
+        assert_eq!(name, b"photos");
+    }
+
+    /// The same on Windows, with its own spellings: `.\`, a drive alone
+    /// (its current directory), `C:\x\.` (names `x`) and `a\..`.
+    #[cfg(windows)]
+    #[test]
+    fn whether_an_operand_names_itself_is_read_as_typed_on_windows() {
+        for (typed, names) in [
+            (r".\", false),
+            (r"..\", false),
+            (r"a\..", false),
+            ("C:", false),
+            (r"C:\", false),
+            (r"C:\.", false),
+            (r"C:\x\.", true),
+            (r"C:\x", true),
+            (r"a\src", true),
+        ] {
+            assert_eq!(operand_names_itself(Path::new(typed)), names, "{typed}");
+        }
+        let opened = Path::new(r"C:\w\photos");
+        let (_, name) = resolve_roots(
+            Direction::ClientSends,
+            Path::new(r"a\.."),
+            opened,
+            false,
+            b"m",
+            false,
+        );
+        assert_eq!(name, b"");
+        // `photos.` names the directory Windows reads, `photos`.
+        let (_, name) = resolve_roots(
+            Direction::ClientSends,
+            Path::new("photos."),
+            opened,
+            false,
+            b"m",
+            false,
+        );
+        assert_eq!(name, b"photos");
+    }
+
     #[test]
     fn trailing_slash_rule_puts_the_basename_in_name() {
         use Direction::*;
         let p = Path::new("/l/photos");
-        let r = |d, l: &Path, lco, rem: &[u8], rco| resolve_roots(d, l, lco, rem, rco);
+        let r = |d, l: &Path, lco, rem: &[u8], rco| resolve_roots(d, l, l, lco, rem, rco);
         assert_eq!(
             r(ClientSends, p, false, b"", false),
             (p.into(), b"photos".to_vec())

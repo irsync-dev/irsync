@@ -315,7 +315,9 @@ impl Sender {
         let mut sorted: Vec<usize> = idxs.iter().map(|&i| i as usize).collect();
         sorted.sort_unstable();
         sorted.dedup();
-        let name = path.to_os().to_string_lossy().into_owned();
+        // The path inside the tree, with `/` on every system (on Unix the
+        // same text as the name of the system).
+        let name = String::from_utf8_lossy(path.as_bytes()).into_owned();
         if let Some(&bad) = sorted.iter().find(|&&i| i >= digest.chunks.len()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,

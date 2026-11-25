@@ -50,7 +50,14 @@ fn one(v: impl ToString) -> Vec<String> {
 fn as_written(p: &Path) -> Vec<String> {
     one(
         match super::paths::home_dir().and_then(|h| p.strip_prefix(h).ok()) {
-            Some(rest) => format!("~/{}", rest.display()),
+            // `~` and the system's separator: `~/` on Unix, `~\` on
+            // Windows, so the rest reads the same (the config takes both
+            // there).
+            Some(rest) => format!(
+                "~{}{}",
+                crate::platform::Platform::CURRENT.separator() as char,
+                rest.display()
+            ),
             None => p.display().to_string(),
         },
     )
