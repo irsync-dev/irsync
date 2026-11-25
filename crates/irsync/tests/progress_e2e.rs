@@ -60,6 +60,17 @@ async fn try_run_with(
     try_run_side(h, o, flow, ropts, h.local_side(), on_event).await
 }
 
+/// The client's side of a pull that requests one file at a time: each
+/// file's data is sent only once the one before is placed, so a fault
+/// armed when a file is placed always has more data to cut. Without it, a
+/// fast sender may have sent everything before the client places its first
+/// file, and the fault never fires.
+fn one_at_a_time(h: &Harness) -> irsync::session::LocalSide {
+    let mut local = h.local_side();
+    local.hooks.max_inflight = Some(1);
+    local
+}
+
 /// [`try_run_with`] on this client side (with its own hooks).
 async fn try_run_side(
     h: &Harness,
@@ -379,7 +390,16 @@ async fn after_a_reconnect_files_placed_earlier_are_not_reported_skipped() {
         };
         // With `--delete` the stored plan is not reused: the second
         // connection lists and plans afresh, past the files the first placed.
-        let (out, events) = run_with(&h, &opts(&["--delete"]), Flow::Pull, fast, arm).await;
+        let (out, events) = try_run_side(
+            &h,
+            &opts(&["--delete"]),
+            Flow::Pull,
+            fast,
+            one_at_a_time(&h),
+            arm,
+        )
+        .await;
+        let out = out.expect("sync session");
         assert!(h.daemon.fault.fired(), "the fault never fired");
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         let cut = events

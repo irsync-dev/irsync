@@ -89,7 +89,7 @@ pub fn symlinks_available() -> bool {
                     "CI is set, but this process may not make symlinks \
                      (no privilege, no Developer Mode)"
                 );
-                eprintln!("skipped: this process may not make symlinks");
+                eprintln!("skipping: this process may not make symlinks");
                 false
             }
             Err(e) => panic!("making a test symlink: {e}"),

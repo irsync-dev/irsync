@@ -58,13 +58,15 @@ pub fn link_target_refused(target: &[u8], platform: Platform) -> Option<&'static
 }
 
 /// Whether two names (stored bytes) differ only in case, at least as
-/// loosely as a case-insensitive file system folds them: two characters are
-/// the same when they are equal, or their uppercase is, or their lowercase
-/// is, each taken only where it is a single character (`ß`, whose
-/// uppercase is `SS`, stays as it is). A name that is WTF-8 but not UTF-8
-/// (it holds an unpaired surrogate) is compared per UTF-16 unit, each unit
-/// that is a character by itself as above, a surrogate exactly. Bytes that
-/// are not WTF-8 are compared exactly.
+/// loosely as NTFS folds them: two characters are the same when they are
+/// equal, or their uppercase is, or their lowercase is, each taken only
+/// where it is a single character (`ß`, whose uppercase is `SS`, stays as
+/// it is). The lowercase catches pairs whose full uppercase is several
+/// characters but which NTFS still folds, such as Greek letters with
+/// ypogegrammeni (`ᾀ` and `ᾈ`). A name that is WTF-8 but not UTF-8 (it
+/// holds an unpaired surrogate) is compared per UTF-16 unit, as NTFS does:
+/// each unit that is a character by itself as above, a surrogate exactly.
+/// Bytes that are not WTF-8 are compared exactly.
 pub fn same_ignoring_case(a: &[u8], b: &[u8]) -> bool {
     match (std::str::from_utf8(a), std::str::from_utf8(b)) {
         (Ok(a), Ok(b)) => {
@@ -85,6 +87,34 @@ pub fn same_ignoring_case(a: &[u8], b: &[u8]) -> bool {
     }
 }
 
+/// A key for [`same_ignoring_case`]: two names that are the same ignoring
+/// case have equal keys. The key may be coarser (two names with equal keys
+/// are not always the same), so a match found by key is confirmed with
+/// [`same_ignoring_case`]. Each character becomes [`fold`]ed; a name that
+/// is WTF-8 but not UTF-8 is keyed per UTF-16 unit, a surrogate kept as it
+/// is; bytes that are not WTF-8 are their own key. A leading tag keeps the
+/// three kinds apart (no two names of different kinds are the same).
+pub fn case_key(name: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(name.len() + 1);
+    if let Ok(s) = std::str::from_utf8(name) {
+        key.push(0);
+        let mut buf = [0u8; 4];
+        for c in s.chars() {
+            key.extend_from_slice(fold(c).encode_utf8(&mut buf).as_bytes());
+        }
+    } else if let Ok(units) = crate::wtf8::decode(name) {
+        key.push(1);
+        for u in units {
+            let k = unit(u).map_or(u32::from(u), |c| u32::from(fold(c)));
+            key.extend_from_slice(&k.to_le_bytes());
+        }
+    } else {
+        key.push(2);
+        key.extend_from_slice(name);
+    }
+    key
+}
+
 /// A UTF-16 unit as the character it is by itself; `None` for a surrogate.
 fn unit(u: u16) -> Option<char> {
     char::from_u32(u32::from(u))
@@ -99,12 +129,26 @@ fn single(mut it: impl Iterator<Item = char>, c: char) -> char {
     }
 }
 
+fn upper(c: char) -> char {
+    single(c.to_uppercase(), c)
+}
+
+fn lower(c: char) -> char {
+    single(c.to_lowercase(), c)
+}
+
 /// Two characters are the same ignoring case: equal, or equal in their
 /// single-character uppercase, or in their single-character lowercase.
 fn same_char(x: char, y: char) -> bool {
-    let upper = |c: char| single(c.to_uppercase(), c);
-    let lower = |c: char| single(c.to_lowercase(), c);
     x == y || upper(x) == upper(y) || lower(x) == lower(y)
+}
+
+/// The folded form of `c` that [`case_key`] uses: the lowercase of its
+/// uppercase. `same_char(x, y)` implies `fold(x) == fold(y)`: a test over
+/// every character checks `fold(c) == fold(upper(c)) == fold(lower(c))`,
+/// so two characters with one uppercase (or one lowercase) fold alike.
+pub(crate) fn fold(c: char) -> char {
+    lower(upper(c))
 }
 
 /// The message for a link target that names a network or device path.
@@ -171,6 +215,46 @@ mod tests {
             assert!(same_ignoring_case(n, n), "{n:?}");
         }
         assert!(!same_ignoring_case(b"a\xff", b"A\xff"));
+        // An unpaired surrogate (WTF-8): the other units fold, NTFS does.
+        assert!(same_ignoring_case(b"A\xed\xa0\x80", b"a\xed\xa0\x80"));
+        assert!(!same_ignoring_case(b"a\xed\xa0\x80", b"a\xed\xa0\x81"));
+        assert!(!same_ignoring_case(b"a\xed\xa0\x80", b"a"));
+    }
+
+    /// Every character folds as its uppercase and its lowercase do, so two
+    /// characters `same_char` takes for one have one fold.
+    #[test]
+    fn fold_agrees_with_the_comparison_for_every_character() {
+        for c in (0..=0x10FFFF).filter_map(char::from_u32) {
+            assert_eq!(fold(c), fold(upper(c)), "{c:?} {:X}", c as u32);
+            assert_eq!(fold(c), fold(lower(c)), "{c:?} {:X}", c as u32);
+        }
+    }
+
+    /// Names that are the same ignoring case have one key.
+    #[test]
+    fn the_case_key_matches_the_comparison() {
+        let pairs: [(&[u8], &[u8]); 7] = [
+            (b"A", b"a"),
+            ("É".as_bytes(), "é".as_bytes()),
+            (b"ReadOnly", b"rEADoNLY"),
+            ("ᾀ".as_bytes(), "ᾈ".as_bytes()),
+            ("xᾀy".as_bytes(), "XᾈY".as_bytes()),
+            (b"A\xed\xa0\x80", b"a\xed\xa0\x80"),
+            ("\u{212A}".as_bytes(), b"k"),
+        ];
+        for (a, b) in pairs {
+            assert!(same_ignoring_case(a, b), "{a:?} {b:?}");
+            assert_eq!(case_key(a), case_key(b), "{a:?} {b:?}");
+        }
+        for (a, b) in [
+            (&b"a"[..], &b"b"[..]),
+            ("ß".as_bytes(), b"SS"),
+            (b"a\xff", b"A\xff"),
+            (b"a\xed\xa0\x80", b"a"),
+        ] {
+            assert_ne!(case_key(a), case_key(b), "{a:?} {b:?}");
+        }
     }
 
     #[test]

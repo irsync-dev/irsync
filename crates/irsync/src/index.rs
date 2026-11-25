@@ -757,13 +757,44 @@ pub(crate) fn cutoff(age: Duration) -> i64 {
 /// names after it: the path it has once created. Anything else that stops
 /// the path resolving is an error rather than a key for the path as given.
 fn canonical_root(root: &Path) -> std::io::Result<PathBuf> {
+    let lexical = crate::platform::Platform::CURRENT.resolves_paths_lexically();
+    if lexical {
+        // Each `..` must leave a directory that is there, as on Unix
+        // (Windows would drop it with the name before it, unseen).
+        let mut before = PathBuf::new();
+        for c in root.components() {
+            if c == std::path::Component::ParentDir {
+                let dir = if before.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    &before
+                };
+                if !crate::platform::native_path(dir)?.is_dir() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("{}: no such directory to leave with ..", dir.display()),
+                    ));
+                }
+            }
+            before.push(c);
+        }
+    }
     // As every platform open reads it (on Unix the path as it is).
     let abs = std::path::absolute(&*crate::platform::native_path(root)?)?;
     let mut missing = Vec::new();
     let mut cur = abs.as_path();
     loop {
         match std::fs::canonicalize(cur) {
-            Ok(base) => return Ok(missing.iter().rev().fold(base, |p, name| p.join(name))),
+            Ok(base) => {
+                // A missing name below a file (Unix says so itself).
+                if lexical && !missing.is_empty() && !base.is_dir() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotADirectory,
+                        format!("{} is not a directory", base.display()),
+                    ));
+                }
+                return Ok(missing.iter().rev().fold(base, |p, name| p.join(name)));
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // `file_name` is `None` for a path ending in `..`, which
                 // cannot be resolved without the directory it leaves.
@@ -905,14 +936,31 @@ impl Index {
             }
             Err(e) => return Err(e.into()),
         }
+        let mut conn = Some(conn);
         for suffix in ["", "-wal", "-shm"] {
             let mut name = file.as_os_str().to_owned();
             name.push(suffix);
-            match std::fs::remove_file(&name) {
+            let mut removed = std::fs::remove_file(&name);
+            if removed.as_ref().is_err_and(crate::fs::transient::is_in_use) {
+                // Windows removes no file another handle holds without
+                // sharing delete, as SQLite opens it: this connection's own
+                // handle included. Closed, the file is removed now unless
+                // another connection still has it open, and then it is in
+                // use and kept. (Unix removes an open file: never here.)
+                if conn.take().is_some() {
+                    removed = std::fs::remove_file(&name);
+                }
+                if suffix.is_empty() && removed.as_ref().is_err_and(crate::fs::transient::is_in_use)
+                {
+                    return Ok(false);
+                }
+            }
+            match removed {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
                 _ => {}
             }
         }
+        drop(conn);
         Ok(true)
     }
 

@@ -161,9 +161,10 @@ fn components(path: &[u8], platform: Platform) -> Result<(Start, Vec<&[u8]>), Re
 
 /// Whether `path`, as a peer typed it, may become an automatic export: on
 /// Windows a relative path, one on a plain drive (`C:\...`, also as
-/// `\\?\C:\...`) or one rooted on the daemon's current drive (`\x`), never
-/// a device (`\\.\...`, `\\?\GLOBALROOT\...`) or a network share: roots
-/// are on a local volume. On Unix every path may, as before.
+/// `\\?\C:\...` or `\\.\C:\...`, which name that same drive) or one rooted
+/// on the daemon's current drive (`\x`), never another device
+/// (`\\.\PhysicalDrive0\...`, `\\?\GLOBALROOT\...`) or a network share:
+/// roots are on a local volume. On Unix every path may, as before.
 ///
 /// A path rooted on the current drive (`\x`, `/x`) is kept: it lies on the
 /// drive of the daemon's working directory, so which drive it names

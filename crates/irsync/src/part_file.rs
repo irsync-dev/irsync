@@ -1367,8 +1367,13 @@ impl Verified {
                     if inplace {
                         return Ok(());
                     }
-                    part.rename_to(&dest).map_err(|e| {
+                    // Another program holding the destination is waited
+                    // out briefly (Windows), then said to hold it.
+                    crate::fs::transient::retry_in_use(|| part.rename_to(&dest)).map_err(|e| {
                         let (part, dest) = (part.path(), dest.path());
+                        if crate::fs::transient::is_in_use(&e) {
+                            return e;
+                        }
                         if cause(&e) == Cause::IsADirectory {
                             return io::Error::other(format!(
                                 "refusing to replace directory {} with a file",

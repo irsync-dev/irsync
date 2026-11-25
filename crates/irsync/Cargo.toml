@@ -103,6 +103,8 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Ioctl",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
+    # `GetDriveTypeW`'s answers (`DRIVE_FIXED` and the rest).
+    "Win32_System_WindowsProgramming",
 ] }
 # Only for the local time zone (`platform::local_time`); already in the
 # workspace for fileset and filegen.

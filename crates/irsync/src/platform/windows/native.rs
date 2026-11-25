@@ -35,7 +35,8 @@ use windows_sys::Win32::Foundation::{
     UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    LockFileEx, ReOpenFile, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    GetDriveTypeW, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, LockFileEx,
+    ReOpenFile, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
     MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
 };
 use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
@@ -606,6 +607,67 @@ pub(super) fn reopen(
     // SAFETY: ReOpenFile succeeded, so `handle` is a new handle owned by
     // nothing else; it is closed once, by the OwnedHandle.
     Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+
+/// `GetVolumeInformationByHandleW`: the name of the file system (`NTFS`,
+/// `ReFS`, `FAT32`, ...) of the volume that holds what `h` has open.
+pub(super) fn file_system_name(h: BorrowedHandle<'_>) -> io::Result<Vec<u16>> {
+    // MAX_PATH + 1, the size the documentation asks for.
+    let mut name = [0u16; 261];
+    // SAFETY: `h` is open for the borrow; `name` is a local buffer of the
+    // length passed; every other out pointer is null with size 0, which
+    // the call allows (it then leaves that value out).
+    let ok = unsafe {
+        GetVolumeInformationByHandleW(
+            h.as_raw_handle(),
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            name.as_mut_ptr(),
+            name.len() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let n = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    Ok(name[..n].to_vec())
+}
+
+/// `GetFinalPathNameByHandleW` with `flags`: the path of what `h` has
+/// open, as the system resolved it (a `subst` drive or a mapped drive
+/// shows as what it stands for: `\\?\C:\...` or `\\?\UNC\...`).
+pub(super) fn final_path(h: BorrowedHandle<'_>, flags: u32) -> io::Result<Vec<u16>> {
+    let mut buf = vec![0u16; 512];
+    loop {
+        // SAFETY: `h` is open for the borrow; `buf` is a live buffer of
+        // the length passed, and the call writes at most that many units.
+        let n = unsafe {
+            GetFinalPathNameByHandleW(h.as_raw_handle(), buf.as_mut_ptr(), buf.len() as u32, flags)
+        } as usize;
+        if n == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if n < buf.len() {
+            buf.truncate(n);
+            return Ok(buf);
+        }
+        // Too small: `n` is the size needed, the final NUL included.
+        buf.resize(n + 1, 0);
+    }
+}
+
+/// `GetDriveTypeW` of `root`, a volume's root directory with a final
+/// separator (`C:\`), given without its NUL: `DRIVE_FIXED`,
+/// `DRIVE_REMOTE` and the rest.
+pub(super) fn drive_type(root: &[u16]) -> u32 {
+    let mut z = root.to_vec();
+    z.push(0);
+    // SAFETY: `z` is a NUL-terminated UTF-16 string that lives across the
+    // call, which only reads it.
+    unsafe { GetDriveTypeW(z.as_ptr()) }
 }
 
 #[cfg(test)]

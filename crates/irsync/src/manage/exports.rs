@@ -300,6 +300,11 @@ pub fn target_name(arg: &str) -> String {
     }
 }
 
+/// Why a remote `export add` path under `~` is refused when what follows
+/// `~` is not a plain relative path (on Windows `~/D:x`).
+pub const REMOTE_TILDE_NOT_RELATIVE: &str =
+    "a path under ~ must go on below the home directory: no drive or root after ~";
+
 /// An `export add` target sent by a remote client: as
 /// [`parse_add_target`] with `home` as the home directory, but the path
 /// must be absolute or start with `~`, since there is no working
@@ -318,10 +323,29 @@ pub(crate) fn parse_remote_target(
     if let Some(problem) = remote_export_path_problem(raw, platform).filter(|_| !tilde) {
         return Err(ManageError::BadValue(problem.to_string()));
     }
+    // What follows `~` is joined onto the home directory: it must be a
+    // plain relative path, as this system reads it. On Windows `~/D:x` or
+    // `~\\server\x` would replace the home instead; on Unix every rest is
+    // relative once its separators are taken off.
+    if tilde {
+        let rest =
+            raw[1..].trim_start_matches(|c: char| c.is_ascii() && platform.is_separator(c as u8));
+        let plain = Path::new(rest).components().all(|c| {
+            matches!(
+                c,
+                Component::Normal(_) | Component::CurDir | Component::ParentDir
+            )
+        });
+        if !plain {
+            return Err(ManageError::BadValue(REMOTE_TILDE_NOT_RELATIVE.to_string()));
+        }
+    }
     let (name, path) = add_target_in(arg, Path::new("/"), home, platform)?;
     if !on_a_local_drive(&path, platform) {
         return Err(ManageError::BadValue(REMOTE_NOT_LOCAL.to_string()));
     }
+    // On Windows only a local NTFS volume takes a tree; Unix checks nothing.
+    crate::platform::check_root(&path).map_err(|e| ManageError::BadValue(e.to_string()))?;
     let rest = home
         .filter(|_| tilde)
         .and_then(|h| path.strip_prefix(h).ok());

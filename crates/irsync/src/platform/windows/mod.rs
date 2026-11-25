@@ -52,6 +52,7 @@ use windows_sys::Win32::Foundation::{
     ERROR_NOT_A_REPARSE_POINT, ERROR_NOT_SAME_DEVICE, ERROR_NOT_SUPPORTED,
     ERROR_NO_SYSTEM_RESOURCES, ERROR_PATH_NOT_FOUND, ERROR_REPARSE_POINT_ENCOUNTERED,
     ERROR_SHARING_VIOLATION, ERROR_STOPPED_ON_SYMLINK, ERROR_TOO_MANY_OPEN_FILES,
+    ERROR_USER_MAPPED_FILE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -106,7 +107,12 @@ pub fn cause(e: &io::Error) -> Cause {
         ERROR_DIR_NOT_EMPTY => Cause::NotEmpty,
         ERROR_NOT_SAME_DEVICE => Cause::CrossDevice,
         ERROR_TOO_MANY_OPEN_FILES | ERROR_NO_SYSTEM_RESOURCES => Cause::OutOfHandles,
-        ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION | ERROR_DELETE_PENDING => Cause::InUse,
+        // A file mapped into some process's memory cannot be cut short or
+        // replaced while it is (`ERROR_USER_MAPPED_FILE`).
+        ERROR_SHARING_VIOLATION
+        | ERROR_LOCK_VIOLATION
+        | ERROR_DELETE_PENDING
+        | ERROR_USER_MAPPED_FILE => Cause::InUse,
         ERROR_NOT_SUPPORTED | ERROR_INVALID_FUNCTION => Cause::NotSupported,
         _ => Cause::Other,
     }
@@ -1551,6 +1557,156 @@ pub use process::*;
 pub mod clone;
 
 pub mod daemonize;
+
+// ---------------------------------------------------------------------------
+// Roots: the volume a tree lies on.
+
+/// What kind of drive a volume is on, as `GetDriveTypeW` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveKind {
+    /// A disk in this machine (`DRIVE_FIXED`).
+    Fixed,
+    /// A disk that can be taken out, such as a USB stick (`DRIVE_REMOVABLE`).
+    Removable,
+    /// A RAM disk (`DRIVE_RAMDISK`).
+    RamDisk,
+    /// A network share (`DRIVE_REMOTE`), or a path the system resolves to
+    /// one (`\\?\UNC\…`).
+    Remote,
+    /// An optical drive (`DRIVE_CDROM`).
+    CdRom,
+    /// Anything the system cannot name.
+    Unknown,
+}
+
+/// Whether a tree may lie on a volume with the file system `fs_name` (as
+/// `GetVolumeInformationByHandleW` gives it) on a drive of kind `drive`:
+/// only NTFS, and only on a drive of this machine. The rest of this module
+/// relies on NTFS (handle-relative opens, reparse points, file ids, the
+/// rename and delete options); a network share may run anything behind
+/// its name.
+pub fn local_ntfs(fs_name: &str, drive: DriveKind) -> bool {
+    fs_name.eq_ignore_ascii_case("NTFS")
+        && matches!(
+            drive,
+            DriveKind::Fixed | DriveKind::Removable | DriveKind::RamDisk
+        )
+}
+
+/// The kind of drive the open directory `d` lies on, from its final path:
+/// a `\\?\UNC\…` path is a share; otherwise the drive type of the volume
+/// root at the start of the path (a `subst` drive resolves to the drive it
+/// stands for, a mapped drive to its share).
+fn drive_kind(d: &Dir) -> io::Result<DriveKind> {
+    use windows_sys::Win32::Storage::FileSystem::{VOLUME_NAME_DOS, VOLUME_NAME_GUID};
+    use windows_sys::Win32::System::WindowsProgramming::{
+        DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
+    };
+    let h = d.0.as_handle();
+    // A volume with no drive letter has no DOS name: its GUID path then.
+    let path = native::final_path(h, VOLUME_NAME_DOS)
+        .or_else(|_| native::final_path(h, VOLUME_NAME_GUID))?;
+    let head = String::from_utf16_lossy(&path[..8.min(path.len())]);
+    if head.eq_ignore_ascii_case(r"\\?\UNC\") {
+        return Ok(DriveKind::Remote);
+    }
+    // The volume root: up to the first separator after `\\?\`, kept.
+    let start = 4.min(path.len());
+    let root = match path[start..].iter().position(|&c| c == u16::from(b'\\')) {
+        Some(i) => &path[..start + i + 1],
+        None => &path[..],
+    };
+    Ok(match native::drive_type(root) {
+        DRIVE_FIXED => DriveKind::Fixed,
+        DRIVE_REMOVABLE => DriveKind::Removable,
+        DRIVE_RAMDISK => DriveKind::RamDisk,
+        DRIVE_REMOTE => DriveKind::Remote,
+        DRIVE_CDROM => DriveKind::CdRom,
+        _ => DriveKind::Unknown,
+    })
+}
+
+/// Fails unless `root` lies on a local NTFS volume ([`local_ntfs`]), with
+/// the message `{root} is not on a local NTFS volume`. A root that does
+/// not exist yet is judged by the nearest directory above it that does,
+/// where it will be made. The volume is read through the open directory,
+/// so the answer is about where the name leads.
+pub fn check_root(root: &Path) -> io::Result<()> {
+    let full = std::path::absolute(native_path(root)?)?;
+    let mut at: &Path = &full;
+    let dir = loop {
+        match Dir::open_root(at) {
+            Ok(d) => break d,
+            Err(e) if cause(&e) == Cause::NotThere => match at.parent() {
+                Some(p) => at = p,
+                None => return Err(e),
+            },
+            Err(e) => return Err(e),
+        }
+    };
+    check_root_dir(&dir, root)
+}
+
+/// [`check_root`] for a root already open as `dir`, so the check and the
+/// use are of one directory; `shown` names it in the message.
+pub fn check_root_dir(dir: &Dir, shown: &Path) -> io::Result<()> {
+    let fs_name = String::from_utf16_lossy(&native::file_system_name(dir.0.as_handle())?);
+    if local_ntfs(&fs_name, drive_kind(dir)?) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("{} is not on a local NTFS volume", shown.display()),
+        ))
+    }
+}
+
+/// Whether `e`, from receiving a datagram, says it was larger than the
+/// buffer (`WSAEMSGSIZE`): Windows then fills the buffer and drops the
+/// rest, as Unix does without an error.
+pub fn is_datagram_too_large(e: &io::Error) -> bool {
+    /// `WSAEMSGSIZE` (winsock2.h).
+    const WSAEMSGSIZE: i32 = 10040;
+    e.raw_os_error() == Some(WSAEMSGSIZE)
+}
+
+/// Whether `name`, at the top of a volume, is one Windows keeps there for
+/// itself: `System Volume Information` and `$RECYCLE.BIN`, in any case. A
+/// walk of a tree whose root is the top of a volume leaves them out.
+pub fn is_builtin_exclude(name: &[u8]) -> bool {
+    [&b"System Volume Information"[..], b"$RECYCLE.BIN"]
+        .iter()
+        .any(|n| name.eq_ignore_ascii_case(n))
+}
+
+/// Whether the directory `root` is the top of a volume, where
+/// [`is_builtin_exclude`] applies: as given (`C:\`, `\\?\C:\`, a `subst`
+/// drive's root), or as the open directory resolves (a volume mounted in a
+/// folder, or `\\?\Volume{…}\`): its path by volume GUID is the volume's
+/// root, with nothing after it.
+pub fn is_volume_top(root: &Path) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::VOLUME_NAME_GUID;
+    let as_given = std::path::absolute(root).is_ok_and(|p| {
+        let mut c = p.components();
+        matches!(c.next(), Some(std::path::Component::Prefix(_)))
+            && matches!(c.next(), Some(std::path::Component::RootDir))
+            && c.next().is_none()
+    });
+    as_given
+        || native_path(root)
+            .and_then(|p| Dir::open_root(&p))
+            .and_then(|d| native::final_path(d.0.as_handle(), VOLUME_NAME_GUID))
+            .is_ok_and(|p| is_volume_guid_root(&String::from_utf16_lossy(&p)))
+}
+
+/// Whether `path` is a volume's root by GUID: `\\?\Volume{…}\` and no
+/// more.
+fn is_volume_guid_root(path: &str) -> bool {
+    path.get(..11)
+        .is_some_and(|head| head.eq_ignore_ascii_case(r"\\?\Volume{"))
+        && path.ends_with(r"}\")
+        && path[11..path.len() - 2].bytes().all(|b| b != b'\\')
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers.

@@ -80,6 +80,31 @@ impl Platform {
         }
     }
 
+    /// Whether a directory takes two names that differ only in case for one
+    /// (NTFS does by default). Where it does, a receiver refuses a new name
+    /// that differs only by case from one already in its directory, instead
+    /// of writing over that one; on Unix it makes no such check and lists
+    /// no directory for it.
+    pub const fn folds_case(self) -> bool {
+        match self {
+            Platform::Unix => false,
+            Platform::Windows => true,
+        }
+    }
+
+    /// Whether resolving a path by name says less than it does on Unix:
+    /// on Windows `..` is taken away with the name before it by the text
+    /// alone (`missing\..\x` is `x`, whether `missing` is there or not),
+    /// and a name below a file reads as missing rather than as "not a
+    /// directory". Where it does, a caller that must refuse such a path
+    /// checks the directories on the way itself; Unix needs no such check.
+    pub const fn resolves_paths_lexically(self) -> bool {
+        match self {
+            Platform::Unix => false,
+            Platform::Windows => true,
+        }
+    }
+
     /// Whether the byte `b` separates the components of a path on this kind
     /// of system: `/` on Unix; `\` and `/` on Windows. Both are ASCII, so
     /// they never occur inside a longer UTF-8 or WTF-8 sequence.

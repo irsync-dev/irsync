@@ -203,8 +203,13 @@ fn refuse_expanded_home(server: &str, target: &str, home: Option<&Path>) -> anyh
     };
     let tilde = if rest.as_os_str().is_empty() {
         "~".to_string()
-    } else {
+    } else if irsync::platform::Platform::CURRENT.separator() == b'/' {
         format!("~/{}", rest.display())
+    } else {
+        // Windows: Git Bash expands `~` too, into a path with `\`; the
+        // server reads `~/` followed by `/` between names on any system.
+        let names: Vec<_> = rest.iter().map(|c| c.to_string_lossy()).collect();
+        format!("~/{}", names.join("/"))
     };
     let name = manage::exports::target_name(target);
     bail!(
@@ -886,5 +891,20 @@ mod tests {
         assert!(refuse_expanded_home("s", "photos:~/Photos", Some(home)).is_ok());
         assert!(refuse_expanded_home("s", "photos:/srv/Photos", Some(home)).is_ok());
         assert!(refuse_expanded_home("s", "photos:/home/mee/Photos", Some(home)).is_ok());
+    }
+
+    /// On Windows (Git Bash expands `~` as well) the hint puts `/` between
+    /// the names below the home, as the server reads them.
+    #[cfg(windows)]
+    #[test]
+    fn the_hint_on_windows_has_slashes() {
+        let home = Path::new(r"C:\Users\me");
+        let e =
+            refuse_expanded_home("s", r"photos:C:\Users\me\Photos\2024", Some(home)).unwrap_err();
+        assert!(
+            e.to_string()
+                .ends_with("irsync remote s export add 'photos:~/Photos/2024'"),
+            "{e}"
+        );
     }
 }

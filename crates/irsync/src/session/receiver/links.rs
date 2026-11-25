@@ -180,7 +180,11 @@ impl Receiver {
                 }
                 Err(e) => {
                     tracing::info!(?path, error = %e, "hard link failed");
-                    let msg = format!("hard link: {e}");
+                    let msg = if crate::fs::transient::is_in_use(&e) {
+                        e.to_string()
+                    } else {
+                        format!("hard link: {e}")
+                    };
                     self.ctx
                         .bus
                         .emit(crate::session::Event::Failed(path.clone(), msg.clone()));

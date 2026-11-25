@@ -25,6 +25,7 @@ fn causes_from_win32_codes() {
         (ERROR_SHARING_VIOLATION, Cause::InUse),
         (ERROR_LOCK_VIOLATION, Cause::InUse),
         (ERROR_DELETE_PENDING, Cause::InUse),
+        (ERROR_USER_MAPPED_FILE, Cause::InUse),
         (ERROR_NOT_SUPPORTED, Cause::NotSupported),
         (ERROR_INVALID_FUNCTION, Cause::NotSupported),
         // Ambiguous on Windows: never read as "in use".
@@ -499,4 +500,78 @@ fn device_names_and_long_paths_are_ordinary_paths() {
     assert_eq!(fstat(&f).unwrap().size, 1);
     set_mtime_path(&long.join("f"), (1_600_000_000, 0)).unwrap();
     assert_eq!(lstat(&long.join("f")).unwrap().mtime, (1_600_000_000, 0));
+}
+
+/// Only NTFS on a drive of this machine takes a tree; the decision, on
+/// volume information given as data.
+#[test]
+fn a_root_that_is_not_ntfs_is_refused() {
+    use super::{local_ntfs, DriveKind::*};
+    for drive in [Fixed, Removable, RamDisk] {
+        assert!(local_ntfs("NTFS", drive), "{drive:?}");
+        assert!(local_ntfs("ntfs", drive), "{drive:?}");
+    }
+    // A share is refused whatever it says it runs (a mapped drive
+    // resolves to one too); so is a drive the system cannot name.
+    for drive in [Remote, CdRom, Unknown] {
+        assert!(!local_ntfs("NTFS", drive), "{drive:?}");
+    }
+    for fs in ["ReFS", "FAT", "FAT32", "exFAT", "UDF", "CDFS", ""] {
+        for drive in [Fixed, Removable, Remote] {
+            assert!(!local_ntfs(fs, drive), "{fs} on {drive:?}");
+        }
+    }
+}
+
+/// The temporary directory is on a local NTFS volume on this machine and
+/// on CI; a missing root is judged where it would be made; the error
+/// names the root.
+#[test]
+fn check_root_reads_the_volume_of_a_real_directory() {
+    let t = tempfile::tempdir().unwrap();
+    super::check_root(t.path()).unwrap();
+    super::check_root(&t.path().join("not").join("yet")).unwrap();
+}
+
+#[test]
+fn the_volume_top_keeps_two_names_for_the_system() {
+    use super::{is_builtin_exclude, is_volume_top};
+    for n in [
+        &b"System Volume Information"[..],
+        b"system volume information",
+        b"$RECYCLE.BIN",
+        b"$Recycle.Bin",
+    ] {
+        assert!(is_builtin_exclude(n));
+    }
+    for n in [
+        &b"System Volume"[..],
+        b"RECYCLE.BIN",
+        b"$RECYCLE.BIN2",
+        b"x",
+    ] {
+        assert!(!is_builtin_exclude(n));
+    }
+    assert!(is_volume_top(Path::new(r"C:\")));
+    assert!(is_volume_top(Path::new(r"\\?\C:\")));
+    assert!(!is_volume_top(Path::new(r"C:\Users")));
+    assert!(!is_volume_top(Path::new("relative")));
+}
+
+/// A volume's root reached by its GUID path is the top of a volume too,
+/// as a volume mounted in a folder is; a folder on it is not.
+#[test]
+fn a_volume_root_by_guid_is_a_volume_top() {
+    use windows_sys::Win32::Storage::FileSystem::VOLUME_NAME_GUID;
+    let t = tempfile::tempdir().unwrap();
+    let d = Dir::open_root(t.path()).unwrap();
+    let path =
+        String::from_utf16_lossy(&native::final_path(d.0.as_handle(), VOLUME_NAME_GUID).unwrap());
+    let end = path.find('}').unwrap() + 2;
+    let root = &path[..end];
+    assert!(is_volume_guid_root(root), "{root}");
+    assert!(!is_volume_guid_root(&path), "{path}");
+    assert!(is_volume_top(Path::new(root)), "{root}");
+    assert!(!is_volume_top(t.path()));
+    assert!(!is_volume_top(Path::new(&path)), "{path}");
 }

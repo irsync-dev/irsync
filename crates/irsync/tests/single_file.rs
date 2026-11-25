@@ -940,7 +940,7 @@ async fn push_onto_a_symlink_out_of_the_export_says_nothing_about_its_target() {
                 .unwrap_err();
             answers.push(format!("{err:#}"));
             assert!(fs::symlink_metadata(&t).unwrap().is_symlink());
-            fs::remove_file(&t).unwrap();
+            common::remove_link(&t).unwrap();
         }
         assert!(
             answers[0].contains("is a symlink the daemon does not follow"),

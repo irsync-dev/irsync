@@ -8,7 +8,7 @@ mod common;
 use std::fs;
 use std::time::Duration;
 
-use common::{Flow, Harness};
+use common::{subst_of, Flow, Harness, Subst};
 use irsync::cli::Args;
 use irsync::options::SyncOptions;
 
@@ -394,38 +394,6 @@ async fn a_push_to_an_ancestor_of_a_missing_inner_root_is_allowed() {
     assert_eq!(listed(&made.join("B")), ["f"]);
 }
 
-/// A drive letter made with `subst` (no privilege needed), removed again
-/// when dropped.
-struct Subst(char);
-
-impl Drop for Subst {
-    /// Removes the drive, once: a letter given back is free for another
-    /// test to take, so it is never removed a second time.
-    fn drop(&mut self) {
-        let _ = std::process::Command::new("subst")
-            .arg(format!("{}:", self.0))
-            .arg("/d")
-            .output();
-    }
-}
-
-/// A free drive letter `subst` makes for `dir`, if one takes it (a letter
-/// held by a mapped network drive that is away is refused); removed when
-/// the result is dropped.
-fn subst_of(dir: &std::path::Path) -> Option<Subst> {
-    ('D'..='Z').rev().find_map(|l| {
-        if fs::metadata(format!(r"{l}:\")).is_ok() {
-            return None;
-        }
-        let made = std::process::Command::new("subst")
-            .arg(format!("{l}:"))
-            .arg(dir)
-            .output()
-            .ok()?;
-        made.status.success().then(|| Subst(l))
-    })
-}
-
 /// A granted export on a drive that went away after the daemon started
 /// (as a drive whose medium was taken out) is skipped without being
 /// opened: requests to `m` go ahead. The drive is a `subst` of a temporary
@@ -469,8 +437,14 @@ async fn an_export_on_a_drive_that_went_away_does_not_disturb_other_requests() {
 async fn an_export_below_a_file_does_not_disturb_other_requests() {
     let elsewhere = tempfile::tempdir().unwrap();
     let file = elsewhere.path().join("file");
+    // A directory while the daemon starts (which opens every export's
+    // index and, as on Unix, refuses a root below a file), a file by the
+    // time the requests come.
+    fs::create_dir(&file).unwrap();
+    let below = file.join("e");
+    let h = Harness::with_other_export("below-file", move |_| below, |_| {}).await;
+    fs::remove_dir(&file).unwrap();
     fs::write(&file, b"a file").unwrap();
-    let h = Harness::with_other_export("below-file", move |_| file.join("e"), |_| {}).await;
     fs::write(h.local.path().join("f"), b"pushed").unwrap();
     let out = push(&h, "x").await.expect("the push to x");
     assert!(out.errors.is_empty(), "{:?}", out.errors);

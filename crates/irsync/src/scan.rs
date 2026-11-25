@@ -299,6 +299,11 @@ fn run_walk(
     if let Ok(native) = crate::platform::native_path(&root) {
         root = native.into_owned();
     }
+    // At the top of a volume the system keeps names for itself (Windows:
+    // `System Volume Information`, `$RECYCLE.BIN`): never walked, listed or
+    // deleted. Judged on the root as given, before a link or a `subst`
+    // drive is resolved. Never on Unix (the call is false without a look).
+    let volume_top = crate::platform::is_volume_top(&root);
     // Timed while the walk works; released while it waits for room in the channel.
     let timing = RefCell::new(meter.as_deref().map(|m| m.start(Activity::Walk)));
     let emit = |ev: ScanEvent| -> bool {
@@ -409,6 +414,12 @@ fn run_walk(
             };
             children.retain_mut(|c| {
                 let Ok(e) = c else { return true };
+                if volume_top
+                    && dir_rel.as_bytes().is_empty()
+                    && crate::platform::is_builtin_exclude(&os_to_bytes(e.file_name()))
+                {
+                    return false;
+                }
                 let Ok(rel) = dir_rel.join(&os_to_bytes(e.file_name())) else {
                     // Kept, unwalked, for the loop below to report.
                     e.read_children = None;
@@ -748,7 +759,20 @@ mod tests {
                 _ => {}
             }
         }
-        std::fs::rename(root.join("z"), &aside).unwrap();
+        // Windows refuses to rename a directory while a file in it is open,
+        // and the walk opens each file for a moment to stat it: tried
+        // again until the walk is between files (it soon waits for room
+        // in the channel, which this test is not reading). Unix renames at
+        // once.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while let Err(e) = std::fs::rename(root.join("z"), &aside) {
+            assert!(
+                e.kind() == std::io::ErrorKind::PermissionDenied
+                    && std::time::Instant::now() < deadline,
+                "{e}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         crate::platform::testutil::symlink(&outside, &root.join("z")).unwrap();
         assert_eq!(std::fs::read(root.join("z/f0000")).unwrap(), b"secret");
 

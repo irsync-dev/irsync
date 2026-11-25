@@ -38,6 +38,88 @@ pub fn try_create_non_utf8(dir: &std::path::Path, name: &[u8]) -> Option<std::pa
     }
 }
 
+/// Whether this process may make symlinks. Always on Unix; on Windows it
+/// needs the privilege or Developer Mode, and a test that needs symlinks
+/// returns early when not (a line that starts `skipping:` says so). With
+/// `CI` set, not being able to is a failure.
+pub fn symlinks_available() -> bool {
+    #[cfg(unix)]
+    let available = true;
+    #[cfg(windows)]
+    let available = irsync::platform::testutil::symlinks_available();
+    available
+}
+
+/// Removes the link at `link` itself, never what it leads to. Windows
+/// makes a link to a directory as a directory, removed as one; Unix
+/// removes any link as a file.
+pub fn remove_link(link: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        let t = std::fs::symlink_metadata(link)?.file_type();
+        if t.is_dir() || t.is_symlink_dir() {
+            return std::fs::remove_dir(link);
+        }
+    }
+    std::fs::remove_file(link)
+}
+
+/// Opens `p` for reading and writing as another program would, sharing
+/// what `share` says (1 read, 2 write, 4 delete).
+#[cfg(windows)]
+pub fn open_sharing(p: &std::path::Path, share: u32) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(share)
+        .open(p)
+        .unwrap()
+}
+
+/// A Windows name from its UTF-16 units, which may hold a lone surrogate.
+#[cfg(windows)]
+pub fn name_from_units(units: &[u16]) -> std::ffi::OsString {
+    use std::os::windows::ffi::OsStringExt;
+    std::ffi::OsString::from_wide(units)
+}
+
+/// A drive letter made with `subst` (no privilege needed), removed again
+/// when dropped.
+#[cfg(windows)]
+pub struct Subst(pub char);
+
+#[cfg(windows)]
+impl Drop for Subst {
+    /// Removes the drive, once: a letter given back is free for another
+    /// test to take, so it is never removed a second time.
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("subst")
+            .arg(format!("{}:", self.0))
+            .arg("/d")
+            .output();
+    }
+}
+
+/// A free drive letter `subst` makes for `dir`, if one takes it (a letter
+/// held by a mapped network drive that is away is refused); removed when
+/// the result is dropped.
+#[cfg(windows)]
+pub fn subst_of(dir: &std::path::Path) -> Option<Subst> {
+    ('D'..='Z').rev().find_map(|l| {
+        if std::fs::metadata(format!(r"{l}:\")).is_ok() {
+            return None;
+        }
+        let made = std::process::Command::new("subst")
+            .arg(format!("{l}:"))
+            .arg(dir)
+            .output()
+            .ok()?;
+        made.status.success().then(|| Subst(l))
+    })
+}
+
 use std::future::Future;
 use std::time::Duration;
 
@@ -1048,14 +1130,20 @@ impl BinaryDaemon {
         self.guard.0.id()
     }
 
-    /// Ends the daemon with `SIGTERM`, as a service manager does, and waits
-    /// for it: it writes out its protocol capture first.
+    /// Ends the daemon and waits for it: on Unix with `SIGTERM`, as a
+    /// service manager does; on Windows it is killed. Its protocol capture
+    /// is written out after every batch, so it holds what the daemon did.
     pub fn stop(mut self) {
-        let status = std::process::Command::new("kill")
-            .args(["-TERM", &self.pid().to_string()])
-            .status()
-            .unwrap();
-        assert!(status.success(), "kill -TERM failed");
+        #[cfg(unix)]
+        {
+            let status = std::process::Command::new("kill")
+                .args(["-TERM", &self.pid().to_string()])
+                .status()
+                .unwrap();
+            assert!(status.success(), "kill -TERM failed");
+        }
+        #[cfg(windows)]
+        bin::stop_child(&mut self.guard.0);
         let _ = self.guard.0.wait();
     }
 

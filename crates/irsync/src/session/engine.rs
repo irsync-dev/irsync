@@ -750,6 +750,9 @@ pub(super) async fn run_client_inner(
             .await
             .with_context(|| format!("creating {}", local.root.display()))?;
     }
+    // On Windows only a local NTFS volume takes a tree (a root still to be
+    // made, on a dry run, is judged where it would be); Unix checks nothing.
+    crate::platform::check_root(&local.root)?;
     // Local work (hashing, writing, finalizing) bumps the same marker the
     // inactivity watchdog reads, as received and sent traffic does.
     let activity = local.hasher.activity().clone();
@@ -898,6 +901,9 @@ pub(crate) fn prepare_root(
         }
         Err(e) => return Err(refused(e, &p)),
     };
+    // On Windows only a local NTFS volume takes a tree, judged on the root
+    // just opened; Unix checks nothing.
+    crate::platform::check_root_dir(&dir, export_root)?;
     for c in rel.components() {
         p.push(crate::platform::bytes_to_os(c)?);
         let next = match dir.open_dir(c) {

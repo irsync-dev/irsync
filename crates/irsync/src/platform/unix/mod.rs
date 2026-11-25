@@ -105,6 +105,37 @@ pub fn native_path(path: &Path) -> io::Result<std::borrow::Cow<'_, Path>> {
     Ok(std::borrow::Cow::Borrowed(path))
 }
 
+/// Whether `e`, from receiving a datagram, says it was larger than the
+/// buffer: never on Unix, which cuts such a datagram short instead.
+pub fn is_datagram_too_large(_e: &io::Error) -> bool {
+    false
+}
+
+/// Whether a tree may lie at `root`: on Unix always, with no call made.
+/// See the Windows version, which refuses a volume that is not local NTFS.
+pub fn check_root(_root: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// [`check_root`] for a root already open as `_dir`: on Unix always Ok,
+/// with no call made.
+pub fn check_root_dir(_dir: &Dir, _shown: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Whether `name` at the top of a volume is one the system keeps there for
+/// itself, which a walk leaves out: on Unix no name is.
+pub fn is_builtin_exclude(_name: &[u8]) -> bool {
+    false
+}
+
+/// Whether the directory `root` is the top of a volume, where
+/// [`is_builtin_exclude`] applies: on Unix it never applies, so never
+/// (nothing is looked up).
+pub fn is_volume_top(_root: &Path) -> bool {
+    false
+}
+
 /// `name` if it is one component: not empty, `.` or `..`, and without `/`
 /// or NUL. Checked before any call, so no operation of [`Dir`] can reach
 /// past the directory it holds.

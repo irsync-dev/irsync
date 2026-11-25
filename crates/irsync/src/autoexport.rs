@@ -19,6 +19,10 @@ pub enum AutoExportError {
     /// The config file holds paths as UTF-8 text.
     #[error("automatic exports need a UTF-8 path")]
     NotUtf8,
+    /// The system cannot hold a tree there (on Windows: not a local NTFS
+    /// volume); the message says why.
+    #[error("{0}")]
+    Unfit(String),
 }
 
 /// The directory to export for `abs`: `abs` itself when it is a directory,
@@ -73,7 +77,8 @@ pub fn auto_export_dir(
     }
 }
 
-/// Refuses `/` and a path that is not UTF-8 as an automatic export.
+/// Refuses `/`, a path that is not UTF-8 and (on Windows) one that is not
+/// on a local NTFS volume as an automatic export.
 pub fn check_root(root: &Path) -> Result<(), AutoExportError> {
     if root.parent().is_none() {
         return Err(AutoExportError::Root);
@@ -81,5 +86,5 @@ pub fn check_root(root: &Path) -> Result<(), AutoExportError> {
     if root.to_str().is_none() {
         return Err(AutoExportError::NotUtf8);
     }
-    Ok(())
+    crate::platform::check_root(root).map_err(|e| AutoExportError::Unfit(e.to_string()))
 }

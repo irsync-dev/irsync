@@ -234,7 +234,7 @@ fn place_via_temp(
     }
     let res = make(&dir, &tmp)
         .and_then(|()| apply_metadata_at(&dir, &tmp, entry, apply))
-        .and_then(|()| dir.rename(&tmp, &dir, &name));
+        .and_then(|()| crate::fs::transient::retry_in_use(|| dir.rename(&tmp, &dir, &name)));
     if res.is_err() {
         let _ = dir.remove_file(&tmp);
     }
@@ -326,7 +326,8 @@ pub(super) fn place_hardlink(
             crate::fs::meta::apply_metadata_fd(&dst, entry, apply)
         })()
     };
-    let res = made.and_then(|()| lfd.rename(&tmp, &lfd, &lname));
+    let res =
+        made.and_then(|()| crate::fs::transient::retry_in_use(|| lfd.rename(&tmp, &lfd, &lname)));
     if res.is_err() {
         let _ = lfd.remove_file(&tmp);
     }
@@ -356,7 +357,7 @@ pub(super) fn mkdir_replacing(at: &Beneath) -> io::Result<()> {
     match dir.stat(name) {
         Ok(st) if st.kind == FileKind::Dir => Ok(()),
         Ok(_) => {
-            dir.remove_file(name)?;
+            crate::fs::transient::retry_in_use(|| dir.remove_file(name))?;
             mkdir()
         }
         Err(e) if cause(&e) == Cause::NotThere => mkdir(),
@@ -389,6 +390,88 @@ fn views(
         })
 }
 
+/// On a system whose directories fold case ([`Platform::folds_case`]): the
+/// names in each directory this pass creates a name in. A directory is
+/// listed once, the first time a new name is to be made in it, and its
+/// names are kept up to date with what the pass itself makes (a name is
+/// added once it is made, or, for a file or hard link the receiver places
+/// later, once it is requested) and deletes. Keyed by the directory's path
+/// below the base (the index key's parent), as the names are made there;
+/// within a directory by [`case_key`], so a check is one lookup.
+///
+/// [`Platform::folds_case`]: crate::platform::Platform::folds_case
+/// [`case_key`]: crate::fs::names::case_key
+#[derive(Default)]
+struct CaseNames {
+    dirs: HashMap<RelPath, HashMap<Vec<u8>, Vec<Vec<u8>>>>,
+}
+
+impl CaseNames {
+    /// Whether the names of `dir` are known.
+    fn listed(&self, dir: &RelPath) -> bool {
+        self.dirs.contains_key(dir)
+    }
+
+    /// Takes `names` as what `dir` holds.
+    fn insert_listing(&mut self, dir: RelPath, names: Vec<Vec<u8>>) {
+        let mut by_key: HashMap<Vec<u8>, Vec<Vec<u8>>> = HashMap::with_capacity(names.len());
+        for n in names {
+            by_key
+                .entry(crate::fs::names::case_key(&n))
+                .or_default()
+                .push(n);
+        }
+        self.dirs.insert(dir, by_key);
+    }
+
+    /// A name in `dir` that differs from `name` only by case, if any.
+    fn clash(&self, dir: &RelPath, name: &[u8]) -> Option<&[u8]> {
+        self.dirs
+            .get(dir)?
+            .get(&crate::fs::names::case_key(name))?
+            .iter()
+            .find(|n| *n != name && crate::fs::names::same_ignoring_case(n, name))
+            .map(Vec::as_slice)
+    }
+
+    /// Notes `name` as made in `dir` (a listed directory).
+    fn made(&mut self, dir: &RelPath, name: &[u8]) {
+        if let Some(by_key) = self.dirs.get_mut(dir) {
+            let spellings = by_key.entry(crate::fs::names::case_key(name)).or_default();
+            if !spellings.iter().any(|n| n == name) {
+                spellings.push(name.to_vec());
+            }
+        }
+    }
+
+    /// Forgets the name at `key` (below the base): this session deleted it.
+    fn deleted(&mut self, key: &RelPath) {
+        if let Ok((dir, name)) = crate::fs::safe::split_last(key) {
+            if let Some(spellings) = self
+                .dirs
+                .get_mut(&dir)
+                .and_then(|by_key| by_key.get_mut(&crate::fs::names::case_key(&name)))
+            {
+                spellings.retain(|n| *n != name);
+            }
+        }
+    }
+}
+
+/// A new name the planner checked against the case of its directory:
+/// noted as made once it is ([`Planner::made`]).
+struct NewName {
+    dir: RelPath,
+    name: Vec<u8>,
+}
+
+/// Why a new name is refused where case folds: the message, and the
+/// existing name (a session path) it clashes with, if that is the reason.
+struct CaseRefusal {
+    msg: String,
+    existing: Option<RelPath>,
+}
+
 struct Planner {
     ctx: Arc<Ctx>,
     out: Out,
@@ -410,6 +493,8 @@ struct Planner {
     regular_ok: HashSet<RelPath>,
     /// Slots for files in flight (see [`MAX_INFLIGHT`]).
     inflight: Arc<Semaphore>,
+    /// The names of the directories new names go into, where case folds.
+    case: CaseNames,
     /// `Done::Planned` events still on their way (test hook, see
     /// `SideHooks::delay_planned`); all arrive before `PlannerFinished`.
     #[cfg(feature = "test-hooks")]
@@ -590,6 +675,32 @@ impl Planner {
                 return;
             }
         }
+        let mut new_name = None;
+        if decision != Decision::Skip
+            && dst.is_none()
+            && !path.as_bytes().is_empty()
+            && crate::platform::Platform::CURRENT.folds_case()
+        {
+            // A new name in a directory that folds case: one that differs
+            // from it only by case would be written over instead.
+            match self.case_clash(&path).await {
+                Ok(n) => new_name = Some(n),
+                Err(refusal) => {
+                    // The name there is kept whole this run, whatever the
+                    // delete mode: it is all the destination holds of the
+                    // entry the source has under another case.
+                    if let (Some(existing), Some(pass)) = (&refusal.existing, self.deletes.as_mut())
+                    {
+                        pass.protect_tree(existing);
+                    }
+                    self.error(&path, refusal.msg);
+                    if is_dir {
+                        self.failed_dirs.insert(path);
+                    }
+                    return;
+                }
+            }
+        }
         if src.entry.kind() == Kind::Regular {
             // Withdrawn again if applying its metadata fails below.
             self.regular_ok.insert(path.clone());
@@ -647,7 +758,10 @@ impl Planner {
             }
         }
         if self.ctx.opts.dry_run {
-            // Decide only: nothing is created, changed or requested.
+            // Decide only: nothing is created, changed or requested (a name
+            // that would be made is noted, so a later case variant is
+            // reported as it would be).
+            self.made(&new_name);
             if is_dir {
                 self.ok_dirs.insert(path);
             } else if src.entry.kind() == Kind::Regular && decision == Decision::Skip {
@@ -690,6 +804,7 @@ impl Planner {
                     return;
                 };
                 // Placed after every regular file (the target may be in flight).
+                self.made(&new_name);
                 let _ = self.events.send(Ev::Recv(Done::Linked(Box::new(Linked {
                     file_id,
                     path,
@@ -706,6 +821,7 @@ impl Planner {
                 drop(placing);
                 match res {
                     Ok(()) => {
+                        self.made(&new_name);
                         self.touch_parent(&path);
                         self.ok_dirs.insert(path.clone());
                         self.report.dirs.push(DirEntry {
@@ -715,7 +831,12 @@ impl Planner {
                         });
                     }
                     Err(e) => {
-                        self.error(&path, format!("mkdir: {e}"));
+                        let msg = if crate::fs::transient::is_in_use(&e) {
+                            e.to_string()
+                        } else {
+                            format!("mkdir: {e}")
+                        };
+                        self.error(&path, msg);
                         self.failed_dirs.insert(path);
                     }
                 }
@@ -796,6 +917,7 @@ impl Planner {
                     return;
                 };
                 let _planning = meter.start(Activity::Plan);
+                self.made(&new_name);
                 // The main loop registers the file, then requests it: the
                 // peer cannot answer a request for a file not yet known.
                 self.post_planned(Ev::Recv(Done::Planned(Box::new(Planned {
@@ -813,10 +935,58 @@ impl Planner {
                 return;
             }
         };
-        if let Err(e) = res {
-            self.regular_ok.remove(&path);
-            self.error(&path, e.to_string());
+        match res {
+            Ok(()) => self.made(&new_name),
+            Err(e) => {
+                self.regular_ok.remove(&path);
+                self.error(&path, e.to_string());
+            }
         }
+    }
+
+    /// Notes a checked new name as made (see [`CaseNames`]).
+    fn made(&mut self, new: &Option<NewName>) {
+        if let Some(n) = new {
+            self.case.made(&n.dir, &n.name);
+        }
+    }
+
+    /// Where directories fold case: refuses the new name `path` when it
+    /// differs only by case from a name in its directory (there before, or
+    /// made by this pass), with the message and that name; else the name to
+    /// note once it is made. The directory is listed the first time, off
+    /// the async threads (see [`CaseNames`]).
+    async fn case_clash(&mut self, path: &RelPath) -> Result<NewName, CaseRefusal> {
+        let refused = |msg: String| CaseRefusal {
+            msg,
+            existing: None,
+        };
+        let at = self.ctx.place(path);
+        let (dir, name) =
+            crate::fs::safe::split_last(&at.rel).map_err(|e| refused(e.to_string()))?;
+        if !self.case.listed(&dir) {
+            let listed = blocking(move || match at.parent() {
+                Ok((d, _)) => d.list(),
+                // Not made yet (a dry run): nothing in it to clash with.
+                Err(e) if cause(&e) == Cause::NotThere => Ok(Vec::new()),
+                Err(e) => Err(e),
+            })
+            .await
+            .map_err(|e| refused(format!("listing its directory: {e}")))?;
+            self.case.insert_listing(dir.clone(), listed);
+        }
+        if let Some(other) = self.case.clash(&dir, &name) {
+            let existing = parent_of(path).join(other).ok();
+            let shown = existing
+                .as_ref()
+                .map(|p| crate::fs::paths::escape_path(p.as_bytes()))
+                .unwrap_or_else(|| crate::fs::paths::escape_path(other));
+            return Err(CaseRefusal {
+                msg: format!("differs only by case from {shown}"),
+                existing,
+            });
+        }
+        Ok(NewName { dir, name })
     }
 
     /// The id for a planned path: kept from an earlier connection of this
@@ -933,6 +1103,10 @@ impl Planner {
         if let Ok(deleted) = rx.await {
             for p in &deleted {
                 self.touch_parent(p);
+                if crate::platform::Platform::CURRENT.folds_case() {
+                    let key = self.ctx.key(p);
+                    self.case.deleted(&key);
+                }
             }
         }
     }
@@ -951,6 +1125,10 @@ impl Planner {
         if let Ok(deleted) = rx.await {
             for p in &deleted {
                 self.touch_parent(p);
+                if crate::platform::Platform::CURRENT.folds_case() {
+                    let key = self.ctx.key(p);
+                    self.case.deleted(&key);
+                }
             }
         }
     }
@@ -1110,6 +1288,7 @@ async fn plan_listings(
         kept_inodes: HashMap::new(),
         regular_ok: HashSet::new(),
         inflight,
+        case: CaseNames::default(),
         #[cfg(feature = "test-hooks")]
         delayed: Vec::new(),
     };
@@ -1175,6 +1354,31 @@ mod tests {
     use super::*;
     use crate::fs::meta::ApplyOpts;
     use crate::platform::testutil::symlink;
+
+    /// The case names of one directory: each check is one lookup, so
+    /// 20 000 new names (and a case variant of each) take a moment, not
+    /// the quadratic time a scan of every name per check would.
+    #[test]
+    fn twenty_thousand_new_names_in_one_directory_are_checked_quickly() {
+        let mut case = CaseNames::default();
+        let dir = RelPath::new(b"d").unwrap();
+        case.insert_listing(dir.clone(), vec![b"Existing".to_vec()]);
+        let started = std::time::Instant::now();
+        for i in 0..20_000 {
+            let name = format!("File{i:05}");
+            assert!(case.clash(&dir, name.as_bytes()).is_none());
+            case.made(&dir, name.as_bytes());
+            let other = name.to_lowercase();
+            assert_eq!(case.clash(&dir, other.as_bytes()), Some(name.as_bytes()));
+            // The exact spelling is no clash.
+            assert!(case.clash(&dir, name.as_bytes()).is_none());
+        }
+        assert_eq!(case.clash(&dir, b"EXISTING"), Some(&b"Existing"[..]));
+        case.deleted(&RelPath::new(b"d/Existing").unwrap());
+        assert!(case.clash(&dir, b"EXISTING").is_none());
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    }
 
     #[test]
     fn inflight_cap_fits_the_open_file_limit() {
@@ -1266,6 +1470,71 @@ mod tests {
         symlink(&out.path().join("victim"), &root.path().join("f")).unwrap();
         let _ = apply_metadata_beneath(&at("f"), &entry(0o100666), &apply);
         assert_eq!(mode(&out.path().join("victim")), 0o600);
+    }
+
+    /// The containment half of the test above, on every system: once the
+    /// entry's directory is swapped for a link out of the tree (a junction
+    /// on Windows, which needs no privilege), no directory or file is made
+    /// out there, nothing is replaced and no time is set.
+    #[test]
+    fn placing_never_goes_through_a_swapped_directory_on_any_system() {
+        use crate::platform::{Create, Open};
+        let (root, out) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(out.path().join("victim"), b"keep").unwrap();
+        let at = |p: &str| Beneath::new(root.path(), RelPath::new(p.as_bytes()).unwrap());
+        let times = ApplyOpts {
+            times: true,
+            ..ApplyOpts::default()
+        };
+        let entry = FileEntry {
+            mode: 0o100644,
+            mtime_sec: 1_600_000_000,
+            ..FileEntry::default()
+        };
+        let new = Open {
+            read: false,
+            write: true,
+            create: Create::New,
+            truncate: false,
+            nonblock: true,
+            mode: 0o600,
+        };
+        let file = |at: &Beneath| {
+            place_via_temp(
+                at,
+                |dir, tmp| dir.open_file(tmp, new).map(drop),
+                &entry,
+                &times,
+            )
+        };
+        let modified = |p: &Path| std::fs::metadata(p).unwrap().modified().unwrap();
+
+        // In a real directory all of it works.
+        mkdir_replacing(&at("d")).unwrap();
+        mkdir_replacing(&at("d/sub")).unwrap();
+        file(&at("d/f")).unwrap();
+        assert!(root.path().join("d/sub").is_dir());
+        assert!(root.path().join("d/f").is_file());
+        let before = modified(&out.path().join("victim"));
+
+        // `d` becomes a link to the outside directory.
+        std::fs::rename(root.path().join("d"), root.path().join("moved")).unwrap();
+        #[cfg(unix)]
+        symlink(out.path(), &root.path().join("d")).unwrap();
+        #[cfg(windows)]
+        crate::platform::testutil::junction(out.path(), &root.path().join("d")).unwrap();
+        assert!(mkdir_replacing(&at("d/sub")).is_err());
+        assert!(mkdir_replacing(&at("d/victim")).is_err());
+        assert!(file(&at("d/f")).is_err());
+        assert!(file(&at("d/victim")).is_err());
+        assert!(apply_metadata_beneath(&at("d/victim"), &entry, &times).is_err());
+        let names: Vec<_> = std::fs::read_dir(out.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["victim"]);
+        assert_eq!(std::fs::read(out.path().join("victim")).unwrap(), b"keep");
+        assert_eq!(modified(&out.path().join("victim")), before);
     }
 
     #[test]

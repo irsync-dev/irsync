@@ -5,15 +5,11 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-#[cfg(unix)]
 use common::irsync_bin_env;
 use common::{irsync_bin as irsync, spawn_daemon_binary_env, BinaryDaemon};
 use irsync::authz::Access;
-#[cfg(unix)]
 use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
-#[cfg(unix)]
 use irsync_proto::v1::{admin_reply, admin_request, hello};
-#[cfg(unix)]
 use prost::Message as _;
 
 fn stderr(o: &std::process::Output) -> String {
@@ -344,7 +340,6 @@ async fn an_older_daemon_is_told_to_update() {
 }
 
 /// Every record of a capture file.
-#[cfg(unix)]
 fn read_capture(path: &Path) -> Vec<Record> {
     let file = std::fs::read(path).unwrap();
     pbcap::Reader::new(&file[..])
@@ -354,7 +349,6 @@ fn read_capture(path: &Path) -> Vec<Record> {
 }
 
 /// The admin messages of a capture, as (side, direction, message).
-#[cfg(unix)]
 fn admin_msgs(recs: &[Record]) -> Vec<(Side, Direction, &Msg)> {
     recs.iter()
         .filter_map(|r| match r.msg.as_ref()? {
@@ -364,9 +358,29 @@ fn admin_msgs(recs: &[Record]) -> Vec<(Side, Direction, &Msg)> {
         .collect()
 }
 
-/// Unix only: the daemon writes its capture when SIGTERM asks it to stop; a
-/// test on Windows can only end it with TerminateProcess, which writes none.
-#[cfg(unix)]
+/// The capture at `path` once it holds `n` admin messages, read again
+/// until it does (for at most 10 s). The daemon writes its capture out
+/// after every batch of records, so what a stopped daemon handled is there
+/// even when it was killed (Windows), not asked to stop (Unix).
+fn capture_with_admin_msgs(path: &Path, n: usize) -> Vec<Record> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let whole = std::fs::read(path).ok().and_then(|file| {
+            pbcap::Reader::new(&file[..])
+                .ok()?
+                .map(|p| Record::decode(&p.ok()?.body[..]).ok())
+                .collect::<Option<Vec<Record>>>()
+        });
+        match whole {
+            Some(recs) if admin_msgs(&recs).len() >= n => return recs,
+            _ if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            _ => return read_capture(path),
+        }
+    }
+}
+
 #[test]
 fn admin_traffic_is_captured_on_both_sides() {
     let dir = tempfile::tempdir().unwrap();
@@ -391,7 +405,7 @@ fn admin_traffic_is_captured_on_both_sides() {
 
     let change = read_capture(&c1);
     let read = read_capture(&c2);
-    let daemon = read_capture(&dcap);
+    let daemon = capture_with_admin_msgs(&dcap, 5);
 
     let is_change = |m: &Msg| matches!(m, Msg::AdminRequest(r) if matches!(r.msg, Some(admin_request::Msg::Change(_))));
     let is_commit = |m: &Msg| matches!(m, Msg::AdminRequest(r) if matches!(r.msg, Some(admin_request::Msg::Commit(_))));

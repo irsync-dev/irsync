@@ -634,6 +634,10 @@ fn a_windows_server_takes_a_drive_path_or_one_under_home() {
     refused("pics:C:", REMOTE_NOT_ABSOLUTE);
     refused("pics:Photos", REMOTE_NOT_ABSOLUTE);
     refused(r"pics:\\server\share\x", REMOTE_NOT_LOCAL);
+    // What follows `~` goes on below the home: never a drive or a root.
+    for target in [r"p:~/D:x", r"p:~\D:", r"p:~/C:\x"] {
+        refused(target, "no drive or root after ~");
+    }
     refused(r"pics:\\.\C:\srv", REMOTE_NOT_LOCAL);
     // A letter and `:` before a separator is a drive (P:), never a name.
     refused(r"p:\srv\photos", "not a directory");

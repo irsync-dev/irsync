@@ -1283,6 +1283,9 @@ async fn a_directory_swapped_for_a_link_gets_no_part_file() {
 
 /// The swap comes after the data is written: the file is not renamed into
 /// the directory the link leads to, and a file of that name there stays.
+/// Windows refuses to rename a directory that holds an open file, so there
+/// the `.part` is kept in a partial dir elsewhere below the root, and the
+/// destination's directory is free to be swapped.
 #[tokio::test]
 async fn a_directory_swapped_for_a_link_gets_no_placed_file() {
     let e = env();
@@ -1290,7 +1293,11 @@ async fn a_directory_swapped_for_a_link_gets_no_placed_file() {
     fs::write(outside.path().join("f.bin"), b"keep").unwrap();
     let data = content(83);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    #[cfg(unix)]
+    let pd = None;
+    #[cfg(windows)]
+    let pd = Some(irsync::part_file::PartialDir::new(Path::new("p")));
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, pd.as_ref(), e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     fs::rename(e.root.join("dir"), e.root.join("moved")).unwrap();
     symlink(outside.path(), &e.root.join("dir")).unwrap();
