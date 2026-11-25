@@ -45,6 +45,9 @@ use crate::session::{DaemonSessions, HASH_WORKERS};
 use irsync_proto::v1::SessionPlan;
 use prost::Message;
 
+mod admin;
+pub use admin::{ADMIN_IDLE, ADMIN_MAX_CHANGES};
+
 /// How often each export is garbage-collected, and the delay before the first
 /// run (so startup stays quick).
 const GC_INTERVAL: Duration = Duration::from_secs(3600);
@@ -556,16 +559,11 @@ async fn handle(
     }
 
     if hello.direction == Direction::Admin as i32 {
-        // Not served yet: every ADMIN Hello gets the plain refusal.
-        tracing::warn!(peer = %id.fmt_short(), "refusing an admin session");
-        return reject(
-            &conn,
-            &mut send,
-            &tap,
-            Code::Unauthorized,
-            "not allowed".into(),
-        )
-        .await;
+        if let Err((code, message)) = protocol_check(&hello) {
+            tracing::info!(peer = %id.fmt_short(), ?code, %message, "rejecting admin session");
+            return reject(&conn, &mut send, &tap, code, message).await;
+        }
+        return admin::serve_admin(shared, &snap, conn, local, id, send, recv, tap).await;
     }
 
     if hello.direction == Direction::ListExports as i32 {
@@ -721,7 +719,8 @@ fn list_exports_for(snap: &Snapshot, grants: &Grants) -> ExportList {
     ExportList { exports }
 }
 
-fn version_check(hello: &Hello) -> Result<(), (Code, String)> {
+/// The protocol version alone: all an admin session needs to agree on.
+fn protocol_check(hello: &Hello) -> Result<(), (Code, String)> {
     if hello.protocol_version != PROTOCOL_VERSION {
         return Err((
             Code::VersionMismatch,
@@ -731,6 +730,11 @@ fn version_check(hello: &Hello) -> Result<(), (Code, String)> {
             ),
         ));
     }
+    Ok(())
+}
+
+fn version_check(hello: &Hello) -> Result<(), (Code, String)> {
+    protocol_check(hello)?;
     if (hello.chunk_min, hello.chunk_avg, hello.chunk_max)
         != (CHUNK_PARAMS.min, CHUNK_PARAMS.avg, CHUNK_PARAMS.max)
     {
