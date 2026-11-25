@@ -15,7 +15,7 @@ When an address is known but nothing answers there, for example a daemon
 that has stopped:
 
 ```text
-irsync: ~/Photos: gave up after 5 attempts: the daemon never answered: connecting to 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff: timed out; if you copied this host's ID by hand, it must be the daemon's EndpointId: on the server, irsync id show --daemon prints it (plain irsync id show prints the client's). Also check that the daemon is running there
+irsync: ~/Photos: gave up after 5 attempts: the daemon never answered: connecting to 4a29f16a4f80a3fd171ef5573c106dbda470ec24f5a97933752746b567ab9aff: timed out; if you added this server's ID by hand, it must be the daemon's EndpointId: on the server, irsync id show --daemon prints it (plain irsync id show prints the client's). Also check that the daemon is running there
 ```
 
 The listing, `irsync myserver:`, ends with the same advice.
@@ -83,7 +83,7 @@ its daemon, so run `irsync pair` for it.
 
 ```text
 irsync: pairing with myserver over ssh
-irsync: "myserver" is not a server in ~/.config/irsync/irsync.toml and not an EndpointId; setting it up over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64 and a development build (0.1.0-beta.1 (1a2b3c4, dirty)). Only release builds install on another OS or CPU. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync#set-the-server-up-by-hand
+irsync: pairing with myserver over ssh failed: myserver runs linux aarch64, this irsync is macos aarch64 and a development build (0.1.0-beta.1 (1a2b3c4, dirty)). Only release builds install on another OS or CPU. Install irsync on both machines and set the server up by hand: https://irsync.org/book/tutorial/first-sync#set-the-server-up-by-hand
 ```
 
 **Cause.** When the server's OS or CPU differs from the client's, `irsync pair`
@@ -158,7 +158,7 @@ These stop `pair` after the files reached the server:
 ## pair stops: --no-install
 
 ```text
-irsync: … setting it up over ssh failed: --no-install: myserver has no irsync 0.1.0-beta.1 (ae5ebe5) at ~/.local/bin/irsync (found none). Install that version there, or run without --no-install (or set ssh_install = true in the config). Nothing was changed.
+irsync: pairing with myserver over ssh failed: --no-install: myserver has no irsync 0.1.0-beta.1 (ae5ebe5) at ~/.local/bin/irsync (found none). Install that version there, or run without --no-install (or set ssh_install = true in the config). Nothing was changed.
 ```
 
 **Cause.** With `--no-install`, or `ssh_install = false` in the config file,

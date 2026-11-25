@@ -77,7 +77,7 @@ const AFTER_HELP: &str = "\
 Quick start over ssh (irsync installed on the client only):
   If `ssh myserver` logs you in, set the server up once:
     irsync pair myserver
-  This installs irsync on the server (same OS and CPU), grants this client
+  This installs this version of irsync on the server, grants this client
   access to any path (all_paths=rw), starts the daemon and saves `myserver`
   as a server. Then push and pull over iroh:
     irsync -av ~/Photos/ myserver:/srv/photos/
@@ -300,13 +300,13 @@ fn ordered_filters(m: &clap::ArgMatches) -> Vec<FilterRule> {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Copy files to or from a host (the rsync-style form, named).
+    /// Copy files to or from a server (the rsync-style form, named).
     Sync(SyncArgs),
-    /// List a host's exports, or the files a pull of HOST:PATH would fetch.
+    /// List a server's exports, or the files a pull of HOST:PATH would fetch.
     List(SyncArgs),
     /// Run the daemon.
     ///
-    /// Serves the exports in the config file to the peers they are granted to
+    /// Serves the exports in the config file to the clients they are granted to
     /// until interrupted, and prints its EndpointId at start. Logs go to
     /// stderr at warning level (-vv: info, -vvv: debug, -vvvv: trace, -q:
     /// errors only; RUST_LOG overrides).
@@ -314,9 +314,10 @@ pub enum Command {
     /// Garbage-collect resume state.
     ///
     /// Removes abandoned partial files and dormant sessions older than 7
-    /// days under every local root irsync has synced, and prints the paths
-    /// removed and a count. A sync does the same for its own root at most
-    /// daily.
+    /// days under every local root irsync has synced, the index entries of
+    /// files that are gone, and index files an older irsync left; prints
+    /// the paths removed and a count. A sync does the same for its own root
+    /// at most daily.
     Gc {
         /// List what would be removed without removing anything.
         #[arg(short = 'n', long)]
@@ -372,7 +373,7 @@ pub enum Command {
         /// name this server knows the client by.
         #[arg(long)]
         client_name_hex: String,
-        /// A client checking a saved host: do not add back an
+        /// A client pairing a server it already has: do not add back an
         /// `all_paths` right the owner removed (only a freshly generated daemon
         /// identity gets one).
         #[arg(long)]
@@ -646,7 +647,7 @@ pub struct GrantArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum GrantCmd {
-    /// Grant a peer access to an export. For every export or any path,
+    /// Grant a client access to an export. For every export or any path,
     /// see `irsync client set`.
     Add {
         /// The export's name.
@@ -657,21 +658,21 @@ pub enum GrantCmd {
         #[arg(long)]
         ro: bool,
     },
-    /// Remove grants: of one peer or of every peer, on one export or on
+    /// Remove grants: of one client or of every client, on one export or on
     /// every export's own list. Server-wide rights go with
     /// `irsync client set`.
     Remove {
         /// The export's name, or `all` for every export's own list.
         export: String,
         /// A client name, an EndpointId, a public key line or a .pub file;
-        /// or `all` for every peer.
+        /// or `all` for every client.
         who: String,
     },
-    /// List grants: all of them, one export's, or what one peer may reach.
+    /// List grants: all of them, one export's, or what one client may reach.
     List {
-        /// An export's name (`all_exports`, `all_paths`: the clients with
-        /// that server-wide right), or a peer (a client name or an
-        /// EndpointId); nothing lists every grant.
+        /// An export's name (`all_exports`, `all_paths`, `admin`: the
+        /// clients with that server-wide right), or a client (its name or
+        /// its EndpointId); nothing lists every grant.
         target: Option<String>,
     },
 }
@@ -696,7 +697,7 @@ pub struct ServerAddArgs {
     #[arg(long, value_name = "ADDR")]
     pub address: Vec<HostPort>,
     /// Data streams a push to this server keeps open at once (default: the
-    /// client settings', else 32).
+    /// client settings', else 128).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long a sync with this server keeps redialling after a dropped
@@ -787,7 +788,7 @@ pub struct PairArgs {
     /// A server name, or an ssh destination (`[user@]host`).
     #[arg(value_name = "HOST")]
     pub host: String,
-    /// The remote shell for SSH onboarding (default: IRSYNC_RSH, else `ssh`);
+    /// The remote shell for pairing (default: IRSYNC_RSH, else `ssh`);
     /// split on whitespace like rsync's `-e`.
     #[arg(long, value_name = "CMD")]
     pub rsh: Option<String>,
@@ -896,8 +897,8 @@ fn parse_bwlimit(s: &str) -> Result<u64, String> {
 
 #[derive(Debug, Default, clap::Args)]
 pub struct SyncArgs {
-    /// Local paths or `HOST:PATH` (HOST: a server name or
-    /// an EndpointId; EXPORT: a directory the daemon shares by name).
+    /// Local paths or `HOST:PATH` (HOST: a server name or an EndpointId;
+    /// PATH may start with an export name, a directory the daemon shares).
     /// Exactly one side is remote; several sources only when pushing. A
     /// trailing `/` copies a directory's contents, none the directory
     /// itself. A source may be one file: it goes into DEST if that is a
@@ -1039,33 +1040,33 @@ pub struct SyncArgs {
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
     /// Data streams a push keeps open at once (default: `parallel` from the
-    /// host entry or the client settings, else 128).
+    /// server entry or the client settings, else 128).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub parallel: Option<u32>,
     /// How long to keep redialling after a dropped connection:
     /// `<N>[s|m|h|d]`; 0 gives up at once like rsync (default: `reconnect`
-    /// from the host entry or the client settings, else 24h). A server that
+    /// from the server entry or the client settings, else 24h). A server that
     /// has never answered gets only `--dial-retries` retries.
     #[arg(long, value_name = "DUR", value_parser = duration::parse)]
     pub reconnect: Option<Duration>,
     /// How often to retry a server that has not answered yet, with growing
     /// waits (1s, 2s, 4s, ...), before giving up; 0 gives up on the first
-    /// failure (default: `dial_retries` from the host entry or the client
+    /// failure (default: `dial_retries` from the server entry or the client
     /// settings, else 4; 0 for a server `irsync pair` saved).
     #[arg(long, value_name = "N")]
     pub dial_retries: Option<u32>,
-    /// Use this relay server instead of the host entry's, the client
+    /// Use this relay server instead of the server entry's, the client
     /// settings' or n0's default.
     #[arg(long, value_name = "URL")]
     pub relay: Option<String>,
     /// Direct connections only: never fall back to a relay (the lookups stay
-    /// on). Default: `relay_mode` from the host entry or the client settings.
+    /// on). Default: `relay_mode` from the server entry or the client settings.
     #[arg(long, conflicts_with = "relay")]
     pub no_relay: bool,
     /// `require`: refuse a daemon that does not offer the post-quantum
-    /// hybrid key exchange (X25519MLKEM768), such as an older irsync.
+    /// hybrid key exchange (X25519MLKEM768), such as an irsync built without it.
     /// `prefer`: use it when offered. Default: `pq_key_exchange` from the
-    /// host entry or the client settings, else prefer.
+    /// server entry or the client settings, else prefer.
     #[arg(long, value_name = "prefer|require")]
     pub pq_key_exchange: Option<PqKeyExchange>,
     /// Do not look the daemon up in the mainline DHT.

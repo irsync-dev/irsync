@@ -142,7 +142,7 @@ fn host_add_then_grant_add_by_alias_then_list() {
         "{out}"
     );
     let o = irsync(&home, &["server", "add", &id, &id]);
-    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("alias"));
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("not a valid name"));
     // A server is no grant's: it goes at once. A client stays until the
     // grant is gone.
     let o = irsync(&home, &["server", "remove", "laptop"]);

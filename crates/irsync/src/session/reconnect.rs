@@ -240,7 +240,7 @@ pub fn describe_dial(target: &EndpointId, err: &ConnectError) -> String {
 
 /// The usual reason a host added by hand never answers: its entry holds
 /// the server's client ID, not its daemon's.
-pub const WRONG_ID_HINT: &str = "if you copied this host's ID by hand, it must be the \
+pub const WRONG_ID_HINT: &str = "if you added this server's ID by hand, it must be the \
      daemon's EndpointId: on the server, irsync id show --daemon prints it (plain \
      irsync id show prints the client's). Also check that the daemon is running there";
 
@@ -802,7 +802,7 @@ mod tests {
         let e = with_wrong_id_hint(anyhow::anyhow!("gave up after 1 attempt: timed out"));
         let text = format!("{e:#}");
         assert!(text.contains("gave up after 1 attempt"), "{text}");
-        assert!(text.contains("copied this host's ID by hand"), "{text}");
+        assert!(text.contains("added this server's ID by hand"), "{text}");
         assert_eq!(count(&e), 1, "{text}");
         let twice = with_wrong_id_hint(e);
         assert_eq!(count(&twice), 1, "{twice:#}");
@@ -833,7 +833,7 @@ mod tests {
             "{:#}",
             never_reached(anyhow::anyhow!("gave up after 1 attempt"), None)
         );
-        assert!(other.contains("copied this host's ID by hand"), "{other}");
+        assert!(other.contains("added this server's ID by hand"), "{other}");
     }
 
     #[test]

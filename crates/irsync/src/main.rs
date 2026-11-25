@@ -735,11 +735,9 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
                      up over ssh failed",
                     paths.config.display()
                 ),
-                irsync::ssh::pair::PairKind::First => format!(
-                    "{host:?} is not a server in {} and not an EndpointId; \
-                     setting it up over ssh failed",
-                    paths.config.display()
-                ),
+                irsync::ssh::pair::PairKind::First => {
+                    format!("pairing with {host} over ssh failed")
+                }
                 irsync::ssh::pair::PairKind::Saved => {
                     format!("checking {host} over ssh failed")
                 }

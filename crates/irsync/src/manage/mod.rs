@@ -48,10 +48,10 @@ pub enum ManageError {
     #[error("{}", crate::config::exports::reserved(.0))]
     Reserved(String),
     #[error(
-        "{0:?} is not a valid alias: must not contain ':' or '/' and must be neither all, * nor an EndpointId"
+        "{0:?} is not a valid name: must not contain ':' or '/' and must be neither all, * nor an EndpointId"
     )]
     BadAlias(String),
-    #[error("no open access: a peer must be named (an alias, an EndpointId, a public key line or a .pub file)")]
+    #[error("no open access: a client must be named (its name, an EndpointId, a public key line or a .pub file)")]
     NoOpenAccess,
     /// Grants name clients: a name that is only a server's names nobody.
     #[error("{0:?} is a server here, not a client; to grant that machine, add it as a client: irsync client add {0} ID")]

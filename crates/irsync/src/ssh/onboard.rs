@@ -1,6 +1,6 @@
-//! The client's first run against a host it does not know: set the server
-//! up over SSH, save a server for it, and say what was done. It never
-//! asks first; it acts, then reports.
+//! The client side of `irsync pair`: set the server up over ssh, save a
+//! server entry for it, and say what was done. It never asks first; it
+//! acts, then reports.
 
 use anyhow::Context;
 use iroh::EndpointId;
@@ -36,7 +36,7 @@ pub struct SavedAlias {
     pub kept_ssh: Option<String>,
 }
 
-/// What the text before the `:` is, as an ssh destination.
+/// What the host given to `irsync pair` is, as an ssh destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DestKind {
     /// An IP address, with or without `user@`.
@@ -400,11 +400,10 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
                 "  another irsync daemon is running there ({}, {version}); left it alone",
                 exe.display()
             ));
-            out.push(
-                "  the alias points at this config's daemon identity; if that daemon uses \
-                 another config, syncs may fail"
-                    .into(),
-            );
+            out.push(format!(
+                "  server {dest} is saved with the daemon identity of this config; if that \
+                 daemon uses another config, syncs may fail"
+            ));
         }
     }
     if let Some(line) = service_line(&r.service, &r.log) {
@@ -890,7 +889,9 @@ mod tests {
             s[1],
             "  another irsync daemon is running there (/usr/bin/irsync, 0.0.9 (x)); left it alone"
         );
-        assert!(s[2].starts_with("  the alias points at this config's daemon identity"));
+        assert!(
+            s[2].starts_with("  server myserver is saved with the daemon identity of this config")
+        );
         assert!(!s.join("\n").contains("installed"));
         assert!(howto(&o).is_empty());
     }
