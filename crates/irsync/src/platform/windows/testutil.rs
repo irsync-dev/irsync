@@ -52,6 +52,28 @@ pub fn set_times(path: &Path, sec: i64, nsec: i64, follow: bool) -> io::Result<(
     )
 }
 
+/// What is at `path`, a final link followed, read by handle (`std`'s
+/// `Metadata` has no file index or link count on Windows).
+fn stat_following(path: &Path) -> io::Result<super::Stat> {
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    super::fstat(&file)
+}
+
+/// Which file is at `path`, a final link followed: its volume serial
+/// number and file index, as [`super::Stat`] gives them.
+pub fn file_id(path: &Path) -> io::Result<(u64, u64)> {
+    stat_following(path).map(|st| (st.dev, st.ino))
+}
+
+/// How many names (hard links) the file at `path` has, a final link
+/// followed.
+pub fn nlink(path: &Path) -> io::Result<u64> {
+    stat_following(path).map(|st| st.nlink)
+}
+
 /// Whether this process may make symlinks (the privilege, or Developer
 /// Mode). A test that needs them returns early when not, and says so.
 /// With `CI` set, not being able to is a failure: CI must run them.

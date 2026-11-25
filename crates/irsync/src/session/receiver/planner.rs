@@ -1170,8 +1170,10 @@ mod tests {
 
     /// The entry's directory was swapped for a link out of the tree after
     /// the listing named it. Nothing is made, changed or replaced out
-    /// there: no directory, no symlink, no FIFO, no mode.
+    /// there: no directory, no symlink, no FIFO, no mode. Unix only: it
+    /// places a FIFO and sets modes, which Windows has not.
     #[test]
+    #[cfg(unix)]
     fn placing_never_goes_through_a_swapped_directory() {
         let (root, out) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         std::fs::write(out.path().join("victim"), b"keep").unwrap();

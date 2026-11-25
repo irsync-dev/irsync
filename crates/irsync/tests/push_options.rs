@@ -278,14 +278,13 @@ async fn push_without_links_or_specials_skips_them() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_hard_links_only_with_h() {
-    use irsync::platform::file_id;
+    use irsync::platform::testutil::file_id;
     within30(async {
         let h = Harness::new().await;
         fs::write(h.local.path().join("a"), b"same").unwrap();
         fs::hard_link(h.local.path().join("a"), h.local.path().join("b")).unwrap();
-        let inode = |n: &str| file_id(&fs::metadata(h.export.path().join(n)).unwrap()).1;
+        let inode = |n: &str| file_id(&h.export.path().join(n)).unwrap().1;
         let out = h.run(&opts(&[]), Flow::Push).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert_ne!(inode("a"), inode("b"), "linked without -H");
@@ -295,7 +294,7 @@ async fn push_hard_links_only_with_h() {
         fs::hard_link(h2.local.path().join("a"), h2.local.path().join("b")).unwrap();
         let out = h2.run(&opts(&["-H"]), Flow::Push).await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
-        let inode2 = |n: &str| file_id(&fs::metadata(h2.export.path().join(n)).unwrap()).1;
+        let inode2 = |n: &str| file_id(&h2.export.path().join(n)).unwrap().1;
         assert_eq!(inode2("a"), inode2("b"), "not linked with -H");
     })
     .await;

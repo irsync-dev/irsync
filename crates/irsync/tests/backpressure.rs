@@ -1543,9 +1543,10 @@ async fn a_sender_failing_before_its_listing_reports_its_own_error() {
 /// reads nothing more, so the rest wait on the receiver's side. Every link
 /// is still made.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Not on Windows: NTFS gives a file at most 1023 names, and this needs 3000.
 #[cfg(unix)]
 async fn link_checks_wait_on_the_receiver_not_in_the_sender() {
-    use irsync::platform::file_id;
+    use irsync::platform::testutil::file_id;
     const LINKS: usize = 3000;
     const LIMIT: usize = 4 * 1024;
     within120(async {
@@ -1567,10 +1568,10 @@ async fn link_checks_wait_on_the_receiver_not_in_the_sender() {
             .await
             .unwrap_or_else(|e| panic!("{e:#}"));
         assert!(out.errors.is_empty(), "{:?}", out.errors);
-        let ino = file_id(&fs::metadata(h.dst(flow).join("f0000")).unwrap()).1;
+        let ino = file_id(&h.dst(flow).join("f0000")).unwrap().1;
         for i in 1..LINKS {
-            let m = fs::metadata(h.dst(flow).join(format!("f{i:04}"))).unwrap();
-            assert_eq!(file_id(&m).1, ino, "f{i:04}");
+            let m = file_id(&h.dst(flow).join(format!("f{i:04}"))).unwrap();
+            assert_eq!(m.1, ino, "f{i:04}");
         }
         // One ask may take the count past the limit, no more: a name here
         // counts for under 200 bytes.

@@ -476,6 +476,18 @@ pub fn symlink_metadata(path: &Path) -> io::Result<Stat> {
     std::fs::symlink_metadata(path).map(|m| stat_of_metadata(&m))
 }
 
+/// Takes the exclusive lock on the open `file`, without waiting:
+/// [`File::try_lock`] (`flock(LOCK_EX | LOCK_NB)`), an advisory lock that
+/// leaves the content readable and writable through other descriptors.
+pub fn try_lock_file(file: &File) -> Result<(), std::fs::TryLockError> {
+    file.try_lock()
+}
+
+/// Releases the lock [`try_lock_file`] took on `file`: [`File::unlock`].
+pub fn unlock_file(file: &File) -> io::Result<()> {
+    file.unlock()
+}
+
 /// Which file `m` describes: its device and inode numbers.
 pub fn file_id(m: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;

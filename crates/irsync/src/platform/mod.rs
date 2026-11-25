@@ -45,6 +45,18 @@ impl Platform {
             Platform::Windows => "windows",
         }
     }
+
+    /// Whether files carry a permission mode a receiver can set (`-p`).
+    /// Windows has none, so a receiver there leaves modes alone, as the
+    /// user did not ask for them; setting one stays an error in the
+    /// platform calls ([`Dir::set_mode`] and the rest), never a silent
+    /// success.
+    pub const fn has_modes(self) -> bool {
+        match self {
+            Platform::Unix => true,
+            Platform::Windows => false,
+        }
+    }
 }
 
 /// What an operating-system error means to the caller, as [`cause`] reads

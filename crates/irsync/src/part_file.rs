@@ -251,7 +251,7 @@ pub(crate) fn discard_part(
         .open(part_open(true, false, Create::No, 0))
         .and_then(|f| require_regular(&f, &part.path()).map(|()| f))
     {
-        Ok(file) => match file.try_lock() {
+        Ok(file) => match crate::platform::try_lock_file(&file) {
             Ok(()) => part.unlink()?,
             Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
             Err(std::fs::TryLockError::Error(e)) => return Err(e),
@@ -412,7 +412,7 @@ fn open_locked_part(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, S
         // A momentary descriptor shortage is waited out rather than failing
         // the file (see `fs::transient`).
         let file = crate::fs::transient::retry(|| open_part(part))?;
-        match file.try_lock() {
+        match crate::platform::try_lock_file(&file) {
             Ok(()) => {
                 let meta = crate::platform::file_metadata(&file)?;
                 if meta.kind != crate::platform::Kind::File {

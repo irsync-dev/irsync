@@ -1141,9 +1141,24 @@ fn set_mtime_handle(h: BorrowedHandle<'_>, mtime: (i64, u32)) -> io::Result<()> 
 }
 
 /// Sets the modification time of the open `file`, as [`Dir::set_mtime`]
-/// does.
+/// does. Unix sets it through any descriptor (`futimens`); Windows needs
+/// `FILE_WRITE_ATTRIBUTES` on the handle, which a file opened to read
+/// lacks. Then the time is set through a second handle to the same open
+/// file (`ReOpenFile`, no name looked up), asking only for that access:
+/// where the user may not change the file's attributes, it is refused.
 pub fn set_mtime_file(file: &File, mtime: (i64, u32)) -> io::Result<()> {
-    set_mtime_handle(file.as_handle(), mtime)
+    match set_mtime_handle(file.as_handle(), mtime) {
+        Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+            let attrs = native::reopen(
+                file.as_handle(),
+                FILE_WRITE_ATTRIBUTES,
+                SHARE_ALL,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            )?;
+            set_mtime_handle(attrs.as_handle(), mtime)
+        }
+        r => r,
+    }
 }
 
 /// [`Dir::set_mtime`] of a path the caller trusts; a final link's own
@@ -1155,6 +1170,35 @@ pub fn set_mtime_path(path: &Path, mtime: (i64, u32)) -> io::Result<()> {
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
     set_mtime_handle(file.as_handle(), mtime)
+}
+
+/// Where irsync's lock on a file lies: the one byte at this offset. A
+/// Windows lock (`LockFileEx`) is mandatory: while it is held, no other
+/// handle may read or write the bytes it covers, in this process too.
+/// Locking one byte far past any content (2^63 - 2; NTFS takes a lock
+/// beyond the end of a file, and no file grows that large) excludes every
+/// other locker, which all take this same byte, and leaves the content
+/// readable and writable through other handles: what a Unix advisory lock
+/// (`flock`) gives.
+const LOCK_OFFSET: u64 = 0x7FFF_FFFF_FFFF_FFFE;
+
+/// Takes the exclusive lock on the open `file`, without waiting, as
+/// [`File::try_lock`] answers: [`std::fs::TryLockError::WouldBlock`] while
+/// another handle holds it. Released by [`unlock_file`] or when the handle
+/// is closed. See [`LOCK_OFFSET`].
+pub fn try_lock_file(file: &File) -> Result<(), std::fs::TryLockError> {
+    match native::try_lock_range(file.as_handle(), LOCK_OFFSET, 1) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) => {
+            Err(std::fs::TryLockError::WouldBlock)
+        }
+        Err(e) => Err(std::fs::TryLockError::Error(e)),
+    }
+}
+
+/// Releases the lock [`try_lock_file`] took on `file`.
+pub fn unlock_file(file: &File) -> io::Result<()> {
+    native::unlock_range(file.as_handle(), LOCK_OFFSET, 1)
 }
 
 /// Not on Windows ([`Cause::NotSupported`]).
@@ -1182,11 +1226,12 @@ pub fn make_device_path(_path: &Path, _kind: Kind, _mode: u32, _rdev: u64) -> io
     Err(unsupported("a device node"))
 }
 
-/// Not on Windows ([`Cause::NotSupported`]); the one caller, which makes
-/// its own `.part` writable again after a failed finalize, takes that as
-/// "could not".
+/// Does nothing on Windows: the one caller makes its own `.part` writable
+/// again after a failed finalize took owner write away with a mode. A
+/// Windows receiver sets no mode (see [`super::Platform::has_modes`]), so there
+/// is nothing to give back.
 pub fn make_owner_writable(_file: &File) -> io::Result<()> {
-    Err(unsupported("a file mode"))
+    Ok(())
 }
 
 /// Does nothing on Windows: a file keeps the access its directory gives

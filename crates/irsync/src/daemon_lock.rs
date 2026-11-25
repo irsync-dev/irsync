@@ -86,7 +86,7 @@ pub(crate) fn acquire(state_dir: &Path) -> Result<DaemonLock, LockError> {
     // retried for about a second before it counts as another daemon.
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
-        match file.try_lock() {
+        match crate::platform::try_lock_file(&file) {
             Ok(()) => break,
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(20));
@@ -122,9 +122,9 @@ pub fn probe(state_dir: &Path) -> Option<LockInfo> {
         .write(true)
         .open(state_dir.join(LOCK_NAME))
         .ok()?;
-    match file.try_lock() {
+    match crate::platform::try_lock_file(&file) {
         Ok(()) => {
-            let _ = file.unlock();
+            let _ = crate::platform::unlock_file(&file);
             None
         }
         Err(TryLockError::WouldBlock) => Some(read_info(&mut file)),

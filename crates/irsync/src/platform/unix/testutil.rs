@@ -39,6 +39,18 @@ pub fn set_times(path: &Path, sec: i64, nsec: i64, follow: bool) -> io::Result<(
     utimensat(nix::fcntl::AT_FDCWD, path, &t, &t, flag).map_err(super::errno_of)
 }
 
+/// Which file is at `path`, a final link followed (`stat`, as
+/// `std::fs::metadata`): its device and inode numbers.
+pub fn file_id(path: &Path) -> io::Result<(u64, u64)> {
+    std::fs::metadata(path).map(|m| super::file_id(&m))
+}
+
+/// How many names (hard links) the file at `path` has, a final link
+/// followed (`stat`, as `std::fs::metadata`).
+pub fn nlink(path: &Path) -> io::Result<u64> {
+    std::fs::metadata(path).map(|m| super::nlink_of(&m))
+}
+
 /// Makes a FIFO at `path` with permission bits `mode` (less the umask).
 pub fn mkfifo(path: &Path, mode: u32) -> io::Result<()> {
     nix::unistd::mkfifo(path, nix::sys::stat::Mode::from_bits_truncate(mode as _))

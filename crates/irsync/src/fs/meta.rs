@@ -1,7 +1,7 @@
 //! POSIX metadata: `lstat` into a `FileEntry`, and symlink-safe application.
 
 use crate::fs::paths::RelPath;
-use crate::platform::{self, Dir, Stat};
+use crate::platform::{self, Dir, Platform, Stat};
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 use std::fs::File;
 use std::io;
@@ -14,6 +14,15 @@ pub struct ApplyOpts {
     pub times: bool,
     pub owner: bool,
     pub group: bool,
+}
+
+impl ApplyOpts {
+    /// Whether a mode is set: asked for (`-p`), and this system has modes.
+    /// A receiver on a system without them (Windows) leaves `-p` out and
+    /// places the file with its content and times alone.
+    fn sets_mode(&self) -> bool {
+        self.perms && Platform::CURRENT.has_modes()
+    }
 }
 
 /// The listing's kind of a platform kind: anything that is no other kind
@@ -224,7 +233,7 @@ fn apply_at(at: Target<'_>, e: &FileEntry, opts: &ApplyOpts) -> io::Result<()> {
     if owner || group {
         at.set_owner(owner.then_some(e.uid), group.then_some(e.gid))?;
     }
-    if opts.perms && e.kind() != Kind::Symlink {
+    if opts.sets_mode() && e.kind() != Kind::Symlink {
         at.set_mode(e.mode & 0o7777)?;
     }
     if opts.times {
@@ -271,7 +280,7 @@ fn apply_fd(
     if owner || group {
         platform::set_owner_file(file, owner.then_some(e.uid), group.then_some(e.gid))?;
     }
-    if opts.perms {
+    if opts.sets_mode() {
         platform::set_mode_file(file, e.mode & 0o7777)?;
     }
     if opts.times {

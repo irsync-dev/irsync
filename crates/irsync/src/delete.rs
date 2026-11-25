@@ -360,7 +360,7 @@ fn clear_temporaries(parent: &Dir, name: &[u8]) -> io::Result<()> {
             Err(e) if matches!(cause(&e), Cause::NotThere | Cause::LinkRefused) => continue,
             Err(e) => return Err(e),
         };
-        match file.try_lock() {
+        match crate::platform::try_lock_file(&file) {
             Ok(()) => held.push(file),
             Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
             Err(std::fs::TryLockError::Error(e)) => return Err(e),
@@ -596,7 +596,7 @@ mod tests {
         std::fs::create_dir(t.path().join("busy")).unwrap();
         std::fs::write(t.path().join("busy/.irsync.f.part"), b"partial").unwrap();
         let held = std::fs::File::open(t.path().join("busy/.irsync.f.part")).unwrap();
-        held.lock().unwrap();
+        crate::platform::try_lock_file(&held).unwrap();
         std::fs::create_dir(t.path().join("full")).unwrap();
         std::fs::write(t.path().join("full/.irsync.f.part"), b"partial").unwrap();
         std::fs::write(t.path().join("full/kept"), b"k").unwrap();

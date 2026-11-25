@@ -8,7 +8,6 @@ mod common;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
-#[cfg(unix)]
 use std::time::SystemTime;
 
 use common::{archive_opts, Flow, Harness};
@@ -18,15 +17,12 @@ use irsync::options::SyncOptions;
 #[cfg(unix)]
 use irsync::platform::testutil::set_mode;
 use irsync::platform::testutil::symlink;
-#[cfg(unix)]
 use irsync::platform::write_all_at;
 use irsync::session::single::SingleFile;
 use irsync::session::SessionKey;
 use irsync_proto::v1::path_info::Kind;
 
-#[cfg(unix)]
 const KIB: usize = 1024;
-#[cfg(unix)]
 const MIB: usize = 1024 * 1024;
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
@@ -43,7 +39,6 @@ fn opts(args: &[&str]) -> SyncOptions {
 }
 
 /// Deterministic pseudo-random bytes.
-#[cfg(unix)]
 fn data(n: usize, seed: u32) -> Vec<u8> {
     let mut x = seed.wrapping_mul(2654435761).wrapping_add(1);
     (0..n)
@@ -66,17 +61,15 @@ fn mtime(p: &Path) -> SystemTime {
     fs::symlink_metadata(p).unwrap().modified().unwrap()
 }
 
-#[cfg(unix)]
 fn set_mtime(p: &Path, t: SystemTime) {
-    fs::File::open(p).unwrap().set_modified(t).unwrap();
+    common::set_modified(p, t).unwrap();
 }
 
 /// `f.iso` in the client's local dir, with mode 0o640.
-#[cfg(unix)]
 fn source(h: &Harness, bytes: &[u8]) -> std::path::PathBuf {
     let f = h.local.path().join("f.iso");
     fs::write(&f, bytes).unwrap();
-    set_mode(&f, 0o640).unwrap();
+    common::set_mode_where_modes_exist(&f, 0o640).unwrap();
     f
 }
 
@@ -100,7 +93,6 @@ async fn push_into_dir() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_to_new_name() {
     within30(async {
         let h = Harness::new().await;
@@ -119,7 +111,6 @@ async fn push_to_new_name() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_with_slash_creates_dir() {
     within30(async {
         let h = Harness::new().await;
@@ -136,7 +127,6 @@ async fn push_with_slash_creates_dir() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_with_slash_onto_file_fails() {
     within30(async {
         let h = Harness::new().await;
@@ -154,7 +144,6 @@ async fn push_with_slash_onto_file_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_dir_in_the_way_fails() {
     within30(async {
         let h = Harness::new().await;
@@ -171,7 +160,6 @@ async fn push_dir_in_the_way_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_again_transfers_nothing() {
     within30(async {
         let h = Harness::new().await;
@@ -193,7 +181,6 @@ async fn push_again_transfers_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_changed_file_uses_delta() {
     within30(async {
         let h = Harness::new().await;
@@ -266,7 +253,6 @@ async fn push_leaves_siblings_and_dir_metadata() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_excluded_file_copies_nothing() {
     within30(async {
         let h = Harness::new().await;
@@ -325,7 +311,6 @@ async fn push_symlink_source_with_l_copies_link() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_onto_symlink_replaces_the_link() {
     within30(async {
         let h = Harness::new().await;
@@ -365,7 +350,6 @@ fn single_and_dir_sessions_have_different_keys() {
 // ---- Renamed pushes: the wire name differs from the sender's name. ----
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_to_new_name_again_transfers_nothing() {
     within30(async {
         let h = Harness::new().await;
@@ -390,7 +374,6 @@ async fn push_to_new_name_again_transfers_nothing() {
 }
 
 /// Changes 4 KiB in the middle of `f` and gives it a new mtime.
-#[cfg(unix)]
 fn change_middle(f: &Path) {
     write_all_at(
         &fs::OpenOptions::new().write(true).open(f).unwrap(),
@@ -405,7 +388,6 @@ fn change_middle(f: &Path) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_to_new_name_uses_delta() {
     within30(async {
         let h = Harness::new().await;
@@ -455,7 +437,6 @@ async fn probe_through_symlink_is_missing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_through_symlink_fails() {
     within30(async {
         let h = Harness::new().await;
@@ -506,7 +487,6 @@ async fn push_through_symlink_fails() {
 /// A push to `m/link`, a symlink to a directory outside the export, is
 /// refused: the link stays and nothing is written where it points.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_onto_symlink_to_dir_is_refused() {
     within30(async {
         let h = Harness::new().await;
@@ -539,16 +519,14 @@ async fn push_onto_symlink_to_dir_is_refused() {
 // ---- Probe and pull. ----
 
 /// `f.iso` at the export's root, with mode 0o640.
-#[cfg(unix)]
 fn remote_source(h: &Harness, bytes: &[u8]) -> std::path::PathBuf {
     let f = h.export.path().join("f.iso");
     fs::write(&f, bytes).unwrap();
-    set_mode(&f, 0o640).unwrap();
+    common::set_mode_where_modes_exist(&f, 0o640).unwrap();
     f
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn probe_kinds() {
     within30(async {
         let h = Harness::new().await;
@@ -581,7 +559,6 @@ async fn pull_into_dir() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn pull_to_new_name() {
     within30(async {
         let h = Harness::new().await;
@@ -600,7 +577,6 @@ async fn pull_to_new_name() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn pull_with_slash_creates_dir() {
     within30(async {
         let h = Harness::new().await;
@@ -681,7 +657,6 @@ async fn pull_into_busy_dir_touches_nothing_else() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn pull_dry_run_creates_nothing() {
     within30(async {
         let h = Harness::new().await;
@@ -696,7 +671,6 @@ async fn pull_dry_run_creates_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn pull_dir_in_the_way_fails() {
     within30(async {
         let h = Harness::new().await;
@@ -729,7 +703,6 @@ async fn pull_of_missing_path_creates_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn pull_to_new_name_uses_delta() {
     within30(async {
         let h = Harness::new().await;
@@ -762,7 +735,6 @@ fn pull_hello(path: &[u8], name: &[u8]) -> irsync::session::SyncHello {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn pull_with_bad_name_is_refused() {
     within30(async {
         let h = Harness::new().await;
@@ -951,7 +923,6 @@ async fn probe_without_a_reply_times_out() {
 /// whatever the link leads to: a file, a directory or nothing. The link
 /// stays and nothing out there is touched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_onto_a_symlink_out_of_the_export_says_nothing_about_its_target() {
     within30(async {
         let h = Harness::new().await;
@@ -986,7 +957,6 @@ async fn push_onto_a_symlink_out_of_the_export_says_nothing_about_its_target() {
 /// A push onto a symlink to a directory in the export is still refused,
 /// and says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn push_onto_a_symlink_to_a_directory_in_the_export_is_refused() {
     within30(async {
         let h = Harness::new().await;

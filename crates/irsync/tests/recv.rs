@@ -2,8 +2,7 @@ use irsync::fs::meta::ApplyOpts;
 use irsync::fs::paths::RelPath;
 use irsync::index::{Index, IndexHandle};
 use irsync::part_file::{FileWriter, FinalizeError};
-#[cfg(unix)]
-use irsync::platform::file_id;
+use irsync::platform::testutil::file_id;
 use irsync::platform::testutil::symlink;
 #[cfg(unix)]
 use irsync::platform::testutil::{blocks_of, errno, mkfifo, set_mode};
@@ -891,7 +890,6 @@ fn clone_source<'a>(
 }
 
 #[tokio::test]
-#[cfg(unix)]
 async fn clone_of_the_old_file_adopts_its_unchanged_chunks_without_writing_them() {
     let e = env_in_target();
     if !reflinks(&e.root) {
@@ -926,13 +924,10 @@ async fn clone_of_the_old_file_adopts_its_unchanged_chunks_without_writing_them(
         .await
         .unwrap();
     assert_eq!(w.bytes_written(), u64::from(cl.chunks[changed].len));
-    let before = file_id(&fs::metadata(final_path(&e.root)).unwrap()).1;
+    let before = file_id(&final_path(&e.root)).unwrap().1;
     w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
-    assert_ne!(
-        file_id(&fs::metadata(final_path(&e.root)).unwrap()).1,
-        before
-    );
+    assert_ne!(file_id(&final_path(&e.root)).unwrap().1, before);
     assert!(!part_path(&e.root).exists());
 }
 
@@ -1004,7 +999,6 @@ async fn clone_that_the_filesystem_refuses_falls_back_to_an_empty_part() {
 }
 
 #[tokio::test]
-#[cfg(unix)]
 async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     let e = env();
     let old = content(71);
@@ -1016,7 +1010,7 @@ async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     assert_eq!(cl.chunks.len(), old_cl.chunks.len());
     fs::write(final_path(&e.root), &old).unwrap();
     let old_file = fs::File::open(final_path(&e.root)).unwrap();
-    let ino = file_id(&fs::metadata(final_path(&e.root)).unwrap()).1;
+    let ino = file_id(&final_path(&e.root)).unwrap().1;
     let mut w = FileWriter::open_inplace(
         &e.root,
         &rel(),
@@ -1035,7 +1029,7 @@ async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     assert_eq!(w.bytes_written(), u64::from(cl.chunks[changed].len));
     w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
-    assert_eq!(file_id(&fs::metadata(final_path(&e.root)).unwrap()).1, ino);
+    assert_eq!(file_id(&final_path(&e.root)).unwrap().1, ino);
     assert!(e.index.lock().unwrap().partial(&rel()).unwrap().is_none());
 }
 

@@ -466,6 +466,107 @@ fn a_directory_swapped_for_a_link_is_never_left_through() {
     );
 }
 
+/// A file lock excludes every other locker, through any other handle,
+/// until it is released or its handle closed.
+#[test]
+fn a_file_lock_excludes_other_lockers_until_released() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("lock");
+    std::fs::write(&path, b"record").unwrap();
+    let open = || {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap()
+    };
+    let (first, second) = (open(), open());
+    try_lock_file(&first).unwrap();
+    assert!(matches!(
+        try_lock_file(&second),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    unlock_file(&first).unwrap();
+    try_lock_file(&second).unwrap();
+    assert!(matches!(
+        try_lock_file(&first),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(second);
+    try_lock_file(&first).unwrap();
+}
+
+/// While a file is locked, its content stays readable and writable
+/// through other handles, in this process too: a lock only excludes other
+/// lockers (Unix's advisory locks; on Windows a lock on one byte past any
+/// content).
+#[test]
+fn a_locked_file_stays_readable_and_writable() {
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("lock");
+    std::fs::write(
+        &path, b"pid=1
+",
+    )
+    .unwrap();
+    let holder = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    try_lock_file(&holder).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"pid=1
+"
+    );
+    let other = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    write_all_at(
+        &other, b"pid=2
+", 0,
+    )
+    .unwrap();
+    let mut buf = [0u8; 6];
+    read_exact_at(&other, &mut buf, 0).unwrap();
+    assert_eq!(
+        &buf,
+        b"pid=2
+"
+    );
+    // The holder reads and writes its own file as well.
+    write_all_at(
+        &holder, b"pid=3
+", 0,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"pid=3
+"
+    );
+}
+
+/// A file opened only to read takes a new modification time through that
+/// handle (Unix `futimens`; Windows reopens the same file to write its
+/// attributes).
+#[test]
+fn a_file_opened_to_read_takes_a_new_mtime() {
+    let t = tempfile::tempdir().unwrap();
+    std::fs::write(t.path().join("f"), b"f").unwrap();
+    let d = Dir::open_root(t.path()).unwrap();
+    let file = d.open_file(b"f", READ).unwrap();
+    set_mtime_file(&file, (1_500_000_000, 123_456_700)).unwrap();
+    drop(file);
+    assert_eq!(
+        lstat(&t.path().join("f")).unwrap().mtime,
+        (1_500_000_000, 123_456_700)
+    );
+}
+
 #[cfg(windows)]
 mod windows;
 

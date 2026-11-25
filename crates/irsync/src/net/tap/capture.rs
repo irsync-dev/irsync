@@ -99,7 +99,7 @@ fn open_locked(path: &Path) -> io::Result<Option<File>> {
         mode: 0o600,
     };
     let file = crate::platform::open_private(path, how)?;
-    match file.try_lock() {
+    match crate::platform::try_lock_file(&file) {
         Ok(()) => Ok(Some(file)),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(e)) => Err(e),
@@ -390,7 +390,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let wanted = dir.path().join("f.pcapng");
         let holder = std::fs::File::create(&wanted).unwrap();
-        holder.try_lock().unwrap();
+        crate::platform::try_lock_file(&holder).unwrap();
         let r = Recorder::open(&wanted).unwrap();
         let pid = std::process::id();
         assert_eq!(r.path(), dir.path().join(format!("f.{pid}.pcapng")));

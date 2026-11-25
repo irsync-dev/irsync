@@ -784,6 +784,44 @@ impl Harness {
     }
 }
 
+/// Sets the permission bits of `p` (`chmod`, which follows a link), for a
+/// test whose setup gives a file a mode but is not about modes. Windows
+/// has none: nothing is done there. On Unix this is
+/// `platform::testutil::set_mode`.
+pub fn set_mode_where_modes_exist(p: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    irsync::platform::set_mode_path_following(p, mode)
+}
+
+/// The process's real user id, as a clone folder's name holds it. Windows
+/// has none: 0 there, the id irsync gives itself (`platform::euid`).
+pub fn real_uid() -> u32 {
+    #[cfg(unix)]
+    let uid = irsync::platform::testutil::real_uid();
+    #[cfg(windows)]
+    let uid = irsync::platform::euid();
+    uid
+}
+
+/// Sets the modification time of `p`, a file or a directory, a final link
+/// followed. On Unix through `p` opened for reading (`futimens`); Windows
+/// sets a time only through a handle opened to write attributes.
+pub fn set_modified(p: &std::path::Path, t: std::time::SystemTime) -> std::io::Result<()> {
+    #[cfg(unix)]
+    let file = std::fs::File::open(p)?;
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+        };
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(p)?
+    };
+    file.set_modified(t)
+}
+
 /// Builds the `src` and `dst` trees, then runs one session in direction `flow`.
 pub async fn sync_trees(
     src: impl FnOnce(&std::path::Path),

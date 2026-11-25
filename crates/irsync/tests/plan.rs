@@ -138,7 +138,10 @@ fn equal_quick_check_skips() {
     assert_eq!(decide(Some(&s), Some(&d), &opts()), Decision::Skip);
 }
 
+// Unix only: a receiver on Windows sets no modes, so a mode is never a
+// difference there (`plan` tests the Windows side).
 #[test]
+#[cfg(unix)]
 fn equal_quick_check_but_mode_differs_is_meta_only() {
     let s = reg("a", 3, 1);
     let mut d = reg("a", 3, 1);
@@ -182,7 +185,10 @@ fn kind_change_is_whole() {
     assert_eq!(decide(Some(&d), Some(&s), &opts()), Decision::Mkdir);
 }
 
+// Unix only: a receiver on Windows sets no modes, so a mode is never a
+// difference there (`plan` tests the Windows side).
 #[test]
+#[cfg(unix)]
 fn directory_same_kind() {
     let s = view("d", Kind::Directory, 0o755);
     let mut d = s.clone();
@@ -429,7 +435,10 @@ fn merge_join_out_of_order_drops_the_key_that_goes_back() {
     );
 }
 
+// Unix only: a receiver on Windows sets no modes, so a mode is never a
+// difference there (`plan` tests the Windows side).
 #[test]
+#[cfg(unix)]
 fn special_mode_mask_ignores_type_bits() {
     // A listing carries the full `st_mode`; only the permission bits count.
     let mut s = view("p", Kind::Fifo, 0o010640);
@@ -448,7 +457,10 @@ fn special_mode_mask_ignores_type_bits() {
     assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
 }
 
+// Unix only: a receiver on Windows sets no modes, so a mode is never a
+// difference there (`plan` tests the Windows side).
 #[test]
+#[cfg(unix)]
 fn special_metadata_only_difference_is_meta_only() {
     let mut s = view("p", Kind::Fifo, 0o640);
     s.entry.mtime_sec = 100;
