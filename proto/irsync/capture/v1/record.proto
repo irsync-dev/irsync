@@ -1,6 +1,7 @@
 syntax = "proto3";
 package irsync.capture.v1;
 
+import "irsync/v1/admin.proto";
 import "irsync/v1/common.proto";
 import "irsync/v1/control.proto";
 import "irsync/v1/data.proto";
@@ -28,6 +29,8 @@ message Record {
     irsync.v1.ListingStreamHeader listing_stream_header = 26;
     irsync.v1.DataStreamHeader data_stream_header = 27;
     irsync.v1.DataChunk data_chunk = 28;
+    irsync.v1.AdminRequest admin_request = 29;
+    irsync.v1.AdminReply admin_reply = 30;
     StreamEvent stream_event = 40;
     PathChange path_change = 41;
   }

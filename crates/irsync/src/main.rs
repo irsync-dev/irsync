@@ -17,7 +17,7 @@ use irsync::cli::progress::Reporter;
 use irsync::cli::{
     validate, Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode,
     Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs,
-    LogArgs, PairArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
+    LogArgs, PairArgs, RemoteArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
 };
 use irsync::config::clients::Clients;
 use irsync::config::file::Config;
@@ -48,6 +48,8 @@ use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{export_entry, hello, path_info, Hello};
 use irsync_proto::PROTOCOL_VERSION;
+
+mod remote;
 
 fn main() {
     let args = Args::parse();
@@ -84,6 +86,10 @@ fn main() {
         Some(Command::Config(c)) => std::process::exit(run_config(c, files)),
         Some(Command::Pair(a)) => std::process::exit(run_pair(a, files)),
         Some(Command::Show) => std::process::exit(run_show(files)),
+        Some(Command::Remote(r)) => {
+            let opts = SyncOptions::for_command(&args);
+            exit_after_capture(run_remote(r, &opts));
+        }
         Some(Command::SshSetup {
             client,
             client_name_hex,
@@ -890,25 +896,7 @@ async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
         ..Hello::default()
     };
     let client = c.endpoint.id();
-    let dial = c.endpoint.connect(c.target.clone(), irsync_proto::ALPN);
-    let dialled = match c.first_dial() {
-        Some(limit) => match tokio::time::timeout(limit, dial).await {
-            Ok(r) => r.map_err(|e| describe_dial(&c.target.id, &e)),
-            Err(_) => Err(format!(
-                "connecting to {}: no answer within {} s",
-                c.target.id,
-                limit.as_secs()
-            )),
-        },
-        None => dial.await.map_err(|e| describe_dial(&c.target.id, &e)),
-    };
-    let conn = dialled.map_err(|msg| never_reached(anyhow::anyhow!(msg), c.paired()))?;
-    irsync::net::tap::ConnTap::of(&conn).set_local_id(client);
-    irsync::session::reconnect::check_pq_key_exchange(
-        &conn,
-        pq_required(&c.opts, c.host_entry.as_ref(), &c.settings),
-        &c.target.id,
-    )?;
+    let conn = dial(c).await?;
     let entries = list_exports(&conn, hello)
         .await
         .map_err(|e| explain(e, Some(&conn), operand, &client))?;
@@ -922,6 +910,66 @@ async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
     }
     conn.close(0u32.into(), b"done");
     Ok(())
+}
+
+/// Dials the daemon of `c` once, bounded as a first dial is, and checks the
+/// post-quantum key exchange when it is required. For the one-shot exchanges
+/// (a listing, `remote`); the caller closes the connection.
+async fn dial(c: &Connected) -> anyhow::Result<iroh::endpoint::Connection> {
+    let dial = c.endpoint.connect(c.target.clone(), irsync_proto::ALPN);
+    let dialled = match c.first_dial() {
+        Some(limit) => match tokio::time::timeout(limit, dial).await {
+            Ok(r) => r.map_err(|e| describe_dial(&c.target.id, &e)),
+            Err(_) => Err(format!(
+                "connecting to {}: no answer within {} s",
+                c.target.id,
+                limit.as_secs()
+            )),
+        },
+        None => dial.await.map_err(|e| describe_dial(&c.target.id, &e)),
+    };
+    let conn = dialled.map_err(|msg| never_reached(anyhow::anyhow!(msg), c.paired()))?;
+    irsync::net::tap::ConnTap::of(&conn).set_local_id(c.endpoint.id());
+    irsync::session::reconnect::check_pq_key_exchange(
+        &conn,
+        pq_required(&c.opts, c.host_entry.as_ref(), &c.settings),
+        &c.target.id,
+    )?;
+    Ok(conn)
+}
+
+/// `irsync remote SERVER COMMAND`: one change or one read of the
+/// server's config, printed as the same command prints it locally.
+fn run_remote(r: &RemoteArgs, opts: &SyncOptions) -> i32 {
+    let plan = match remote::plan(&r.server, &r.cmd) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("irsync remote: {}", escape_text(&format!("{e:#}")));
+            return 1;
+        }
+    };
+    let log = LogWriter::new();
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("irsync remote: {e}");
+            return 1;
+        }
+    };
+    let done = rt.block_on(async {
+        let c = connect_for(&r.server, opts, &log).await?;
+        // Closed on every way out (#256).
+        let done = remote::run_remote(&c, plan.request).await;
+        c.endpoint.close().await;
+        done
+    });
+    match done.and_then(|outcome| remote::print(&plan.shape, &r.server, outcome)) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("irsync remote: {}", escape_text(&format!("{e:#}")));
+            1
+        }
+    }
 }
 
 /// `log`: where a failed source is reported (above the live block).
@@ -1509,26 +1557,19 @@ fn run_daemon(d: &DaemonArgs, log: LogArgs, files: &FilesArgs) -> i32 {
 }
 
 fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
-    use irsync::manage::config::{self as cfg, Got};
+    use irsync::manage::config as cfg;
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ConfigCmd::List;
     match c.cmd.as_ref().unwrap_or(&list) {
         ConfigCmd::Get { key } => {
             let r = (|| -> anyhow::Result<bool> {
-                let path = cfg::parse_key(key)?;
-                if cfg::kind_of(&path).is_none() {
-                    return Err(cfg::unknown_key(key).into());
-                }
+                let path = cfg::key_path(key)?;
                 // Load first: a file that would not load is an error.
                 Config::load(&paths)?;
                 let msg = manage::load_message(&paths.config)?;
-                let lines = match cfg::get(&msg, &path)? {
-                    Got::Lines(lines) => lines,
-                    Got::Unset => match cfg::default_of(&path) {
-                        Some(lines) => lines,
-                        None => return Ok(false),
-                    },
+                let Some(lines) = cfg::get_or_default(&msg, &path)? else {
+                    return Ok(false);
                 };
                 for line in lines {
                     println!("{line}");
@@ -1616,42 +1657,24 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-/// The id of each client of `msg`, the id grants naming it are for; none
-/// when `msg` does not load.
+/// The id of each client of `msg`; see [`manage::clients::client_ids`].
 fn peer_ids(
     msg: &irsync_proto::config::Config,
     path: &Path,
 ) -> std::collections::BTreeMap<String, iroh::EndpointId> {
-    let Ok(config) = Config::from_message(msg, path) else {
-        return Default::default();
-    };
-    let clients = config.clients.entries;
-    clients
-        .into_iter()
-        .map(|(name, c)| (name, c.client_id))
-        .collect()
+    manage::clients::client_ids(msg, path)
 }
 
-/// A grant by name follows the name. After an edit that changed which id
-/// a client's grants are for (`before`: [`peer_ids`] from before it), say
-/// so on stderr, for each such client that grants name.
+/// Says on stderr which grants now apply to another id; see
+/// [`manage::clients::moved_grant_notes`].
 fn note_moved_grants(
     cmd: &str,
     before: &std::collections::BTreeMap<String, iroh::EndpointId>,
     msg: &irsync_proto::config::Config,
     path: &Path,
 ) {
-    for (alias, new) in peer_ids(msg, path) {
-        let Some(old) = before.get(&alias).filter(|old| **old != new) else {
-            continue;
-        };
-        let lists = manage::grants::lists_naming(msg, &alias);
-        if !lists.is_empty() {
-            eprintln!(
-                "irsync {cmd}: note: the grants that name {alias} (in {}) now apply to {new} (was {old})",
-                lists.join(", ")
-            );
-        }
+    for note in manage::clients::moved_grant_notes(cmd, before, msg, path) {
+        eprintln!("{note}");
     }
 }
 
@@ -1808,9 +1831,8 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
                 lock.save(&mut msg)?;
                 eprintln!(
-                    "added export {name} ({}) to {}",
-                    path.display(),
-                    paths.config.display()
+                    "{}",
+                    manage::exports::added_line(&name, &path, &paths.config)
                 );
                 println!("{}", secret.public());
                 Ok(())
@@ -1824,7 +1846,7 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 manage::exports::remove_export(&mut msg, name)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!("removed export {name} from {}", paths.config.display());
+                eprintln!("{}", manage::exports::removed_line(name, &paths.config));
                 Ok(())
             })(),
         ),
@@ -1850,17 +1872,7 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
         GrantCmd::Add { export, who, ro } => finish(
             "grant add",
             (|| {
-                if export == "all" {
-                    bail!(
-                        "\"all\" is not an export: give a client every export with: irsync client set NAME all_exports={}",
-                        if *ro { "ro" } else { "rw" }
-                    );
-                }
-                if export == "immediate" {
-                    bail!(
-                        "\"immediate\" is not an export: give a client any path with: irsync client set NAME all_paths=rw"
-                    );
-                }
+                manage::grants::check_add_export(export, *ro)?;
                 let Config {
                     servers, clients, ..
                 } = Config::load(&paths)?;
@@ -1871,8 +1883,10 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 manage::grants::grant_add(&mut msg, export, &spec, *ro, &resolve)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                let mode = if *ro { "ro" } else { "rw" };
-                eprintln!("{}: {mode} on {export}", spec.written(&clients));
+                eprintln!(
+                    "{}",
+                    manage::grants::added_line(&spec, &clients, export, *ro)
+                );
                 Ok(())
             })(),
         ),
@@ -1883,33 +1897,12 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                     servers, clients, ..
                 } = Config::load(&paths)?;
                 let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
-                if who == "*" {
-                    bail!(
-                        "\"*\" names no peer: irsync grant remove {export} all removes every grant {}",
-                        if export == "all" { "in the file".to_string() } else { format!("on {export}") }
-                    );
-                }
-                if export == "immediate" {
-                    bail!(
-                        "\"immediate\" is not an export: take a client's any-path right away with: irsync client set NAME all_paths=none"
-                    );
-                }
+                manage::grants::check_remove(export, who)?;
                 let export = (export != "all").then_some(export.as_str());
                 let who = (who != "all").then_some(who.as_str());
-                // Text that names no known peer still matches entries literally
-                // (a name no longer in the clients table, or a server's).
-                let spec = match who.map(|w| (w, PeerSpec::parse(w, &clients, &servers))) {
-                    None => None,
-                    Some((_, Ok(s))) => Some(s),
-                    Some((
-                        w,
-                        Err(
-                            manage::ManageError::Config(irsync::config::ConfigError::BadPeer(_))
-                            | manage::ManageError::NotAClient(_),
-                        ),
-                    )) => Some(PeerSpec::Alias(w.to_string())),
-                    Some((_, Err(e))) => return Err(e.into()),
-                };
+                let spec = who
+                    .map(|w| PeerSpec::or_literal(w, PeerSpec::parse(w, &clients, &servers)))
+                    .transpose()?;
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
                 let removed =
@@ -1927,7 +1920,7 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                     }
                 };
                 lock.save(&mut msg)?;
-                eprintln!("removed {n} {}", if n == 1 { "entry" } else { "entries" });
+                eprintln!("{}", manage::grants::removed_line(n));
                 for line in &held {
                     eprintln!("{line}");
                 }
@@ -1943,37 +1936,53 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                     settings,
                     ..
                 } = Config::load(&paths)?;
-                let text = match target.as_deref() {
-                    None => manage::grants::list_all(&exports, &clients),
-                    Some(t) => match manage::grants::list_export(&exports, &clients, t) {
-                        Some(block) => block,
-                        None => {
-                            let Ok(id) = clients.resolve_peer(t) else {
-                                bail!(
-                                    "{t:?} is not an export, a client in {} or an EndpointId",
-                                    paths.config.display()
-                                );
-                            };
-                            let label = if clients.get(t).is_some() {
-                                format!("{t} ({id})")
-                            } else {
-                                id.to_string()
-                            };
-                            manage::grants::list_peer(
-                                &exports,
-                                &clients,
-                                settings.daemon.allow_all_paths,
-                                &label,
-                                &id,
-                            )
-                        }
-                    },
-                };
-                print!("{text}");
+                print!(
+                    "{}",
+                    grant_list_text(
+                        &exports,
+                        &clients,
+                        settings.daemon.allow_all_paths,
+                        target.as_deref(),
+                        &paths.config.display().to_string(),
+                    )?
+                );
                 Ok(())
             })(),
         ),
     }
+}
+
+/// What `grant list [TARGET]` prints: every grant, one export's, or what
+/// one peer may reach. `place` names where the clients are kept, for the
+/// error of a target that is none of those.
+fn grant_list_text(
+    exports: &irsync::config::exports::Exports,
+    clients: &Clients,
+    allow_all_paths: bool,
+    target: Option<&str>,
+    place: &str,
+) -> anyhow::Result<String> {
+    let Some(t) = target else {
+        return Ok(manage::grants::list_all(exports, clients));
+    };
+    if let Some(block) = manage::grants::list_export(exports, clients, t) {
+        return Ok(block);
+    }
+    let Ok(id) = clients.resolve_peer(t) else {
+        bail!("{t:?} is not an export, a client in {place} or an EndpointId");
+    };
+    let label = if clients.get(t).is_some() {
+        format!("{t} ({id})")
+    } else {
+        id.to_string()
+    };
+    Ok(manage::grants::list_peer(
+        exports,
+        clients,
+        allow_all_paths,
+        &label,
+        &id,
+    ))
 }
 
 /// `irsync host`: gone, replaced by `server` and `client`.
@@ -2055,10 +2064,7 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 let before = peer_ids(&msg, &paths.config);
                 let old = manage::clients::client_add(&mut msg, name, id)?;
                 lock.save(&mut msg)?;
-                match old {
-                    Some(old) => println!("{name}: {old} -> {id}"),
-                    None => println!("{name}: {id}"),
-                }
+                println!("{}", manage::clients::added_line(name, old, id));
                 // The id the grants are for may have changed: say so.
                 note_moved_grants("client add", &before, &msg, &paths.config);
                 Ok(())
@@ -2070,24 +2076,12 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 load_first(&paths)?;
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                if !msg.clients.iter().any(|c| c.name == *name) {
-                    return Err(manage::ManageError::NotFound(name.clone()))
-                        .with_context(|| format!("in {}", paths.config.display()));
-                }
-                // First, so an EndpointId written for this client is found
-                // as a grant that names it.
-                manage::canonicalize_without(&mut msg, &paths.config, name)?;
-                let grants = manage::clients::client_remove(&mut msg, name, *force)
+                let grants = manage::clients::remove_client(&mut msg, &paths.config, name, *force)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                let also = match grants {
-                    0 => String::new(),
-                    1 => " and 1 grant".to_string(),
-                    n => format!(" and {n} grants"),
-                };
                 eprintln!(
-                    "removed client {name}{also} from {}",
-                    paths.config.display()
+                    "{}",
+                    manage::clients::removed_line(name, grants, &paths.config)
                 );
                 Ok(())
             })(),
@@ -2098,24 +2092,12 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 load_first(&paths)?;
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                if !msg.clients.iter().any(|c| c.name == *old) {
-                    return Err(manage::ManageError::NotFound(old.clone()))
-                        .with_context(|| format!("in {}", paths.config.display()));
-                }
-                // First, so an EndpointId written for this client is found
-                // as a grant that names it.
-                manage::canonicalize_doc(&mut msg, &paths.config)?;
-                let grants = manage::clients::client_rename(&mut msg, old, new)
+                let grants = manage::clients::rename_client(&mut msg, &paths.config, old, new)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                let also = match grants {
-                    0 => String::new(),
-                    1 => "; updated 1 grant".to_string(),
-                    n => format!("; updated {n} grants"),
-                };
                 eprintln!(
-                    "renamed client {old} to {new}{also} in {}",
-                    paths.config.display()
+                    "{}",
+                    manage::clients::renamed_line(old, new, grants, &paths.config)
                 );
                 Ok(())
             })(),
@@ -2134,8 +2116,8 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 manage::clients::client_set(&mut msg, name, &settings)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                if let Some(c) = msg.clients.iter().find(|c| c.name == *name) {
-                    eprintln!("{name}: {}", manage::clients::rights_summary(c));
+                if let Some(line) = manage::clients::set_line(&msg, name) {
+                    eprintln!("{line}");
                 }
                 Ok(())
             })(),

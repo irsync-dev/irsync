@@ -565,10 +565,10 @@ mod tests {
 
     #[test]
     fn unknown_payload_is_shown_as_its_number() {
-        // field 29, length-delimited, 5 bytes: a message these protos lack.
-        let body = record_with(5, &[0xea, 0x01, 5, 1, 2, 3, 4, 5]);
+        // field 31, length-delimited, 5 bytes: a message these protos lack.
+        let body = record_with(5, &[0xfa, 0x01, 5, 1, 2, 3, 4, 5]);
         let e = unwrap(&wrapper(), &body, Prefix::Varint);
-        assert_eq!((e.kind, e.type_name.as_str()), (Kind::Message, "#29"));
+        assert_eq!((e.kind, e.type_name.as_str()), (Kind::Message, "#31"));
         assert_eq!((e.present, e.wire_len, e.not_captured), (5, 5, 0));
         assert_eq!(e.fields.len(), 1);
         assert_eq!(e.fields[0].value, Value::Bytes(&[1, 2, 3, 4, 5]));
@@ -591,7 +591,7 @@ mod tests {
     fn unknown_payload_counts_toward_two_payloads() {
         let n = hello_len();
         let mut body = hello_record(n as u32, None);
-        body.extend_from_slice(&[0xea, 0x01, 1, 0]);
+        body.extend_from_slice(&[0xfa, 0x01, 1, 0]);
         let e = unwrap(&wrapper(), &body, Prefix::Varint);
         assert_eq!(e.type_name, "Hello");
         assert!(e.mismatch.is_some());

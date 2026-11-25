@@ -30,6 +30,7 @@ detail. This page builds on it.
 | A client with a read-only grant | Requests for files in an export | To read that export |
 | A client with a read-write grant | File names, contents and metadata pushed into an export | To change that export, and nothing else |
 | A client with `all_paths = "rw"` | The same, for any path | As much as the daemon's account itself |
+| A client with `admin = "rw"` | Changes to the exports, clients and grants | To change who may reach what on this server, and so to give itself any path |
 | The daemon a client talks to | The listing and the data on a pull; the answers on a push | To hold the files you give it, and to supply the files you ask for |
 | Whoever made a tree you sync | File names, symlinks, permissions, and any `.fileset` manifest in it | Not at all, beyond the content you chose to copy |
 | Other users of the same machine | Files in directories they can write | Not at all |
@@ -142,6 +143,24 @@ client's session, or exhaust the daemon.
   bound single messages, queues and stored sessions, not a client that works
   at being expensive. irsync does not treat a granted key as hostile to the daemon's
   uptime.
+- **`admin = "rw"` is the whole account too.** Such a key can add an export
+  for any directory and grant itself read-write access to it, so it can do
+  what `all_paths = "rw"` can. Give it with the same care. `admin = "ro"`
+  only reads: the exports, clients and grants (names, paths and ids), and,
+  through `config get` and `config list`, every other setting in the file,
+  such as `state_dir`, the ids and addresses of the saved `[servers.*]` and
+  the `[client]` settings. None of it is a secret.
+- **Who can reach the admin service.** Only a named client with `admin` set.
+  A key without it gets the plain answer `not allowed`, which says nothing
+  about the server. A change is checked on the server, against the config as
+  it is when the change lands, and applied all or nothing. A client cannot
+  remove or lower its own `admin` right through it, so a slip does not lock
+  it out. At most 100 changes go in one call, and a session idle for 10
+  minutes is closed.
+- **The audit log.** The server logs every applied change at `info` with the
+  client's name, and every refused attempt at `warn` with the name, or the
+  first digits of the key when it has none. Reads are not logged. The log
+  holds no secrets, but it is the record of who changed what.
 - **`all_paths = "rw"` is the whole account.** Such a key can reach any
   path the daemon's account can. Give it only to machines you would give
   ssh access to. `all_paths = "ro"` is smaller, but it still reads the whole
@@ -278,7 +297,7 @@ symlink while a sync runs in a tree they can write.
 - [`irsync pair`](../how-to/pair.md) trusts ssh: the server you
   log in to is the one irsync installs on and grants access to. Only `pair`
   uses ssh; a sync never does. It gives
-  this client `all_paths = "rw"` on that server.
+  this client `all_paths = "rw"` and `admin = "rw"` on that server.
 - Releases are signed. [Verify a download](../how-to/verify-a-download.md)
   shows how to check one, and
   [Supply chain security](../contributing/supply-chain.md) how they are

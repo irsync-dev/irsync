@@ -1,0 +1,137 @@
+syntax = "proto3";
+package irsync.v1;
+
+import "irsync/v1/common.proto";
+
+// The admin service: a client with `admin = "rw"` or `"ro"` changes or reads
+// the daemon's configuration over a control stream opened with
+// `Hello.direction = ADMIN`.
+
+message AdminRequest {
+  oneof msg {
+    Change change = 1;
+    Commit commit = 2;
+    Read read = 3;
+  }
+}
+
+// Apply every change sent since the stream opened (or the last commit),
+// all or nothing.
+message Commit {}
+
+message Change {
+  oneof op {
+    ExportAdd export_add = 1;
+    ExportRemove export_remove = 2;
+    GrantAdd grant_add = 3;
+    GrantRemove grant_remove = 4;
+    ClientAdd client_add = 5;
+    ClientRemove client_remove = 6;
+    ClientRename client_rename = 7;
+    ClientSet client_set = 8;
+  }
+}
+
+message ExportAdd {
+  string target = 1; // "[NAME:]PATH", PATH absolute or ~
+  bool read_only = 2;
+  bool warm_index = 3;
+}
+
+message ExportRemove {
+  string name = 1;
+}
+
+message GrantAdd {
+  string export = 1;
+  string who = 2; // a client name, an EndpointId or a public key line
+  bool ro = 3;
+}
+
+message GrantRemove {
+  string export = 1;
+  string who = 2; // "all" as in the CLI
+}
+
+message ClientAdd {
+  string name = 1;
+  bytes id = 2;
+}
+
+message ClientRemove {
+  string name = 1;
+  bool force = 2;
+}
+
+message ClientRename {
+  string old = 1;
+  string new = 2;
+}
+
+message ClientSet {
+  string name = 1;
+  repeated string settings = 2; // "KEY=VALUE" as typed
+}
+
+message Read {
+  oneof what {
+    // exports, clients and daemon facts: for export list, grant list,
+    // client list and show
+    ReadView view = 1;
+    // config get KEY, or config list (empty key)
+    ReadConfig config = 2;
+  }
+}
+
+message ReadView {}
+
+message ReadConfig {
+  string key = 1;
+}
+
+message AdminReply {
+  oneof msg {
+    Ack ack = 1;
+    Nack nack = 2;
+    View view = 3;
+    ConfigText config = 4;
+    Error refused = 5;
+  }
+}
+
+message Ack {
+  repeated string results = 1; // one line per change, what the local command prints
+}
+
+message Nack {
+  uint32 change = 1; // 1-based; 0: the whole transaction
+  string reason = 2;
+}
+
+message View {
+  bytes daemon_id = 1;
+  bool allow_all_paths = 2;
+  repeated ExportView exports = 3;
+  repeated ClientView clients = 4;
+}
+
+message ExportView {
+  string name = 1;
+  string path = 2;
+  bool read_only = 3;
+  bool warm_index = 4;
+  bool fsync = 5;
+  bool is_auto = 6;
+  repeated string rw = 7;
+  repeated string ro = 8;
+}
+
+message ClientView {
+  string name = 1;
+  bytes id = 2;
+  map<string, string> rights = 3; // key -> "rw" | "ro", only set rights
+}
+
+message ConfigText {
+  repeated string lines = 1;
+}

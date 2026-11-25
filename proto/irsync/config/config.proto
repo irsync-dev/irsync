@@ -119,6 +119,7 @@ message ClientEntry {
   bytes client_id = 5;         // empty: missing
   optional Access all_exports = 6;
   optional Access all_paths = 7;
+  optional Access admin = 8;
 }
 
 message Export {

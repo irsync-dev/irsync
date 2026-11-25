@@ -3,12 +3,15 @@
 //! saving belong to the caller. A client is the id that grants name.
 
 use super::grants::{lists_naming, remove_named, rename_named};
-use super::{id_bytes, id_of, ManageError};
+use super::{canonicalize_doc, canonicalize_without, id_bytes, id_of, ManageError};
 use crate::authz::Access;
 use crate::config::clients::{Right, RIGHTS};
+use crate::config::file::Config;
 use crate::config::names::valid_alias;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
+use std::collections::BTreeMap;
+use std::path::Path;
 
 /// Create or update client `name`: set its id. Returns the previous id
 /// when the client existed with a different one.
@@ -56,6 +59,116 @@ pub fn client_remove(msg: &mut pb::Config, name: &str, force: bool) -> Result<us
     let removed = remove_named(msg, name);
     msg.clients.retain(|c| c.name != name);
     Ok(removed)
+}
+
+/// `client remove` on a message loaded from `path`: as [`client_remove`],
+/// with the grants canonicalized first (see [`canonicalize_without`]), so
+/// an EndpointId written for this client is found as a grant naming it.
+pub fn remove_client(
+    msg: &mut pb::Config,
+    path: &Path,
+    name: &str,
+    force: bool,
+) -> Result<usize, ManageError> {
+    if !msg.clients.iter().any(|c| c.name == name) {
+        return Err(ManageError::NotFound(name.to_string()));
+    }
+    canonicalize_without(msg, path, name)?;
+    client_remove(msg, name, force)
+}
+
+/// `client rename` on a message loaded from `path`: as
+/// [`client_rename`], with the grants canonicalized first (see
+/// [`canonicalize_doc`]), so an EndpointId written for this client is
+/// renamed too.
+pub fn rename_client(
+    msg: &mut pb::Config,
+    path: &Path,
+    old: &str,
+    new: &str,
+) -> Result<usize, ManageError> {
+    if !msg.clients.iter().any(|c| c.name == old) {
+        return Err(ManageError::NotFound(old.to_string()));
+    }
+    canonicalize_doc(msg, path)?;
+    client_rename(msg, old, new)
+}
+
+/// What `client add` reports: the id, and the one it replaced.
+pub fn added_line(name: &str, old: Option<EndpointId>, id: EndpointId) -> String {
+    match old {
+        Some(old) => format!("{name}: {old} -> {id}"),
+        None => format!("{name}: {id}"),
+    }
+}
+
+/// What `client remove` reports, with the `grants` it removed.
+pub fn removed_line(name: &str, grants: usize, config: &Path) -> String {
+    let also = match grants {
+        0 => String::new(),
+        1 => " and 1 grant".to_string(),
+        n => format!(" and {n} grants"),
+    };
+    format!("removed client {name}{also} from {}", config.display())
+}
+
+/// What `client rename` reports, with the `grants` it updated.
+pub fn renamed_line(old: &str, new: &str, grants: usize, config: &Path) -> String {
+    let also = match grants {
+        0 => String::new(),
+        1 => "; updated 1 grant".to_string(),
+        n => format!("; updated {n} grants"),
+    };
+    format!(
+        "renamed client {old} to {new}{also} in {}",
+        config.display()
+    )
+}
+
+/// What `client set` reports: every right of client `name`; none when
+/// there is no such client.
+pub fn set_line(msg: &pb::Config, name: &str) -> Option<String> {
+    let c = msg.clients.iter().find(|c| c.name == name)?;
+    Some(format!("{name}: {}", rights_summary(c)))
+}
+
+/// The id of each client of `msg`, the id grants naming it are for; none
+/// when `msg` does not load.
+pub fn client_ids(msg: &pb::Config, path: &Path) -> BTreeMap<String, EndpointId> {
+    let Ok(config) = Config::from_message(msg, path) else {
+        return BTreeMap::new();
+    };
+    config
+        .clients
+        .entries
+        .into_iter()
+        .map(|(name, c)| (name, c.client_id))
+        .collect()
+}
+
+/// A grant by name follows the name. After an edit that changed which id
+/// a client's grants are for (`before`: [`client_ids`] from before it),
+/// one note per such client that grants name, for the command `cmd`.
+pub fn moved_grant_notes(
+    cmd: &str,
+    before: &BTreeMap<String, EndpointId>,
+    msg: &pb::Config,
+    path: &Path,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    for (alias, new) in client_ids(msg, path) {
+        let Some(old) = before.get(&alias).filter(|old| **old != new) else {
+            continue;
+        };
+        let lists = lists_naming(msg, &alias);
+        if !lists.is_empty() {
+            notes.push(format!(
+                "irsync {cmd}: note: the grants that name {alias} (in {}) now apply to {new} (was {old})",
+                lists.join(", ")
+            ));
+        }
+    }
+    notes
 }
 
 /// Rename client `old` to `new`, keeping its place and its comments, and

@@ -227,3 +227,113 @@ fn data_header_roundtrips() {
     };
     assert_eq!(DataChunk::decode(d.encode_to_vec().as_slice()).unwrap(), d);
 }
+
+#[test]
+fn admin_messages_round_trip() {
+    use irsync_proto::v1::Ack;
+    use irsync_proto::v1::{
+        admin_reply, admin_request, change, error::Code, read, AdminReply, AdminRequest, Change,
+        ClientAdd, ClientRemove, ClientRename, ClientSet, ClientView, Commit, ConfigText, Error,
+        ExportAdd, ExportRemove, ExportView, GrantAdd, GrantRemove, Nack, Read, ReadConfig,
+        ReadView, View,
+    };
+    use prost::Message;
+
+    fn rt<M: Message + Default + PartialEq + std::fmt::Debug>(m: M) {
+        let back = M::decode(m.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(back, m);
+    }
+
+    let ops = vec![
+        change::Op::ExportAdd(ExportAdd {
+            target: "photos:~/Photos".into(),
+            read_only: true,
+            warm_index: true,
+        }),
+        change::Op::ExportRemove(ExportRemove {
+            name: "photos".into(),
+        }),
+        change::Op::GrantAdd(GrantAdd {
+            export: "photos".into(),
+            who: "myclient".into(),
+            ro: true,
+        }),
+        change::Op::GrantRemove(GrantRemove {
+            export: "photos".into(),
+            who: "all".into(),
+        }),
+        change::Op::ClientAdd(ClientAdd {
+            name: "myclient".into(),
+            id: vec![9; 32],
+        }),
+        change::Op::ClientRemove(ClientRemove {
+            name: "myclient".into(),
+            force: true,
+        }),
+        change::Op::ClientRename(ClientRename {
+            old: "a".into(),
+            new: "b".into(),
+        }),
+        change::Op::ClientSet(ClientSet {
+            name: "myclient".into(),
+            settings: vec!["admin=ro".into(), "all_paths=rw".into()],
+        }),
+    ];
+    for op in ops {
+        let ch = Change { op: Some(op) };
+        rt(ch.clone());
+        rt(AdminRequest {
+            msg: Some(admin_request::Msg::Change(ch)),
+        });
+    }
+    rt(AdminRequest {
+        msg: Some(admin_request::Msg::Commit(Commit {})),
+    });
+    for what in [
+        read::What::View(ReadView {}),
+        read::What::Config(ReadConfig { key: "x".into() }),
+    ] {
+        rt(AdminRequest {
+            msg: Some(admin_request::Msg::Read(Read { what: Some(what) })),
+        });
+    }
+
+    let view = View {
+        daemon_id: vec![1; 32],
+        allow_all_paths: true,
+        exports: vec![ExportView {
+            name: "photos".into(),
+            path: "/srv/photos".into(),
+            read_only: true,
+            warm_index: true,
+            fsync: true,
+            is_auto: true,
+            rw: vec!["myclient".into()],
+            ro: vec!["other".into()],
+        }],
+        clients: vec![ClientView {
+            name: "myclient".into(),
+            id: vec![2; 32],
+            rights: [("admin".to_string(), "rw".to_string())].into(),
+        }],
+    };
+    for msg in [
+        admin_reply::Msg::Ack(Ack {
+            results: vec!["added".into()],
+        }),
+        admin_reply::Msg::Nack(Nack {
+            change: 3,
+            reason: "busy".into(),
+        }),
+        admin_reply::Msg::View(view),
+        admin_reply::Msg::Config(ConfigText {
+            lines: vec!["a = 1".into()],
+        }),
+        admin_reply::Msg::Refused(Error {
+            code: Code::Unauthorized as i32,
+            message: "not allowed".into(),
+        }),
+    ] {
+        rt(AdminReply { msg: Some(msg) });
+    }
+}

@@ -124,7 +124,7 @@ sync, push, pull or listing never does. `HOST` is an ssh destination, such as
 - installs `irsync`, `fileset` and the manual pages on the server (the same
   files as `install.sh`, in `~/.local/bin`) when the server has no matching
   build;
-- gives this client `all_paths = "rw"`, access to any path;
+- gives this client `all_paths = "rw"`, access to any path, and `admin = "rw"`, the right to manage the server remotely;
 - starts the daemon and makes it a user service: a systemd service on Linux, a
   launchd agent on macOS;
 - saves `HOST` as a server with `ssh = "HOST"`.
@@ -322,10 +322,31 @@ table, then `[client]`, then the built-in default. See
 | `irsync sync` | Copy files; the same as the rsync-style form. See [Operands](#operands). |
 | `irsync list` | List a host's exports, or the files under `HOST:PATH`. See [Operands](#operands). |
 | `irsync pair` | Set a server up over ssh and save it as a server. See [irsync pair](#irsync-pair). |
+| `irsync remote` | Manage a server's exports, clients and grants from this client. See [irsync remote](#irsync-remote). |
 | `irsync daemon` | Run the daemon. Its flags are under [irsync daemon](#irsync-daemon). |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions and stale index entries. See [Clean up state](../how-to/clean-up.md). |
 | `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync client set NAME all_paths=rw` lets a client reach any path, read-write; it is what `irsync pair` sets. |
+
+### irsync remote
+
+```text
+irsync remote SERVER COMMAND
+```
+
+Runs a management command on a server's daemon. `SERVER` is a saved server
+or the daemon's `EndpointId`. This client needs `admin = "rw"` on the server
+to change things, and `admin = "ro"` or `"rw"` to read. `remote` dials the
+server like a sync does. It never sets one up: use `irsync pair` for that.
+
+`COMMAND` is one of `export list|add|remove`, `grant list|add|remove`,
+`client list|add|remove|rename|set`, `show`, `config get KEY` and
+`config list`. Each takes the arguments it takes on the server; see
+[Management commands](management.md#remote-use). Each call sends one change,
+which the server applies all or not at all. Quote a path that starts with
+`~`: `irsync remote myserver export add 'photos:~/Photos'`.
+
+The book has a how-to, "Manage a server from your client".
 
 ### Flags every command takes
 

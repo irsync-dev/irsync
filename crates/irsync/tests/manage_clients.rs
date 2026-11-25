@@ -235,10 +235,9 @@ fn parse_setting_takes_rw_ro_none() {
         parse_setting("all_paths=none").unwrap(),
         (Right::AllPaths, None)
     );
-    // admin is not a right yet; issue #203 adds it to RIGHTS.
     for bad in [
         "all_paths=yes",
-        "admin=rw",
+        "admin=yes",
         "all_paths",
         "all_paths=",
         "=rw",
@@ -284,4 +283,15 @@ fn rights_alone_do_not_hold_a_client_back_from_removal() {
     .unwrap();
     assert_eq!(client_remove(&mut m, "laptop", false).unwrap(), 0);
     assert!(m.clients.is_empty());
+}
+
+#[test]
+fn client_set_takes_admin() {
+    assert_eq!(
+        parse_setting("admin=rw").unwrap(),
+        (Right::Admin, Some(Access::ReadWrite))
+    );
+    let mut m = client_file();
+    client_set(&mut m, "laptop", &[(Right::Admin, Some(Access::ReadWrite))]).unwrap();
+    assert_eq!(client_list(&m), vec![format!("laptop: {} admin=rw", id(1))]);
 }

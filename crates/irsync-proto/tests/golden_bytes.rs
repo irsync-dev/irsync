@@ -9,7 +9,7 @@ use prost::Message;
 
 #[test]
 fn protocol_version_is_pinned() {
-    assert_eq!(irsync_proto::PROTOCOL_VERSION, 6);
+    assert_eq!(irsync_proto::PROTOCOL_VERSION, 7);
 }
 
 fn enc(m: Msg) -> Vec<u8> {
@@ -111,4 +111,37 @@ fn data_stream_header_golden_bytes() {
         h.encode_to_vec(),
         [0x0A, 0x02, 0x01, 0x02, 0x10, 0x03, 0x18, 0x04, 0x20, 0x05, 0x28, 0x06]
     );
+}
+
+#[test]
+fn admin_commit_golden_bytes() {
+    use irsync_proto::v1::{admin_request::Msg, AdminRequest, Commit};
+    // commit = 2, an empty message
+    let m = AdminRequest {
+        msg: Some(Msg::Commit(Commit {})),
+    };
+    assert_eq!(m.encode_to_vec(), [0x12, 0x00]);
+}
+
+#[test]
+fn admin_nack_golden_bytes() {
+    use irsync_proto::v1::Nack;
+    // change = 1, reason = 2
+    let n = Nack {
+        change: 2,
+        reason: "x".into(),
+    };
+    assert_eq!(n.encode_to_vec(), [0x08, 0x02, 0x12, 0x01, 0x78]);
+}
+
+#[test]
+fn hello_golden_bytes_carry_protocol_version_7() {
+    use irsync_proto::v1::{hello::Direction, Hello};
+    // protocol_version = 1, direction = 5 (ADMIN = 4)
+    let h = Hello {
+        protocol_version: irsync_proto::PROTOCOL_VERSION,
+        direction: Direction::Admin as i32,
+        ..Default::default()
+    };
+    assert_eq!(h.encode_to_vec(), [0x08, 0x07, 0x28, 0x04]);
 }

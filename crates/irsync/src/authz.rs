@@ -68,13 +68,19 @@ pub struct Grants {
     /// The client's right over any path (`all_paths`), when the daemon
     /// allows it (`allow_all_paths`).
     pub all_paths: Option<Access>,
+    /// The client's right over the admin service (`admin`): `rw` reads and
+    /// changes the configuration, `ro` reads it.
+    pub admin: Option<Access>,
 }
 
 impl Grants {
     /// True when the grants cover nothing at all (no entries, no
-    /// `all_exports`, no `all_paths`).
+    /// `all_exports`, no `all_paths`, no `admin`).
     pub fn is_empty(&self) -> bool {
-        self.exports.is_empty() && self.all_exports.is_none() && self.all_paths.is_none()
+        self.exports.is_empty()
+            && self.all_exports.is_none()
+            && self.all_paths.is_none()
+            && self.admin.is_none()
     }
 
     /// The access this key has to `export`, named `name`: its own entry,
@@ -142,12 +148,13 @@ impl Snapshot {
         let mut grants: HashMap<EndpointId, Grants> = HashMap::new();
         for c in clients.entries.values() {
             let all_paths = c.all_paths.filter(|_| allow_all_paths);
-            if c.all_exports.is_none() && all_paths.is_none() {
+            if c.all_exports.is_none() && all_paths.is_none() && c.admin.is_none() {
                 continue;
             }
             let g = grants.entry(c.client_id).or_default();
             raise(&mut g.all_exports, c.all_exports);
             raise(&mut g.all_paths, all_paths);
+            raise(&mut g.admin, c.admin);
         }
         for (name, e) in &exports.exports {
             let lists = [(&e.rw, Access::ReadWrite), (&e.ro, Access::ReadOnly)];
@@ -191,6 +198,11 @@ impl Snapshot {
         }
     }
 
+    /// The admin right of `id`; none when it has none.
+    pub fn admin(&self, id: &EndpointId) -> Option<Access> {
+        self.grants.get(id).and_then(|g| g.admin)
+    }
+
     /// The grants of `id`; empty when it is granted nothing.
     pub fn grants(&self, id: &EndpointId) -> Grants {
         self.grants.get(id).cloned().unwrap_or_default()
@@ -222,12 +234,34 @@ pub trait Authorizer: Send + Sync {
         peer: EndpointId,
         access: Access,
     ) -> Result<(), AuthzError>;
+
+    /// The config file the grants are read from; none when they are not
+    /// from a file (then there is nothing to administer).
+    fn config_path(&self) -> Option<&Path> {
+        None
+    }
 }
 
 /// How long [`FileAuthorizer::add_auto_export`] waits for a config lock
 /// someone else holds (another connection adding its export, or an
 /// `irsync export` command).
 pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Takes the lock of the config file `path` (see
+/// [`crate::manage::lock_config`]), waiting up to [`LOCK_WAIT`] while
+/// someone else holds it; then it is [`ManageError::Locked`]. Blocks:
+/// call it off the async runtime.
+pub fn lock_config_waiting(path: &Path) -> Result<crate::manage::ConfigLock, ManageError> {
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match crate::manage::lock_config(path) {
+            Err(ManageError::Locked { .. }) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => return r,
+        }
+    }
+}
 
 /// True when an export `peer` may use in `snap` already contains `root`.
 fn covered(snap: &Snapshot, root: &Path, peer: &EndpointId) -> bool {
@@ -267,16 +301,8 @@ impl Authorizer for FileAuthorizer {
         peer: EndpointId,
         access: Access,
     ) -> Result<(), AuthzError> {
-        use crate::manage::{exports, lock_config};
-        let deadline = std::time::Instant::now() + LOCK_WAIT;
-        let mut lock = loop {
-            match lock_config(&self.paths.config) {
-                Err(ManageError::Locked { .. }) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                r => break r?,
-            }
-        };
+        use crate::manage::exports;
+        let mut lock = lock_config_waiting(&self.paths.config)?;
         if covered(&self.snapshot()?, root, &peer) {
             return Ok(());
         }
@@ -290,6 +316,10 @@ impl Authorizer for FileAuthorizer {
             "added automatic export"
         );
         Ok(())
+    }
+
+    fn config_path(&self) -> Option<&Path> {
+        Some(&self.paths.config)
     }
 }
 

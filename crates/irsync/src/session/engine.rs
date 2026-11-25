@@ -611,7 +611,9 @@ pub async fn client_session_key(
     let (src, dst) = match direction {
         Direction::ClientSends => (local_loc, remote_loc),
         Direction::DaemonSends => (remote_loc, local_loc),
-        Direction::ListExports | Direction::Probe => bail!("a listing or probe has no session"),
+        Direction::ListExports | Direction::Probe | Direction::Admin => {
+            bail!("a listing, probe or admin stream has no session")
+        }
     };
     let (o, single) = (opts.clone(), local.single.clone());
     Ok(tokio::task::spawn_blocking(move || {

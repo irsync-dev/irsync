@@ -37,6 +37,25 @@ noun the flag may stand before the noun, or before or after the verb:
 - An export name may not be empty, contain `/`, or be `all`. A server or client name may not
   be empty, contain `:` or `/`, be `all` or `*`, or be an `EndpointId`.
 
+## Remote use
+
+Most of these commands also work on a server from afar, with
+`irsync remote SERVER` in front: `irsync remote myserver export list`. See
+[irsync remote](command-line.md#irsync-remote) and
+the how-to "Manage a server from your client". It needs
+`admin` on the server.
+
+| Remote | Not remote |
+| --- | --- |
+| `export list`, `add`, `remove` | `export update` |
+| `grant list`, `add`, `remove` | `config set`, `config unset` |
+| `client list`, `add`, `remove`, `rename`, `set` | `id` |
+| `show`, `config get`, `config list` | `server` |
+
+A remote `export add` takes an absolute path or one that starts with `~`,
+quoted so that your shell leaves it alone. A client cannot remove or lower its
+own `admin` right this way.
+
 A running daemon picks up `client`, `export` and `grant` changes on its next
 connection; nothing needs a restart.
 
@@ -61,9 +80,9 @@ server when it does not offer post-quantum key exchange.
 | --- | --- |
 | `irsync client add NAME ID` | Add a client: a name for the `EndpointId` a machine has as a client (what `irsync id show` prints on that machine). For an existing name, change the id; grants that name it then apply to the new id, and a note on stderr says so. Prints `NAME: ID`. |
 | `irsync client remove NAME [-f]` | Remove a client. Refused while a grant names it, and the error lists where: without the client those grants would match nobody. A grant written as the `EndpointId` counts as naming the client, unless another client has the same id. `-f`/`--force` removes those grants, then the client. |
-| `irsync client rename OLD NEW` | Rename a client, and every grant that names it: in every export. Its `all_exports` and `all_paths` stay with it. A grant written as the `EndpointId` counts as naming the client. The client keeps its place and comments. Refused, with nothing changed, when `OLD` is no client, `NEW` is not a valid name or `NEW` is a client already. Only the config file changes. |
-| `irsync client set NAME KEY=VALUE...` | Set the server-wide rights of a client. `KEY` is `all_exports` or `all_paths`, and `VALUE` is `rw`, `ro` or `none` (`none` removes the right). Give several pairs to change them together: if one is wrong, nothing changes. `irsync client set myclient all_paths=rw` lets `myclient` reach any path this account can. Prints the client's rights afterwards. See [Rights on a client](configuration.md#rights-on-a-client). |
-| `irsync client list` | One `NAME: ID` line per client, followed by `all_exports=VALUE` and `all_paths=VALUE` for each right it has. |
+| `irsync client rename OLD NEW` | Rename a client, and every grant that names it: in every export. Its `all_exports`, `all_paths` and `admin` stay with it. A grant written as the `EndpointId` counts as naming the client. The client keeps its place and comments. Refused, with nothing changed, when `OLD` is no client, `NEW` is not a valid name or `NEW` is a client already. Only the config file changes. |
+| `irsync client set NAME KEY=VALUE...` | Set the server-wide rights of a client. `KEY` is `all_exports`, `all_paths` or `admin`, and `VALUE` is `rw`, `ro` or `none` (`none` removes the right). Give several pairs to change them together: if one is wrong, nothing changes. `irsync client set myclient all_paths=rw` lets `myclient` reach any path this account can. Prints the client's rights afterwards. See [Rights on a client](configuration.md#rights-on-a-client). |
+| `irsync client list` | One `NAME: ID` line per client, followed by `all_exports=VALUE` `all_paths=VALUE` and `admin=VALUE` for each right it has. |
 
 The old `host` noun is gone: it prints a pointer to `server` and `client`. A server and
 a client may have the same name; the two commands do not touch each other's
@@ -90,10 +109,10 @@ everyone; `--warm-index` sets `warm_index`.
 | Command | Effect |
 | --- | --- |
 | `irsync grant add EXPORT WHO [--ro]` | Grant `WHO` read-write access to `EXPORT`, or read-only access with `--ro`. An earlier grant of the same peer there is replaced. For every export or any path, use `irsync client set`; `grant add all` and `grant add immediate` are refused, with a hint. |
-| `irsync grant remove EXPORT WHO` | Remove `WHO`'s grant on `EXPORT`. `irsync grant remove all WHO` removes `WHO` from every export's own list. It leaves their `all_exports` and `all_paths` alone, and says so when `WHO` still has one; those go with `irsync client set`. `irsync grant remove EXPORT all` empties an export's grants. |
-| `irsync grant list` | Every grant: an `all_exports:` block, an `all_paths:` block (the clients that hold each right), then one block per export. |
-| `irsync grant list EXPORT` | One export's grants. `all_exports` and `all_paths` list the clients that hold that right. |
-| `irsync grant list WHO` | What one peer may reach: `all_paths: rw` or `all_paths: ro` first when it has that right, then one `NAME: rw` or `NAME: ro` line per export, marked `(all_exports)` when the access comes from `all_exports` and `(read_only export)` when a read-write grant is capped by `read_only`. |
+| `irsync grant remove EXPORT WHO` | Remove `WHO`'s grant on `EXPORT`. `irsync grant remove all WHO` removes `WHO` from every export's own list. It leaves their `all_exports`, `all_paths` and `admin` alone, and says so when `WHO` still has one; those go with `irsync client set`. `irsync grant remove EXPORT all` empties an export's grants. |
+| `irsync grant list` | Every grant: an `all_exports:` block, an `all_paths:` block, an `admin:` block (the clients that hold each right), then one block per export. |
+| `irsync grant list EXPORT` | One export's grants. `all_exports`, `all_paths` and `admin` list the clients that hold that right. |
+| `irsync grant list WHO` | What one peer may reach: `all_paths: rw` or `all_paths: ro` and `admin: rw` or `admin: ro` first when it has those rights, then one `NAME: rw` or `NAME: ro` line per export, marked `(all_exports)` when the access comes from `all_exports` and `(read_only export)` when a read-write grant is capped by `read_only`. |
 
 A client paired over ssh is listed by its host name, which `irsync pair` saved
 in `[clients]`.
@@ -103,7 +122,7 @@ line, or the path of a `.pub` file holding one. A key's comment is kept as a
 TOML comment at the end of the entry's line. Removing the grant removes that
 comment; comment lines above it stay. A peer that `[clients]` has a name for is stored
 by that name, however it was named. A server name is not a `WHO`. There is no open access: `all` and `*` are
-refused as `WHO` in `grant add`. The words `all`, `immediate`, `all_exports` and `all_paths` are reserved: no export has one of them as its name.
+refused as `WHO` in `grant add`. The words `all`, `immediate`, `all_exports`, `all_paths` and `admin` are reserved: no export has one of them as its name.
 
 ## id
 

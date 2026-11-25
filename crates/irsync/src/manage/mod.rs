@@ -3,6 +3,7 @@
 //! writer's form, comments kept), and the interpretation of a command-line
 //! "who" argument.
 
+pub mod admin;
 pub mod clients;
 pub mod config;
 pub mod exports;
@@ -398,6 +399,41 @@ impl PeerSpec {
     /// `.pub` file) or an EndpointId. A name that only `servers` has is
     /// refused: grants name clients.
     pub fn parse(who: &str, clients: &Clients, servers: &Servers) -> Result<PeerSpec, ManageError> {
+        Self::parse_with(who, clients, servers, true)
+    }
+
+    /// As [`PeerSpec::parse`], without reading a file: for a `who` sent by
+    /// a remote client, which names nothing on this machine's disk.
+    pub fn parse_text(
+        who: &str,
+        clients: &Clients,
+        servers: &Servers,
+    ) -> Result<PeerSpec, ManageError> {
+        Self::parse_with(who, clients, servers, false)
+    }
+
+    /// The `who` of `grant remove`: text that names no known peer (a name
+    /// no longer in the clients table, or a server's) still matches grant
+    /// entries literally, so `parsed` failing for that reason is the text
+    /// itself.
+    pub fn or_literal(
+        who: &str,
+        parsed: Result<PeerSpec, ManageError>,
+    ) -> Result<PeerSpec, ManageError> {
+        match parsed {
+            Err(ManageError::Config(ConfigError::BadPeer(_)) | ManageError::NotAClient(_)) => {
+                Ok(PeerSpec::Alias(who.to_string()))
+            }
+            other => other,
+        }
+    }
+
+    fn parse_with(
+        who: &str,
+        clients: &Clients,
+        servers: &Servers,
+        files: bool,
+    ) -> Result<PeerSpec, ManageError> {
         if who == "all" || who == "*" {
             return Err(ManageError::NoOpenAccess);
         }
@@ -408,10 +444,12 @@ impl PeerSpec {
             return Err(ManageError::NotAClient(who.to_string()));
         }
         let bad = || ManageError::Config(ConfigError::BadPeer(who.to_string()));
-        if let Ok(text) = std::fs::read_to_string(who) {
-            if let Some(line) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
-                if let Ok(pk) = ssh_key::PublicKey::from_openssh(line) {
-                    return Self::from_key(&pk)?.ok_or_else(bad);
+        if files {
+            if let Ok(text) = std::fs::read_to_string(who) {
+                if let Some(line) = text.lines().map(str::trim).find(|l| !l.is_empty()) {
+                    if let Ok(pk) = ssh_key::PublicKey::from_openssh(line) {
+                        return Self::from_key(&pk)?.ok_or_else(bad);
+                    }
                 }
             }
         }

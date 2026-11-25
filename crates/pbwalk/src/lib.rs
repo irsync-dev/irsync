@@ -869,7 +869,7 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        body.extend_from_slice(&[0xea, 0x01, 5, 1, 2, 3, 4, 5]);
+        body.extend_from_slice(&[0xfa, 0x01, 5, 1, 2, 3, 4, 5]);
         let mut f = pbcap::write::section_header();
         f.extend(pbcap::write::interface(252, 0));
         let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, &body);
@@ -877,7 +877,7 @@ mod tests {
         let (s, out) = run_on(&[], &f);
         assert_eq!((s.messages, s.wire_bytes, s.mismatches), (1, 5, 0));
         assert!(out.contains("5 bytes, type not in the protos"), "{out}");
-        assert!(out.contains("#29 (type not in the protos)"), "{out}");
+        assert!(out.contains("#31 (type not in the protos)"), "{out}");
     }
 
     #[test]
@@ -893,8 +893,8 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec();
-        // Field 29, 5 bytes: a type these protos do not have.
-        body.extend_from_slice(&[0xea, 0x01, 5, 1, 2, 3, 4, 5]);
+        // Field 31, 5 bytes: a type these protos do not have.
+        body.extend_from_slice(&[0xfa, 0x01, 5, 1, 2, 3, 4, 5]);
         let mut f = capture(&[]);
         let pdu = pbcap::write::exported_pdu("irsync", A, B, 1, 1, &body);
         f.extend(pbcap::write::packet(1, &pdu));
@@ -907,7 +907,7 @@ mod tests {
             .expect(fields);
         assert_eq!(
             row.split("  ").find(|p| !p.is_empty()).map(str::trim),
-            Some("#29 (type not in the protos) (cut, not itemised)"),
+            Some("#31 (type not in the protos) (cut, not itemised)"),
             "{row:?}"
         );
     }
@@ -979,7 +979,7 @@ mod tests {
     /// The records every hex test runs over, each with the bytes of the
     /// message or event inside it as they were built: short and long
     /// fields, a nested message, an event, a message with nothing in the
-    /// file, a payload of a type the protos lack (field 29, 20 bytes), a
+    /// file, a payload of a type the protos lack (field 31, 20 bytes), a
     /// packed field of over 16 bytes, and a message with 20 bytes at its
     /// end that do not parse.
     fn hex_records() -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -1025,7 +1025,7 @@ mod tests {
             ),
             (event_record().encode_to_vec(), event.encode_to_vec()),
             (cut_chunk_record().encode_to_vec(), Vec::new()),
-            (by_hand(29, &unknown), unknown),
+            (by_hand(31, &unknown), unknown),
             (
                 message(1, 1, Msg::Control(need.clone()), need.encoded_len()).encode_to_vec(),
                 need.encode_to_vec(),

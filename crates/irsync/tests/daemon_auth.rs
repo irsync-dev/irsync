@@ -1036,3 +1036,33 @@ async fn all_paths_alone_is_refused_when_not_allowed() {
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }
+
+/// `admin` alone is a right: the client is not closed before the Hello.
+#[tokio::test]
+async fn a_client_with_only_admin_passes_the_gate() {
+    let (dir, ..) = export_dir();
+    let client = client_endpoint().await;
+    let only_admin = Grants {
+        admin: Some(Access::ReadOnly),
+        ..Grants::default()
+    };
+    let d = spawn_daemon_home(
+        vec![("rw", dir.path().to_path_buf(), false)],
+        MemoryAuthorizer::single(client.id(), only_admin),
+        None,
+    )
+    .await;
+    assert_eq!(list_against(&d, &client).await.unwrap(), vec![]);
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+    // No rights at all: still closed.
+    let d = spawn_daemon_home(
+        vec![("rw", dir.path().to_path_buf(), false)],
+        MemoryAuthorizer::single(client.id(), Grants::default()),
+        None,
+    )
+    .await;
+    assert!(list_against(&d, &client).await.is_err());
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}

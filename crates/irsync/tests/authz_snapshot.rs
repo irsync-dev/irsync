@@ -255,3 +255,15 @@ fn parse_exports(
 ) -> Result<irsync::config::exports::Exports, irsync::config::ConfigError> {
     irsync::config::file::Config::parse(text, path).map(|c| c.exports)
 }
+
+#[test]
+fn admin_alone_is_not_empty() {
+    let s = snap(&laptop("admin = \"ro\"\n"), "[exports.x]\npath = \"/x\"\n");
+    let g = s.grants(&id(1));
+    assert!(!g.is_empty());
+    assert_eq!(g.admin, Some(Access::ReadOnly));
+    assert_eq!(s.admin(&id(1)), Some(Access::ReadOnly));
+    assert_eq!(s.admin(&id(2)), None);
+    assert!(g.exports.is_empty() && g.all_exports.is_none() && g.all_paths.is_none());
+    assert!(!s.allows(&id(1), "x", false));
+}

@@ -1143,7 +1143,7 @@ fn the_current_reader_checks_servers_and_clients_at_their_line() {
             "[clients.lap]\nclient_id = \"{}\"\nendpoint_id = \"x\"\n",
             id(1)
         )),
-        "f:3: unknown field `endpoint_id`, expected one of `client_id`, `all_exports`, `all_paths`"
+        "f:3: unknown field `endpoint_id`, expected one of `client_id`, `all_exports`, `all_paths`, `admin`"
     );
     assert_eq!(
         error(&format!("[servers.nas]\nendpoint_id = \"{}\"\nclient_id = \"x\"\n", id(1))),

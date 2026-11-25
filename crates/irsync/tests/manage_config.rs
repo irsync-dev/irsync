@@ -529,6 +529,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("clients.nas.client_id", &[ID5]),
     ("clients.nas.all_exports", &["ro"]),
     ("clients.nas.all_paths", &["rw"]),
+    ("clients.nas.admin", &["rw"]),
     ("exports.p.path", &["/srv/q"]),
     ("exports.p.read_only", &["true"]),
     ("exports.p.warm_index", &["true"]),

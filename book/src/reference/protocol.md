@@ -18,7 +18,7 @@ version is refused with `VERSION_MISMATCH`.
 | Item | Value |
 | --- | --- |
 | ALPN | `irsync/1` |
-| `PROTOCOL_VERSION` | `6`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
+| `PROTOCOL_VERSION` | `7`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
 | Framing | A protobuf varint length (at most 4 bytes for `MAX_FRAME`), then that many bytes of one protobuf message: protobuf's standard length-delimited form |
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
@@ -93,7 +93,7 @@ The client sends `Hello` on the control stream:
 - `protocol_version` and the three chunking parameters;
 - `session_id`: 16 bytes to resume a session, empty for a new one;
 - `direction`: `CLIENT_SENDS` (a push), `DAEMON_SENDS` (a pull) or
-  `LIST_EXPORTS` or `PROBE`;
+  `LIST_EXPORTS`, `PROBE` or `ADMIN`;
 - `path`, the remote `PATH` as typed, which the daemon resolves (see
   [Remote addresses](remote-addresses.md#resolution-order)); `contents_only`,
   the trailing-slash rule; and on a push of a source without a trailing slash,
@@ -130,6 +130,18 @@ The client sends `Hello` on the control stream:
   trace). A daemon that exports traces makes its `session` span a child of it;
 - `build`: the client's `BuildInfo` (package version, short git commit, dirty
   flag).
+
+An `ADMIN` Hello (`path` empty) turns the control stream into an admin
+session, defined in `admin.proto`. The client sends `AdminRequest` frames and
+the daemon answers each with an `AdminReply`. A key without `admin` gets an
+`Error` with `UNAUTHORIZED` and the message `not allowed`. Otherwise:
+
+| Message | Direction | Meaning |
+| --- | --- | --- |
+| `Change` | client to daemon | One change: an export, grant or client add, remove, rename or set. Held, not applied. No reply. |
+| `Commit` | client to daemon | Apply the held changes, all or nothing: answered with `Ack` (one result line per change) or `Nack`. At most 100 changes; a session idle for 10 minutes is closed. |
+| `Read` | client to daemon | `ReadView` for the exports, clients and daemon facts, or `ReadConfig` for one key (empty: every key). Answered with `View` or `ConfigText`, from the saved config. Needs `admin` `ro` or `rw`. |
+| `Nack` | daemon to client | Nothing was applied. `change` is the 1-based number of the change at fault, or 0 for the whole transaction (busy, not allowed, own `admin` right, too many changes). |
 
 A `PROBE` opens no session. The daemon resolves `path` as it would for a
 pull, applies the same access checks, and answers with a `PathInfo` whose

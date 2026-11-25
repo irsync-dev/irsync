@@ -649,6 +649,28 @@ mod tests {
                 .encode_to_vec(),
             ),
         ];
+        cases.push((
+            "irsync.v1.AdminRequest",
+            v1::AdminRequest {
+                msg: Some(v1::admin_request::Msg::Change(v1::Change {
+                    op: Some(v1::change::Op::ExportAdd(v1::ExportAdd {
+                        target: "photos:~/Photos".into(),
+                        read_only: true,
+                        warm_index: false,
+                    })),
+                })),
+            }
+            .encode_to_vec(),
+        ));
+        cases.push((
+            "irsync.v1.AdminReply",
+            v1::AdminReply {
+                msg: Some(v1::admin_reply::Msg::Ack(v1::Ack {
+                    results: vec!["added export photos".into()],
+                })),
+            }
+            .encode_to_vec(),
+        ));
         for msg in control_variants() {
             cases.push((
                 "irsync.v1.Control",

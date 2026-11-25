@@ -58,6 +58,7 @@ ssh_aliases = ["10.0.0.2", "nas.local"]
 client_id = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1"
 all_exports = "ro"
 all_paths = "rw"
+admin = "ro"
 
 [exports.photos]
 path = "/srv/photos"

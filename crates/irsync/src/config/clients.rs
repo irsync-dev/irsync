@@ -18,6 +18,9 @@ pub struct ClientEntry {
     pub all_exports: Option<Access>,
     /// The right over any path no export names, when the client has it.
     pub all_paths: Option<Access>,
+    /// The right to read and, with `rw`, change the server's configuration
+    /// remotely, when the client has it.
+    pub admin: Option<Access>,
 }
 
 /// A right a `[clients.NAME]` entry can hold. The one place that names the
@@ -27,9 +30,10 @@ pub struct ClientEntry {
 pub enum Right {
     AllExports,
     AllPaths,
+    Admin,
 }
 
-pub const RIGHTS: [Right; 2] = [Right::AllExports, Right::AllPaths];
+pub const RIGHTS: [Right; 3] = [Right::AllExports, Right::AllPaths, Right::Admin];
 
 impl Right {
     /// The key of the right in the file.
@@ -37,6 +41,7 @@ impl Right {
         match self {
             Right::AllExports => "all_exports",
             Right::AllPaths => "all_paths",
+            Right::Admin => "admin",
         }
     }
 
@@ -50,6 +55,7 @@ impl Right {
         match self {
             Right::AllExports => c.all_exports,
             Right::AllPaths => c.all_paths,
+            Right::Admin => c.admin,
         }
     }
 
@@ -63,6 +69,7 @@ impl Right {
         match self {
             Right::AllExports => c.all_exports,
             Right::AllPaths => c.all_paths,
+            Right::Admin => c.admin,
         }
     }
 
@@ -74,6 +81,7 @@ impl Right {
         match self {
             Right::AllExports => (&mut c.all_exports, &mut c.key_comments),
             Right::AllPaths => (&mut c.all_paths, &mut c.key_comments),
+            Right::Admin => (&mut c.admin, &mut c.key_comments),
         }
     }
 
@@ -101,6 +109,7 @@ impl ClientEntry {
             client_id,
             all_exports: None,
             all_paths: None,
+            admin: None,
         };
         for right in RIGHTS {
             let access = match right.field(c) {
@@ -113,6 +122,7 @@ impl ClientEntry {
             match right {
                 Right::AllExports => entry.all_exports = access,
                 Right::AllPaths => entry.all_paths = access,
+                Right::Admin => entry.admin = access,
             }
         }
         Ok(entry)
