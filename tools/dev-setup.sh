@@ -5,6 +5,7 @@
 #
 # Installs what it can without root: rustup itself, the toolchain from
 # rust-toolchain.toml with rustfmt and clippy, the musl targets on Linux,
+# the targets tools/ci.sh typecheck checks (tools/typecheck-targets),
 # the nightly from fuzz/rust-toolchain.toml, and cargo-nextest, cargo-deny,
 # cargo-fuzz, zizmor, dist, actionlint, shellcheck and mdbook. Those eight
 # are downloaded from their release pages and checked against SHA-256s kept
@@ -167,6 +168,30 @@ if $rust_ready && [ "$os" = Linux ]; then
         ok "target $musl"
     else
         warn "target $musl, for release builds" "rustup target add --toolchain $channel $musl"
+    fi
+fi
+
+# The targets tools/ci.sh typecheck checks, from tools/typecheck-targets.
+if $rust_ready; then
+    # The listed targets that are not installed, separated by spaces.
+    missing_targets() {
+        local installed t out=""
+        installed=$(rustup target list --installed --toolchain "$channel")
+        while read -r t _; do
+            printf '%s\n' "$installed" | grep -x "$t" >/dev/null || out="$out $t"
+        done < <(sed 's/#.*//' "$root/tools/typecheck-targets" | awk 'NF')
+        printf '%s' "${out# }"
+    }
+    targets=$(missing_targets)
+    if [ -n "$targets" ] && ! $check_only; then
+        # shellcheck disable=SC2086 # one argument per target
+        run rustup target add --toolchain "$channel" $targets || true
+        targets=$(missing_targets)
+    fi
+    if [ -z "$targets" ]; then
+        ok "targets for tools/ci.sh typecheck"
+    else
+        warn "targets $targets, for tools/ci.sh typecheck" "rustup target add --toolchain $channel $targets"
     fi
 fi
 

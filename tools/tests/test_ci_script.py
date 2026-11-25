@@ -1,4 +1,4 @@
-"""Tests for tools/ci.sh: the freebsd-build, fuzz, workflows, miri and check jobs."""
+"""Tests for tools/ci.sh: the freebsd-build, fuzz, workflows, miri, check and typecheck jobs."""
 import os
 import platform
 import re
@@ -11,7 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CI = os.path.join(ROOT, "tools", "ci.sh")
 
 # Real programs tools/ci.sh runs, before a job and in check; cargo and rustup are fakes.
-UTILS = ["bash", "env", "dirname", "uname", "awk", "sed", "mkdir", "mktemp", "rm", "tr"]
+UTILS = ["bash", "env", "dirname", "uname", "awk", "sed", "mkdir", "mktemp", "rm", "tr", "sh"]
 # What uname prints in Git Bash, which ci.sh takes for Windows.
 WINDOWS = "echo MINGW64_NT-10.0-26100"
 # The pinned nightly, whatever its date, on a Linux machine.
@@ -259,6 +259,68 @@ class CiScriptTests(unittest.TestCase):
         build = lines.index("run env CARGO_DIST_TARGET=x86_64-unknown-freebsd packaging/dist/build.sh")
         pack = lines.index("run packaging/tarball.sh x86_64-unknown-freebsd packaging/dist target/distrib")
         self.assertLess(build, pack)
+
+    def typecheck_lines(self):
+        """tools/typecheck-targets as (target, [crate, ...]) pairs."""
+        with open(os.path.join(ROOT, "tools", "typecheck-targets")) as f:
+            words = [l.split("#")[0].split() for l in f]
+        return [(w[0], w[1:]) for w in words if w]
+
+    def run_typecheck(self, fail=None, missing=()):
+        """Runs the typecheck job with a fake cargo that logs each call as
+        one line, and a rustup with every listed target installed but those
+        in missing. With fail, a substring of a cargo call: that call exits 1."""
+        log = os.path.join(tempfile.mkdtemp(prefix="ci-typecheck-log-"), "calls")
+        self.addCleanup(shutil.rmtree, os.path.dirname(log), ignore_errors=True)
+        stop = f'case "$*" in *"{fail}"*) exit 1 ;; esac; ' if fail else ""
+        targets = "\\n".join(t for t, _ in self.typecheck_lines() if t not in missing)
+        rustup = f"""case "$*" in
+  "target list --installed") printf '{targets}\\n' ;;
+  *) echo "rustc 1.0.0" ;;
+esac"""
+        r = self.run_with(["typecheck"], f'echo "cargo $*" >> {log}; {stop}exit 0', rustup=rustup)
+        calls = []
+        if os.path.exists(log):
+            with open(log) as f:
+                calls = f.read().splitlines()
+        return r, calls
+
+    def test_help_lists_typecheck(self):
+        r = subprocess.run([CI, "--help"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertRegex(r.stdout, r"(?m)^  typecheck ")
+
+    def test_typecheck_only_when_named(self):
+        # Eight clippy runs: never part of a run of every job.
+        with open(CI) as f:
+            all_jobs = re.search(r'^all_jobs="(.*)"$', f.read(), re.M).group(1)
+        self.assertNotIn("typecheck", all_jobs.split())
+
+    def test_typecheck_covers_every_platform(self):
+        targets = [t for t, _ in self.typecheck_lines()]
+        for cpu in ("x86_64", "aarch64"):
+            for rest in ("unknown-linux-musl", "apple-darwin", "unknown-freebsd", "pc-windows-msvc"):
+                self.assertIn(f"{cpu}-{rest}", targets)
+
+    def test_typecheck_runs_each_target_with_its_crates(self):
+        r, calls = self.run_typecheck()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        want = [f"cargo clippy --locked {' '.join('-p ' + c for c in crates)} --all-targets --all-features "
+                f"--target {t} -- -D warnings" for t, crates in self.typecheck_lines()]
+        self.assertEqual(calls, want)
+
+    def test_typecheck_goes_on_after_a_failure_and_names_it(self):
+        r, calls = self.run_typecheck(fail="--target x86_64-apple-darwin ")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(len(calls), len(self.typecheck_lines()))
+        self.assertIn("ci.sh: typecheck failed for: x86_64-apple-darwin\n", r.stderr)
+
+    def test_typecheck_needs_the_targets(self):
+        r, calls = self.run_typecheck(missing=("aarch64-unknown-freebsd",))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ci.sh: Rust target aarch64-unknown-freebsd not installed; tools/dev-setup.sh installs it",
+                      r.stderr)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

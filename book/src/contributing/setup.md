@@ -20,6 +20,7 @@ The workspace holds irsync itself and the tools that test it: `fileset`
 
 `tools/dev-setup.sh` sets most of this up and checks the rest. It installs
 rustup, the toolchain with rustfmt and clippy, the musl target on Linux, the
+Rust targets of every platform `tools/ci.sh typecheck` checks, the
 nightly the fuzz targets build with, and cargo-nextest, cargo-deny,
 cargo-fuzz, zizmor, dist, actionlint, shellcheck and mdbook. The nightly
 is a large download, and only fuzzing and Miri need it. Those eight tools
@@ -231,3 +232,22 @@ tools/ci.sh check
 This is the full regression, the same script CI's `check` job runs. After
 a change under `.github/`, to the dependencies or to the release build, run
 `tools/ci.sh` with no job, which runs CI's other jobs too.
+
+After a change to Rust code or its tests, also check that it still compiles
+on the other platforms:
+
+```sh
+tools/ci.sh typecheck
+```
+
+This runs clippy, with warnings as errors, for Linux (x86_64 and arm64
+musl), macOS, FreeBSD and Windows, each on x86_64 and arm64. It needs no
+compiler for those platforms: `tools/typecheck-target.sh` hands the C
+build scripts a stand-in that writes empty files, since a check never
+links. It finds code that does not compile there, such as a mistake behind
+`#[cfg(windows)]`, in a few minutes instead of a CI round. It runs
+nothing, so CI still runs the tests. The list of platforms, and the crates
+each one checks, is `tools/typecheck-targets`; on Windows that is
+`filegen`, `fileset` and `irsync-glob`, the crates that build there.
+`tools/dev-setup.sh` installs the Rust targets. A run of every job leaves
+`typecheck` out.
