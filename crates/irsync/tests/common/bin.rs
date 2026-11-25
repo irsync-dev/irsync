@@ -49,7 +49,7 @@ pub fn locations(home: impl AsRef<Path>) -> irsync::platform::Locations {
         match k {
             "HOME" | "USERPROFILE" => Some(home.clone().into()),
             "XDG_STATE_HOME" | "LOCALAPPDATA" => Some(home.join(".local").join("state").into()),
-            "APPDATA" => Some(home.join(".config").into()),
+            "XDG_CONFIG_HOME" | "APPDATA" => Some(home.join(".config").into()),
             _ => None,
         }
     };
