@@ -15,7 +15,7 @@ use crate::config::settings::{PqKeyExchange, Settings};
 use crate::identity::{load_client_identity, parse_endpoint_id, KeySource, PassphraseSource};
 use crate::net::{build_endpoint, client_endpoint_opts};
 use crate::options::SyncOptions;
-use crate::session::reconnect::{describe_dial, never_reached, PAIRED_FIRST_DIAL};
+use crate::session::reconnect::{dial_once, never_reached, PAIRED_FIRST_DIAL};
 
 /// The daemon's EndpointId: a server's name, else the host string itself
 /// must be an EndpointId. `clients` is only for the message about a name
@@ -288,20 +288,9 @@ pub fn client_identity(
 /// post-quantum key exchange when it is required. For the one-shot exchanges
 /// (a listing, `remote`); the caller closes the connection.
 pub async fn dial(c: &Connected) -> anyhow::Result<iroh::endpoint::Connection> {
-    let dial = c.endpoint.connect(c.target.clone(), irsync_proto::ALPN);
-    let dialled = match c.first_dial() {
-        Some(limit) => match tokio::time::timeout(limit, dial).await {
-            Ok(r) => r.map_err(|e| describe_dial(&c.target.id, &e)),
-            Err(_) => Err(format!(
-                "connecting to {}: no answer within {} s",
-                c.target.id,
-                limit.as_secs()
-            )),
-        },
-        None => dial.await.map_err(|e| describe_dial(&c.target.id, &e)),
-    };
-    let conn = dialled.map_err(|msg| never_reached(anyhow::anyhow!(msg), c.paired()))?;
-    crate::net::tap::ConnTap::of(&conn).set_local_id(c.endpoint.id());
+    let conn = dial_once(&c.endpoint, &c.target, c.first_dial())
+        .await
+        .map_err(|msg| never_reached(anyhow::anyhow!(msg), c.paired()))?;
     crate::session::reconnect::check_pq_key_exchange(
         &conn,
         c.dial.pq_key_exchange == PqKeyExchange::Require,

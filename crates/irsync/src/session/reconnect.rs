@@ -326,6 +326,33 @@ pub fn explain(
     }
 }
 
+/// One dial of `target` from `endpoint`, bounded by `limit` (`None`:
+/// iroh's own handshake timeout, about 60 s). The connection is marked with
+/// this side's id for a capture. The error is the line that says why the
+/// dial failed.
+pub async fn dial_once(
+    endpoint: &Endpoint,
+    target: &EndpointAddr,
+    limit: Option<Duration>,
+) -> Result<Connection, String> {
+    let dial = endpoint.connect(target.clone(), irsync_proto::ALPN);
+    let conn = match limit {
+        Some(limit) => match tokio::time::timeout(limit, dial).await {
+            Ok(r) => r.map_err(|e| describe_dial(&target.id, &e))?,
+            Err(_) => {
+                return Err(format!(
+                    "connecting to {}: no answer within {} s",
+                    target.id,
+                    limit.as_secs()
+                ))
+            }
+        },
+        None => dial.await.map_err(|e| describe_dial(&target.id, &e))?,
+    };
+    crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
+    Ok(conn)
+}
+
 /// With `require`, closes `conn` and fails unless its handshake agreed on
 /// the post-quantum hybrid key exchange. Call it before the first irsync
 /// message is sent. The error is final: a redial would get the same answer.
@@ -368,22 +395,10 @@ pub async fn probe_path(
     // Set once a dial has gone through.
     let mut reached = false;
     loop {
-        let dial = endpoint.connect(target.clone(), irsync_proto::ALPN);
-        let dialled = match opts.first_dial_timeout {
-            Some(limit) => match tokio::time::timeout(limit, dial).await {
-                Ok(r) => r.map_err(|e| describe_dial(&target.id, &e)),
-                Err(_) => Err(format!(
-                    "connecting to {}: no answer within {} s",
-                    target.id,
-                    limit.as_secs()
-                )),
-            },
-            None => dial.await.map_err(|e| describe_dial(&target.id, &e)),
-        };
+        let dialled = dial_once(endpoint, &target, opts.first_dial_timeout).await;
         let err = match dialled {
             Ok(conn) => {
                 reached = true;
-                crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
                 let res = match check_pq_key_exchange(&conn, opts.require_pq, &target.id) {
                     Ok(()) => super::single::probe(&conn, path, timeout).await,
                     Err(e) => Err(e),
@@ -593,25 +608,14 @@ async fn attempts(
         let mut tried = Attempt::default();
         let connect = phase(PhaseKind::Connect, Side::Client, role, None);
         connect.span().record("attempt", attempt);
-        let dial = endpoint
-            .connect(target.clone(), irsync_proto::ALPN)
-            .instrument(connect.span().clone());
-        let dialled = match opts.first_dial_timeout.filter(|_| !reached) {
-            Some(limit) => match tokio::time::timeout(limit, dial).await {
-                Ok(r) => r.map_err(|e| describe_dial(&target.id, &e)),
-                Err(_) => Err(format!(
-                    "connecting to {}: no answer within {} s",
-                    target.id,
-                    limit.as_secs()
-                )),
-            },
-            None => dial.await.map_err(|e| describe_dial(&target.id, &e)),
-        };
+        let limit = opts.first_dial_timeout.filter(|_| !reached);
+        let dialled = dial_once(endpoint, &target, limit)
+            .instrument(connect.span().clone())
+            .await;
         *connecting.lock().unwrap() = Some(connect);
         let (res, conn) = match dialled {
             Ok(conn) => {
                 reached = true;
-                crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
                 key_exchange = crate::net::key_exchange(&conn);
                 tracing::info!(
                     key_exchange = key_exchange.as_deref().unwrap_or("unknown"),
