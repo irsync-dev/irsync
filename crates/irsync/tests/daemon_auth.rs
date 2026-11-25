@@ -807,7 +807,7 @@ fn export_at(
 }
 
 /// `all_exports` covers the exports written by hand only: an automatic
-/// export belongs to the peer it was made for, so a client with
+/// export belongs to the client it was made for, so a client with
 /// `all_exports = "rw"` can neither use nor list it.
 #[tokio::test]
 async fn all_grant_does_not_reach_auto_exports() {
@@ -851,8 +851,8 @@ async fn all_grant_does_not_reach_auto_exports() {
     let _ = within(d.task).await;
 }
 
-/// An `all_paths` peer's relative path names another client's export: the
-/// short name only counts for exports this peer may use, so the path
+/// An `all_paths` client's relative path names another client's export: the
+/// short name only counts for exports this client may use, so the path
 /// resolves under the home instead and the shared export is untouched.
 #[tokio::test]
 async fn all_paths_relative_path_does_not_take_another_clients_export() {

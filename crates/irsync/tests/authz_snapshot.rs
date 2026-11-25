@@ -111,8 +111,8 @@ fn all_paths_not_allowed_is_ignored() {
     assert!(s.permissions(&id(1)).is_empty());
 }
 
-/// An automatic export carries its peer's own `rw` entry; it counts only
-/// while that peer's `all_paths` is in effect, so removing it or turning
+/// An automatic export carries its client's own `rw` entry; it counts only
+/// while that client's `all_paths` is in effect, so removing it or turning
 /// `allow_all_paths` off also ends access through earlier automatic
 /// exports. Exports written by hand are unaffected.
 #[test]

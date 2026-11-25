@@ -256,7 +256,7 @@ impl Beneath {
     }
 }
 
-/// [`open_regular_nofollow`] for `base/rel`, with no symlink followed in
+/// [`open_regular_nofollow_stat`] for `base/rel`, with no symlink followed in
 /// any component of `rel` (see [`open_parent_beneath`]).
 pub fn open_regular_beneath(base: &Path, rel: &RelPath) -> io::Result<File> {
     open_regular_beneath_stat(base, rel).map(|(f, _)| f)

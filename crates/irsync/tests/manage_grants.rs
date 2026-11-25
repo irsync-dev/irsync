@@ -680,7 +680,7 @@ fn grant_list_shows_all_paths_rights() {
 }
 
 #[test]
-fn list_peer_marks_inherited_and_capped_grants() {
+fn list_client_marks_inherited_and_capped_grants() {
     let (h, e) = fixture();
     let s = list_client(&e, &h, true, &format!("laptop ({})", id(1)), &id(1));
     assert_eq!(

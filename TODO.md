@@ -124,7 +124,7 @@ landed. Items the final review's fix wave closed are not listed.
 - [ ] `daemon_lock::acquire`'s retry path and the pid-0 probe result.
 - [ ] `tests/fixtures/fake-ssh` takes `$1` as the destination (breaks if
       `--rsh` carries flags) and logs only the destination, not the command.
-- [ ] Tidy: redundant `immediate: false` next to `..Grants::default()` in tests.
+- [ ] Tidy: redundant `immediate: false` next to `..Permissions::default()` in tests.
 
 # Open items from the cross-platform install, 2026-11-14
 

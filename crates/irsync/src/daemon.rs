@@ -874,9 +874,9 @@ async fn serve_all_paths(
     t: &Target<'_>,
 ) -> Result<(Snapshot, PathBuf), (Code, String)> {
     let push = t.push;
-    // An export's short name stands for its path only when this peer may
+    // An export's short name stands for its path only when this client may
     // use that export; any other name is a directory under the home, so
-    // the peer cannot reach (and auto-export) another client's export.
+    // the client cannot reach (and auto-export) another client's export.
     let grants = snap.permissions(&id);
     let Some(level) = grants.all_paths else {
         return Err(no_access(t.path));

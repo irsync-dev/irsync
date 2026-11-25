@@ -969,12 +969,12 @@ fn grant_list_prefers_an_export_over_an_name_of_the_same_name() {
         &["export", "add", &format!("p:{}", home.join("p").display())],
     );
     ok(&home, &["grant", "add", "p", "p"]);
-    // The export's block, not the peer's reach.
+    // The export's block, not the client's reach.
     assert_eq!(
         ok(&home, &["grant", "list", "p"]),
         format!("p:\n    rw: p ({id})\n")
     );
-    // The peer is still reachable by its id.
+    // The client is still reachable by its id.
     assert_eq!(
         ok(&home, &["grant", "list", &id]),
         format!("{id}:\n    p: rw\n")
@@ -1748,7 +1748,7 @@ fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
             hosts(&["amy", "zed"])
         ),
     );
-    // The id is not amy's alone: zed still names the peer.
+    // The id is not amy's alone: zed still names the client.
     ok(&home, &["client", "remove", "amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
@@ -2972,7 +2972,7 @@ fn grant_remove_names_the_rights_the_client_still_holds() {
     assert!(err.contains("laptop still has all_exports=rw"), "{err}");
     assert!(!err.contains("phone still has"), "{err}");
     assert_eq!(std::fs::read(&file).unwrap(), before);
-    // All peers: every client that holds a right.
+    // All clients: every client that holds a right.
     let o = irsync(&home, &["grant", "remove", "all", "all"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
