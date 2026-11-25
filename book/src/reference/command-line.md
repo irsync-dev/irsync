@@ -165,7 +165,6 @@ See [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
 | `--no-ssh-install` | Copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
 | `--server-no-dht` | Turn the server's DHT publishing off (`[daemon] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
 | `--no-service` | Do not make the daemon a user service: start it in the background, until the server reboots. For a daemon you run your own way. |
-| `--identity FILE` | The private key to pair with. Default as for a sync. |
 
 ## rsync-compatible flags
 
@@ -310,7 +309,7 @@ These have no rsync counterpart.
 | `--no-mdns` | Do not look the daemon up with mDNS on the local network for this run. |
 | `--address ADDR` | Dial the daemon at `ip:port`, `[ipv6]:port` or `host:port` directly; repeatable. Turns the relay, DNS, DHT, mDNS and the port mapper off, and binds the client to the local address it dials from (see [Keep to one path](../how-to/direct-and-relay.md#keep-to-one-path)). The daemon's `EndpointId` is still required and still checked. |
 | `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. |
-| `--identity FILE` | The private key to connect with. Default: `[defaults] identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
+| `--identity FILE` | The private key to connect with. Every command that uses the client's key takes it; see [Flags every command takes](#flags-every-command-takes). Default: `[defaults] identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted key from the first line of this file. Without it, `IRSYNC_PASSPHRASE` is used, else a prompt when stdin is a terminal. |
 | `--no-resume` | Start a fresh plan instead of resuming a dormant session. Partial files are still picked up. |
 | `--no-rename-detection` | Do not fill files from other files on the receiving side that hold the same content or parts of it, so a moved or copied file is transferred again. A changed file still reuses its own old version. |
@@ -337,7 +336,7 @@ the value can be changed back later the same way.
 | `irsync daemon` | Run the daemon. Its flags are under [irsync daemon](#irsync-daemon). |
 | `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions, stale index entries and the index files of older irsync builds. See [Clean up state](../how-to/clean-up.md). |
-| `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync client set NAME all_paths=rw` lets a client reach any path, read-write; it is what `irsync pair` sets. |
+| `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config`, `--passphrase-file` and `--identity` too. `irsync client set NAME all_paths=rw` lets a client reach any path, read-write; it is what `irsync pair` sets. |
 
 ### irsync remote
 
@@ -361,8 +360,8 @@ The book has a how-to, "Manage a server from your client".
 
 ### Flags every command takes
 
-`-v`, `-q`, `--config PATH` and `--passphrase-file PATH` are accepted before
-or after any command: `irsync -v gc` and `irsync id show -vv` both work. A
+`-v`, `-q`, `--config PATH`, `--passphrase-file PATH` and `--identity FILE`
+are accepted before or after any command: `irsync -v gc` and `irsync id show -vv` both work. A
 command name right after these flags is the command. So a directory called
 `gc` is written `./gc`: `irsync -v ./gc host:path`. The same goes for `sync`
 and `list`: `irsync -av ./sync myserver:` pushes the directory `sync`.
@@ -384,6 +383,10 @@ and `list`: `irsync -av ./sync myserver:` pushes the directory `sync`.
   instead. They write nothing and name `irsync id generate --passphrase-file
   PATH`. The file must be for its owner only (`chmod 600`); see
   [File permissions](configuration.md#file-permissions).
+- `--identity FILE` names the client's key for every command that uses it:
+  a sync, a listing, `pair`, `remote`, `id show`, `id list` and `show`.
+  `irsync id generate` writes the new client key there. The daemon has a
+  key of its own and ignores the flag.
 - `irsync show --passphrase-file PATH` reads both the client's and the
   daemon's key. Both must exist already: without the flag it would generate
   the missing one.

@@ -673,7 +673,7 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
                 Some(alias) => irsync::ssh::onboard::check(alias, &t.dest)?,
                 None => irsync::ssh::onboard::check_dest(&t.dest)?,
             }
-            let secret = client_key(a.identity.as_deref(), &config.settings, &pass)?;
+            let secret = client_key(files.identity.as_deref(), &config.settings, &pass)?;
             let rsh = irsync::ssh::client::Rsh::from_opts(a.rsh.as_deref());
             log.eprintln(&format!("irsync: pairing with {} over ssh", t.host));
             let flags = SetupFlags {
@@ -2129,7 +2129,8 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
                     if daemon {
                         (settings.daemon.identity, "irsync-daemon")
                     } else {
-                        (settings.identity, "irsync")
+                        // `--identity` names the client's key for every command.
+                        (f.identity.clone().unwrap_or(settings.identity), "irsync")
                     }
                 }
             };
@@ -2222,9 +2223,14 @@ fn print_identity(secret: &iroh::SecretKey, role: IdRole) {
     println!("{}", secret.public());
 }
 
-/// The client's identity, generated when no key serves.
-fn print_client_identity(settings: &Settings, pass: &PassphraseSource) -> anyhow::Result<()> {
-    let (secret, source) = client_identity(None, settings, pass)?;
+/// The client's identity (`--identity` when given), generated when no key
+/// serves.
+fn print_client_identity(
+    explicit: Option<&Path>,
+    settings: &Settings,
+    pass: &PassphraseSource,
+) -> anyhow::Result<()> {
+    let (secret, source) = client_identity(explicit, settings, pass)?;
     if let KeySource::Generated(p) = &source {
         eprintln!("generated identity {}", p.display());
     }
@@ -2261,12 +2267,12 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
                 settings.unsafe_config_allowed,
             );
             if all {
-                print_client_identity(&settings, &pass)?;
+                print_client_identity(f.identity.as_deref(), &settings, &pass)?;
                 print_daemon_identity(&settings, &pass)?;
             } else if daemon {
                 print_daemon_identity(&settings, &pass)?;
             } else {
-                print_client_identity(&settings, &pass)?;
+                print_client_identity(f.identity.as_deref(), &settings, &pass)?;
                 if has_daemon_identity(&settings) {
                     eprintln!(
                         "irsync: this machine also has a daemon identity; clients connect \
@@ -2290,7 +2296,7 @@ fn id_list(f: &FilesArgs) -> i32 {
                 f.passphrase_file.clone(),
                 settings.unsafe_config_allowed,
             );
-            print_client_identity(&settings, &pass)?;
+            print_client_identity(f.identity.as_deref(), &settings, &pass)?;
             // Only a missing file means "no daemon here". A key that
             // cannot be looked at is an error, not a daemon left out.
             let path = &settings.daemon.identity;
@@ -2322,7 +2328,7 @@ fn run_show(f: &FilesArgs) -> i32 {
                 f.passphrase_file.clone(),
                 settings.unsafe_config_allowed,
             );
-            let (client, source) = client_identity(None, settings, &pass)?;
+            let (client, source) = client_identity(f.identity.as_deref(), settings, &pass)?;
             if let KeySource::Generated(p) = &source {
                 eprintln!("generated identity {}", p.display());
             }

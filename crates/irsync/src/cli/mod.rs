@@ -775,7 +775,7 @@ pub struct LogArgs {
     pub quiet: bool,
 }
 
-/// The config file every command reads. Global: accepted before or after the
+/// The files every command reads. Global: accepted before or after the
 /// command.
 #[derive(Debug, clap::Args)]
 pub struct FilesArgs {
@@ -787,6 +787,13 @@ pub struct FilesArgs {
     /// the new key with it.
     #[arg(long, global = true, value_name = "PATH")]
     pub passphrase_file: Option<PathBuf>,
+    /// The client's private key, for every command that uses it: a sync,
+    /// a listing, pair, remote, id and show (default: `[defaults]
+    /// identity`, else id_ed25519 in the config directory, else
+    /// ~/.ssh/id_ed25519; generated if missing). id generate writes the
+    /// new client key here.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub identity: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -813,10 +820,6 @@ pub struct PairArgs {
     /// your own way.
     #[arg(long)]
     pub no_service: bool,
-    /// The private key to pair with (default: `[defaults] identity` in irsync.toml,
-    /// else id_ed25519 in the config directory; generated if missing).
-    #[arg(long, value_name = "FILE")]
-    pub identity: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1097,10 +1100,6 @@ pub struct SyncArgs {
     /// mapper off; the daemon's EndpointId is still required.
     #[arg(long, value_name = "ADDR", conflicts_with = "relay")]
     pub address: Vec<HostPort>,
-    /// The private key to connect with (default: `[defaults] identity` in irsync.toml,
-    /// else id_ed25519 in the config directory; generated if missing).
-    #[arg(long, value_name = "FILE")]
-    pub identity: Option<PathBuf>,
     /// Start a fresh plan instead of resuming a dormant session (partial
     /// files are still picked up).
     #[arg(long)]
@@ -1345,7 +1344,7 @@ impl SyncOptions {
             addresses: a.address.clone(),
             config: args.files.config.clone(),
             state_dir: None,
-            identity: a.identity.clone(),
+            identity: args.files.identity.clone(),
             passphrase_file: args.files.passphrase_file.clone(),
             no_resume: a.no_resume,
             no_rename_detection: a.no_rename_detection,

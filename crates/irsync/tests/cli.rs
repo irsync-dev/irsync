@@ -55,7 +55,6 @@ fn pair_parses_host_and_flags() {
             assert_eq!(p.host, "mike@myserver");
             assert_eq!(p.rsh.as_deref(), Some("ssh -p 2222"));
             assert!(p.server_no_dht && p.no_ssh_install);
-            assert_eq!(p.identity, None);
         }
         c => panic!("not Pair: {c:?}"),
     }
@@ -1185,6 +1184,28 @@ fn config_is_accepted_before_and_after_any_command() {
     assert_eq!(opts(&["--config", "f", "src", "h:m/"]).config, f);
     assert_eq!(opts(&["src", "h:m/", "--config", "f"]).config, f);
     assert_eq!(parse(&["server", "list"]).files.config, None);
+}
+
+#[test]
+fn identity_is_accepted_before_and_after_any_command() {
+    for argv in [
+        vec!["--identity", "k", "id", "show"],
+        vec!["id", "show", "--identity", "k"],
+        vec!["show", "--identity", "k"],
+        vec!["pair", "--identity", "k", "h"],
+        vec!["--identity", "k", "sync", "a", "h:m"],
+        vec!["-a", "--identity", "k", "a", "h:m"],
+        vec!["list", "h:", "--identity", "k"],
+    ] {
+        let mut full = vec!["irsync"];
+        full.extend(argv.iter());
+        let a = Args::try_parse_from(&full).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+        assert_eq!(a.files.identity, Some(PathBuf::from("k")), "{argv:?}");
+    }
+    assert_eq!(
+        opts(&["--identity", "k", "a", "h:m"]).identity,
+        Some(PathBuf::from("k"))
+    );
 }
 
 #[test]

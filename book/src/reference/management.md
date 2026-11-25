@@ -134,11 +134,11 @@ export has one of them as its name.
 
 | Command | Effect |
 | --- | --- |
-| `irsync id list [--passphrase-file PATH]` | Print every identity this machine has: `client:` with the client's public key line and `EndpointId`, then `daemon:` with the daemon's when a daemon key exists. Generates the client's key if no key serves; never the daemon's. |
-| `irsync id show [--passphrase-file PATH]` | Print `client:`, then the client's public key line and `EndpointId`, generating the key if no key serves. On a machine that also has a daemon key, a note on stderr says that clients connect to the daemon's `EndpointId` and that `irsync id show --daemon` prints it. |
+| `irsync id list [--identity FILE] [--passphrase-file PATH]` | Print every identity this machine has: `client:` with the client's public key line and `EndpointId`, then `daemon:` with the daemon's when a daemon key exists. Generates the client's key if no key serves; never the daemon's. |
+| `irsync id show [--identity FILE] [--passphrase-file PATH]` | Print `client:`, then the client's public key line and `EndpointId`, generating the key if no key serves. On a machine that also has a daemon key, a note on stderr says that clients connect to the daemon's `EndpointId` and that `irsync id show --daemon` prints it. |
 | `irsync id show --daemon` | The same for the daemon, under `daemon:`. Never generates the daemon's key: without one it fails and says how to make one. |
 | `irsync id show -a` | Both, each under its label. |
-| `irsync id generate [--daemon] [--out PATH] [-f] [--passphrase-file PATH]` | Write a new Ed25519 key pair, with the public key beside it as `.pub`: the client's (default) or with `--daemon` the daemon's, at its configured path or at `--out PATH`, and print the public key line and `EndpointId`. Refuses to overwrite an existing key or `.pub` file unless given `-f`/`--force`. With `--passphrase-file`, the private key is written encrypted with the passphrase on the first line of that file (its line ending, LF or CR+LF, is not part of it). A file that is missing or empty is an error and nothing is written. `IRSYNC_PASSPHRASE` does not encrypt a new key. |
+| `irsync id generate [--daemon] [--out PATH] [-f] [--passphrase-file PATH]` | Write a new Ed25519 key pair, with the public key beside it as `.pub`: the client's (default) or with `--daemon` the daemon's, at its configured path (for the client's, `--identity FILE` when given) or at `--out PATH`, and print the public key line and `EndpointId`. Refuses to overwrite an existing key or `.pub` file unless given `-f`/`--force`. With `--passphrase-file`, the private key is written encrypted with the passphrase on the first line of that file (its line ending, LF or CR+LF, is not part of it). A file that is missing or empty is an error and nothing is written. `IRSYNC_PASSPHRASE` does not encrypt a new key. |
 
 Some commands generate a missing key automatically: a sync, a listing,
 `id show`, `id list`, `show`, `export add` and the daemon. A key generated
@@ -148,7 +148,8 @@ do not generate a missing key. They fail, write nothing, and tell you to run
 daemon's key.
 
 The client's key is found the way ssh picks one; see
-[Configuration](configuration.md#identity-and-state). After `irsync id
+[Configuration](configuration.md#identity-and-state). `--identity FILE`
+names it for one command. After `irsync id
 generate` has written `~/.config/irsync/id_ed25519`, `~/.ssh/id_ed25519` is no
 longer consulted. Replacing a key with `--force` is permanent: every grant made
 for the old key stops working.
@@ -183,7 +184,7 @@ writes that string as a grant entry that matches nobody.
 ## show
 
 ```text
-irsync show [--passphrase-file PATH]
+irsync show [--identity FILE] [--passphrase-file PATH]
 ```
 
 Prints the config file's path, the client's `EndpointId` and public key line,
