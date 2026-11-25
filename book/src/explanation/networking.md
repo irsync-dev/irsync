@@ -260,8 +260,8 @@ client's key during the TLS handshake. It answers with `HelloAck` and a new
 session id.
 
 ```text
-Hello { protocol_version: 6, path: "photos", chunk_min: 65536, chunk_avg: 262144, chunk_max: 1048576, contents_only: true, build: BuildInfo { … }, preserve: Preserve { links: true, perms: true, times: true, … } } dir="SENT" stream="CONTROL" quic_stream=0 file=-
-HelloAck { session_id: 0x88f83bf9…, protocol_version: 6, build: BuildInfo { … } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=-
+Hello { protocol_version: 7, path: "photos", chunk_min: 65536, chunk_avg: 262144, chunk_max: 1048576, contents_only: true, build: BuildInfo { … }, preserve: Preserve { links: true, perms: true, times: true, … } } dir="SENT" stream="CONTROL" quic_stream=0 file=-
+HelloAck { session_id: 0x88f83bf9…, protocol_version: 7, build: BuildInfo { … } } dir="RECEIVED" stream="CONTROL" quic_stream=0 file=-
 ```
 
 **The listings.** The client opens the listing stream, QUIC stream 4 (the

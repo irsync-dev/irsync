@@ -18,7 +18,7 @@ version is refused with `VERSION_MISMATCH`.
 | Item | Value |
 | --- | --- |
 | ALPN | `irsync/1` |
-| `PROTOCOL_VERSION` | `6`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
+| `PROTOCOL_VERSION` | `7`, carried in `Hello.protocol_version` and `HelloAck.protocol_version` |
 | Framing | A protobuf varint length (at most 4 bytes for `MAX_FRAME`), then that many bytes of one protobuf message: protobuf's standard length-delimited form |
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |

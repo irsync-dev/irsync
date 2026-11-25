@@ -9,7 +9,7 @@ use prost::Message;
 
 #[test]
 fn protocol_version_is_pinned() {
-    assert_eq!(irsync_proto::PROTOCOL_VERSION, 6);
+    assert_eq!(irsync_proto::PROTOCOL_VERSION, 7);
 }
 
 fn enc(m: Msg) -> Vec<u8> {
@@ -135,7 +135,7 @@ fn admin_nack_golden_bytes() {
 }
 
 #[test]
-fn hello_golden_bytes_carry_protocol_version_6() {
+fn hello_golden_bytes_carry_protocol_version_7() {
     use irsync_proto::v1::{hello::Direction, Hello};
     // protocol_version = 1, direction = 5 (ADMIN = 4)
     let h = Hello {
@@ -143,5 +143,5 @@ fn hello_golden_bytes_carry_protocol_version_6() {
         direction: Direction::Admin as i32,
         ..Default::default()
     };
-    assert_eq!(h.encode_to_vec(), [0x08, 0x06, 0x28, 0x04]);
+    assert_eq!(h.encode_to_vec(), [0x08, 0x07, 0x28, 0x04]);
 }
