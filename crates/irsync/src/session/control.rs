@@ -792,7 +792,7 @@ fn list_single(
             return lstat_entry_with_ctime(&root, rel);
         }
         let (dir, name) =
-            crate::fs::safe::open_parent_beneath(base, &super::join_rel(prefix, rel))?;
+            crate::fs::safe::open_parent_beneath(base, &super::record::join_rel(prefix, rel))?;
         lstat_at(&dir, &name, rel)
     };
     match lstat(&RelPath::root()) {
