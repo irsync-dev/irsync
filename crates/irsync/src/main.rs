@@ -1215,7 +1215,7 @@ fn pull_plan(
     if !is_one_component(basename) || basename == b"~" {
         bail!("cannot tell the file's name from {}", escape_path(rpath));
     }
-    let placed = place_file(local, contents_only, basename, true)?;
+    let placed = place_file(local, contents_only, basename)?;
     let mut hello = dir.hello;
     hello.req = SyncRequest {
         single_file: true,

@@ -88,35 +88,48 @@ pub fn split_last(path: &Path) -> (PathBuf, Vec<u8>) {
     }
 }
 
-/// Decide where a single file named `src_name` lands for destination `dest`.
-/// `follow` resolves a symlink at `dest` (the client does, the daemon does
-/// not). Without `follow`, a symlink to a file (or a dangling one) is a
-/// file to replace and a symlink to a directory is refused. A missing root
-/// directory is not checked here; callers create it.
-pub fn place_file(
+/// What is at a single file's destination, or at the file's name inside
+/// it, as far as placing the file needs to know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum At {
+    Missing,
+    Dir,
+    /// A file, or anything else that is not a directory (a symlink that
+    /// is not looked through counts here, as a file to replace).
+    Other,
+    /// A symlink to a directory (the daemon refuses it).
+    LinkToDir,
+    /// A symlink the daemon does not follow (see [`link_leads_to`]).
+    LinkNotFollowed,
+}
+
+/// How a side looks at what is where a single file may land.
+trait Lookup {
+    /// What is at the destination itself.
+    fn dest(&self) -> io::Result<At>;
+    /// What is at `name` inside the destination, once that is a directory.
+    fn child(&self, name: &[u8]) -> io::Result<At>;
+}
+
+/// rsync's rule for a single file named `src_name` and the destination
+/// `dest`, with `look` telling what is there: into the destination when
+/// it is a directory (or missing, with a trailing slash), else as the
+/// destination itself. Nothing is written through a link.
+fn place(
+    look: &impl Lookup,
     dest: &Path,
     contents_only: bool,
     src_name: &[u8],
-    follow: bool,
 ) -> Result<FilePlace, PlaceError> {
-    let meta = if follow {
-        std::fs::metadata(dest)
-    } else {
-        std::fs::symlink_metadata(dest)
-    };
-    let in_dir = match meta {
-        Ok(m) if m.is_dir() => true,
-        // Only decides; nothing is written through the link.
-        Ok(m) if m.is_symlink() && std::fs::metadata(dest).is_ok_and(|t| t.is_dir()) => {
-            return Err(PlaceError::SymlinkToDirectory(dest.to_path_buf()))
+    let in_dir = match look.dest() {
+        Ok(At::Dir) => true,
+        Ok(At::LinkToDir) => return Err(PlaceError::SymlinkToDirectory(dest.to_path_buf())),
+        Ok(At::LinkNotFollowed) => return Err(PlaceError::SymlinkNotFollowed(dest.to_path_buf())),
+        Ok(At::Other) if contents_only => {
+            return Err(PlaceError::NotADirectory(dest.to_path_buf()))
         }
-        Ok(_) => {
-            if contents_only {
-                return Err(PlaceError::NotADirectory(dest.to_path_buf()));
-            }
-            false
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => contents_only,
+        Ok(At::Other) => false,
+        Ok(At::Missing) => contents_only,
         Err(e) => return Err(PlaceError::Io(dest.to_path_buf(), e)),
     };
     if !in_dir {
@@ -125,16 +138,50 @@ pub fn place_file(
     }
     let name = bytes_to_os(src_name).map_err(|e| PlaceError::Io(dest.to_path_buf(), e))?;
     let target = dest.join(name);
-    match std::fs::symlink_metadata(&target) {
-        Ok(m) if m.is_dir() => return Err(PlaceError::IsADirectory(target)),
+    match look.child(src_name) {
+        Ok(At::Dir) => return Err(PlaceError::IsADirectory(target)),
         Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(PlaceError::Io(target, e)),
     }
     Ok(FilePlace {
         root: dest.to_path_buf(),
         name: src_name.to_vec(),
     })
+}
+
+/// The kind of what `meta` describes, a missing entry as [`At::Missing`].
+fn at_of(meta: io::Result<std::fs::Metadata>) -> io::Result<At> {
+    match meta {
+        Ok(m) if m.is_dir() => Ok(At::Dir),
+        Ok(_) => Ok(At::Other),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(At::Missing),
+        Err(e) => Err(e),
+    }
+}
+
+/// The client looks with the plain file system and follows a symlink at
+/// the destination (a dangling one is a missing destination).
+struct Followed<'a>(&'a Path);
+
+impl Lookup for Followed<'_> {
+    fn dest(&self) -> io::Result<At> {
+        at_of(std::fs::metadata(self.0))
+    }
+
+    fn child(&self, name: &[u8]) -> io::Result<At> {
+        at_of(std::fs::symlink_metadata(self.0.join(bytes_to_os(name)?)))
+    }
+}
+
+/// Decide where a single file named `src_name` lands for destination
+/// `dest` on the client, which follows a symlink at `dest`. A missing
+/// root directory is not checked here; callers create it.
+pub fn place_file(
+    dest: &Path,
+    contents_only: bool,
+    src_name: &[u8],
+) -> Result<FilePlace, PlaceError> {
+    place(&Followed(dest), dest, contents_only, src_name)
 }
 
 /// Whether `path` names a single file (not a directory). A missing path is
@@ -234,12 +281,58 @@ pub(crate) fn place_single(
     }
 }
 
+/// The daemon looks from the export's directory with no symlink followed
+/// on the way, so a directory above the destination that was swapped for a
+/// link says nothing about what the link leads to. A link at the
+/// destination itself is worked out only inside the export
+/// ([`link_leads_to`]).
+struct Beneath<'a> {
+    export_root: &'a Path,
+    rel: &'a RelPath,
+}
+
+impl Lookup for Beneath<'_> {
+    fn dest(&self) -> io::Result<At> {
+        use crate::platform::Kind as FileKind;
+        if self.rel.as_bytes().is_empty() {
+            // The export's own directory.
+            return Ok(At::Dir);
+        }
+        match crate::fs::safe::Beneath::new(self.export_root, self.rel.clone()).lstat() {
+            Ok(st) if st.kind == FileKind::Dir => Ok(At::Dir),
+            // Only decides; nothing is written through the link.
+            Ok(st) if st.kind == FileKind::Symlink => {
+                Ok(match link_leads_to(self.export_root, self.rel) {
+                    LinkTo::Directory => At::LinkToDir,
+                    LinkTo::NotFollowed => At::LinkNotFollowed,
+                    LinkTo::Other => At::Other,
+                })
+            }
+            Ok(_) => Ok(At::Other),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(At::Missing),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn child(&self, name: &[u8]) -> io::Result<At> {
+        use crate::platform::Kind as FileKind;
+        let rel = self
+            .rel
+            .join(name)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        match crate::fs::safe::Beneath::new(self.export_root, rel).lstat() {
+            Ok(st) if st.kind == FileKind::Dir => Ok(At::Dir),
+            Ok(_) => Ok(At::Other),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(At::Missing),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 /// [`place_file`] for the daemon: where a single file named `src_name`
 /// lands for the destination `rel` in the export at `export_root` (`dest`
-/// is the same place as a path, for the result and for messages). What is
-/// at the destination is looked at from the export's directory with no
-/// symlink followed on the way, so a directory above it that was swapped
-/// for a link says nothing about what the link leads to.
+/// is the same place as a path, for the result and for messages), looked
+/// at as [`Beneath`] says.
 fn place_file_beneath(
     export_root: &Path,
     rel: &RelPath,
@@ -247,57 +340,7 @@ fn place_file_beneath(
     contents_only: bool,
     src_name: &[u8],
 ) -> Result<FilePlace, PlaceError> {
-    use crate::fs::safe::Beneath;
-    use crate::platform::Kind as FileKind;
-    let io_at = |p: &Path, e: io::Error| PlaceError::Io(p.to_path_buf(), e);
-    let missing = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
-    let in_dir = if rel.as_bytes().is_empty() {
-        // The export's own directory.
-        true
-    } else {
-        match Beneath::new(export_root, rel.clone()).lstat() {
-            Ok(st) if st.kind == FileKind::Dir => true,
-            Ok(st) => {
-                let link = st.kind == FileKind::Symlink;
-                // Only decides; nothing is written through the link.
-                if link {
-                    match link_leads_to(export_root, rel) {
-                        LinkTo::Directory => {
-                            return Err(PlaceError::SymlinkToDirectory(dest.to_path_buf()))
-                        }
-                        LinkTo::NotFollowed => {
-                            return Err(PlaceError::SymlinkNotFollowed(dest.to_path_buf()))
-                        }
-                        LinkTo::Other => {}
-                    }
-                }
-                if contents_only {
-                    return Err(PlaceError::NotADirectory(dest.to_path_buf()));
-                }
-                false
-            }
-            Err(e) if missing(&e) => contents_only,
-            Err(e) => return Err(io_at(dest, e)),
-        }
-    };
-    if !in_dir {
-        let (root, name) = split_last(dest);
-        return Ok(FilePlace { root, name });
-    }
-    let target = dest.join(crate::platform::bytes_to_os(src_name).map_err(|e| io_at(dest, e))?);
-    let target_rel = rel
-        .join(src_name)
-        .map_err(|e| io_at(&target, io::Error::new(io::ErrorKind::InvalidInput, e)))?;
-    match Beneath::new(export_root, target_rel).lstat() {
-        Ok(st) if st.kind == FileKind::Dir => return Err(PlaceError::IsADirectory(target)),
-        Ok(_) => {}
-        Err(e) if missing(&e) => {}
-        Err(e) => return Err(io_at(&target, e)),
-    }
-    Ok(FilePlace {
-        root: dest.to_path_buf(),
-        name: src_name.to_vec(),
-    })
+    place(&Beneath { export_root, rel }, dest, contents_only, src_name)
 }
 
 /// What the symlink at a single file's destination leads to, as far as the
@@ -516,5 +559,42 @@ mod tests {
         // Through, or onto, another link.
         assert_eq!(link("m", p("a")), LinkTo::NotFollowed);
         assert_eq!(link("n", p("a/x")), LinkTo::NotFollowed);
+    }
+
+    /// On the daemon a symlink at `T` to a file, or a dangling one, is a
+    /// file to replace: nothing is written through it.
+    #[test]
+    fn symlink_dest_is_a_file_on_daemon() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("real"), b"x").unwrap();
+        for (t, to) in [("T", "real"), ("D", "nowhere")] {
+            crate::platform::testutil::symlink(std::path::Path::new(to), &d.path().join(t))
+                .unwrap();
+            let rel = RelPath::new(t.as_bytes()).unwrap();
+            let dest = d.path().join(t);
+            let p = place_file_beneath(d.path(), &rel, &dest, false, b"f.iso").unwrap();
+            assert_eq!((p.root, p.name), split_last(&dest));
+        }
+    }
+
+    /// On the daemon a symlink at `T` to a directory is refused, with or
+    /// without a trailing slash: neither replacing the link nor writing into
+    /// its target is what the user meant.
+    #[test]
+    fn symlink_to_dir_dest_is_refused_on_daemon() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("real")).unwrap();
+        let t = d.path().join("T");
+        crate::platform::testutil::symlink(std::path::Path::new("real"), &t).unwrap();
+        let rel = RelPath::new(b"T").unwrap();
+        for contents_only in [false, true] {
+            match place_file_beneath(d.path(), &rel, &t, contents_only, b"f.iso") {
+                Err(e @ PlaceError::SymlinkToDirectory(_)) => assert_eq!(
+                    e.to_string(),
+                    format!("{} is a symlink to a directory", t.display())
+                ),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
     }
 }

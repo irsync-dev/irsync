@@ -710,7 +710,7 @@ impl Harness {
         #[cfg(windows)]
         let remote = std::path::Path::new(&remote_os);
         let (_, basename) = split_last(remote);
-        let placed = place_file(dest, contents_only, &basename, true)?;
+        let placed = place_file(dest, contents_only, &basename)?;
         let mut hello = Self::hello(Flow::Pull);
         hello.req.path = remote_path.to_vec();
         hello.req.contents_only = false;

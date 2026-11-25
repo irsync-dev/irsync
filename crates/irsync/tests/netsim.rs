@@ -359,7 +359,6 @@ async fn single_file_pull_resumes_after_blackout() {
             &h.local.path().join("copy.bin"),
             false,
             b"big.bin",
-            true,
         )
         .unwrap();
         let mut hello = Harness::hello(Flow::Pull);

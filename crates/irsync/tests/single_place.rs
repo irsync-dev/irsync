@@ -13,7 +13,7 @@ fn dir_dest_takes_source_name() {
     let d = tempfile::tempdir().unwrap();
     let t = d.path().join("T");
     fs::create_dir(&t).unwrap();
-    let p = place_file(&t, false, b"f.iso", true).unwrap();
+    let p = place_file(&t, false, b"f.iso").unwrap();
     assert_eq!((p.root, p.name), (t, b"f.iso".to_vec()));
 }
 
@@ -22,7 +22,7 @@ fn dir_dest_with_slash() {
     let d = tempfile::tempdir().unwrap();
     let t = d.path().join("T");
     fs::create_dir(&t).unwrap();
-    let p = place_file(&t, true, b"f.iso", true).unwrap();
+    let p = place_file(&t, true, b"f.iso").unwrap();
     assert_eq!((p.root, p.name), (t, b"f.iso".to_vec()));
 }
 
@@ -30,7 +30,7 @@ fn dir_dest_with_slash() {
 fn missing_dest_is_the_file_name() {
     let d = tempfile::tempdir().unwrap();
     let t = d.path().join("T");
-    let p = place_file(&t, false, b"f.iso", true).unwrap();
+    let p = place_file(&t, false, b"f.iso").unwrap();
     assert_eq!((p.root, p.name), (parent_name(&t).0, b"T".to_vec()));
 }
 
@@ -38,7 +38,7 @@ fn missing_dest_is_the_file_name() {
 fn missing_dest_with_slash_is_a_dir() {
     let d = tempfile::tempdir().unwrap();
     let t = d.path().join("T");
-    let p = place_file(&t, true, b"f.iso", true).unwrap();
+    let p = place_file(&t, true, b"f.iso").unwrap();
     assert_eq!((p.root, p.name), (t, b"f.iso".to_vec()));
 }
 
@@ -47,7 +47,7 @@ fn file_dest_is_updated() {
     let d = tempfile::tempdir().unwrap();
     let t = d.path().join("T");
     fs::write(&t, b"x").unwrap();
-    let p = place_file(&t, false, b"f.iso", true).unwrap();
+    let p = place_file(&t, false, b"f.iso").unwrap();
     assert_eq!((p.root, p.name), (d.path().to_path_buf(), b"T".to_vec()));
 }
 
@@ -56,7 +56,7 @@ fn file_dest_with_slash_is_an_error() {
     let d = tempfile::tempdir().unwrap();
     let t = d.path().join("T");
     fs::write(&t, b"x").unwrap();
-    match place_file(&t, true, b"f.iso", true) {
+    match place_file(&t, true, b"f.iso") {
         Err(PlaceError::NotADirectory(p)) => assert_eq!(p, t),
         other => panic!("unexpected {other:?}"),
     }
@@ -67,7 +67,7 @@ fn dir_in_the_way_is_an_error() {
     let d = tempfile::tempdir().unwrap();
     let t = d.path().join("T");
     fs::create_dir_all(t.join("f.iso")).unwrap();
-    match place_file(&t, false, b"f.iso", true) {
+    match place_file(&t, false, b"f.iso") {
         Err(PlaceError::IsADirectory(p)) => assert_eq!(p, t.join("f.iso")),
         other => panic!("unexpected {other:?}"),
     }
@@ -80,46 +80,8 @@ fn symlink_dest_followed_on_client() {
     fs::create_dir(&real).unwrap();
     let t = d.path().join("T");
     symlink(&real, &t).unwrap();
-    let p = place_file(&t, false, b"f.iso", true).unwrap();
+    let p = place_file(&t, false, b"f.iso").unwrap();
     assert_eq!((p.root, p.name), (t, b"f.iso".to_vec()));
-}
-
-/// On the daemon a symlink at `T` to a file, or a dangling one, is a file
-/// to replace: nothing is written through it.
-#[test]
-fn symlink_dest_is_a_file_on_daemon() {
-    let d = tempfile::tempdir().unwrap();
-    let real = d.path().join("real");
-    fs::write(&real, b"x").unwrap();
-    for (t, to) in [("T", real.clone()), ("D", d.path().join("nowhere"))] {
-        let t = d.path().join(t);
-        symlink(&to, &t).unwrap();
-        let p = place_file(&t, false, b"f.iso", false).unwrap();
-        assert_eq!((p.root, p.name), parent_name(&t));
-    }
-}
-
-/// On the daemon a symlink at `T` to a directory is refused, with or
-/// without a trailing slash: neither replacing the link nor writing into
-/// its target is what the user meant.
-#[test]
-fn symlink_to_dir_dest_is_refused_on_daemon() {
-    let d = tempfile::tempdir().unwrap();
-    let real = d.path().join("real");
-    fs::create_dir(&real).unwrap();
-    let t = d.path().join("T");
-    symlink(&real, &t).unwrap();
-    for contents_only in [false, true] {
-        match place_file(&t, contents_only, b"f.iso", false) {
-            Err(e @ PlaceError::SymlinkToDirectory(_)) => {
-                assert_eq!(
-                    e.to_string(),
-                    format!("{} is a symlink to a directory", t.display())
-                )
-            }
-            other => panic!("unexpected {other:?}"),
-        }
-    }
 }
 
 #[test]
