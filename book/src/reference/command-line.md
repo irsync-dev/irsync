@@ -373,7 +373,11 @@ and `list`: `irsync -av ./sync myserver:` pushes the directory `sync`.
 - `-v` asks for the command's own extra output. Where a command has none,
   `-v` shows nothing more. `-vv` gives info logs, `-vvv` debug, `-vvvv`
   trace, and `-vvvvv` trace plus every protocol message.
-- `-q` logs errors only and prints no summary. It wins over `-v`.
+- `-q` logs errors only and prints no summary. It wins over `-v`. A
+  management command or `pair` then also leaves out the lines that say what it
+  did, such as `removed server myserver from …`. What the command is run for,
+  such as a list or an id, still prints, and so do errors and the note that a
+  key was generated.
 - `RUST_LOG` overrides the log level.
 - `--config PATH` names the config file for every command:
   `irsync --config f server list`.

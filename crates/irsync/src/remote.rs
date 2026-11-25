@@ -414,8 +414,15 @@ pub fn view_to_config(v: &View) -> pb::Config {
 }
 
 /// Prints `outcome` the way the local command does; the exit code.
-pub fn print(shape: &Shape, server: &str, outcome: RemoteOutcome) -> anyhow::Result<i32> {
+pub fn print(
+    shape: &Shape,
+    server: &str,
+    outcome: RemoteOutcome,
+    quiet: bool,
+) -> anyhow::Result<i32> {
     match outcome {
+        // What a change did: a status line, which `-q` leaves out.
+        RemoteOutcome::Applied(_) if quiet => {}
         RemoteOutcome::Applied(results) => {
             for line in results.iter().flat_map(|r| r.split('\n')) {
                 eprintln!("{}", escape_text(line));

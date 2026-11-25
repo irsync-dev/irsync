@@ -2330,6 +2330,54 @@ fn server_and_client_rename_take_their_grants_in_the_file() {
     );
 }
 
+/// `-q` leaves out the lines that say what a management command did; what
+/// it is run for (a list, an id) and errors still print.
+#[test]
+fn quiet_management_commands_print_only_results_and_errors() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    let p = format!("p:{}", home.join("p").display());
+    for args in [
+        vec!["-q", "server", "add", "s", &id],
+        vec!["server", "rename", "s", "t", "-q"],
+        vec!["-q", "client", "add", "c", &id],
+        vec!["-q", "client", "set", "c", "all_exports=ro"],
+        vec!["-q", "grant", "add", "p", "c"],
+        vec!["-q", "grant", "remove", "p", "c"],
+        vec!["-q", "config", "set", "defaults.parallel", "3"],
+        vec!["-q", "server", "remove", "t"],
+    ] {
+        if args.contains(&"grant") && args.contains(&"add") {
+            let o = irsync(&home, &["-q", "export", "add", &p]);
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            // A key made on the way is still said: it is a new file.
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert!(
+                err.lines().all(|l| l.contains("generated identity")),
+                "{err}"
+            );
+            // The daemon's id is what export add is run for.
+            assert_eq!(String::from_utf8_lossy(&o.stdout).trim().len(), 64);
+        }
+        let o = irsync(&home, &args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(
+            o.stdout.is_empty() && o.stderr.is_empty(),
+            "{args:?}: {o:?}"
+        );
+    }
+    let o = irsync(&home, &["-q", "client", "list"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("c: "));
+    let o = irsync(&home, &["-q", "server", "remove", "nobody"]);
+    assert!(!o.status.success() && !o.stderr.is_empty());
+}
+
 /// `irsync --help` names `sync` and `list` and keeps the transfer options;
 /// each has its own help, `list` with its one operand and its own flags.
 #[test]

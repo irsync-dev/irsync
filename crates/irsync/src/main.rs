@@ -53,6 +53,26 @@ use irsync_proto::PROTOCOL_VERSION;
 
 mod remote;
 
+/// A line on stderr that says what a command did; nothing with `-q`.
+/// Errors do not go through here: they print anyway.
+macro_rules! say {
+    ($log:expr, $($arg:tt)*) => {
+        if !$log.quiet {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+/// A confirmation on stdout, such as `server add`'s `NAME: ID`; nothing
+/// with `-q`. What a command is run for (a list, an id) is not one.
+macro_rules! say_out {
+    ($log:expr, $($arg:tt)*) => {
+        if !$log.quiet {
+            println!($($arg)*);
+        }
+    };
+}
+
 fn main() {
     let args = Args::parse();
     // The receiver holds a descriptor per file in flight; see
@@ -79,13 +99,13 @@ fn main() {
         Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d, log, files)),
         Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, log, files)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix, log, files)),
-        Some(Command::Server(s)) => std::process::exit(run_server(s, files)),
-        Some(Command::Client(c)) => std::process::exit(run_client(c, files)),
+        Some(Command::Server(s)) => std::process::exit(run_server(s, log, files)),
+        Some(Command::Client(c)) => std::process::exit(run_client(c, log, files)),
         Some(Command::Export(e)) => std::process::exit(run_export(e, log, files)),
-        Some(Command::Grant(g)) => std::process::exit(run_grant(g, files)),
-        Some(Command::Id(i)) => std::process::exit(run_id(i, files)),
-        Some(Command::Config(c)) => std::process::exit(run_config(c, files)),
-        Some(Command::Pair(a)) => std::process::exit(run_pair(a, files)),
+        Some(Command::Grant(g)) => std::process::exit(run_grant(g, log, files)),
+        Some(Command::Id(i)) => std::process::exit(run_id(i, log, files)),
+        Some(Command::Config(c)) => std::process::exit(run_config(c, log, files)),
+        Some(Command::Pair(a)) => std::process::exit(run_pair(a, log, files)),
         Some(Command::Show) => std::process::exit(run_show(files)),
         Some(Command::Remote(r)) => {
             let opts = SyncOptions::for_command(&args);
@@ -668,8 +688,14 @@ fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
 }
 
 /// `irsync pair HOST`: sets the server up over ssh and saves it.
-fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
+fn run_pair(a: &PairArgs, quiet: LogArgs, files: &FilesArgs) -> i32 {
     let log = LogWriter::new();
+    // What pair did, line by line; nothing with `-q`.
+    let say = |line: &str| {
+        if !quiet.quiet {
+            log.eprintln(line);
+        }
+    };
     finish(
         "pair",
         (|| {
@@ -681,7 +707,7 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
             );
             let t = irsync::ssh::pair::target(&config.servers, &config.clients, &a.host)?;
             if let Some(typed) = &t.found_as {
-                log.eprintln(&format!("irsync: {typed} is saved as {}", t.host));
+                say(&format!("irsync: {typed} is saved as {}", t.host));
             }
             // No ssh call yet: these errors need no "over ssh failed" context.
             match &t.alias {
@@ -690,7 +716,7 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
             }
             let secret = client_key(files.identity.as_deref(), &config.settings, &pass)?;
             let rsh = irsync::ssh::client::Rsh::from_opts(a.rsh.as_deref());
-            log.eprintln(&format!("irsync: pairing with {} over ssh", t.host));
+            say(&format!("irsync: pairing with {} over ssh", t.host));
             let flags = SetupFlags {
                 recheck: t.kind == irsync::ssh::pair::PairKind::Saved,
                 no_dht: a.server_no_dht,
@@ -722,14 +748,16 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
                     format!("checking {host} over ssh failed")
                 }
             })?;
-            report_onboarded(&log, &o);
+            if !quiet.quiet {
+                report_onboarded(&log, &o);
+            }
             if o.report.grant == irsync::ssh::setup::GrantOutcome::Missing {
                 bail!(irsync::session::reconnect::no_access_hint(
                     &format!("{}:", o.alias),
                     &secret.public()
                 ));
             }
-            log.eprintln(&format!(
+            say(&format!(
                 "irsync: {}",
                 irsync::ssh::pair::paired_line(&o.alias)
             ));
@@ -937,7 +965,7 @@ fn run_remote(r: &RemoteArgs, opts: &SyncOptions) -> i32 {
         c.endpoint.close().await;
         done
     });
-    match done.and_then(|outcome| remote::print(&plan.shape, &r.server, outcome)) {
+    match done.and_then(|outcome| remote::print(&plan.shape, &r.server, outcome, opts.quiet)) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("irsync remote: {}", escape_text(&format!("{e:#}")));
@@ -1516,7 +1544,7 @@ fn run_daemon(d: &DaemonArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
+fn run_config(c: &ConfigArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     use irsync::manage::config as cfg;
     let paths = file_paths(files);
     // A noun alone lists.
@@ -1567,7 +1595,7 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                 let before = peer_ids(&msg, &paths.config);
                 cfg::set(&mut msg, &path, value).with_context(|| key.to_string())?;
                 lock.save(&mut msg).with_context(|| key.to_string())?;
-                note_moved_grants("config set", &before, &msg, &paths.config);
+                note_moved_grants(log, "config set", &before, &msg, &paths.config);
                 Ok(())
             })(),
         ),
@@ -1610,7 +1638,7 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                     }
                 }
                 lock.save(&mut msg).with_context(|| key.to_string())?;
-                note_moved_grants("config unset", &before, &msg, &paths.config);
+                note_moved_grants(log, "config unset", &before, &msg, &paths.config);
                 Ok(())
             })(),
         ),
@@ -1628,13 +1656,14 @@ fn peer_ids(
 /// Says on stderr which grants now apply to another id; see
 /// [`manage::clients::moved_grant_notes`].
 fn note_moved_grants(
+    log: LogArgs,
     cmd: &str,
     before: &std::collections::BTreeMap<String, iroh::EndpointId>,
     msg: &irsync_proto::config::Config,
     path: &Path,
 ) {
     for note in manage::clients::moved_grant_notes(cmd, before, msg, path) {
-        eprintln!("{note}");
+        say!(log, "{note}");
     }
 }
 
@@ -1781,7 +1810,8 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 // export is not added either.
                 let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "{}",
                     manage::exports::added_line(&name, &path, &paths.config)
                 );
@@ -1797,7 +1827,11 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 manage::exports::remove_export(&mut msg, name)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!("{}", manage::exports::removed_line(name, &paths.config));
+                say!(
+                    log,
+                    "{}",
+                    manage::exports::removed_line(name, &paths.config)
+                );
                 Ok(())
             })(),
         ),
@@ -1815,7 +1849,7 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
+fn run_grant(g: &GrantArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     let paths = file_paths(files);
     // A noun alone lists.
     let list = GrantCmd::List { target: None };
@@ -1834,7 +1868,8 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 manage::grants::grant_add(&mut msg, export, &spec, *ro, &resolve)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "{}",
                     manage::grants::added_line(&spec, &clients, export, *ro)
                 );
@@ -1871,9 +1906,9 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                     }
                 };
                 lock.save(&mut msg)?;
-                eprintln!("{}", manage::grants::removed_line(n));
+                say!(log, "{}", manage::grants::removed_line(n));
                 for line in &held {
-                    eprintln!("{line}");
+                    say!(log, "{line}");
                 }
                 Ok(())
             })(),
@@ -1942,12 +1977,12 @@ fn load_first(paths: &Paths) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_server(s: &ServerArgs, files: &FilesArgs) -> i32 {
+fn run_server(s: &ServerArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ServerCmd::List;
     match s.cmd.as_ref().unwrap_or(&list) {
-        ServerCmd::Add(a) => finish("server add", server_add(a, &paths)),
+        ServerCmd::Add(a) => finish("server add", server_add(a, log, &paths)),
         ServerCmd::Remove { name } => finish(
             "server remove",
             (|| {
@@ -1957,7 +1992,7 @@ fn run_server(s: &ServerArgs, files: &FilesArgs) -> i32 {
                 manage::servers::server_remove(&mut msg, name)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!("removed server {name} from {}", paths.config.display());
+                say!(log, "removed server {name} from {}", paths.config.display());
                 Ok(())
             })(),
         ),
@@ -1970,7 +2005,8 @@ fn run_server(s: &ServerArgs, files: &FilesArgs) -> i32 {
                 manage::servers::server_rename(&mut msg, old, new)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "renamed server {old} to {new} in {}",
                     paths.config.display()
                 );
@@ -1992,7 +2028,7 @@ fn run_server(s: &ServerArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
+fn run_client(c: &ClientArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ClientCmd::List;
@@ -2006,9 +2042,9 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 let before = peer_ids(&msg, &paths.config);
                 let old = manage::clients::client_add(&mut msg, name, id)?;
                 lock.save(&mut msg)?;
-                println!("{}", manage::clients::added_line(name, old, id));
+                say_out!(log, "{}", manage::clients::added_line(name, old, id));
                 // The id the grants are for may have changed: say so.
-                note_moved_grants("client add", &before, &msg, &paths.config);
+                note_moved_grants(log, "client add", &before, &msg, &paths.config);
                 Ok(())
             })(),
         ),
@@ -2021,7 +2057,8 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 let grants = manage::clients::remove_client(&mut msg, &paths.config, name, *force)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "{}",
                     manage::clients::removed_line(name, grants, &paths.config)
                 );
@@ -2037,7 +2074,8 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 let grants = manage::clients::rename_client(&mut msg, &paths.config, old, new)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "{}",
                     manage::clients::renamed_line(old, new, grants, &paths.config)
                 );
@@ -2059,7 +2097,7 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
                 if let Some(line) = manage::clients::set_line(&msg, name) {
-                    eprintln!("{line}");
+                    say!(log, "{line}");
                 }
                 Ok(())
             })(),
@@ -2116,20 +2154,26 @@ fn identity_of(
     Ok(secret)
 }
 
-fn run_id(i: &IdArgs, files: &FilesArgs) -> i32 {
+fn run_id(i: &IdArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     // A noun alone lists.
     match i.cmd.as_ref().unwrap_or(&IdCmd::List) {
         IdCmd::List => id_list(files),
-        IdCmd::Show { daemon, all } => id_show(files, *daemon, *all),
+        IdCmd::Show { daemon, all } => id_show(files, log, *daemon, *all),
         IdCmd::Generate { daemon, out, force } => {
-            id_generate(files, *daemon, out.as_deref(), *force)
+            id_generate(files, log, *daemon, out.as_deref(), *force)
         }
     }
 }
 
 /// `irsync id generate`: writes the key pair, prints the public key line
 /// and the EndpointId. Replaces an existing file only with `force`.
-fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force: bool) -> i32 {
+fn id_generate(
+    f: &FilesArgs,
+    log: LogArgs,
+    daemon: bool,
+    out: Option<&std::path::Path>,
+    force: bool,
+) -> i32 {
     finish(
         "id generate",
         (|| {
@@ -2196,7 +2240,7 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
                 irsync::identity::generate_openssh_with(&path, comment, passphrase.as_deref())?;
             let line = std::fs::read_to_string(&pub_path)
                 .with_context(|| format!("reading {}", pub_path.display()))?;
-            eprintln!("wrote {} and {}", path.display(), pub_path.display());
+            say!(log, "wrote {} and {}", path.display(), pub_path.display());
             println!("{}", line.trim());
             println!("{}", secret.public());
             Ok(())
@@ -2274,7 +2318,7 @@ fn print_daemon_identity(settings: &Settings, pass: &PassphraseSource) -> anyhow
     Ok(())
 }
 
-fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
+fn id_show(f: &FilesArgs, log: LogArgs, daemon: bool, all: bool) -> i32 {
     finish(
         "id show",
         (|| {
@@ -2291,7 +2335,8 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
             } else {
                 print_client_identity(f.identity.as_deref(), &settings, &pass)?;
                 if has_daemon_identity(&settings) {
-                    eprintln!(
+                    say!(
+                        log,
                         "irsync: this machine also has a daemon identity; clients connect \
                          to the daemon, whose id irsync id show --daemon prints"
                     );
@@ -2374,7 +2419,7 @@ fn run_show(f: &FilesArgs) -> i32 {
 }
 
 /// `server add`: the server `NAME`, set to dial `ID`.
-fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
+fn server_add(a: &ServerAddArgs, log: LogArgs, paths: &Paths) -> anyhow::Result<()> {
     let id = parse_endpoint_id(&a.id).with_context(|| format!("ID {:?}", a.id))?;
     let flags = manage::servers::ServerFlags {
         relay: a.relay.clone(),
@@ -2399,8 +2444,8 @@ fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let old = manage::servers::server_add(&mut msg, &a.name, id, &flags)?;
     lock.save(&mut msg)?;
     match old {
-        Some(old) => println!("{}: {old} -> {id}", a.name),
-        None => println!("{}: {id}", a.name),
+        Some(old) => say_out!(log, "{}: {old} -> {id}", a.name),
+        None => say_out!(log, "{}: {id}", a.name),
     }
     Ok(())
 }
