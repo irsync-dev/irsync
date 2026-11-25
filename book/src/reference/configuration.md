@@ -189,7 +189,7 @@ irsync always offers a key exchange that also holds against a quantum
 computer (`X25519MLKEM768`, see
 [Networking](../explanation/networking.md#tls-13-inside-quic)), and uses it
 when the other side offers it too. `pq_key_exchange` says what happens when
-the other side does not, as irsync 0.1.0-beta.6 and older do not:
+the other side does not:
 
 - `prefer`, the default: the connection is made with the classical key
   exchange. Someone who records it could decrypt it once a large quantum
