@@ -16,9 +16,8 @@
       man pages; see whether binstall can bring them.
 - [ ] OpenTelemetry instrumentation, export on the daemon side, stats printing after a run
 - [ ] Auto-update irsync on the remote side, with the correct architecture
-    - [ ] Only happens when a run goes through ssh (first sync, `--ssh`, or the
-          fallback when the daemon can't be reached); a reachable older daemon is
-          not updated on its own
+    - [ ] Only happens on `irsync pair`, the one command that uses ssh; a
+          reachable older daemon is not updated on its own
 - [ ] Adversarial fuzz testing / hardening for the daemon mode
 - [ ] Performance and resource measurements on daemon mode, potentially re-think execution model (fork vs. threads, ulimits)
 
@@ -49,12 +48,6 @@ landed. Items the final review's fix wave closed are not listed.
 
 ## Grants and automatic exports
 
-- [ ] `grant list WHO` still shows `immediate: rw` and auto-export lines when
-      `daemon.immediate = false`, although the daemon ignores them
-      (`list_client` builds its snapshot with immediate on). Over-reports, never
-      under-reports.
-- [ ] The "no exports defined" startup warning is skipped when `[immediate]`
-      has entries, even if `daemon.immediate = false`.
 - [ ] GC of an automatic export (often `$HOME`) is not limited to one
       filesystem.
 - [ ] A session on an outer export that writes below a nested export's root
@@ -67,8 +60,8 @@ landed. Items the final review's fix wave closed are not listed.
       directory stays.
 - [ ] `add_auto_export` stores `to_string_lossy()` and the name drops `.`/`..`;
       callers must pass canonical UTF-8 paths (the daemon does).
-- [ ] Error text sent to an immediate peer when the config is locked includes
-      the lock file's path.
+- [ ] The error a client gets when its automatic export can't be added because
+      the config is locked (`AuthzError::Locked`) includes the lock file's path.
 - [ ] Where `$HOME` sits under a symlink, every connection takes the config
       lock to re-check an automatic export (correct, extra lock traffic).
 
@@ -97,17 +90,13 @@ landed. Items the final review's fix wave closed are not listed.
 - [ ] A same-platform copy that does not run on the server (older glibc,
       NixOS build) is refused with a clear message since 2026-11-14. It
       could fall back to the release binary, which is static on Linux.
-- [ ] The first run makes three ssh connections (probe, install, setup), so
+- [ ] `irsync pair` makes three ssh connections (probe, install, setup), so
       password users get three prompts. Consider ControlMaster or folding
       probe and setup together.
-- [ ] Listings (`irsync myserver:`) do not fall back to ssh when the daemon
-      is silent; only syncs do.
-- [ ] A failed `connect_for` rebuild in the fallback loop returns from `sync`,
-      dropping earlier sources' totals and a `SessionEnd`.
-- [ ] The client identity is generated before onboarding, even when it then
-      stops (other platform).
-- [ ] An alias save that fails after setup has changed the server prints no
-      summary of what was done there.
+- [ ] `pair` generates the client identity before the setup, even when the
+      setup then stops (other platform).
+- [ ] Saving the server's name that fails after setup has changed the server
+      prints no summary of what was done there.
 - [ ] The launchd plist in the how-to has a literal `$HOME` to replace by hand.
 - [ ] The platform refusal omits the raw `uname -sm` text; `replaced` is empty
       when an unreadable file was overwritten; `run_setup` doesn't tell ssh's
@@ -118,13 +107,9 @@ landed. Items the final review's fix wave closed are not listed.
 
 ## Tests
 
-- [ ] CLI tests for `grant add immediate --ro` (usage error) and
-      `grant remove immediate`; `grant_immediate` alias-vs-id dedup.
-- [ ] Immediate peers: symlinked paths; `irsync -l newhost:` onboarding.
 - [ ] `daemon_lock::acquire`'s retry path and the pid-0 probe result.
 - [ ] `tests/fixtures/fake-ssh` takes `$1` as the destination (breaks if
       `--rsh` carries flags) and logs only the destination, not the command.
-- [ ] Tidy: redundant `immediate: false` next to `..Permissions::default()` in tests.
 
 # Open items from the cross-platform install, 2026-11-14
 
@@ -193,12 +178,11 @@ a failed step).
 - [ ] `Staged::from_local` looks for `../share/man` beside the exe path as
       given, not the resolved one, so a symlinked `irsync` finds the pages
       only if they sit beside the link.
-- [ ] No direct tests through `setup::run` for: the pid-0 guard, the
-      `is_old_bin(&exe)` guard, an unreadable service file, and a home
-      that is a symlink.
+- [ ] No direct tests through `setup::run` for: the pid-0 guard, an
+      unreadable service file, and a home that is a symlink.
 - [ ] Untested: the one-line fallback notice ("no release files for this
-      build"), and the `--no-install` path on a recheck (a saved host whose
-      daemon did not answer).
+      build"), and `irsync pair --no-ssh-install` on a server that is already
+      saved (a recheck).
 - [ ] The summary says what the client sent, not what the installer
       placed: with a man directory it cannot write to, the summary still
       says "with the manual pages".
@@ -294,8 +278,9 @@ runner divides by its cores.
       or slow, because it waits on production timeouts. On macOS that is
       36% of all test time. Five tests dial a dead daemon and wait out the
       60 s connection timeout (`net/endpoint.rs`, `max_idle_timeout`).
-      Four more take about 20 s each; the 15 s `SSH_HOST_FIRST_DIAL` in
-      `main.rs` is the likely cause, not traced. Option: let tests shorten
+      Four more took about 20 s each; the 15 s `PAIRED_FIRST_DIAL` in
+      `session/reconnect.rs` is the likely cause, not traced. Measured before
+      `pair` took the ssh setup out of sync (#282); measure again. Option: let tests shorten
       these through a test-only setting, as `IRSYNC_TEST_RELEASE_URL` does
       for the release URL. Estimated saving: 1.5 minutes on Linux, 2 on
       macOS. Cost: these tests no longer run with the real values.
@@ -348,11 +333,8 @@ is `docs/superpowers/specs/2026-11-16-freebsd-manual-build-design.md`.
       or macOS, setup stops with "no release binary for that platform",
       because no FreeBSD binary is released.
 - [ ] The open-file count in the usage report is a few too high on
-      FreeBSD (8 against 5 in a test run). The `sysinfo` crate also counts
-      the current folder, the root folder and the program's binary there.
-      Accepted for now; the test in `telemetry/process.rs` allows up to
-      five too many on FreeBSD. Fix it in `sysinfo` (report it upstream),
-      or ask the kernel directly (`kern.proc.nfds`).
+      FreeBSD (8 against 5 in a test run). Fixed upstream in sysinfo, not yet
+      released; #313 removes the workaround once it is.
 
 ## Releases and packaging
 
