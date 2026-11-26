@@ -695,8 +695,7 @@ class EnvironmentTests(unittest.TestCase):
         self.assertNotIn("MAIN_REF", text)
         self.assertNotIn("refs/heads/main", text)
         self.assertNotIn("default_branch", text)
-        outside = text.replace(job_text("release-resume.yml", "branch"), "")
-        self.assertNotIn("refs/heads/", outside)
+        self.assertNotIn("refs/heads/", text)
 
 
 class FreeBsdTests(unittest.TestCase):
@@ -872,10 +871,9 @@ class GateTests(unittest.TestCase):
         self.assertIn("in_progress", text)
         self.assertIn("queued", text)
 
-    def test_resume_makes_release_branch(self):
-        job = jobs(load_workflows()["release-resume.yml"])["branch"]
-        self.assertIn("check", job["needs"])
-        self.assertIn("new-branch", job["if"])
+    def test_resume_makes_no_branch(self):
+        self.assertNotIn("branch", jobs(load_workflows()["release-resume.yml"]))
+        self.assertNotIn("new-branch", read("release-resume.yml"))
 
     def test_gate_check_outputs(self):
         self.assertEqual(set(jobs(self.gate())["check"]["outputs"]), {"tag", "branch"})
