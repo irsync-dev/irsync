@@ -23,13 +23,15 @@ opens a list:
                                         ┌──────────────────────┐
                                         │ Beta  0.1.0-beta.5 ✓ │
                                         │ Alpha 0.1.0-alpha.4  │
-                                        │ Dev   unreleased     │
+                                        │ Dev   irsync@a3cdcd6 │
                                         └──────────────────────┘
 ```
 
 - **The list:** Stable, Beta, Alpha, each with its exact version, then
   Dev. Only the channels that have a book are listed; today there is no
-  stable. Dev shows `unreleased` where the others show a version.
+  stable. Dev shows the commit it was built from (`irsync@a3cdcd6`)
+  where the others show a version; it showed `unreleased` until
+  `2026-11-26-switcher-commit-label-design.md`.
 - **`/book/` is not listed.** It is a copy of one of the channel books (the
   main version's). A reader in `/book/` sees that channel on the button and
   ticked in the list. With no release at all, `/book/` is the working tree:

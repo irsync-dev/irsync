@@ -4,7 +4,9 @@
 The site holds the book several times (see site/tools/versions.py and the
 VERSIONS file the build writes). This tool runs after mdbook has built all
 of them. It puts a button in the top bar of every page, which opens a list
-of the books: Stable, Beta, Alpha (those that exist) and Dev. /book/ is
+of the books: Stable, Beta, Alpha (those that exist), each with its
+version, and Dev, with the commit it was built from (irsync@a3cdcd6), so a
+glance at dev.irsync.org tells whether a merge is live. /book/ is
 not in the list: it is a copy of one of the channel books, and that one is
 ticked there.
 
@@ -42,8 +44,10 @@ LABELS = {"stable": "Stable", "beta": "Beta", "alpha": "Alpha", "dev": "Dev"}
 PUB_URL = "https://irsync.org"
 DEV_URL = "https://dev.irsync.org"
 
-# One book in the list. `version` is None for dev.
-Entry = namedtuple("Entry", "path label version")
+# One book in the list. `version` is None for dev. `commit` is the commit
+# the book was built from, None when VERSIONS has none (a build from before
+# the line carried it). Dev shows it where the others show their version.
+Entry = namedtuple("Entry", "path label version commit")
 
 
 class SwitcherError(Exception):
@@ -51,22 +55,23 @@ class SwitcherError(Exception):
 
 
 def _lines(versions_text):
-    """{path: version or None} from a VERSIONS text, which must be sound."""
+    """{path: (version or None, commit or None)} from a VERSIONS text,
+    which must be sound."""
     try:
         versions.unpublished(versions_text)
     except versions.VersionsError as e:
         raise SwitcherError(f"VERSIONS: {e}") from e
     out = {}
     for line in versions_text.splitlines():
-        path, version, _, _ = line.split(" ")
-        out[path] = None if version == "-" else version
+        path, version, commit, _ = line.split(" ")
+        out[path] = (None if version == "-" else version, None if commit == "-" else commit)
     return out
 
 
 def entries(versions_text):
     """The books in the list, in the order stable, beta, alpha, dev."""
     found = _lines(versions_text)
-    return [Entry(p, LABELS[p], found[p]) for p in ORDER if p in found]
+    return [Entry(p, LABELS[p], *found[p]) for p in ORDER if p in found]
 
 
 def ticked(versions_text, path):
@@ -74,7 +79,7 @@ def ticked(versions_text, path):
     its version, or dev when it has none."""
     if path != "book":
         return path
-    version = _lines(versions_text)["book"]
+    version, _ = _lines(versions_text)["book"]
     return versions.channel(version) if version else "dev"
 
 
@@ -102,7 +107,7 @@ def menu(entries, here, page, pages_of, up=None, local=False):
             attrs.append('aria-current="true"')
         if same:
             attrs.append("data-same-page")
-        version = html.escape(e.version or "unreleased")
+        version = html.escape(e.version or (f"irsync@{e.commit[:7]}" if e.commit else "unreleased"))
         items.append(f'<li><a {" ".join(attrs)}>{e.label} '
                      f'<span class="irsync-book-version">{version}</span></a></li>')
     label = LABELS.get(here, here)
