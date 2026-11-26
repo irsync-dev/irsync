@@ -666,8 +666,10 @@ rm release-branch release-branch.pub
 ```
 
 Run `tools/github_settings.py apply` first, so the environment exists.
-Applying never creates the key, so the private half never passes through
-that tool.
+It also turns on deploy keys for the `irsync-dev` organisation: they are
+off in a new organisation, and `gh repo deploy-key add` then fails with
+"Deploy keys are disabled for this repository". Applying never creates the
+key, so the private half never passes through that tool.
 
 **Repository settings.** `tools/github_settings.py apply` sets the
 rulesets (including [the release tags](#protecting-the-release-tags) and

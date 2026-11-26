@@ -310,6 +310,25 @@ def apply(repo, want):
             gh(f"repos/{repo}/rulesets", "-X", "POST", body=payload)
 
 
+def org_lines(org):
+    """What is wrong with the org's own settings, one line each."""
+    lines = []
+    if not org.get("two_factor_requirement_enabled"):
+        lines.append(f"{ORG}: two-factor authentication is not required. Turn it on in the "
+                     "org settings (Authentication security); there is no API for it.")
+    if not org.get("deploy_keys_enabled_for_repositories"):
+        lines.append(f"{ORG}: deploy keys are turned off, so irsync can't have its "
+                     "release-branch key. Run apply, or turn them on in the org settings "
+                     "(Member privileges, Deploy keys).")
+    return lines
+
+
+def apply_org():
+    """Turn on deploy keys for the org's repositories: release-prepare.yml needs one."""
+    if not gh(f"orgs/{ORG}").get("deploy_keys_enabled_for_repositories"):
+        gh(f"orgs/{ORG}", "-X", "PATCH", body={"deploy_keys_enabled_for_repositories": True})
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("command", nargs="?", choices=["check", "apply"], default="check")
@@ -321,6 +340,9 @@ def main():
         want = {args.repo: want[args.repo]}
 
     if args.command == "apply":
+        if MAIN in want:
+            print(f"applying {ORG}")
+            apply_org()
         for repo, settings in want.items():
             print(f"applying {repo}")
             apply(repo, settings)
@@ -329,10 +351,7 @@ def main():
     lines = diff(want, have)
     if MAIN in want:
         lines += stray_tags()
-    org = gh(f"orgs/{ORG}")
-    if not org.get("two_factor_requirement_enabled"):
-        lines.append(f"{ORG}: two-factor authentication is not required. Turn it on in the "
-                     "org settings (Authentication security); there is no API for it.")
+    lines += org_lines(gh(f"orgs/{ORG}"))
     for line in lines:
         print(line)
     if not lines:

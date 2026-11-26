@@ -168,6 +168,39 @@ class DesiredTests(unittest.TestCase):
             state = gs.fetch(REPO)
         self.assertEqual(state["deploy_keys"], [{"title": "release-branch", "read_only": False}])
 
+    def test_org_reports_deploy_keys_off(self):
+        lines = gs.org_lines({"two_factor_requirement_enabled": True,
+                              "deploy_keys_enabled_for_repositories": False})
+        self.assertEqual(len(lines), 1)
+        self.assertIn("deploy keys", lines[0])
+
+    def test_org_lines_empty_when_ok(self):
+        self.assertEqual(gs.org_lines({"two_factor_requirement_enabled": True,
+                                       "deploy_keys_enabled_for_repositories": True}), [])
+
+    def test_apply_org_turns_on_deploy_keys(self):
+        calls = []
+
+        def fake_gh(*args, **kw):
+            calls.append((args, kw))
+            return {"deploy_keys_enabled_for_repositories": False}
+
+        with mock.patch.object(gs, "gh", fake_gh):
+            gs.apply_org()
+        self.assertIn(((f"orgs/{gs.ORG}", "-X", "PATCH"),
+                       {"body": {"deploy_keys_enabled_for_repositories": True}}), calls)
+
+    def test_apply_org_leaves_deploy_keys_on(self):
+        calls = []
+
+        def fake_gh(*args, **kw):
+            calls.append(args)
+            return {"deploy_keys_enabled_for_repositories": True}
+
+        with mock.patch.object(gs, "gh", fake_gh):
+            gs.apply_org()
+        self.assertFalse([c for c in calls if "-X" in c])
+
     def test_apply_creates_no_keys(self):
         calls = []
 
