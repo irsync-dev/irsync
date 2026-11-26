@@ -20,6 +20,7 @@ START = os.path.join(SCRIPTS, "release-start-check.sh")
 CHANGELOG = os.path.join(SCRIPTS, "changelog-section.sh")
 PIN = os.path.join(SCRIPTS, "pin-release.sh")
 BRANCH = os.path.join(SCRIPTS, "release-branch.sh")
+LINE = os.path.join(SCRIPTS, "release-line.sh")
 FORMULA_MAN = os.path.join(SCRIPTS, "formula-man-pages.sh")
 FORMULA = os.path.join(HERE, "fixtures", "irsync.rb")
 HEADING = "## What's changed"
@@ -493,6 +494,87 @@ class ReleaseBranchTests(unittest.TestCase):
         r = self.branch("v1.2.1")
         self.assertEqual(r.returncode, 1)
         self.assertIn("without the v", r.stderr)
+
+
+class ReleaseLineTests(FakeGh):
+    def line(self, version, tags=()):
+        self.set_state(releases={}, tags=list(tags))
+        return self.run_script(LINE, version)
+
+    def test_first_alpha(self):
+        r = self.line("1.3.0-alpha.1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "line=1.3\nfirst=true\n")
+        self.assertNotIn("::warning::", r.stderr)
+
+    def test_first_beta_warns(self):
+        r = self.line("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "line=1.3\nfirst=true\n")
+        self.assertIn("::warning::", r.stderr)
+        self.assertIn("not the usual order", r.stderr)
+
+    def test_first_stable_warns(self):
+        r = self.line("1.3.0")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("::warning::", r.stderr)
+        self.assertIn("not the usual order", r.stderr)
+
+    def test_allowed_steps(self):
+        for tags, version in [(["v1.3.0-alpha.1"], "1.3.0-alpha.2"),
+                              (["v1.3.0-alpha.2"], "1.3.0-beta.1"),
+                              (["v1.3.0-beta.1"], "1.3.0-beta.2"),
+                              (["v1.3.0-alpha.2"], "1.3.0"),
+                              (["v1.3.0-beta.2"], "1.3.0"),
+                              (["v1.3.0"], "1.3.1"),
+                              (["v1.3.0", "v1.3.1"], "1.3.2")]:
+            with self.subTest(tags=tags, version=version):
+                r = self.line(version, tags)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(r.stdout, "line=1.3\nfirst=false\n")
+                self.assertNotIn("::warning::", r.stderr)
+
+    def test_refused_steps(self):
+        for tags, version, newest in [(["v1.3.0-beta.1"], "1.3.0-alpha.3", "1.3.0-beta.1"),
+                                      (["v1.3.0"], "1.3.0-beta.3", "1.3.0"),
+                                      (["v1.3.0-beta.2"], "1.3.0-beta.2", "1.3.0-beta.2"),
+                                      (["v1.3.0-beta.2"], "1.3.0-beta.1", "1.3.0-beta.2"),
+                                      (["v1.3.1"], "1.3.1", "1.3.1")]:
+            with self.subTest(tags=tags, version=version):
+                r = self.line(version, tags)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("::error::", r.stderr)
+                self.assertIn(newest, r.stderr)
+                self.assertEqual(r.stdout, "")
+
+    def test_prerelease_of_patch_refused(self):
+        r = self.line("1.3.1-beta.1", ["v1.3.0"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Pre-releases are only of X.Y.0", r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_line_prefix_is_not_a_match(self):
+        r = self.line("1.2.0-alpha.1", ["v1.20.0-beta.1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "line=1.2\nfirst=true\n")
+
+    def test_old_tags_count(self):
+        r = self.line("0.1.0-alpha.3", ["v0.1.0-alpha.1", "v0.1.0-alpha.2", "v0.1.0-beta.6"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("0.1.0-beta.6", r.stderr)
+
+    def test_failed_lookup_stops(self):
+        self.set_state(releases={}, tags=[], api_fails=["git/matching-refs/tags/"])
+        r = self.run_script(LINE, "1.3.0-alpha.1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Could not read", r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_bad_version(self):
+        for version in ["v1.3.0", "1.3", "1.3.0-rc.1"]:
+            r = self.line(version)
+            self.assertNotEqual(r.returncode, 0, version)
+            self.assertEqual(r.stdout, "", version)
 
 
 class StartCheckTests(FakeGh):
