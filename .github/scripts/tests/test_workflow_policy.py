@@ -526,7 +526,74 @@ def env_name(job):
     return e.get("name") if isinstance(e, dict) else e
 
 
+class PrepareTests(unittest.TestCase):
+    NAME = "release-prepare.yml"
+
+    def wf(self):
+        return load_workflows()[self.NAME]
+
+    def test_starts_only_by_hand(self):
+        on = triggers(self.wf())
+        self.assertEqual(set(on), {"workflow_dispatch"})
+        self.assertEqual(set(on["workflow_dispatch"]["inputs"]), {"version", "fixed-branch"})
+
+    def test_one_run_at_a_time(self):
+        self.assertEqual(self.wf()["concurrency"],
+                         {"group": "release-prepare", "cancel-in-progress": False})
+
+    def test_check_job_has_no_secrets(self):
+        job = jobs(self.wf())["check"]
+        self.assertNotIn("secrets.", job_text(self.NAME, "check"))
+        self.assertIsNone(env_name(job))
+        self.assertIn("prepare-check.sh", job_text(self.NAME, "check"))
+
+    def test_push_job_in_release_branch_env(self):
+        job = jobs(self.wf())["push"]
+        self.assertEqual(env_name(job), "release-branch")
+        self.assertIn("check", job["needs"])
+        checkout = [s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout@")]
+        self.assertEqual(len(checkout), 1)
+        self.assertEqual(checkout[0]["with"]["ssh-key"], "${{ secrets.RELEASE_BRANCH_KEY }}")
+        self.assertEqual(checkout[0]["with"]["fetch-depth"], 0)
+        self.assertIn("prepare-branch.sh", job_text(self.NAME, "push"))
+
+    def test_check_job_can_list_runs(self):
+        self.assertEqual(jobs(self.wf())["check"]["permissions"],
+                         {"contents": "read", "actions": "read"})
+
+    def test_push_job_checks_again_right_before_it_pushes(self):
+        # The approval can take hours: a draft, a pin or a gate run may have
+        # appeared, and main may have moved, since the check job.
+        job = jobs(self.wf())["push"]
+        # Drafts are visible only with write access; runs need actions: read.
+        self.assertEqual(job["permissions"], {"contents": "write", "actions": "read"})
+        runs = [s.get("run", "") for s in job["steps"]]
+        busy = next(i for i, r in enumerate(runs) if "prepare-busy.sh" in r)
+        push = next(i for i, r in enumerate(runs) if "prepare-branch.sh" in r)
+        self.assertLess(busy, push)
+        self.assertIn('"$MAIN_SHA"', runs[push])
+        self.assertEqual(job["env"]["MAIN_SHA"], "${{ github.sha }}")
+
+    def test_inputs_only_through_env(self):
+        for job_id, job in jobs(self.wf()).items():
+            for step in job.get("steps", []):
+                self.assertNotIn("${{", step.get("run", ""), f"{job_id}: {step.get('name')}")
+
+    def test_points_to_the_gate(self):
+        self.assertIn("release-gate.yml --ref", job_text(self.NAME, "push"))
+
+
 class EnvironmentTests(unittest.TestCase):
+    def test_branch_key_only_in_release_branch_env(self):
+        found = False
+        for name, wf in load_workflows().items():
+            for job_id, job in jobs(wf).items():
+                if "secrets.RELEASE_BRANCH_KEY" in job_text(name, job_id):
+                    found = True
+                    self.assertEqual(env_name(job), "release-branch", f"{name}: {job_id}")
+                    self.assertNotIn("uses", job, f"{name}: {job_id}")
+        self.assertTrue(found)
+
     def test_release_secrets_only_in_release_env(self):
         for name, wf in load_workflows().items():
             for job_id, job in jobs(wf).items():
@@ -643,8 +710,7 @@ class EnvironmentTests(unittest.TestCase):
         self.assertNotIn("MAIN_REF", text)
         self.assertNotIn("refs/heads/main", text)
         self.assertNotIn("default_branch", text)
-        outside = text.replace(job_text("release-resume.yml", "branch"), "")
-        self.assertNotIn("refs/heads/", outside)
+        self.assertNotIn("refs/heads/", text)
 
 
 class FreeBsdTests(unittest.TestCase):
@@ -820,10 +886,19 @@ class GateTests(unittest.TestCase):
         self.assertIn("in_progress", text)
         self.assertIn("queued", text)
 
-    def test_resume_makes_release_branch(self):
-        job = jobs(load_workflows()["release-resume.yml"])["branch"]
-        self.assertIn("check", job["needs"])
-        self.assertIn("new-branch", job["if"])
+    def test_resume_makes_no_branch(self):
+        self.assertNotIn("branch", jobs(load_workflows()["release-resume.yml"]))
+        self.assertNotIn("new-branch", read("release-resume.yml"))
+
+    def test_gate_check_outputs(self):
+        self.assertEqual(set(jobs(self.gate())["check"]["outputs"]), {"tag", "branch"})
+
+    def test_gate_header_names_the_new_flow(self):
+        with open(os.path.join(WORKFLOWS, "release-gate.yml")) as f:
+            text = f.read()
+        header = text[:text.index("\nname:")]
+        self.assertIn("--ref release-1.2 -f version=1.2.0", header)
+        self.assertIn("release-prepare.yml", header)
 
     def test_gate_points_to_signing(self):
         self.assertIn("sign-release.sh", job_text("release-gate.yml", "draft"))

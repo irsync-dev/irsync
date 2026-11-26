@@ -2,7 +2,8 @@
 """A stand-in for the gh CLI, for the release script tests.
 
 State lives in the JSON file named by FAKE_GH_STATE:
-  releases: {tag: {"body": str, "isDraft": bool, "isPrerelease": bool}}; for
+  releases: {tag: {"body": str, "isDraft": bool, "isPrerelease": bool}}
+    (api releases with a --jq that selects .draft lists only the drafts); for
     sign-release.sh also "databaseId": int, "targetCommitish": str,
     "immutable": bool and "assets": {name: content}
   tags: [tag, ...]
@@ -22,6 +23,8 @@ State lives in the JSON file named by FAKE_GH_STATE:
   attested_commit, attested_ref: str (what attestation verify checks
     --source-digest and --source-ref against, when set)
   patched: {field: value} (the fields of the last PATCH of a release)
+  runs: [{"workflow": name, "status": str}, ...] (what run list --workflow
+    name --json status lists; other run list calls give the site run)
   calls: [argv, ...] (appended by every call)
 Only the calls the scripts make are understood; anything else fails.
 """
@@ -138,6 +141,10 @@ elif args[:2] == ["attestation", "verify"]:
     print("Verification succeeded!")
 elif args[:2] == ["workflow", "run"]:
     pass
+elif args[:2] == ["run", "list"] and opt("--json") == "status":
+    for run in state.get("runs", []):
+        if run["workflow"] == opt("--workflow"):
+            print(run["status"])
 elif args[:2] == ["run", "list"]:
     # The newest site.yml run, as sign-release.sh asks for it (--jq gives the id).
     if not state.get("no_site_run"):
@@ -183,8 +190,10 @@ elif args[0] == "api":
             fail("gh: Not Found (HTTP 404)")
         print(state["keys_at_commit"])
     elif endpoint == f"repos/{repo}/releases":
-        for t in state["releases"]:
-            print(t)
+        drafts_only = "select(.draft)" in (opt("--jq") or "")
+        for t, rel in state["releases"].items():
+            if rel.get("isDraft") or not drafts_only:
+                print(t)
     elif endpoint.startswith(f"repos/{repo}/releases/") and opt("-X") == "PATCH":
         rid = int(endpoint.rsplit("/", 1)[1])
         tag = next(t for t, r in state["releases"].items() if r.get("databaseId") == rid)

@@ -17,6 +17,9 @@ rules:
   template-injection:
     ignore:
       - release.yml # written by dist
+  artipacked:
+    ignore:
+      - release-prepare.yml # the push job keeps the deploy key on purpose: prepare-branch.sh pushes with it; the job uploads no artifacts
   unpinned-images:
     ignore:
       - release.yml # written by dist

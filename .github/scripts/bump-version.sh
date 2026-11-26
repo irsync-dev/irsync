@@ -8,13 +8,16 @@
 # bump-v<version>. The release notes are not its work: when CHANGELOG.md has
 # no section for the version yet, it says so at the end.
 #
-# Run it on the branch the release is cut from: release-X.Y for a patch
-# (X.Y.Z with Z > 0), main for everything else (release-branch.sh has the
-# rule). That branch only takes changes through a pull request, so the script
-# does not push and does not tag: open the pull request, merge it once "CI
-# result" passes, then start the release gate on the base branch. The gate
-# ends at a draft release; sign-release.sh signs it, and with --publish
-# publishes it, which creates the tag. The script prints those commands at the end.
+# Run it on the branch the bump goes to (bump-branch.sh has the rule): main
+# for a pre-release or X.Y.0 while main is on the line X.Y, otherwise
+# release-X.Y. It reads main's version from origin/main, so fetch first.
+# That branch only takes changes through a pull request, so the script does
+# not push and does not tag: open the pull request and merge it once "CI
+# result" passes. After a bump on main, release-prepare.yml creates or
+# rebases release-X.Y onto main. Then start the release gate on release-X.Y.
+# The gate ends at a draft release; sign-release.sh signs it, and with
+# --publish publishes it, which creates the tag. The script prints those
+# commands at the end.
 #
 # Run it anywhere in the repo, with no uncommitted changes to tracked files.
 set -euo pipefail
@@ -24,7 +27,6 @@ version=$1
 tag=v$version
 here=$(cd "$(dirname "$0")" && pwd)
 check=$here/check-release-tag.sh
-base_of=$here/release-branch.sh
 
 cd "$(git rev-parse --show-toplevel)"
 
@@ -41,11 +43,20 @@ if "$check" --versions "$tag" >/dev/null 2>&1; then
     exit 1
 fi
 
-# The branch this release is cut from; the version is already valid here.
-base=$("$base_of" "$version")
+# The branch the bump goes to; the version is already valid here.
+if ! main_toml=$(git show origin/main:Cargo.toml 2>/dev/null); then
+    echo "error: can't read Cargo.toml on origin/main. Run: git fetch origin" >&2
+    exit 1
+fi
+main_version=$(python3 -c '
+import sys, tomllib
+print(tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"])
+' <<<"$main_toml")
+base=$("$here/bump-branch.sh" "$version" "$main_version")
+release_branch=$("$here/release-branch.sh" "$version")
 current=$(git branch --show-current)
 if [ "$current" != "$base" ]; then
-    echo "error: $version is released from $base, but you are on ${current:-a detached HEAD}." >&2
+    echo "error: the version bump for $version goes to $base (main is at $main_version), but you are on ${current:-a detached HEAD}." >&2
     echo "Run: git switch $base && git pull --ff-only" >&2
     exit 1
 fi
@@ -100,6 +111,12 @@ if ! "$here/changelog-section.sh" "$version" >/dev/null 2>&1; then
   git commit -m 'Release notes for $tag' -- CHANGELOG.md
 "
 fi
+prepare=
+if [ "$base" = main ]; then
+    prepare="  # create or rebase $release_branch onto main:
+  gh workflow run release-prepare.yml --ref main -f version=$version
+"
+fi
 
 cat <<EOF
 
@@ -108,7 +125,7 @@ $notes  git push -u origin $branch
   gh pr create --fill --base $base
   # once "CI result" passes:
   gh pr merge --merge
-  gh workflow run release-gate.yml --ref $base -f version=$version
+$prepare  gh workflow run release-gate.yml --ref $release_branch -f version=$version
   # once the gate has made the draft: sign it, check it on GitHub, then publish:
   .github/scripts/sign-release.sh $version
   .github/scripts/sign-release.sh --publish $version

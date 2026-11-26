@@ -20,8 +20,14 @@ maintainer can do. Why each choice was made is in
   blocked: a tag with no release stops the next gate run, and
   `tools/github_settings.py check` reports it.
 - `release-*` branches take changes only through a pull request that passed
-  `CI result`, like `main`. The `pinned/*` branches the gate makes can't be
-  moved.
+  `CI result`, like `main`. The one exception is the deploy key
+  `release-branch`, with which `release-prepare.yml` creates
+  `release-X.Y` or rebases it onto `main`. Its private half lives in the
+  `release-branch` environment, which opens only for runs on `main` and
+  only after a maintainer approves; the job that checks the version holds
+  no secret. A ruleset can't name one deploy key, so it lets every deploy
+  key past, and the settings check reports any key but this one. The
+  `pinned/*` branches the gate makes can't be moved.
 - The signing key and the tokens for the packages repo and the Homebrew tap
   live in the `release` environment. It opens only for jobs running on a
   `v*` tag, and only after a maintainer approves. A change merged to `main`
@@ -154,8 +160,9 @@ checks, so read the live result for the current numbers.
 
 `tools/github_settings.py` holds the settings for `irsync-dev/irsync`,
 `irsync-dev/iroh`, `irsync-dev/homebrew-tap` and `irsync-dev/packages`.
-These are the rulesets, environments, secret scanning, SHA pinning and
-immutable releases and private vulnerability reporting.
+These are the rulesets, environments, deploy keys, secret scanning, SHA
+pinning, immutable releases and private vulnerability reporting. `apply`
+never adds or removes a deploy key; it says what to do by hand.
 
 ```sh
 tools/github_settings.py check    # prints every difference, changes nothing

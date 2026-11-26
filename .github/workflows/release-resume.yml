@@ -7,8 +7,8 @@
 #
 #   gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3
 #
-# It never builds or publishes a release. It creates the branch release-X.Y
-# for an X.Y.0 release, and runs packages.yml and
+# It never builds or publishes a release, and creates no branch
+# (release-prepare.yml makes release-X.Y). It runs packages.yml and
 # publish-homebrew.yml (stable releases) and the notes step for a GitHub
 # Release that already exists. All are safe to run again.
 #
@@ -48,7 +48,6 @@ jobs:
       packages: ${{ steps.check.outputs.packages }}
       homebrew: ${{ steps.check.outputs.homebrew }}
       notes: ${{ steps.check.outputs.notes }}
-      new-branch: ${{ steps.check.outputs.new-branch }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -101,22 +100,3 @@ jobs:
       tag: ${{ inputs.tag }}
     permissions:
       contents: write
-
-  # X.Y.0 only: the branch for the later X.Y.Z patch releases, at the commit
-  # just released (this run is on the tag).
-  branch:
-    needs: check
-    if: needs.check.outputs.new-branch != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      NEW_BRANCH: ${{ needs.check.outputs.new-branch }}
-    steps:
-      - name: Create the release branch
-        run: |
-          set -euo pipefail
-          gh api "repos/$GH_REPO/git/refs" -f ref="refs/heads/$NEW_BRANCH" -f sha="$GITHUB_SHA" > /dev/null
-          echo "Created $NEW_BRANCH at $GITHUB_SHA."

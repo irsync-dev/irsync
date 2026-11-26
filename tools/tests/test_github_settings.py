@@ -127,7 +127,62 @@ class DesiredTests(unittest.TestCase):
         rs = gs.desired(1)[REPO]["rulesets"]
         self.assertEqual(rs["Release branches"]["include"], ["refs/heads/release-*"])
         self.assertEqual(rs["Release branches"]["rules"], rs["main"]["rules"])
-        self.assertEqual(rs["Release branches"]["bypass_actors"], [])
+
+    def test_release_branches_bypass_only_deploy_keys(self):
+        # release-prepare.yml rebases release-X.Y with the deploy key.
+        rs = gs.desired(1)[REPO]["rulesets"]
+        self.assertEqual(rs["Release branches"]["bypass_actors"],
+                         [{"actor_id": None, "actor_type": "DeployKey", "bypass_mode": "always"}])
+        for name in ("main", "Pinned release commits", "Release tags"):
+            self.assertEqual(rs[name]["bypass_actors"], [], name)
+
+    def test_release_branch_env(self):
+        env = gs.desired(42)[REPO]["environments"]["release-branch"]
+        self.assertEqual(env, {"policies": [{"name": "main", "type": "branch"}],
+                               "reviewers": [42], "prevent_self_review": False})
+
+    def test_desired_one_deploy_key(self):
+        # A DeployKey bypass covers every deploy key, so only this one may exist.
+        self.assertEqual(gs.desired(1)[REPO]["deploy_keys"],
+                         [{"title": "release-branch", "read_only": False}])
+        for repo, settings in gs.desired(1).items():
+            if repo != REPO:
+                self.assertNotIn("deploy_keys", settings, repo)
+
+    def test_extra_deploy_key_reported(self):
+        want = {REPO: {"deploy_keys": gs.desired(1)[REPO]["deploy_keys"]}}
+        have = {REPO: {"deploy_keys": [{"title": "other", "read_only": True},
+                                       {"title": "release-branch", "read_only": False}]}}
+        lines = gs.diff(want, have)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("deploy_keys", lines[0])
+
+    def test_fetch_reads_deploy_keys(self):
+        def fake_gh(*args, **kw):
+            if args[0] == f"repos/{REPO}/keys":
+                return [{"id": 1, "key": "ssh-ed25519 AAA", "title": "release-branch",
+                         "read_only": False, "verified": True}]
+            return {}
+
+        with mock.patch.object(gs, "gh", fake_gh):
+            state = gs.fetch(REPO)
+        self.assertEqual(state["deploy_keys"], [{"title": "release-branch", "read_only": False}])
+
+    def test_apply_creates_no_keys(self):
+        calls = []
+
+        def fake_gh(*args, **kw):
+            calls.append(args)
+            return [] if args[0].endswith("/keys") else {}
+
+        with mock.patch.object(gs, "gh", fake_gh), \
+                mock.patch.object(gs, "required_check_has_passed", lambda repo: False), \
+                mock.patch("builtins.print") as printed:
+            gs.apply(REPO, gs.desired(1)[REPO])
+        self.assertFalse([c for c in calls if "keys" in c[0] and "-X" in c])
+        said = " ".join(str(c.args[0]) for c in printed.call_args_list)
+        self.assertIn("release-branch", said)
+        self.assertIn("deploy key", said)
 
     def test_desired_pins_cannot_move(self):
         pins = gs.desired(1)[REPO]["rulesets"]["Pinned release commits"]
@@ -188,6 +243,12 @@ class RulesetPayloadTests(unittest.TestCase):
         api = gs.ruleset_payload("main", main)
         self.assertEqual(api["enforcement"], "active")
         self.assertEqual(gs.normalize_ruleset(api), main)
+
+    def test_roundtrip_with_bypass(self):
+        branches = gs.desired(1)[REPO]["rulesets"]["Release branches"]
+        api = gs.ruleset_payload("Release branches", branches)
+        self.assertEqual(api["bypass_actors"], branches["bypass_actors"])
+        self.assertEqual(gs.normalize_ruleset(api), branches)
 
 
 if __name__ == "__main__":

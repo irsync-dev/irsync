@@ -3,9 +3,9 @@
 #
 # The checks the release gate makes before it does anything. <version> is
 # written without the "v" (1.3.0, 1.3.0-beta.1). Run it in a checkout of the
-# commit to release. Prints "tag=", "prerelease=", "branch=" (the branch the
-# release is cut from) and "new-branch=" (release-X.Y when this release
-# creates that branch, otherwise empty), ready for $GITHUB_OUTPUT.
+# commit to release. Prints "tag=", "prerelease=" and "branch=" (release-X.Y,
+# the branch every release of the line X.Y is cut from), ready for
+# $GITHUB_OUTPUT.
 #
 # Stops at the first failed check:
 # - The version is valid and Cargo.toml and dist.toml hold it.
@@ -14,8 +14,10 @@
 # - The run is on the right branch (see release-branch.sh).
 # - The tag does not exist yet.
 # - No stray release tags exist (see stray-tags.sh).
-# - X.Y.0 creates the branch release-X.Y, which must not exist yet; a patch
-#   needs release-X.Y to exist.
+# - The branch release-X.Y exists. release-prepare.yml creates it, for a
+#   pre-release or X.Y.0; this gate never creates branches.
+# - The version may follow the line's earlier releases (release-line.sh; a
+#   line that starts with a beta or stable passes with a warning).
 #
 # Needs gh, logged in (GH_TOKEN), and GH_REPO. GITHUB_REF may be unset
 # outside a runner.
@@ -57,31 +59,18 @@ fi
 
 "$here/stray-tags.sh" >/dev/null
 
-new_branch=
-if [ "$branch" != main ] || [[ $version =~ ^[0-9]+\.[0-9]+\.0$ ]]; then
-    if [ "$branch" = main ]; then
-        release_branch=release-${version%.*}
+heads=$(gh_lines "repos/$GH_REPO/git/matching-refs/heads/$branch" '.[].ref | ltrimstr("refs/heads/")')
+if ! grep -qxF -- "$branch" <<<"$heads"; then
+    if [[ $version =~ ^[0-9]+\.[0-9]+\.0(-.*)?$ ]]; then
+        echo "::error::The branch $branch does not exist. Create it first: gh workflow run release-prepare.yml --ref main -f version=$version" >&2
     else
-        release_branch=$branch
+        echo "::error::The branch $branch does not exist. A patch needs it: release ${branch#release-}.0 first." >&2
     fi
-    exists=false
-    heads=$(gh_lines "repos/$GH_REPO/git/matching-refs/heads/$release_branch" '.[].ref | ltrimstr("refs/heads/")')
-    if grep -qxF -- "$release_branch" <<<"$heads"; then
-        exists=true
-    fi
-    if [ "$branch" = main ]; then
-        if $exists; then
-            echo "::error::The branch $release_branch already exists, so $version can't be cut from main again. Release a patch from $release_branch, or use a later version." >&2
-            exit 1
-        fi
-        new_branch=$release_branch
-    elif ! $exists; then
-        echo "::error::The branch $release_branch does not exist. Release ${release_branch#release-}.0 from main first." >&2
-        exit 1
-    fi
+    exit 1
 fi
+
+"$here/release-line.sh" "$version" >/dev/null
 
 echo "tag=$tag"
 echo "prerelease=$prerelease"
 echo "branch=$branch"
-echo "new-branch=$new_branch"

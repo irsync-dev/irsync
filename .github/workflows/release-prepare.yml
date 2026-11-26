@@ -1,0 +1,112 @@
+# Creates the branch release-X.Y, or rebases it onto main, before a
+# pre-release or X.Y.0 of the line X.Y. Every release of the line is cut from
+# release-X.Y (see release-gate.yml). Start it by hand on main, after the
+# pull request with the version bump is merged there:
+#
+#   gh workflow run release-prepare.yml --ref main -f version=1.3.0-beta.1
+#
+# (.github/scripts/bump-version.sh prints the command.) The check job reads
+# GitHub without any secret (prepare-check.sh): main must hold the version,
+# the version must follow the line's releases, and no draft, pinned/ branch
+# or release gate run may be under way, so a branch that is being released
+# never moves. After the approval of the environment, which may take a
+# while, the push job checks that again (prepare-busy.sh), and that main
+# has not moved since the check. Then it creates release-X.Y at main, or rebases the
+# branch's own commits onto main (prepare-branch.sh). It pushes with the
+# deploy key RELEASE_BRANCH_KEY, which lives in the environment
+# release-branch and is the only one the "Release branches" rule lets past,
+# and always with a lease on the tip it read.
+#
+# On a rebase conflict nothing is pushed. Rebase release-X.Y onto main by
+# hand into a branch of your own and hand it in; the error says how:
+#
+#   gh workflow run release-prepare.yml --ref main -f version=1.3.0-beta.1 -f fixed-branch=fix-1.3
+#
+# The fixed branch must hold only release-X.Y's own commits on top of main.
+# It becomes release-X.Y and is then deleted.
+
+name: Release prepare
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version, without the v, for example 1.3.0-beta.1
+        type: string
+        required: true
+      fixed-branch:
+        description: A branch holding release-X.Y rebased onto main by hand, after a conflict
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# One run at a time. prepare-check.sh also refuses while a release gate run
+# is going.
+concurrency:
+  group: release-prepare
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # To list the release gate's runs.
+      actions: read
+    outputs:
+      line: ${{ steps.check.outputs.line }}
+      fixed: ${{ steps.check.outputs.fixed }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ inputs.version }}
+      FIXED: ${{ inputs.fixed-branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that release-X.Y may move now
+        id: check
+        run: .github/scripts/prepare-check.sh "$VERSION" "$FIXED" >> "$GITHUB_OUTPUT"
+
+  push:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: release-branch
+    permissions:
+      # Only to see draft releases: GitHub hides them from read-only tokens.
+      # This token can't move release-X.Y; only the deploy key can.
+      contents: write
+      # To list the release gate's runs.
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # The commit of main the check job checked; the same in both jobs.
+      MAIN_SHA: ${{ github.sha }}
+      VERSION: ${{ inputs.version }}
+      LINE: ${{ needs.check.outputs.line }}
+      FIXED: ${{ needs.check.outputs.fixed }}
+    steps:
+      # The deploy key is what lets this job push release-X.Y; checkout keeps
+      # it for the pushes of prepare-branch.sh.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          ssh-key: ${{ secrets.RELEASE_BRANCH_KEY }}
+          fetch-depth: 0
+
+      # The approval can take hours. Check again, right before the push,
+      # that no release of the line got under way meanwhile.
+      - name: Check again that no release of the line is under way
+        run: .github/scripts/prepare-busy.sh "$LINE"
+
+      - name: Create release-X.Y or rebase it onto main
+        run: .github/scripts/prepare-branch.sh "$LINE" "$MAIN_SHA" "$FIXED"
+
+      - name: Say what to do next
+        run: |
+          echo "release-$LINE is ready. Start the gate: gh workflow run release-gate.yml --ref release-$LINE -f version=$VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
