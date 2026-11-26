@@ -5,6 +5,148 @@ what to do when upgrading, and what was fixed. The newest release is on top.
 Each section is also the top of that release's notes on GitHub, where the
 full list of changes follows it.
 
+## v0.1.0-beta.7
+
+A release about safety and a cleaner setup. A review of everything the
+other side of a sync can send led to many fixes, every connection offers a
+key exchange that holds against a future quantum computer, and the new
+`irsync pair` is now the only command that uses ssh. The configuration and
+the command line were cleaned up, so read "Upgrading" first.
+
+### Upgrading
+
+- The protocol changed. An older irsync cannot talk to this one, so update
+  the client and every server together.
+- `irsync.toml` has a new layout, and irsync refuses a file from beta.6 at
+  the first line it no longer knows. Change it by hand, with the
+  configuration reference at hand:
+  - `[hosts.NAME]` is split into `[servers.NAME]`, the machines you
+    connect to, and `[clients.NAME]`, the machines your daemon lets in.
+    Grants name clients. The file starts with `config_version = 2`. [#202]
+  - `[client]` is now `[defaults]`, and the top-level `identity` moves
+    into it.
+  - `[all]` and `[immediate]` are now `all_exports` and `all_paths` on
+    the client, and `[daemon] immediate` is now `allow_all_paths`. [#284]
+  - One `relay = "default" | "disabled" | "URL"` replaces `relay` and
+    `relay_mode`. `dht`, `dns` and `mdns` are plain keys in `[daemon]`,
+    `[defaults]` and each server, and `[daemon.discovery]` is gone.
+  - The export setting `warm_index` is now `index_at_start`.
+- The first command that changes `irsync.toml` writes it in a fixed order.
+  Comments stay, blank lines do not.
+- irsync refuses a config file, a private key or a passphrase file that
+  other users can read or write, or that belongs to another user, as sshd
+  does. `chmod 600` fixes it. `unsafe_config_allowed = true` at the top of
+  `irsync.toml` turns the check off.
+- A sync no longer uses ssh. `irsync pair myserver` sets a server up: it
+  installs irsync there, lets your client in, starts the daemon as a user
+  service and saves the server. A sync to a name that is not a saved server
+  stops and points to `irsync pair`. Run `irsync pair` once for each server
+  you set up before, to update it. [#277]
+- Commands and flags that changed:
+  - `irsync host` is gone. Use `irsync server` and `irsync client`.
+  - `--ssh`, `--rsh`, `--no-install` and `--no-remote-dht` left the sync.
+    `irsync pair` has `--rsh`, `--no-ssh-install` and `--server-no-dht`.
+  - `--timeout SECS` is now `--idle-timeout DUR`.
+  - `--relay default|disabled|URL` replaces `--no-relay` and the old
+    `--relay URL`, and `server add --relay-mode` is gone.
+  - `export add --ro` is now `--read-only`.
+  - `irsync export update` is now `irsync index --export NAME`.
+  - `grant add` and `grant remove` no longer take `all` or `immediate`.
+    Use `irsync client set`.
+- Every mistake on the command line exits with 2. Some used to exit with 1.
+- A push of one file onto a symlink is refused when the link has an
+  absolute target or leads out of the export.
+- A client with a grant for only one of two exports of the same directory
+  can no longer use the other export's name.
+- `fileset` refuses a manifest written by an older version. Make it again
+  with `fileset init`.
+
+### New
+
+- `irsync pair` ends by reaching the daemon over iroh, the way a sync
+  will, and says so when it cannot. [#312]
+- `irsync remote myserver` manages a server's exports, clients and grants
+  from your client, with no shell on the server. The server gives a client
+  that right with `irsync client set myclient admin=rw`, or `admin=ro` to
+  only read. `irsync pair` gives it to your client. [#203]
+- `irsync client set` sets a client's `all_exports`, `all_paths` and
+  `admin`. `all_paths = "ro"` is new: read any path, write none. [#284]
+- `irsync export set`, `irsync export rename` and `export add --fsync`.
+  `export add` also changes an export that is already there.
+- `--identity` works on every command, and `-q` quiets the management
+  commands.
+- Every connection offers the hybrid key exchange `X25519MLKEM768` first.
+  A recorded connection between two irsync of this version stays safe from
+  a future quantum computer. `pq_key_exchange = "require"`, or
+  `--pq-key-exchange require`, refuses a connection without it. `-vv`
+  shows which key exchange a connection got. [#240] [#241] [#255]
+- A chunk that a dropped connection left half done continues where it
+  stopped. On a link that drops more often than one chunk can cross, a
+  transfer now finishes. [#281]
+- A big push over a link that drops often keeps going, as long as each
+  connection moves data. [#271]
+- The daemon setting `max_dormant_sessions_per_key`, default `25`, limits
+  the interrupted sessions one client key may leave in an export.
+- A run with several sources names each session in the progress block, and
+  the name stays above its finished lines. [#112]
+- `fileset init --store redb` keeps the manifest in one small file, for a
+  tree that travels. It can be read on media that cannot be written to.
+  [#192] [#206]
+- `fileset` runs on Windows.
+- The book has a page on the threat model. Security problems can be
+  reported privately on the repository's Security tab.
+- The landing page has the version switcher, and the book of the
+  development version moved to dev.irsync.org. [#288] [#318]
+
+### Fixed
+
+- irsync checks what the other side of a sync sends much more strictly:
+  - A receiver places only the one file of a single-file sync, and nothing
+    that its own filter rules exclude.
+  - Files are read and written through directories opened without
+    following symlinks, so a sync stays inside the export and the
+    destination even when a directory is swapped for a symlink.
+  - A sender learns nothing about the old copy of a file it updates.
+  - A session holds a limited number of filter rules, paths and hard-link
+    checks.
+  - Text from the other side is printed with control characters and
+    characters that change the direction of text escaped, and a log entry
+    stays on one line.
+  - An export's name counts only for a client with a grant for it.
+- Partial files, the index, the daemon's log and a new config file can be
+  read by their owner only. Saving the config keeps its permissions.
+- `fileset` trusts a manifest that came with a tree less: it refuses one
+  that is a symlink or holds links, views or triggers.
+- `--reconnect` counts an outage from the first dropped connection, not
+  from the start of the run. A long first connection that drops is always
+  dialled again. [#223]
+- On a lossy link, the daemon's last answer, such as a refusal, reaches the
+  client. [#298]
+- A daemon's refusal no longer looks like an empty list of exports, and a
+  refused listing no longer prints an error from iroh first. [#256]
+- The progress block:
+  - A file that is fully sent and waits for the other side no longer shows
+    as stalled. [#120]
+  - On a pull, a file gets its row when its data arrives, not while it
+    waits its turn. [#114]
+  - The rows show the files that are moving, not the largest ones, and the
+    last line says how many hidden rows are stalled. [#121]
+- `irsync show` no longer creates a daemon key, `irsync config get` prints
+  the default of every key, and help, errors and the book were corrected
+  in many places.
+
+### Behind the scenes
+
+- irsync builds on Windows, but does not run there yet. `tools/ci.sh
+  typecheck` checks every platform from one machine.
+- `pbwalk` shows where every byte of a protocol capture goes. [#231]
+- aws-lc-rs replaces ring, iroh comes from upstream instead of a fork, and
+  `cargo deny` refuses a new duplicate crate version. OpenSSF Scorecard
+  checks the repository. [#124] [#209]
+- Release notes live in `CHANGELOG.md`, and every release line gets a
+  release branch. [#322]
+- Several flaky tests are fixed.
+
 ## v0.1.0-beta.6
 
 irsync and the install script now check a release's signature before they
