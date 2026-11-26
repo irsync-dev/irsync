@@ -193,11 +193,13 @@ def check_moved(repo, moved):
         if (repo / rel).exists():
             continue
         name = re.escape(Path(rel).name)
-        # By full path, or by bare name; neither as the tail of another path.
+        # By full path, or by bare name; neither as the tail of another path,
+        # nor followed by a word character: daemon.mdns is a config key, not
+        # daemon.md.
         # A bare name is captured with the rest of its path-like token, so a
         # link such as `x.md` or `x.md#top` can be resolved.
-        path = re.compile("(?<![\\w./-])" + re.escape(rel))
-        bare = re.compile("(?<![\\w./-])(" + name + ")[\\w./#-]*")
+        path = re.compile("(?<![\\w./-])" + re.escape(rel) + "(?!\\w)")
+        bare = re.compile("(?<![\\w./-])(" + name + ")(?!\\w)[\\w./#-]*")
         patterns.append((rel, path, bare))
     problems = []
     if not patterns:

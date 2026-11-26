@@ -172,6 +172,15 @@ class MovedTests(TmpCase):
         git_repo(self.d, {"tools/a.sh": "# see x.md\n"})
         self.assertEqual(len(check_moved(self.d, ["docs/x.md"])), 1)
 
+    def test_name_that_goes_on_is_not_a_match(self):
+        # A config key such as daemon.mdns is not a reference to daemon.md.
+        git_repo(self.d, {"tools/a.sh": "set x.mdns false\nsee docs/x.mdns\n"})
+        self.assertEqual(check_moved(self.d, ["docs/x.md"]), [])
+
+    def test_name_before_an_anchor_or_full_stop_is_reported(self):
+        git_repo(self.d, {"tools/a.sh": "see x.md#top\nsee x.md.\nsee docs/x.md.\n"})
+        self.assertEqual(len(check_moved(self.d, ["docs/x.md"])), 3)
+
     def test_longer_path_is_not_a_match(self):
         git_repo(self.d, {"notes.md": "see book/docs/x.md\n"})
         self.assertEqual(check_moved(self.d, ["docs/x.md"]), [])
