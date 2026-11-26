@@ -825,6 +825,16 @@ class GateTests(unittest.TestCase):
         self.assertIn("check", job["needs"])
         self.assertIn("new-branch", job["if"])
 
+    def test_gate_check_outputs(self):
+        self.assertEqual(set(jobs(self.gate())["check"]["outputs"]), {"tag", "branch"})
+
+    def test_gate_header_names_the_new_flow(self):
+        with open(os.path.join(WORKFLOWS, "release-gate.yml")) as f:
+            text = f.read()
+        header = text[:text.index("\nname:")]
+        self.assertIn("--ref release-1.2 -f version=1.2.0", header)
+        self.assertIn("release-prepare.yml", header)
+
     def test_gate_points_to_signing(self):
         self.assertIn("sign-release.sh", job_text("release-gate.yml", "draft"))
 

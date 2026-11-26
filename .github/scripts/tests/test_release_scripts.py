@@ -646,6 +646,7 @@ class StartCheckTests(FakeGh):
         super().setUp()
         # On a runner GITHUB_REF is always set; here only where a test sets it.
         self.env.pop("GITHUB_REF", None)
+        self.set_state(releases={}, tags=[], branches=["main", "release-1.3"])
 
     def start(self, version, ref=None, files=None, changelog=None):
         files = files or version
@@ -654,34 +655,57 @@ class StartCheckTests(FakeGh):
             self.env["GITHUB_REF"] = ref
         return self.run_script(START, version, cwd=d)
 
-    def test_prerelease_from_main(self):
-        r = self.start("1.3.0-beta.1", "refs/heads/main")
+    def test_prerelease_from_release_branch(self):
+        r = self.start("1.3.0-beta.1", "refs/heads/release-1.3")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout, "tag=v1.3.0-beta.1\nprerelease=true\nbranch=main\nnew-branch=\n")
+        self.assertEqual(r.stdout, "tag=v1.3.0-beta.1\nprerelease=true\nbranch=release-1.3\n")
 
-    def test_minor_from_main_makes_branch(self):
-        r = self.start("1.3.0", "refs/heads/main")
+    def test_minor_from_release_branch(self):
+        self.set_state(releases={"v1.3.0-beta.2": REL}, tags=["v1.3.0-beta.2"],
+                       branches=["main", "release-1.3"])
+        r = self.start("1.3.0", "refs/heads/release-1.3")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout, "tag=v1.3.0\nprerelease=false\nbranch=main\nnew-branch=release-1.3\n")
+        self.assertEqual(r.stdout, "tag=v1.3.0\nprerelease=false\nbranch=release-1.3\n")
+        self.assertNotIn("::warning::", r.stderr)
 
     def test_patch_from_release_branch(self):
-        self.set_state(releases={}, tags=[], branches=["main", "release-1.2"])
+        self.set_state(releases={"v1.2.0": REL}, tags=["v1.2.0"], branches=["main", "release-1.2"])
         r = self.start("1.2.1", "refs/heads/release-1.2")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout, "tag=v1.2.1\nprerelease=false\nbranch=release-1.2\nnew-branch=\n")
+        self.assertEqual(r.stdout, "tag=v1.2.1\nprerelease=false\nbranch=release-1.2\n")
 
     def test_wrong_branch(self):
-        self.set_state(releases={}, tags=[], branches=["main", "release-1.2"])
+        self.set_state(releases={}, tags=[], branches=["main", "release-1.2", "release-1.3"])
         for version, ref, want in [("1.2.1", "refs/heads/main", "--ref release-1.2"),
-                                   ("1.3.0-beta.1", "refs/heads/release-1.2", "--ref main"),
-                                   ("1.3.0", "refs/tags/v1.3.0", "--ref main")]:
+                                   ("1.3.0-beta.1", "refs/heads/main", "--ref release-1.3"),
+                                   ("1.3.0-beta.1", "refs/heads/release-1.2", "--ref release-1.3"),
+                                   ("1.3.0", "refs/tags/v1.3.0", "--ref release-1.3")]:
             r = self.start(version, ref)
             self.assertEqual(r.returncode, 1, version)
             self.assertIn(f"gh workflow run release-gate.yml {want} -f version={version}", r.stderr)
 
+    def test_branch_missing_points_to_prepare(self):
+        self.set_state(releases={}, tags=[], branches=["main"])
+        r = self.start("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("gh workflow run release-prepare.yml --ref main -f version=1.3.0-beta.1",
+                      r.stderr)
+
+    def test_order_refused(self):
+        self.set_state(releases={"v1.3.0": REL}, tags=["v1.3.0"], branches=["main", "release-1.3"])
+        r = self.start("1.3.0-beta.3", "refs/heads/release-1.3")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("v1.3.0", r.stderr)
+        self.assertNotIn("tag=", r.stdout)
+
+    def test_first_beta_warns(self):
+        r = self.start("1.3.0-beta.1", "refs/heads/release-1.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("::warning::", r.stderr)
+
     def test_tag_exists_points_to_resume(self):
-        self.set_state(releases={"v1.3.0": REL}, tags=["v1.3.0"], branches=["main"])
-        r = self.start("1.3.0", "refs/heads/main")
+        self.set_state(releases={"v1.3.0": REL}, tags=["v1.3.0"], branches=["main", "release-1.3"])
+        r = self.start("1.3.0", "refs/heads/release-1.3")
         self.assertEqual(r.returncode, 1)
         self.assertIn("gh workflow run release-resume.yml --ref v1.3.0 -f tag=v1.3.0", r.stderr)
 
@@ -689,29 +713,24 @@ class StartCheckTests(FakeGh):
         # A failed gh call must not read as "the tag (or branch) is not there".
         for path in ["git/matching-refs/tags/", "git/matching-refs/heads/"]:
             with self.subTest(path=path):
-                self.set_state(releases={}, tags=[], branches=["main"], api_fails=[path])
-                r = self.start("1.3.0", "refs/heads/main")
+                self.set_state(releases={}, tags=[], branches=["main", "release-1.3"],
+                               api_fails=[path])
+                r = self.start("1.3.0", "refs/heads/release-1.3")
                 self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
                 self.assertIn(f"Could not read repos/irsync-dev/irsync/{path}", r.stderr)
                 self.assertNotIn("tag=", r.stdout)
 
     def test_tag_pushed_by_hand(self):
-        self.set_state(releases={}, tags=["v1.3.0"], branches=["main"])
-        r = self.start("1.3.0", "refs/heads/main")
+        self.set_state(releases={}, tags=["v1.3.0"], branches=["main", "release-1.3"])
+        r = self.start("1.3.0", "refs/heads/release-1.3")
         self.assertEqual(r.returncode, 1)
         self.assertIn("pushed by hand", r.stderr)
 
     def test_stray_tag_blocks(self):
-        self.set_state(releases={}, tags=["v1.2.9"], branches=["main"])
-        r = self.start("1.3.0", "refs/heads/main")
+        self.set_state(releases={}, tags=["v1.2.9"], branches=["main", "release-1.3"])
+        r = self.start("1.3.0", "refs/heads/release-1.3")
         self.assertEqual(r.returncode, 1)
         self.assertIn("v1.2.9", r.stderr)
-
-    def test_minor_when_branch_exists(self):
-        self.set_state(releases={}, tags=[], branches=["main", "release-1.3"])
-        r = self.start("1.3.0", "refs/heads/main")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("release-1.3 already exists", r.stderr)
 
     def test_patch_without_branch(self):
         self.set_state(releases={}, tags=[], branches=["main"])
@@ -725,18 +744,18 @@ class StartCheckTests(FakeGh):
         self.assertEqual(self.start("1.2.1").returncode, 1)
 
     def test_files_disagree(self):
-        r = self.start("1.3.0", "refs/heads/main", files="1.2.0")
+        r = self.start("1.3.0", "refs/heads/release-1.3", files="1.2.0")
         self.assertEqual(r.returncode, 1)
         self.assertIn("Cargo.toml has version 1.2.0", r.stderr)
 
     def test_leading_v(self):
-        r = self.start("v1.3.0", "refs/heads/main")
+        r = self.start("v1.3.0", "refs/heads/release-1.3")
         self.assertEqual(r.returncode, 1)
         self.assertIn("without the v", r.stderr)
 
     def test_no_release_notes(self):
         # Notes for another version do not count.
-        r = self.start("1.3.0", "refs/heads/main",
+        r = self.start("1.3.0", "refs/heads/release-1.3",
                        changelog="# Changelog\n\n## v1.3.0-beta.1\n\nOlder.\n")
         self.assertEqual(r.returncode, 1)
         self.assertIn("CHANGELOG.md has no section '## v1.3.0'", r.stderr)
@@ -744,6 +763,7 @@ class StartCheckTests(FakeGh):
 
 
 class ChangelogTests(unittest.TestCase):
+
     """changelog-section.sh, in a directory holding only a CHANGELOG.md."""
 
     def section(self, version, text):
@@ -1378,7 +1398,7 @@ class SignTests(FakeGh):
                 self.assert_nothing_signed()
 
     def test_commit_must_be_on_the_release_branch(self):
-        for version, branch in [("1.2.3", "release-1.2"), ("1.3.0", "main")]:
+        for version, branch in [("1.2.3", "release-1.2"), ("1.3.0", "release-1.3")]:
             for status in ["identical", "ahead"]:
                 with self.subTest(version=version, status=status):
                     self.extra_state.update(compare=status,

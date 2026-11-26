@@ -74,7 +74,7 @@ if not mine:
 newest = max(mine, key=key)
 old = key(newest)
 if new <= old or new[1] < old[1]:
-    print(f"::error::{version} can't follow {newest}, the newest release of line {line}. "
+    print(f"::error::{version} can't follow v{newest}, the newest release of line {line}. "
           "An alpha follows a lower alpha, a beta follows an alpha or a lower beta, "
           "and a stable release follows any lower release.", file=sys.stderr)
     sys.exit(1)
