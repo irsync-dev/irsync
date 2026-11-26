@@ -22,6 +22,8 @@ PIN = os.path.join(SCRIPTS, "pin-release.sh")
 BRANCH = os.path.join(SCRIPTS, "release-branch.sh")
 LINE = os.path.join(SCRIPTS, "release-line.sh")
 BUMP_BRANCH = os.path.join(SCRIPTS, "bump-branch.sh")
+PREP_CHECK = os.path.join(SCRIPTS, "prepare-check.sh")
+PREP_BRANCH = os.path.join(SCRIPTS, "prepare-branch.sh")
 FORMULA_MAN = os.path.join(SCRIPTS, "formula-man-pages.sh")
 FORMULA = os.path.join(HERE, "fixtures", "irsync.rb")
 HEADING = "## What's changed"
@@ -639,6 +641,306 @@ class ReleaseLineTests(FakeGh):
             r = self.line(version)
             self.assertNotEqual(r.returncode, 0, version)
             self.assertEqual(r.stdout, "", version)
+
+
+class PrepareCheckTests(FakeGh):
+    def setUp(self):
+        super().setUp()
+        self.env["GITHUB_REF"] = "refs/heads/main"
+        self.set_state(releases={"v1.3.0-alpha.1": REL}, tags=["v1.3.0-alpha.1"],
+                       branches=["main", "release-1.3"])
+
+    def check(self, version, fixed=None, files=None):
+        files = files or version
+        d = version_fixture(self, files, files)
+        return self.run_script(PREP_CHECK, version, *([fixed] if fixed is not None else []), cwd=d)
+
+    def update_state(self, **kw):
+        state = self.state()
+        state.update(kw)
+        self.set_state(**state)
+
+    def assert_refused(self, r, *messages):
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("::error::", r.stderr)
+        for m in messages:
+            self.assertIn(m, r.stderr)
+        self.assertEqual(r.stdout, "")
+
+    def test_ok(self):
+        r = self.check("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "line=1.3\nbranch=release-1.3\nfixed=\n")
+
+    def test_new_line_ok(self):
+        # The first release of a line: no branch, no tags yet.
+        self.set_state(releases={}, tags=[], branches=["main"])
+        r = self.check("1.4.0-alpha.1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "line=1.4\nbranch=release-1.4\nfixed=\n")
+
+    def test_not_on_main(self):
+        self.env["GITHUB_REF"] = "refs/heads/release-1.3"
+        self.assert_refused(self.check("1.3.0-beta.1"), "--ref main")
+
+    def test_patch_refused(self):
+        self.assert_refused(self.check("1.3.1"),
+                            "gh workflow run release-gate.yml --ref release-1.3 -f version=1.3.1")
+
+    def test_main_not_bumped(self):
+        self.assert_refused(self.check("1.3.0-beta.1", files="1.3.0-alpha.1"),
+                            "bump-version.sh 1.3.0-beta.1")
+
+    def test_main_left_the_line(self):
+        self.assert_refused(self.check("1.3.0", files="1.4.0-alpha.1"), "--base release-1.3",
+                            "--ref release-1.3")
+
+    def test_stable_out_refused(self):
+        self.update_state(releases={"v1.3.0": REL}, tags=["v1.3.0"])
+        self.assert_refused(self.check("1.3.0-beta.3"), "v1.3.0")
+
+    def test_tag_exists_refused(self):
+        self.update_state(releases={"v1.3.0-beta.1": REL}, tags=["v1.3.0-alpha.1", "v1.3.0-beta.1"])
+        self.assert_refused(self.check("1.3.0-beta.1"), "v1.3.0-beta.1")
+
+    def test_order_refused(self):
+        self.update_state(tags=["v1.3.0-beta.2"])
+        self.assert_refused(self.check("1.3.0-alpha.2"), "v1.3.0-beta.2")
+
+    def test_draft_refused(self):
+        self.update_state(releases={"v1.3.0-alpha.1": REL,
+                                    "v1.3.0-beta.1": dict(REL, isDraft=True)})
+        self.assert_refused(self.check("1.3.0-beta.2"), "v1.3.0-beta.1")
+
+    def test_draft_of_other_line_is_fine(self):
+        self.update_state(releases={"v1.3.0-alpha.1": REL,
+                                    "v1.30.0-beta.1": dict(REL, isDraft=True)})
+        self.assertEqual(self.check("1.3.0-beta.1").returncode, 0)
+
+    def test_pin_refused(self):
+        self.update_state(branches=["main", "release-1.3", "pinned/v1.3.0-beta.1"])
+        self.assert_refused(self.check("1.3.0-beta.2"), "pinned/v1.3.0-beta.1")
+
+    def test_gate_running_refused(self):
+        for status in ["queued", "in_progress", "waiting"]:
+            with self.subTest(status=status):
+                self.update_state(runs=[{"workflow": "release-gate.yml", "status": "completed"},
+                                        {"workflow": "release-gate.yml", "status": status}])
+                self.assert_refused(self.check("1.3.0-beta.1"), "release gate")
+
+    def test_finished_gate_is_fine(self):
+        self.update_state(runs=[{"workflow": "release-gate.yml", "status": "completed"},
+                                {"workflow": "site.yml", "status": "in_progress"}])
+        self.assertEqual(self.check("1.3.0-beta.1").returncode, 0)
+
+    def test_failed_lookup_stops(self):
+        for path in ["git/matching-refs/tags/", "git/matching-refs/heads/", "releases"]:
+            with self.subTest(path=path):
+                self.update_state(api_fails=[path])
+                self.assert_refused(self.check("1.3.0-beta.1"), "Could not read")
+
+    def test_fixed_branch_name_refused(self):
+        for fixed in ["release-1.3-fix", "release-1.3", "pinned/x", "main", "-x", "a b", "a;b"]:
+            with self.subTest(fixed=fixed):
+                self.update_state(calls=[])
+                self.assert_refused(self.check("1.3.0-beta.1", fixed))
+                self.assertEqual(self.state()["calls"], [])
+
+    def test_fixed_branch_missing(self):
+        self.assert_refused(self.check("1.3.0-beta.1", "fix-1.3"), "fix-1.3")
+
+    def test_fixed_branch_ok(self):
+        self.update_state(branches=["main", "release-1.3", "fix-1.3"])
+        r = self.check("1.3.0-beta.1", "fix-1.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "line=1.3\nbranch=release-1.3\nfixed=fix-1.3\n")
+
+    def test_empty_fixed_branch_is_none(self):
+        r = self.check("1.3.0-beta.1", "")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("fixed=\n", r.stdout)
+
+
+class PrepareBranchTests(unittest.TestCase):
+    """prepare-branch.sh in a clone of a local bare repository."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="prep-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
+                        GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.com",
+                        GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        self.origin = os.path.join(self.tmp, "origin.git")
+        self.git(self.tmp, "init", "-q", "--bare", "-b", "main", self.origin)
+        self.dev = os.path.join(self.tmp, "dev")
+        self.git(self.tmp, "clone", "-q", self.origin, self.dev)
+        self.git(self.dev, "switch", "-q", "-c", "main")
+        self.commit("f.txt", "one\ntwo\nthree\n", "start")
+        self.git(self.dev, "push", "-q", "origin", "main")
+
+    def git(self, cwd, *args):
+        r = subprocess.run(["git", *args], cwd=cwd, env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r.stdout.strip()
+
+    def commit(self, path, text, subject):
+        with open(os.path.join(self.dev, path), "w") as f:
+            f.write(text)
+        self.git(self.dev, "add", path)
+        self.git(self.dev, "commit", "-q", "-m", subject)
+        return self.git(self.dev, "rev-parse", "HEAD")
+
+    def on(self, branch, start=None):
+        if start:
+            self.git(self.dev, "switch", "-q", "-C", branch, start)
+        else:
+            self.git(self.dev, "switch", "-q", branch)
+
+    def push(self, *refs):
+        self.git(self.dev, "push", "-q", "-f", "origin", *refs)
+
+    def remote(self, branch):
+        r = subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch}"],
+                           cwd=self.origin, env=self.env, capture_output=True, text=True)
+        return r.stdout.strip() or None
+
+    def prepare(self, *args, hook=None):
+        work = os.path.join(self.tmp, "work")
+        shutil.rmtree(work, ignore_errors=True)
+        self.git(self.tmp, "clone", "-q", self.origin, work)
+        if hook:
+            path = os.path.join(work, ".git", "hooks", "pre-push")
+            with open(path, "w") as f:
+                f.write(hook)
+            os.chmod(path, 0o755)
+        return subprocess.run([PREP_BRANCH, *args], cwd=work, env=self.env,
+                              capture_output=True, text=True)
+
+    def own_commit(self):
+        """release-1.3 at the first main commit plus one commit of its own."""
+        self.on("release-1.3", "main")
+        sha = self.commit("fix.txt", "fix\n", "A fix only for 1.3")
+        self.push("release-1.3")
+        self.on("main")
+        return sha
+
+    def test_creates_branch(self):
+        r = self.prepare("1.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.remote("release-1.3"), self.remote("main"))
+        self.assertIn("created release-1.3", r.stdout)
+
+    def test_fast_forward(self):
+        self.push("main:release-1.3")
+        self.commit("g.txt", "g\n", "main moves on")
+        self.push("main")
+        r = self.prepare("1.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.remote("release-1.3"), self.remote("main"))
+
+    def test_rebase_keeps_own_commit(self):
+        self.own_commit()
+        self.commit("g.txt", "g\n", "main moves on")
+        self.push("main")
+        r = self.prepare("1.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tip = self.remote("release-1.3")
+        self.assertEqual(self.git(self.origin, "rev-parse", tip + "^"), self.remote("main"))
+        self.assertEqual(self.git(self.origin, "log", "-1", "--format=%s", tip), "A fix only for 1.3")
+        self.assertEqual(self.git(self.origin, "show", tip + ":fix.txt"), "fix")
+        self.assertEqual(self.git(self.origin, "log", "-1", "--format=%cn", tip), "irsync release bot")
+        self.assertIn("rebased release-1.3", r.stdout)
+
+    def test_rebase_drops_commit_main_has(self):
+        sha = self.own_commit()
+        self.git(self.dev, "cherry-pick", sha)
+        self.push("main")
+        r = self.prepare("1.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.remote("release-1.3"), self.remote("main"))
+
+    def conflict(self):
+        self.on("release-1.3", "main")
+        self.commit("f.txt", "one\nTWO on 1.3\nthree\n", "Change two for 1.3")
+        self.push("release-1.3")
+        self.on("main")
+        self.commit("f.txt", "one\nTWO on main\nthree\n", "Change two on main")
+        self.push("main")
+
+    def test_conflict_changes_nothing(self):
+        self.conflict()
+        before = self.remote("release-1.3")
+        r = self.prepare("1.3")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.remote("release-1.3"), before)
+        self.assertIn("f.txt", r.stderr)
+        self.assertIn("fixed-branch=", r.stderr)
+
+    def test_lease_protects(self):
+        self.own_commit()
+        self.commit("g.txt", "g\n", "main moves on")
+        self.push("main")
+        # Someone pushes to release-1.3 while the script is about to push.
+        other = os.path.join(self.tmp, "other")
+        hook = (f"#!/bin/sh\nset -e\nrm -f \"$0\"\n"
+                f"git clone -q {self.origin} {other}\ncd {other}\n"
+                "git switch -q release-1.3\n"
+                "git -c user.name=o -c user.email=o@example.com commit -q --allow-empty -m late\n"
+                "git push -q origin release-1.3\n")
+        r = self.prepare("1.3", hook=hook)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.git(self.origin, "log", "-1", "--format=%s", "release-1.3"), "late")
+
+    def fixed(self, base, subjects_and_texts, name="fix-1.3"):
+        self.on(name, base)
+        for subject, text in subjects_and_texts:
+            self.commit("f.txt", text, subject)
+        self.push(name)
+        self.on("main")
+
+    def test_fixed_branch_ok(self):
+        self.conflict()
+        self.fixed("main", [("Change two for 1.3", "one\nTWO on both\nthree\n")])
+        tip = self.remote("fix-1.3")
+        r = self.prepare("1.3", "fix-1.3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.remote("release-1.3"), tip)
+        self.assertIsNone(self.remote("fix-1.3"))
+
+    def test_fixed_branch_adds_commit_refused(self):
+        self.conflict()
+        before = self.remote("release-1.3")
+        self.fixed("main", [("Change two for 1.3", "one\nTWO on both\nthree\n"),
+                            ("Something new", "one\nTWO\nthree\n")])
+        r = self.prepare("1.3", "fix-1.3")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.remote("release-1.3"), before)
+        self.assertIsNotNone(self.remote("fix-1.3"))
+
+    def test_fixed_branch_not_on_main_refused(self):
+        self.conflict()
+        before = self.remote("release-1.3")
+        self.fixed("main~1", [("Change two for 1.3", "one\nTWO on both\nthree\n")])
+        r = self.prepare("1.3", "fix-1.3")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.remote("release-1.3"), before)
+
+    def test_fixed_branch_with_merge_refused(self):
+        self.conflict()
+        before = self.remote("release-1.3")
+        self.on("side", "main")
+        self.commit("s.txt", "s\n", "Change two for 1.3")
+        self.on("fix-1.3", "main")
+        self.git(self.dev, "merge", "-q", "--no-ff", "-m", "merge", "side")
+        self.push("fix-1.3")
+        r = self.prepare("1.3", "fix-1.3")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.remote("release-1.3"), before)
+
+    def test_bad_arguments(self):
+        for args in [("1.3.0",), ("x",), ("1.3", "pinned/x"), ("1.3", "main")]:
+            with self.subTest(args=args):
+                self.assertNotEqual(self.prepare(*args).returncode, 0)
 
 
 class StartCheckTests(FakeGh):
