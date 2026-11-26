@@ -1115,3 +1115,148 @@ async fn a_client_with_only_admin_passes_the_gate() {
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }
+
+// The daemon's last answer on a connection (#298). Closing a connection
+// throws away what has not reached the client yet, so after its last answer
+// the daemon waits for the client to close, up to `ANSWER_WAIT`. With this
+// QUIC library, data that has arrived stays readable after the close: the
+// two late-read tests pass either way, and are there in case that changes.
+
+/// Sends `h` over a fresh connection, then waits `delay` before reading the
+/// reply, as a slow client would. Closes the connection once it has read it.
+async fn exchange_read_late(
+    d: &DaemonHandle,
+    client: &Endpoint,
+    h: Hello,
+    delay: std::time::Duration,
+) -> Result<HelloReply, String> {
+    let conn = within(client.connect(d.addr.clone(), ALPN))
+        .await
+        .map_err(|e| e.to_string())?;
+    let (mut send, mut recv) = within(conn.open_bi()).await.map_err(|e| e.to_string())?;
+    within(write_msg(&mut send, &h))
+        .await
+        .map_err(|e| e.to_string())?;
+    send.finish().map_err(|e| e.to_string())?;
+    tokio::time::sleep(delay).await;
+    let body = within(read_body(&mut recv))
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("end of stream before reply")?;
+    conn.close(0u32.into(), b"done");
+    Ok(HelloReply::decode(&body[..]).unwrap())
+}
+
+#[tokio::test]
+async fn a_client_that_reads_late_still_gets_the_refusal() {
+    let client = client_endpoint().await;
+    let dir = tempfile::tempdir().unwrap();
+    let d = spawn_daemon(
+        vec![("rw", dir.path().to_path_buf(), false)],
+        MemoryAuthorizer::single(client.id(), grants(Access::ReadWrite)),
+    )
+    .await;
+    let h = hello(b"/no/such", Direction::ClientSends).to_hello();
+    let late = std::time::Duration::from_millis(500);
+    let got = exchange_read_late(&d, &client, h, late).await;
+    match got.map(|r| r.reply) {
+        Ok(Some(hello_reply::Reply::Error(e))) => {
+            assert_eq!(e.code, Code::Unauthorized as i32, "{}", e.message);
+            assert_eq!(e.message, no_access(b"/no/such"));
+        }
+        other => panic!("expected the refusal, got {other:?}"),
+    }
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+#[tokio::test]
+async fn a_client_that_reads_late_still_gets_the_listing() {
+    let client = client_endpoint().await;
+    let dir = tempfile::tempdir().unwrap();
+    let d = spawn_daemon(
+        vec![("rw", dir.path().to_path_buf(), false)],
+        MemoryAuthorizer::single(client.id(), grants(Access::ReadWrite)),
+    )
+    .await;
+    let late = std::time::Duration::from_millis(500);
+    let got = exchange_read_late(&d, &client, listing_hello(), late).await;
+    match got.map(|r| r.reply) {
+        Ok(Some(hello_reply::Reply::Exports(list))) => {
+            let names: Vec<_> = list.exports.iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(names, ["rw"]);
+        }
+        other => panic!("expected the listing, got {other:?}"),
+    }
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+/// The wait ends as soon as the client closes: a refused sync, daemon side
+/// included, takes nowhere near the bound.
+#[tokio::test]
+async fn a_refused_sync_ends_promptly() {
+    let h = common::Harness::new().await;
+    let refused = hello(b"nope/", Direction::ClientSends);
+    let t = std::time::Instant::now();
+    let (out, _) = h
+        .run_reconnect_hello(
+            &common::archive_opts(),
+            refused,
+            irsync::session::reconnect::ReconnectOpts::default(),
+            h.local_side(),
+        )
+        .await;
+    let took = t.elapsed();
+    assert!(out.is_err(), "a sync of an unknown export was not refused");
+    assert!(
+        took < std::time::Duration::from_secs(3),
+        "the refused sync took {took:?}: the daemon waited out its bound"
+    );
+}
+
+/// A client that reads the refusal and never closes: the daemon keeps the
+/// connection open for it up to `ANSWER_WAIT`, then closes it itself. On
+/// tokio's paused clock, through the in-process fault layer.
+#[cfg(feature = "netsim")]
+#[tokio::test(start_paused = true)]
+async fn the_daemon_waits_for_the_client_to_close_up_to_a_bound() {
+    use irsync::net::netsim::ProfileName;
+    use irsync::net::ANSWER_WAIT;
+    common::with_netsim(ProfileName::TestWan, 1, async {
+        let client = client_endpoint().await;
+        let dir = tempfile::tempdir().unwrap();
+        let d = spawn_daemon(
+            vec![("rw", dir.path().to_path_buf(), false)],
+            MemoryAuthorizer::single(client.id(), grants(Access::ReadWrite)),
+        )
+        .await;
+        let conn = client.connect(d.addr.clone(), ALPN).await.unwrap();
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        let h = hello(b"/no/such", Direction::ClientSends).to_hello();
+        write_msg(&mut send, &h).await.unwrap();
+        send.finish().unwrap();
+        let reply: HelloReply = read_msg(&mut recv).await.unwrap().expect("a reply");
+        assert!(
+            matches!(reply.reply, Some(hello_reply::Reply::Error(_))),
+            "{reply:?}"
+        );
+        let start = tokio::time::Instant::now();
+        let closed = tokio::time::timeout(ANSWER_WAIT * 2, conn.closed())
+            .await
+            .expect("the daemon never closed the connection");
+        let open = start.elapsed();
+        assert!(format!("{closed:?}").contains("rejected"), "{closed:?}");
+        assert!(
+            open >= ANSWER_WAIT - std::time::Duration::from_secs(1),
+            "closed after {open:?}"
+        );
+        assert!(
+            open < ANSWER_WAIT + std::time::Duration::from_secs(5),
+            "closed after {open:?}"
+        );
+        d.shutdown.cancel();
+        let _ = d.task.await;
+    })
+    .await;
+}

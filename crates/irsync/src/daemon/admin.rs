@@ -28,6 +28,7 @@ use crate::config::clients::Clients;
 use crate::config::file::Config;
 use crate::manage::admin::{self as engine, Committer, NOT_ALLOWED};
 use crate::manage::{load_message, ManageError};
+use crate::net::finish_answer;
 use crate::net::frame::{read_msg_max_tapped, write_msg_tapped, FrameTooLarge};
 use crate::net::tap::StreamTap;
 
@@ -198,11 +199,7 @@ pub(super) async fn serve_admin(
         };
         write_msg_tapped(&mut send, &AdminReply { msg: Some(reply) }, &tap).await?;
     };
-    send.finish()?;
-    tap.finished();
-    let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
-    conn.close(0u32.into(), reason);
-    Ok(())
+    finish_answer(&conn, &mut send, &tap, 0, reason).await
 }
 
 /// Applies `changes` to the config file `path` for `id`, all or nothing,
@@ -405,7 +402,7 @@ async fn close_refused(
 }
 
 /// Writes `last`, the session's last frame, and closes the connection once
-/// the client has read it.
+/// the client has it ([`finish_answer`]).
 async fn close_with<M: crate::net::tap::WireMsg>(
     conn: &Connection,
     send: &mut SendStream,
@@ -413,17 +410,5 @@ async fn close_with<M: crate::net::tap::WireMsg>(
     last: M,
 ) -> Result<()> {
     write_msg_tapped(send, &last, tap).await?;
-    send.finish()?;
-    tap.finished();
-    // An acknowledgement is not a read: a peer that is slow to read loses
-    // what it has not read yet once the connection closes. So wait
-    // (bounded) for the peer to close it, as `irsync remote` does once it
-    // has read the answer.
-    let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = send.stopped().await;
-        conn.closed().await;
-    })
-    .await;
-    conn.close(2u32.into(), b"rejected");
-    Ok(())
+    finish_answer(conn, send, tap, 2, b"rejected").await
 }
