@@ -168,7 +168,9 @@ when its title page does not start with a heading.
 Once mdbook has built all of them, `site/tools/switcher.py` adds the
 version switcher to the top bar of every page: a button with the book's
 channel (`Beta`), which opens the list of the books, Stable, Beta and Alpha
-with their versions (those that exist), then Dev. `/book/` is not in the
+with their versions (those that exist), then Dev with the commit it was
+built from (`irsync@a3cdcd6`), so a glance at dev.irsync.org tells whether
+a merge is live. `/book/` is not in the
 list; there, the channel it copies is ticked. Each link is written for the
 page it is on: the same page in the other book if that book has it, else
 that book's title page. Each names the site that serves its book: Stable,

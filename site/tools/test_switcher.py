@@ -33,12 +33,12 @@ def links(menu):
 
 class EntriesTests(unittest.TestCase):
     def test_entries(self):
-        self.assertEqual(switcher.entries(TODAY), [Entry("beta", "Beta", "0.1.0-beta.5"),
-                                                   Entry("alpha", "Alpha", "0.1.0-alpha.4"),
-                                                   Entry("dev", "Dev", None)])
+        self.assertEqual(switcher.entries(TODAY), [Entry("beta", "Beta", "0.1.0-beta.5", SHA),
+                                                   Entry("alpha", "Alpha", "0.1.0-alpha.4", SHA),
+                                                   Entry("dev", "Dev", None, SHA)])
         with_stable = TODAY.replace("\nbeta", f"\nstable 1.0.0 {SHA} published\nbeta", 1)
-        self.assertEqual(switcher.entries(with_stable)[0], Entry("stable", "Stable", "1.0.0"))
-        self.assertEqual(switcher.entries(NO_RELEASE), [Entry("dev", "Dev", None)])
+        self.assertEqual(switcher.entries(with_stable)[0], Entry("stable", "Stable", "1.0.0", SHA))
+        self.assertEqual(switcher.entries(NO_RELEASE), [Entry("dev", "Dev", None, SHA)])
 
     def test_ticked(self):
         self.assertEqual(switcher.ticked(TODAY, "book"), "beta")
@@ -69,8 +69,21 @@ class MenuTests(unittest.TestCase):
         self.assertIn('aria-expanded="false"', menu)
         self.assertIn('aria-controls="irsync-book-list"', menu)
         self.assertIn('id="irsync-book-list"', menu)
-        self.assertIn("unreleased", menu)
+        self.assertIn('>Dev <span class="irsync-book-version">irsync@bbbbbbb</span>', menu)
+        self.assertNotIn("unreleased", menu)
         self.assertIn("0.1.0-alpha.4", menu)
+
+    def test_release_entries_show_their_version_not_a_commit(self):
+        menu = switcher.menu(switcher.entries(TODAY), "beta", PAGE, self.all_pages())
+        self.assertIn('>Beta <span class="irsync-book-version">0.1.0-beta.5</span>', menu)
+        self.assertEqual(menu.count("irsync@"), 1)
+
+    def test_dev_without_a_commit_is_unreleased(self):
+        # A VERSIONS file from a build before the line carried the commit.
+        old = TODAY.replace(f"dev - {SHA} main", "dev - - dev")
+        menu = switcher.menu(switcher.entries(old), "beta", PAGE, self.all_pages())
+        self.assertIn('>Dev <span class="irsync-book-version">unreleased</span>', menu)
+        self.assertNotIn("irsync@", menu)
 
     def test_a_list_of_links_not_a_menu(self):
         # Menu roles promise arrow keys; these are plain links behind a button.
@@ -134,6 +147,7 @@ class ApplyTests(unittest.TestCase):
         for book in ("book", "beta", "alpha", "dev"):
             self.assertEqual((self.site / book / "toc.html").read_text(encoding="utf-8"),
                              "<ol></ol>\n")
+        self.assertIn("irsync@bbbbbbb", (self.site / "dev" / PAGE).read_text(encoding="utf-8"))
         self.assertEqual(check.check_links(self.site), [])
 
     def test_landing_page(self):
@@ -154,6 +168,7 @@ class ApplyTests(unittest.TestCase):
         # The landing page remembers the book picked by its data-book.
         self.assertIn('data-book="alpha"', got[url("alpha", "")])
         self.assertNotIn("switcher -->", page)
+        self.assertIn("irsync@bbbbbbb", page)
         self.assertEqual(check.check_links(self.site), [])
 
     def test_landing_page_without_markers_stops(self):
