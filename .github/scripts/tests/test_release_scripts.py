@@ -24,6 +24,7 @@ LINE = os.path.join(SCRIPTS, "release-line.sh")
 BUMP_BRANCH = os.path.join(SCRIPTS, "bump-branch.sh")
 PREP_CHECK = os.path.join(SCRIPTS, "prepare-check.sh")
 PREP_BRANCH = os.path.join(SCRIPTS, "prepare-branch.sh")
+PREP_BUSY = os.path.join(SCRIPTS, "prepare-busy.sh")
 FORMULA_MAN = os.path.join(SCRIPTS, "formula-man-pages.sh")
 FORMULA = os.path.join(HERE, "fixtures", "irsync.rb")
 HEADING = "## What's changed"
@@ -782,7 +783,8 @@ class PrepareBranchTests(unittest.TestCase):
                            cwd=self.origin, env=self.env, capture_output=True, text=True)
         return r.stdout.strip() or None
 
-    def prepare(self, *args, hook=None):
+    def prepare(self, *args, hook=None, main=None):
+        """Runs the script; main is the commit the checks saw (default: main now)."""
         work = os.path.join(self.tmp, "work")
         shutil.rmtree(work, ignore_errors=True)
         self.git(self.tmp, "clone", "-q", self.origin, work)
@@ -791,7 +793,10 @@ class PrepareBranchTests(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(hook)
             os.chmod(path, 0o755)
-        return subprocess.run([PREP_BRANCH, *args], cwd=work, env=self.env,
+        if main is None:
+            main = self.remote("main")
+        line, *rest = args
+        return subprocess.run([PREP_BRANCH, line, main, *rest], cwd=work, env=self.env,
                               capture_output=True, text=True)
 
     def own_commit(self):
@@ -915,10 +920,73 @@ class PrepareBranchTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual(self.remote("release-1.3"), before)
 
+    def test_main_moved_since_the_check(self):
+        self.own_commit()
+        checked = self.remote("main")
+        before = self.remote("release-1.3")
+        self.commit("g.txt", "g\n", "main moves on")
+        self.push("main")
+        r = self.prepare("1.3", main=checked)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("main moved", r.stderr)
+        self.assertEqual(self.remote("release-1.3"), before)
+
+    def test_bad_main_sha(self):
+        r = self.prepare("1.3", main="nonsense")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIsNone(self.remote("release-1.3"))
+
     def test_bad_arguments(self):
         for args in [("1.3.0",), ("x",), ("1.3", "pinned/x"), ("1.3", "main")]:
             with self.subTest(args=args):
                 self.assertNotEqual(self.prepare(*args).returncode, 0)
+
+
+class PrepareBusyTests(FakeGh):
+    """prepare-busy.sh: is a release of the line under way?"""
+
+    def setUp(self):
+        super().setUp()
+        self.set_state(releases={"v1.3.0-alpha.1": REL}, tags=["v1.3.0-alpha.1"],
+                       branches=["main", "release-1.3"])
+
+    def busy(self, **kw):
+        state = self.state()
+        state.update(kw)
+        self.set_state(**state)
+        return self.run_script(PREP_BUSY, "1.3")
+
+    def test_idle(self):
+        r = self.busy()
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_draft(self):
+        r = self.busy(releases={"v1.3.0-beta.1": dict(REL, isDraft=True)})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("v1.3.0-beta.1", r.stderr)
+
+    def test_draft_of_other_line(self):
+        self.assertEqual(self.busy(releases={"v1.30.0-beta.1": dict(REL, isDraft=True)}).returncode, 0)
+
+    def test_pin(self):
+        r = self.busy(branches=["main", "pinned/v1.3.0-beta.1"])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("pinned/v1.3.0-beta.1", r.stderr)
+
+    def test_gate_running(self):
+        r = self.busy(runs=[{"workflow": "release-gate.yml", "status": "in_progress"}])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("release gate", r.stderr)
+
+    def test_failed_lookup_stops(self):
+        for path in ["releases", "git/matching-refs/heads/"]:
+            with self.subTest(path=path):
+                r = self.busy(api_fails=[path])
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("Could not read", r.stderr)
+
+    def test_bad_line(self):
+        self.assertNotEqual(self.run_script(PREP_BUSY, "1.3.0").returncode, 0)
 
 
 class StartCheckTests(FakeGh):

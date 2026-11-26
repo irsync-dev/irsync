@@ -1,10 +1,12 @@
 #!/bin/bash
-# Usage: prepare-branch.sh <line> [<fixed-branch>]
+# Usage: prepare-branch.sh <line> <main-sha> [<fixed-branch>]
 #
 # Creates the branch release-<line> (for example release-1.3) at main, or
 # rebases it onto main, on GitHub. release-prepare.yml runs it after
 # prepare-check.sh, in a full clone whose origin it may push to (the deploy
-# key); the "Release branches" rule lets only that key past.
+# key); the "Release branches" rule lets only that key past. <main-sha> is
+# the commit of main that prepare-check.sh checked: if main has moved since
+# (the approval in between can take hours), nothing is pushed.
 #
 # - No release-X.Y yet: it is created at main.
 # - Otherwise its own commits (those not on main) are rebased onto main, and
@@ -21,9 +23,10 @@
 # Never pushes without a lease.
 set -euo pipefail
 
-[ $# -eq 1 ] || [ $# -eq 2 ] || { echo "usage: $0 <line> [<fixed-branch>]" >&2; exit 2; }
+[ $# -eq 2 ] || [ $# -eq 3 ] || { echo "usage: $0 <line> <main-sha> [<fixed-branch>]" >&2; exit 2; }
 line=$1
-fixed=${2:-}
+checked=$2
+fixed=${3:-}
 
 fail() {
     echo "::error::$1" >&2
@@ -31,6 +34,7 @@ fail() {
 }
 
 [[ $line =~ ^[0-9]+\.[0-9]+$ ]] || fail "'$line' is not a release line such as 1.3."
+[[ $checked =~ ^[0-9a-f]{40}$ ]] || fail "'$checked' is not a full commit SHA."
 if [ -n "$fixed" ]; then
     case $fixed in
         main | release-* | pinned/* | -*) fail "The fixed branch can't be $fixed." ;;
@@ -41,6 +45,9 @@ branch=release-$line
 
 git fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*'
 main=$(git rev-parse --verify origin/main)
+if [ "$main" != "$checked" ]; then
+    fail "main moved since the checks ran (they saw $checked, main is now $main). Nothing was pushed. Start the workflow again."
+fi
 
 if ! old=$(git rev-parse --verify --quiet "refs/remotes/origin/$branch"); then
     if [ -n "$fixed" ]; then

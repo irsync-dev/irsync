@@ -14,8 +14,7 @@
 # - Cargo.toml and dist.toml on main do not hold <version>;
 # - the tag vX.Y.0 or v<version> exists, or <version> can't follow the
 #   line's releases (release-line.sh);
-# - a draft release of the line, a pinned/vX.Y.* branch or a running
-#   release gate exists;
+# - a release of the line is under way (prepare-busy.sh);
 # - <fixed-branch> is release-*, pinned/*, main, an odd name, or does not
 #   exist on GitHub.
 #
@@ -82,23 +81,9 @@ done
 
 "$here/release-line.sh" "$version" >/dev/null
 
-drafts=$(gh_lines "repos/$GH_REPO/releases" '.[] | select(.draft) | .tag_name')
-draft=$(grep -E -m1 "^v${line//./\\.}\\." <<<"$drafts" || true)
-if [ -n "$draft" ]; then
-    fail "The draft release $draft is waiting. Publish it (.github/scripts/sign-release.sh --publish ${draft#v}) or delete it (gh release delete $draft) before $branch moves."
-fi
-
-pins=$(gh_lines "repos/$GH_REPO/git/matching-refs/heads/pinned/v$line." '.[].ref | ltrimstr("refs/heads/")')
-pin=$(grep -E -m1 "^pinned/v${line//./\\.}\\." <<<"$pins" || true)
-if [ -n "$pin" ]; then
-    fail "The branch $pin exists: a release of the line is under way. Let it finish (or remove the branch if its run is over) before $branch moves."
-fi
-
-statuses=$(gh run list --workflow release-gate.yml --limit 100 --json status --jq '.[].status') ||
-    fail "Could not list the release-gate.yml runs from GitHub."
-if grep -qxE 'queued|in_progress|waiting|pending|requested' <<<"$statuses"; then
-    fail "A release gate run is going. Wait for it to finish, then start this workflow again."
-fi
+# A release of the line under way. A read-only token sees no drafts, so the
+# push job runs this again, with write access, right before it pushes.
+"$here/prepare-busy.sh" "$line"
 
 if [ -n "$fixed" ]; then
     heads=$(gh_lines "repos/$GH_REPO/git/matching-refs/heads/$fixed" '.[].ref | ltrimstr("refs/heads/")')

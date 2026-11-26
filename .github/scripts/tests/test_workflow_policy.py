@@ -545,19 +545,34 @@ class PrepareTests(unittest.TestCase):
         job = jobs(self.wf())["check"]
         self.assertNotIn("secrets.", job_text(self.NAME, "check"))
         self.assertIsNone(env_name(job))
-        self.assertEqual(job["permissions"], {"contents": "read"})
         self.assertIn("prepare-check.sh", job_text(self.NAME, "check"))
 
     def test_push_job_in_release_branch_env(self):
         job = jobs(self.wf())["push"]
         self.assertEqual(env_name(job), "release-branch")
         self.assertIn("check", job["needs"])
-        self.assertEqual(job["permissions"], {})
         checkout = [s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout@")]
         self.assertEqual(len(checkout), 1)
         self.assertEqual(checkout[0]["with"]["ssh-key"], "${{ secrets.RELEASE_BRANCH_KEY }}")
         self.assertEqual(checkout[0]["with"]["fetch-depth"], 0)
         self.assertIn("prepare-branch.sh", job_text(self.NAME, "push"))
+
+    def test_check_job_can_list_runs(self):
+        self.assertEqual(jobs(self.wf())["check"]["permissions"],
+                         {"contents": "read", "actions": "read"})
+
+    def test_push_job_checks_again_right_before_it_pushes(self):
+        # The approval can take hours: a draft, a pin or a gate run may have
+        # appeared, and main may have moved, since the check job.
+        job = jobs(self.wf())["push"]
+        # Drafts are visible only with write access; runs need actions: read.
+        self.assertEqual(job["permissions"], {"contents": "write", "actions": "read"})
+        runs = [s.get("run", "") for s in job["steps"]]
+        busy = next(i for i, r in enumerate(runs) if "prepare-busy.sh" in r)
+        push = next(i for i, r in enumerate(runs) if "prepare-branch.sh" in r)
+        self.assertLess(busy, push)
+        self.assertIn('"$MAIN_SHA"', runs[push])
+        self.assertEqual(job["env"]["MAIN_SHA"], "${{ github.sha }}")
 
     def test_inputs_only_through_env(self):
         for job_id, job in jobs(self.wf()).items():

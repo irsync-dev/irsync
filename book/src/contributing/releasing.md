@@ -243,8 +243,8 @@ These checks catch a mismatch:
 Fixes go to the lines that have not reached `X.Y.0` yet, and to the
 newest stable line. Land the fix on `main` first. Before `X.Y.0`, a line
 whose branch still follows `main` gets the fix with the next
-`release-prepare.yml` run, and needs nothing else. Otherwise copy it. Then copy it to the release branch with a pull request (here for
-`release-1.2`):
+`release-prepare.yml` run, and needs nothing else. For any other line,
+copy the fix to its branch with a pull request (here for `release-1.2`):
 
 ```sh
 git switch release-1.2 && git pull --ff-only

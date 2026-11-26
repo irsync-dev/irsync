@@ -9,7 +9,9 @@
 # GitHub without any secret (prepare-check.sh): main must hold the version,
 # the version must follow the line's releases, and no draft, pinned/ branch
 # or release gate run may be under way, so a branch that is being released
-# never moves. Then the push job creates release-X.Y at main, or rebases the
+# never moves. After the approval of the environment, which may take a
+# while, the push job checks that again (prepare-busy.sh), and that main
+# has not moved since the check. Then it creates release-X.Y at main, or rebases the
 # branch's own commits onto main (prepare-branch.sh). It pushes with the
 # deploy key RELEASE_BRANCH_KEY, which lives in the environment
 # release-branch and is the only one the "Release branches" rule lets past,
@@ -51,6 +53,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # To list the release gate's runs.
+      actions: read
     outputs:
       line: ${{ steps.check.outputs.line }}
       fixed: ${{ steps.check.outputs.fixed }}
@@ -72,8 +76,17 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     environment: release-branch
-    permissions: {}
+    permissions:
+      # Only to see draft releases: GitHub hides them from read-only tokens.
+      # This token can't move release-X.Y; only the deploy key can.
+      contents: write
+      # To list the release gate's runs.
+      actions: read
     env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # The commit of main the check job checked; the same in both jobs.
+      MAIN_SHA: ${{ github.sha }}
       VERSION: ${{ inputs.version }}
       LINE: ${{ needs.check.outputs.line }}
       FIXED: ${{ needs.check.outputs.fixed }}
@@ -86,8 +99,13 @@ jobs:
           ssh-key: ${{ secrets.RELEASE_BRANCH_KEY }}
           fetch-depth: 0
 
+      # The approval can take hours. Check again, right before the push,
+      # that no release of the line got under way meanwhile.
+      - name: Check again that no release of the line is under way
+        run: .github/scripts/prepare-busy.sh "$LINE"
+
       - name: Create release-X.Y or rebase it onto main
-        run: .github/scripts/prepare-branch.sh "$LINE" "$FIXED"
+        run: .github/scripts/prepare-branch.sh "$LINE" "$MAIN_SHA" "$FIXED"
 
       - name: Say what to do next
         run: |
