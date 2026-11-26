@@ -1,6 +1,6 @@
 use irsync::cli::progress::state::{Live, RowState, ROW_EXPIRY, STALL_AFTER};
-use irsync::cli::DeleteMode;
 use irsync::fs::paths::RelPath;
+use irsync::options::DeleteMode;
 use irsync::session::{Event, Party};
 use std::time::{Duration, Instant};
 

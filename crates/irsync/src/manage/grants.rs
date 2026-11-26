@@ -8,6 +8,8 @@ use super::{check_comment, ManageError, PeerSpec};
 use crate::authz::{Access, Snapshot};
 use crate::config::clients::{Clients, Right, RIGHTS};
 use crate::config::exports::Exports;
+use crate::config::file::Config;
+use crate::config::paths::Paths;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
@@ -286,7 +288,7 @@ pub fn grant_add(
 /// Refuses the export `grant add` takes no grant on: `all`, which is a
 /// right of a client (`all_exports`). `ro`: the grant asked for was
 /// read-only.
-pub fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError> {
+pub(crate) fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError> {
     if export == "all" {
         return Err(ManageError::BadValue(format!(
             "\"all\" is not an export: give a client every export with: irsync client set NAME all_exports={}",
@@ -298,7 +300,7 @@ pub fn check_add_export(export: &str, ro: bool) -> Result<(), ManageError> {
 
 /// Refuses what `grant remove EXPORT WHO` does not take: `*` for a peer
 /// (`all` is everyone).
-pub fn check_remove(export: &str, who: &str) -> Result<(), ManageError> {
+pub(crate) fn check_remove(export: &str, who: &str) -> Result<(), ManageError> {
     if who == "*" {
         return Err(ManageError::BadValue(format!(
             "\"*\" names no peer: irsync grant remove {export} all removes every grant {}",
@@ -319,7 +321,7 @@ pub fn added_line(who: &PeerSpec, clients: &Clients, export: &str, ro: bool) -> 
 }
 
 /// What `grant remove` reports once `n` entries are removed.
-pub fn removed_line(n: usize) -> String {
+pub(crate) fn removed_line(n: usize) -> String {
     format!("removed {n} {}", if n == 1 { "entry" } else { "entries" })
 }
 
@@ -368,7 +370,7 @@ pub fn grant_remove(
 /// `grant remove` was asked about: `who` (a client's name or id), or, with
 /// `who = None` and `export = None` (`grant remove all all`), every client.
 /// `grant remove` clears only the exports' own lists, so these stay.
-pub fn rights_still_held(
+pub(crate) fn rights_still_held(
     clients: &Clients,
     export: Option<&str>,
     who: Option<&PeerSpec>,
@@ -485,4 +487,70 @@ pub fn list_peer(
         out.push('\n');
     }
     out
+}
+
+// The commands, from the config file's lock to the lines they say.
+
+/// `grant add EXPORT WHO [--ro]`; the line to say.
+pub fn add(paths: &Paths, export: &str, who: &str, ro: bool) -> anyhow::Result<String> {
+    check_add_export(export, ro)?;
+    let Config {
+        servers, clients, ..
+    } = Config::load(paths)?;
+    let spec = PeerSpec::parse(who, &clients, &servers)?;
+    let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
+    super::edit(&paths.config, |msg| {
+        grant_add(msg, export, &spec, ro, &resolve)
+    })?;
+    Ok(added_line(&spec, &clients, export, ro))
+}
+
+/// A `grant remove` that failed: the error, and the rights the peer still
+/// holds otherwise, which say why (empty when the grants were not looked
+/// at yet).
+#[derive(Debug)]
+pub struct RemoveFailed {
+    pub error: anyhow::Error,
+    pub held: Vec<String>,
+}
+
+impl<E: Into<anyhow::Error>> From<E> for RemoveFailed {
+    fn from(e: E) -> RemoveFailed {
+        RemoveFailed {
+            error: e.into(),
+            held: Vec::new(),
+        }
+    }
+}
+
+/// `grant remove EXPORT WHO` (either may be `all`); the lines to say: how
+/// many grants went, then the rights the peer still holds otherwise.
+pub fn remove(paths: &Paths, export: &str, who: &str) -> Result<Vec<String>, RemoveFailed> {
+    let Config {
+        servers, clients, ..
+    } = Config::load(paths)?;
+    let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
+    check_remove(export, who)?;
+    let export = (export != "all").then_some(export);
+    let who = (who != "all").then_some(who);
+    let spec = who
+        .map(|w| PeerSpec::or_literal(w, PeerSpec::parse(w, &clients, &servers)))
+        .transpose()?;
+    let mut lock = super::lock_config(&paths.config)?;
+    let mut msg = lock.load()?;
+    let removed = grant_remove(&mut msg, export, spec.as_ref(), &resolve);
+    let held = rights_still_held(&clients, export, spec.as_ref(), &resolve);
+    let n = match removed {
+        Ok(n) => n,
+        Err(e) => {
+            return Err(RemoveFailed {
+                error: anyhow::Error::from(e).context(format!("in {}", paths.config.display())),
+                held,
+            })
+        }
+    };
+    lock.save(&mut msg)?;
+    let mut lines = vec![removed_line(n)];
+    lines.extend(held);
+    Ok(lines)
 }

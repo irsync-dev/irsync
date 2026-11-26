@@ -9,7 +9,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::build::BuildInfo;
+use crate::build_info::BuildInfo;
 use crate::signature::{release_keys, verify_file};
 
 /// Where GitHub serves a release's files, without the tag.
@@ -42,7 +42,7 @@ pub fn release_tag(info: &BuildInfo) -> Option<String> {
 
 /// The hex digest `sums` lists for `file_name`, lowercased. Takes both
 /// `<hex> *<name>` and `<hex>  <name>` lines.
-pub fn expected_sha256(sums: &str, file_name: &str) -> Option<String> {
+pub(crate) fn expected_sha256(sums: &str, file_name: &str) -> Option<String> {
     sums.lines().find_map(|line| {
         let (hex, name) = line.trim().split_once(char::is_whitespace)?;
         let name = name.trim_start();
@@ -54,7 +54,7 @@ pub fn expected_sha256(sums: &str, file_name: &str) -> Option<String> {
 /// Test builds only: a URL that stands in for `RELEASES/<tag>`, from
 /// `IRSYNC_TEST_RELEASE_URL`. May be a `file://` URL.
 #[cfg(feature = "test-hooks")]
-pub fn test_url() -> Option<String> {
+pub(crate) fn test_url() -> Option<String> {
     std::env::var("IRSYNC_TEST_RELEASE_URL")
         .ok()
         .filter(|u| !u.is_empty())

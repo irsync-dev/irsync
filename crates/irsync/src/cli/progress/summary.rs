@@ -13,50 +13,11 @@
 
 use std::time::Duration;
 
-use super::{clock, commas, human};
+use super::{commas, human};
 use crate::session::reconnect::ConnState;
+use crate::session::SessionSummary;
 use crate::telemetry::meter::{Activity, Counter, Usage};
-
-/// One finished (or failed) session, for the `-vv` summary.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionSummary {
-    /// 0-based position among the run's sources, and their count.
-    pub index: usize,
-    pub of: usize,
-    /// `"push"` or `"pull"`.
-    pub verb: &'static str,
-    /// The operands as typed.
-    pub from: String,
-    pub to: String,
-    pub reconnects: u32,
-    /// How the last connection was made; `None` if it never was.
-    pub conn: Option<ConnState>,
-    /// The key exchange group of the last connection (`X25519MLKEM768`).
-    pub key_exchange: Option<String>,
-    pub usage: Usage,
-    pub files_transferred: u64,
-    pub files_hashed: u64,
-    /// The session's QUIC bytes, as in the `sent`/`received` trailer.
-    pub bytes_sent: u64,
-    pub bytes_received: u64,
-    /// The session ended with an error (files that failed in a session
-    /// that ran to its end do not count).
-    pub failed: bool,
-}
-
-/// `0.4s`, `21.0s`, `2:47`, `1:02:03`.
-pub fn short_dur(d: Duration) -> String {
-    let secs = d.as_secs_f64();
-    if (secs * 10.0).round() < 600.0 {
-        return format!("{:.1}s", secs);
-    }
-    let whole = if secs < 60.0 { 60 } else { d.as_secs() };
-    if whole >= 3600 {
-        clock(Duration::from_secs(whole))
-    } else {
-        format!("{}:{:02}", whole / 60, whole % 60)
-    }
-}
+use crate::telemetry::timing::{ms, short_dur};
 
 /// Like [`short_dur`] but `m:ss` below a minute too (CPU time).
 fn cpu_dur(d: Duration) -> String {
@@ -64,15 +25,6 @@ fn cpu_dur(d: Duration) -> String {
         format!("0:{:02}", d.as_secs())
     } else {
         short_dur(d)
-    }
-}
-
-pub(crate) fn ms(d: Duration) -> String {
-    let v = d.as_secs_f64() * 1000.0;
-    if v < 10.0 {
-        format!("{v:.1}ms")
-    } else {
-        format!("{v:.0}ms")
     }
 }
 
@@ -434,14 +386,5 @@ mod tests {
         }
         // Wrapping keeps every activity.
         assert!(render(&s, 60).join("\n").contains("delete 5:33:20 ×4.0"));
-    }
-
-    #[test]
-    fn short_dur_forms() {
-        assert_eq!(short_dur(secs(0.4)), "0.4s");
-        assert_eq!(short_dur(secs(59.94)), "59.9s");
-        assert_eq!(short_dur(secs(59.97)), "1:00");
-        assert_eq!(short_dur(secs(167.0)), "2:47");
-        assert_eq!(short_dur(secs(3723.0)), "1:02:03");
     }
 }

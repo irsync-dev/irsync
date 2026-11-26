@@ -31,18 +31,18 @@ use irsync_proto::v1::{
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use super::control::{Ev, Out};
-use super::engine::{blocking, Ctx};
-use super::limits::{basis_wire_len, need_piece, ByteBudget, Held, BASIS_BATCH};
-use super::receiver::Done;
+use super::Done;
 use crate::delta::{decode, encoded_len, Basis, Op, Region, MIN_BLOCK};
 use crate::fs::meta::apply_metadata_fd;
 use crate::fs::paths::RelPath;
 use crate::index::{ChunkHolder, IndexHandle, NewEntry};
 use crate::net::frame::read_msg_tapped;
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
-use crate::recv::{discard_part, CloneSource, FileWriter, FinalizeError, Verified};
+use crate::part_file::{discard_part, CloneSource, FileWriter, FinalizeError, Verified};
 use crate::scan::ScanItem;
+use crate::session::control::{Ev, Out};
+use crate::session::engine::{blocking, Ctx};
+use crate::session::limits::{basis_wire_len, need_piece, ByteBudget, Held, BASIS_BATCH};
 use crate::telemetry::meter::{Activity, Counter, Meter};
 
 fn invalid(msg: &str) -> io::Error {
@@ -116,7 +116,7 @@ struct GateState {
 /// overwritten yet and forward reads of the old content stay valid), or
 /// at any time once it lies below the cursor (a re-sent chunk rewrites a
 /// range every forward reference has already passed).
-pub(super) struct Gate {
+pub(in crate::session) struct Gate {
     state: std::sync::Mutex<GateState>,
     tx: watch::Sender<u32>,
 }
@@ -148,7 +148,7 @@ impl Gate {
 
     /// Waits until chunk `idx` may be written; false once the gate is
     /// closed (the writer was retired).
-    pub async fn admit(&self, idx: u32) -> bool {
+    pub(crate) async fn admit(&self, idx: u32) -> bool {
         let mut rx = self.tx.subscribe();
         loop {
             let c = *rx.borrow_and_update();
@@ -183,13 +183,13 @@ impl Gate {
 
 /// The old destination file of a `DELTA`, hashed: its digest and the stat
 /// the digest was computed under.
-pub(super) struct OldFile {
+pub(in crate::session) struct OldFile {
     pub digest: FileDigest,
     pub entry: FileEntry,
     pub ctime: (i64, u32),
 }
 
-pub(super) enum Opened {
+pub(in crate::session) enum Opened {
     /// The `.part` writer and the chunks it still needs.
     Writer(Box<Fill>),
     /// The destination already holds the content (a `DELTA` whose
@@ -197,7 +197,7 @@ pub(super) enum Opened {
     Identical { file: File, digest: Arc<FileDigest> },
 }
 
-pub(super) struct Fill {
+pub(in crate::session) struct Fill {
     pub writer: FileWriter,
     /// Chunks with no local source: to be requested from the sender.
     pub remote: Vec<u32>,
@@ -286,9 +286,9 @@ async fn hash_key(ctx: &Ctx, key: &RelPath) -> Option<OldFile> {
         entry: entry.clone(),
         ctime,
     };
-    let since = super::wait_start(&ctx.meter);
+    let since = crate::session::wait_start(&ctx.meter);
     let hashed = ctx.hasher.digest(&item).await;
-    super::record_hash_wait(&ctx.meter, since);
+    crate::session::record_hash_wait(&ctx.meter, since);
     if hashed.is_ok() {
         // The chunk lookup that follows reads the index: wait for the
         // digest to be written there.
@@ -585,7 +585,7 @@ pub(super) async fn open_writer(
 /// it and drops it.
 ///
 /// Bases are held under the session's basis budget (`budget`, see
-/// [`BASIS_BUDGET`](super::limits::BASIS_BUDGET)) from being sent until
+/// [`BASIS_BUDGET`](crate::session::limits::BASIS_BUDGET)) from being sent until
 /// their request is queued. They go out in batches of at most
 /// [`BASIS_BATCH`], each followed by the request for its chunks; a basis
 /// that does not fit first requests the batch so far, which frees its
@@ -1536,10 +1536,9 @@ fn account(ctx: &Ctx, route: &Route, bytes: &AtomicU64, wire: u64) {
     ctx.progress.store(true, Ordering::Relaxed);
     ctx.busy.received.fetch_add(wire, Ordering::Relaxed);
     ctx.activity.fetch_add(1, Ordering::Relaxed);
-    ctx.hooks
-        .bus
-        .emit(super::Event::FileBytes(route.path.clone(), wire));
-    ctx.hooks.bus.emit(super::Event::Bytes(wire));
+    ctx.bus
+        .emit(crate::session::Event::FileBytes(route.path.clone(), wire));
+    ctx.bus.emit(crate::session::Event::Bytes(wire));
     ctx.meter.add(Counter::BytesLiteral, wire);
     let _total = bytes.fetch_add(wire, Ordering::Relaxed) + wire;
     #[cfg(feature = "test-hooks")]
@@ -1590,7 +1589,7 @@ mod tests {
     #[tokio::test]
     async fn a_retired_writer_offers_no_bases() {
         use irsync_proto::v1::Control;
-        let t = super::super::engine::test_ctx().await;
+        let t = crate::session::engine::test_ctx().await;
         let ctx = t.ctx.clone();
         const LEN: u32 = 64 * 1024;
         let path = ctx.root.join("old");
@@ -1599,7 +1598,7 @@ mod tests {
         let old = Arc::new(File::open(&path).unwrap());
         let (send, _) = ctx.conn.open_bi().await.unwrap();
         let (events, _events) = mpsc::unbounded_channel();
-        let (out, writer) = super::super::control::spawn_writer(
+        let (out, writer) = crate::session::control::spawn_writer(
             send,
             events,
             &ctx.hooks,
@@ -1664,7 +1663,7 @@ mod tests {
     /// bytes it could find out what the old file holds, one guess at a time.
     #[tokio::test]
     async fn copies_come_only_from_whole_blocks_offered_for_the_chunk() {
-        let t = super::super::engine::test_ctx().await;
+        let t = crate::session::engine::test_ctx().await;
         let ctx = t.ctx.clone();
         const LEN: u32 = 64 * 1024;
         let path = ctx.root.join("old");

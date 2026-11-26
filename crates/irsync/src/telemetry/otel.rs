@@ -37,7 +37,7 @@ pub struct OtelProviders {
 /// Builds the providers for `cfg`: a batch span processor and a periodic
 /// metric reader, each with its own OTLP exporter. The other `OTEL_*`
 /// variables are the SDK's. Call inside a runtime context (tonic needs one).
-pub fn providers(
+pub(crate) fn providers(
     cfg: &OtlpConfig,
     side: Side,
     endpoint_id: Option<String>,

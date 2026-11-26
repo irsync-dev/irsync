@@ -1,13 +1,13 @@
 use irsync::fs::meta::ApplyOpts;
 use irsync::fs::paths::RelPath;
 use irsync::index::{Index, IndexHandle};
+use irsync::part_file::{FileWriter, FinalizeError};
 #[cfg(unix)]
 use irsync::platform::file_id;
 use irsync::platform::testutil::symlink;
 #[cfg(unix)]
 use irsync::platform::testutil::{blocks_of, errno, mkfifo, set_mode};
 use irsync::platform::{mode_of, mtime_of};
-use irsync::recv::{FileWriter, FinalizeError};
 use irsync_proto::chunk::{digest_bytes, ChunkRecord, FileDigest};
 use irsync_proto::v1::{self, file_entry::Kind, FileEntry};
 use std::fs;
@@ -422,7 +422,7 @@ async fn partial_dir_and_copy_local() {
     let src = e.root.join("src.bin");
     fs::write(&src, &data).unwrap();
     let pd = e.root.join(".partials");
-    let pdir = irsync::recv::PartialDir::new(&pd);
+    let pdir = irsync::part_file::PartialDir::new(&pd);
     let mut w = FileWriter::open(&e.root, &rel(), &cl, Some(&pdir), e.index.clone()).unwrap();
     // A wrong source offset is caught by the hash check.
     let at = |p: &str| irsync::fs::safe::Beneath::new(&e.root, RelPath::new(p.as_bytes()).unwrap());
@@ -757,7 +757,7 @@ async fn busy_part_waits_for_previous_holder() {
 }
 
 mod temp_names {
-    use irsync::recv::{is_temp_name, temp_name, NAME_MAX};
+    use irsync::fs::temp_name::{is_temp_name, temp_name, NAME_MAX};
 
     #[test]
     fn short_names_are_wrapped_verbatim() {
@@ -873,7 +873,7 @@ fn reflinks(dir: &Path) -> bool {
     // would read as "cannot clone" on every filesystem.
     let a = fs::File::open(dir.join(".probe-a")).unwrap();
     let b = fs::File::create(dir.join(".probe-b")).unwrap();
-    let ok = irsync::recv::reflink(&a, &b).is_ok();
+    let ok = irsync::part_file::reflink(&a, &b).is_ok();
     let _ = fs::remove_file(dir.join(".probe-a"));
     let _ = fs::remove_file(dir.join(".probe-b"));
     if !ok {
@@ -882,8 +882,11 @@ fn reflinks(dir: &Path) -> bool {
     ok
 }
 
-fn clone_source<'a>(file: &'a fs::File, digest: &'a FileDigest) -> irsync::recv::CloneSource<'a> {
-    irsync::recv::CloneSource { file, digest }
+fn clone_source<'a>(
+    file: &'a fs::File,
+    digest: &'a FileDigest,
+) -> irsync::part_file::CloneSource<'a> {
+    irsync::part_file::CloneSource { file, digest }
 }
 
 #[tokio::test]
@@ -1304,7 +1307,7 @@ async fn a_partial_dir_that_is_a_link_is_not_followed() {
     symlink(outside.path(), &e.root.join("p")).unwrap();
     let data = content(85);
     let cl = chunk_list(&data);
-    let pd = irsync::recv::PartialDir::new(Path::new("p"));
+    let pd = irsync::part_file::PartialDir::new(Path::new("p"));
     let opened = FileWriter::open(&e.root, &rel(), &cl, Some(&pd), e.index.clone());
     let failed = match opened {
         Err(_) => true,

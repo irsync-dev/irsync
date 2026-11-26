@@ -29,10 +29,10 @@ network data, and a stale local source degrades to a network fetch.
 
 ### Plan time: the old file's hash starts early
 
-`Planner` (`session/planner.rs`) merge-joins the two listings and calls
+`Planner` (`session/receiver/planner.rs`) merge-joins the two listings and calls
 `plan::decide`. When the decision is `Delta`, at the moment the `PlanItem` is
 handed to the control stream, the planner spawns a task that runs
-`recv_io::index_old_file` on the destination path.
+`file_io::index_old_file` on the destination path.
 
 `index_old_file` takes an `lstat` (size, mtime, ctime, inode) and asks the
 session's hasher for the file's digest. A fresh index row answers at once;
@@ -59,7 +59,7 @@ which `Receiver::on_chunk_list_start` and `on_chunk_list_more` reassemble
 of a sequence drops the half-built list; the resumed session gets a fresh
 sequence.
 
-`Receiver::on_chunk_list` (`session/receiver.rs`) bumps the file's
+`Receiver::on_chunk_list` (`session/receiver/mod.rs`) bumps the file's
 generation, retires any earlier writer for the file, so that no stale task can
 touch the `.part` afterwards, takes the hash task's handle out of the file's
 state, and spawns `open_writer`. The handle is taken, not cloned: a second
@@ -68,7 +68,7 @@ calls `index_old_file` itself, which by then is a cache hit.
 
 ### Open and partition
 
-`recv_io::open_writer` copies nothing. It:
+`file_io::open_writer` copies nothing. It:
 
 1. **Takes the old file's hash** (`DELTA` only): it awaits the handle, which
    yields the old file's digest with the stat it was computed under. Without a
@@ -157,7 +157,7 @@ request has even been sent.
 
 ### Bases and operations
 
-`recv_io::offer_bases` runs as one task per file. For each chosen chunk it
+`file_io::offer_bases` runs as one task per file. For each chosen chunk it
 reads the region from the old file's descriptor, outside every lock, signs it
 (`delta::Basis::sign`: blocks of `sqrt(region)` bytes clamped to 512 B ..
 4 KiB, per block a 32-bit rolling sum and the first 8 bytes of the block's
@@ -168,7 +168,7 @@ region that cannot be read ends the signing, and the chunks left over are
 requested raw. The control stream is ordered, so the sender holds every basis
 before it sees the request that uses it.
 
-On the sender (`sender_role::on_basis`, `send::payload`) a basis is kept per
+On the sender (`sender::on_basis`, `data_stream::payload`) a basis is kept per
 file and chunk until the request for that chunk arrives, then handed to the
 data-stream task. For such a chunk the task runs `delta::encode`: a window of
 one block slides over the chunk's bytes one byte at a time, the rolling sum is
@@ -250,7 +250,7 @@ three re-requests fails with `WRITE_ERROR`.
 
 ### Finalize
 
-`recv_io::finalize` runs `fsync` (only with `--fsync`, or on a push into an
+`file_io::finalize` runs `fsync` (only with `--fsync`, or on a push into an
 export with `fsync = true`), compares the whole-file hash with the
 sender's, applies metadata through the descriptor, renames the `.part` over
 the destination, records the file in the index and sends `FileAck DONE`.

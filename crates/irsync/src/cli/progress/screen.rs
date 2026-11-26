@@ -49,11 +49,11 @@ impl Screen {
         }
     }
 
-    pub fn is_tty(&self) -> bool {
+    pub(crate) fn is_tty(&self) -> bool {
         matches!(self, Screen::Tty { .. })
     }
 
-    pub fn geometry(&self) -> Geometry {
+    pub(crate) fn geometry(&self) -> Geometry {
         match self {
             Screen::Plain(_) => Geometry::fixed(80, 24),
             Screen::Tty { geometry, .. } => geometry(),

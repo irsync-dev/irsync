@@ -1,9 +1,9 @@
 //! The `[clients]` table of `irsync.toml`: names for the peers that
 //! grants are given to.
 
+use super::access::Access;
 use super::names::{invalid_name, valid_alias};
 use super::{endpoint_id_from, file_error, ConfigError};
-use crate::authz::Access;
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
@@ -86,7 +86,7 @@ impl Right {
     }
 
     /// The message of a value that is not `"rw"` or `"ro"`.
-    pub fn not_an_access(self) -> String {
+    pub(crate) fn not_an_access(self) -> String {
         format!("{} must be \"rw\" or \"ro\"", self.key())
     }
 }

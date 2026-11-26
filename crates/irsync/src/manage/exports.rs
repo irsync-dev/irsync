@@ -5,6 +5,7 @@
 use super::ManageError;
 use crate::authz::Access;
 use crate::config::exports::RESERVED;
+use crate::config::paths::Paths;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::path::{Component, Path, PathBuf};
@@ -271,7 +272,7 @@ pub fn target_name(arg: &str) -> String {
 /// must be absolute or start with `~`, since there is no working
 /// directory to join it onto. The name and the path as the file is to
 /// hold it: under `~` when it was typed so and stays under `home`.
-pub fn parse_remote_target(
+pub(crate) fn parse_remote_target(
     arg: &str,
     home: Option<&Path>,
 ) -> Result<(String, String), ManageError> {
@@ -315,12 +316,12 @@ pub fn added_line(name: &str, path: &Path, old: Option<&str>, config: &Path) -> 
 }
 
 /// What `export rename` reports.
-pub fn renamed_line(old: &str, new: &str, config: &Path) -> String {
+pub(crate) fn renamed_line(old: &str, new: &str, config: &Path) -> String {
     format!("renamed export {old} to {new} in {}", config.display())
 }
 
 /// What `export remove` reports once the export is gone.
-pub fn removed_line(name: &str, config: &Path) -> String {
+pub(crate) fn removed_line(name: &str, config: &Path) -> String {
     format!("removed export {name} from {}", config.display())
 }
 
@@ -368,4 +369,31 @@ fn add_target_in(
             .ok_or_else(|| ManageError::NotADirectory(path.clone()))?,
     };
     Ok((name, path))
+}
+
+// The commands, from the config file's lock to the line they say.
+
+/// `export remove NAME`; the line to say.
+pub fn remove(paths: &Paths, name: &str) -> anyhow::Result<String> {
+    super::edit(&paths.config, |msg| remove_export(msg, name))?;
+    Ok(removed_line(name, &paths.config))
+}
+
+/// `export set NAME KEY=VALUE...`; the line to say, if any.
+pub fn set(paths: &Paths, name: &str, settings: &[String]) -> anyhow::Result<Option<String>> {
+    // Every pair is read before anything changes.
+    let settings: Vec<_> = settings
+        .iter()
+        .map(|s| parse_setting(s))
+        .collect::<Result<_, _>>()?;
+    super::load_first(paths)?;
+    let ((), msg) = super::edit(&paths.config, |msg| export_set(msg, name, &settings))?;
+    Ok(set_line(&msg, name))
+}
+
+/// `export rename OLD NEW`; the line to say.
+pub fn rename(paths: &Paths, old: &str, new: &str) -> anyhow::Result<String> {
+    super::load_first(paths)?;
+    super::edit(&paths.config, |msg| rename_export(msg, old, new))?;
+    Ok(renamed_line(old, new, &paths.config))
 }

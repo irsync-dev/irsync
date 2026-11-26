@@ -32,23 +32,23 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
-use super::control::{is_own_temp, Ev, Listed, Out};
-use super::engine::{blocking, Ctx};
-use super::receiver::Done;
-use super::recv_io::{index_old_file, OldFile};
-use crate::cli::DeleteMode;
+use super::file_io::{index_old_file, OldFile};
+use super::Done;
 use crate::delete::DeletePass;
 use crate::filter::Verdict;
 use crate::fs::meta::{apply_metadata_at, create_special_at};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::Beneath;
+use crate::options::DeleteMode;
 use crate::plan::{decide, itemize, merge_join, meta_differs, Decision, PlanOpts, Side};
 use crate::platform::{cause, Cause, Dir, Kind as FileKind, LinkKind};
+use crate::session::control::{is_own_temp, Ev, Listed, Out};
+use crate::session::engine::{blocking, Ctx};
 use crate::telemetry::meter::Activity;
 use crate::telemetry::PhaseKind;
 
 /// A regular file the planner requested from the sender.
-pub(super) struct Planned {
+pub(in crate::session) struct Planned {
     pub file_id: u64,
     pub path: RelPath,
     /// The sender's listing entry (metadata applied at finalize).
@@ -65,7 +65,7 @@ pub(super) struct Planned {
 /// What the planner started early or held back for a `DELTA` file; empty
 /// for other actions and for files of a resumed plan.
 #[derive(Default)]
-pub(super) struct Deferred {
+pub(in crate::session) struct Deferred {
     /// Hashing of the old destination file, started at plan time so it
     /// runs alongside the sender's digest of the new one.
     pub prehash: Option<JoinHandle<Option<OldFile>>>,
@@ -76,14 +76,14 @@ pub(super) struct Deferred {
 
 /// A `DELTA` file's itemize line as planned (a transfer) and as it reads if
 /// the content proves unchanged (attributes only; none if nothing differs).
-pub(super) struct Itemize {
+pub(in crate::session) struct Itemize {
     pub planned: String,
     pub meta: Option<String>,
 }
 
 /// At most this many requested files are in flight (planned, not yet
 /// acknowledged) per session; the planner waits for a slot before the next.
-pub(super) const MAX_INFLIGHT: usize = 4096;
+pub(in crate::session) const MAX_INFLIGHT: usize = 4096;
 
 /// Descriptors a file in flight may hold: its `.part` and, for a `DELTA`
 /// or `APPEND`, the old file.
@@ -119,7 +119,7 @@ pub(super) fn inflight_cap(ctx: &Ctx) -> usize {
 
 /// A hard link (`-H`) the planner decided on: placed by the receiver after
 /// every regular file, since its target may still be in flight.
-pub(super) struct Linked {
+pub(in crate::session) struct Linked {
     pub file_id: u64,
     pub path: RelPath,
     /// The sender's listing entry (kind `HARDLINK`, `link_target` = target).
@@ -127,7 +127,7 @@ pub(super) struct Linked {
     pub target: RelPath,
 }
 
-pub(super) struct DirEntry {
+pub(in crate::session) struct DirEntry {
     pub path: RelPath,
     pub entry: FileEntry,
     /// Created or metadata differs: apply even if no child changed.
@@ -135,7 +135,7 @@ pub(super) struct DirEntry {
 }
 
 #[derive(Default)]
-pub(super) struct PlannerReport {
+pub(in crate::session) struct PlannerReport {
     pub skipped: u64,
     /// Source entries by kind (`--stats`).
     pub listed: crate::scan::ListStats,
@@ -211,7 +211,7 @@ fn place_via_temp(
     apply: &crate::fs::meta::ApplyOpts,
 ) -> io::Result<()> {
     let (dir, name) = at.parent()?;
-    let tmp = crate::recv::temp_name(&name, b".tmp");
+    let tmp = crate::fs::temp_name::temp_name(&name, b".tmp");
     match dir.remove_file(&tmp) {
         Err(e) if cause(&e) != Cause::NotThere => return Err(e),
         _ => {}
@@ -266,7 +266,7 @@ pub(super) fn place_hardlink(
     if tm.kind != FileKind::File {
         return Err(io::Error::other("hard link target is not a regular file"));
     }
-    let tmp = crate::recv::temp_name(&lname, b".tmp");
+    let tmp = crate::fs::temp_name::temp_name(&lname, b".tmp");
     match lfd.remove_file(&tmp) {
         Ok(()) => {}
         Err(e) if cause(&e) == Cause::NotThere => {}
@@ -417,7 +417,6 @@ impl Planner {
         let msg = msg.into();
         tracing::info!(?path, error = %msg, "receiver");
         self.ctx
-            .hooks
             .bus
             .emit(crate::session::Event::Failed(path.clone(), msg.clone()));
         self.report.errors.push((path.clone(), msg));
@@ -433,7 +432,6 @@ impl Planner {
             return;
         }
         self.ctx
-            .hooks
             .bus
             .emit(crate::session::Event::Skipped(path.clone(), size));
         self.ctx
@@ -606,7 +604,7 @@ impl Planner {
                         }))
                         .await;
                 }
-                let bus = &self.ctx.hooks.bus;
+                let bus = &self.ctx.bus;
                 bus.emit(crate::session::Event::Itemized(path.clone(), code));
                 // rsync -n -v lists what would be transferred.
                 if self.ctx.opts.dry_run

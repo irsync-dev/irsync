@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Flow, Harness};
-use irsync::cli::{Args, SyncOptions};
+use irsync::cli::Args;
+use irsync::options::SyncOptions;
 use irsync::platform::{egid, euid, group_name, mode_of, mtime_of, owner_of, user_name};
 use irsync::session::Event;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
@@ -55,7 +56,7 @@ async fn peer_ids_are_mapped_by_name_unless_numeric_ids() {
                     Vec::new()
                 }
             }));
-            let mut rx = local.hooks.bus.subscribe();
+            let mut rx = local.bus.subscribe();
             let out = h.run_side(&opts(extra), Flow::Push, local).await.unwrap();
             assert!(out.errors.is_empty(), "{extra:?}: {:?}", out.errors);
             let mut codes = Vec::new();

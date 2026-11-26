@@ -15,9 +15,9 @@ use irsync::fs::transient::{waits, RETRIES};
 #[cfg(unix)]
 use irsync::index::Index;
 #[cfg(unix)]
-use irsync::platform::testutil::errno;
+use irsync::part_file::FileWriter;
 #[cfg(unix)]
-use irsync::recv::FileWriter;
+use irsync::platform::testutil::errno;
 #[cfg(unix)]
 use irsync_proto::chunk::digest_bytes;
 

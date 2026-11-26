@@ -17,7 +17,7 @@ fn acquire_writes_info_and_probe_sees_it() {
         info.exe,
         std::path::PathBuf::from(env!("CARGO_BIN_EXE_irsync"))
     );
-    assert_eq!(info.version, *irsync::build::LONG_VERSION);
+    assert_eq!(info.version, *irsync::build_info::LONG_VERSION);
 }
 
 #[test]

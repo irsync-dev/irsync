@@ -170,7 +170,7 @@ fn fresh_home_generates_grants_starts() {
     assert_eq!(r.identity, Created::Generated);
     assert_eq!(r.grant, GrantOutcome::Added);
     assert_eq!(r.daemon, DaemonOutcome::Started);
-    assert_eq!(r.version, *irsync::build::LONG_VERSION);
+    assert_eq!(r.version, *irsync::build_info::LONG_VERSION);
     assert_eq!(r.log, home.state().join("daemon.log"));
     let doc = read_config(&home);
     // The client is saved under its host name, with all_paths = "rw".
@@ -375,7 +375,7 @@ fn setup_restarts_own_stale_daemon() {
         "helper still running"
     );
     let info = probe(&home.state()).expect("new daemon running");
-    assert_eq!(info.version, *irsync::build::LONG_VERSION);
+    assert_eq!(info.version, *irsync::build_info::LONG_VERSION);
 }
 
 #[test]

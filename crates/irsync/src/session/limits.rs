@@ -61,7 +61,7 @@ pub(super) fn need_piece(hooks: &super::SideHooks) -> usize {
 ///
 /// `held` (sender indices too): the chunks the receiver holds the first
 /// bytes of, each named in the piece that requests it. At most
-/// `recv::MAX_HELD_CHUNKS` entries, a few hundred bytes on the wire, which
+/// `part_file::MAX_HELD_CHUNKS` entries, a few hundred bytes on the wire, which
 /// [`FILE_WIRE`] leaves room for.
 pub(super) fn need_pieces(
     file_id: u64,
@@ -125,20 +125,19 @@ const FILE_WIRE: usize = 16 * 1024;
 /// ≈ 1.0 GB (964 MiB, nearly all of it chunk lists), a receiver 4 MiB + 5 × 2^24
 /// × 4 B + 4096 × 16 KiB + 16 MiB ≈ 424 MB.
 ///
-/// [`MAX_INFLIGHT`]: super::planner::MAX_INFLIGHT
-/// [`MAX_RETRIES`]: super::sender_role::MAX_RETRIES
+/// [`MAX_INFLIGHT`]: super::receiver::planner::MAX_INFLIGHT
+/// [`MAX_RETRIES`]: super::sender::MAX_RETRIES
 /// [`MAX_REREQUESTS`]: super::receiver::MAX_REREQUESTS
 /// [`MAX_FRAME`]: crate::net::frame::MAX_FRAME
 fn honest_out(list_budget: u64, sends: bool) -> usize {
-    use super::planner::MAX_INFLIGHT;
+    use super::receiver::planner::MAX_INFLIGHT;
     use crate::net::frame::MAX_FRAME;
     let records = usize::try_from(list_budget).unwrap_or(usize::MAX);
     let files = MAX_INFLIGHT.saturating_mul(FILE_WIRE);
     let frames = if sends {
         OUT_BUDGET.saturating_add(records.saturating_mul(RECORD_WIRE))
     } else {
-        let lists =
-            (1 + super::sender_role::MAX_RETRIES + super::receiver::MAX_REREQUESTS) as usize;
+        let lists = (1 + super::sender::MAX_RETRIES + super::receiver::MAX_REREQUESTS) as usize;
         OUT_BUDGET.saturating_add(lists.saturating_mul(records).saturating_mul(INDEX_WIRE))
     };
     frames.saturating_add(files).saturating_add(MAX_FRAME)
@@ -289,7 +288,7 @@ impl ByteBudget {
 
     /// Takes `n` bytes, waiting until they fit. Cancel-safe: nothing is
     /// taken unless it returns.
-    pub async fn acquire(&self, n: usize) {
+    pub(crate) async fn acquire(&self, n: usize) {
         loop {
             let freed = self.freed.notified();
             tokio::pin!(freed);
@@ -303,7 +302,7 @@ impl ByteBudget {
     }
 
     /// Takes `n` bytes if they fit now.
-    pub fn try_acquire(&self, n: usize) -> bool {
+    pub(crate) fn try_acquire(&self, n: usize) -> bool {
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
         if *held > 0 && *held + n > self.limit {
             return false;
@@ -342,7 +341,7 @@ impl Held {
     }
 
     /// Takes `n` more bytes if they fit now.
-    pub fn try_take(&mut self, n: usize) -> bool {
+    pub(crate) fn try_take(&mut self, n: usize) -> bool {
         let ok = self.budget.try_acquire(n);
         if ok {
             self.n += n;

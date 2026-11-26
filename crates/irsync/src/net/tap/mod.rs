@@ -197,7 +197,7 @@ impl ConnTap {
     }
 
     /// Records the session id once the Hello names it; later calls are ignored.
-    pub fn set_session(&self, id: &[u8]) {
+    pub(crate) fn set_session(&self, id: &[u8]) {
         if let (Some(c), Ok(id)) = (&self.0, <[u8; 16]>::try_from(id)) {
             let _ = c.session.set(id);
         }

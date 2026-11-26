@@ -72,7 +72,7 @@ pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Option<Vec
 /// [`read_body`] for frames of at most `max` bytes (itself at most
 /// [`MAX_FRAME`]); a longer one is the error [`FrameTooLarge`], and its
 /// body is left unread.
-pub async fn read_body_max<R: AsyncRead + Unpin>(
+pub(crate) async fn read_body_max<R: AsyncRead + Unpin>(
     r: &mut R,
     max: usize,
 ) -> io::Result<Option<Vec<u8>>> {
@@ -173,7 +173,7 @@ where
 
 /// [`read_msg`], reporting the message to `tap` as received, a clean end of
 /// stream as finished and an error as a reset.
-pub async fn read_msg_tapped<M, R>(r: &mut R, tap: &StreamTap) -> io::Result<Option<M>>
+pub(crate) async fn read_msg_tapped<M, R>(r: &mut R, tap: &StreamTap) -> io::Result<Option<M>>
 where
     M: WireMsg,
     R: AsyncRead + Unpin,
@@ -183,7 +183,7 @@ where
 
 /// [`read_msg_tapped`] for frames of at most `max` bytes; see
 /// [`read_body_max`]. A frame over the cap is reported as a reset.
-pub async fn read_msg_max_tapped<M, R>(
+pub(crate) async fn read_msg_max_tapped<M, R>(
     r: &mut R,
     max: usize,
     tap: &StreamTap,

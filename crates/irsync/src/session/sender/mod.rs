@@ -8,6 +8,8 @@
 //!
 //! Per-file state lives only while a file is in flight: it is dropped at its
 //! final ack or when the sender gives up on it.
+//!
+//! The data streams themselves are opened and filled by [`crate::data_stream`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io;
@@ -37,16 +39,16 @@ use super::limits::{
 };
 use super::listing_stream::ListingOut;
 use super::parts::{records_at_most, split, ListCredit, ListStat, PART_RECORDS};
-use super::planner::MAX_INFLIGHT;
+use super::receiver::planner::MAX_INFLIGHT;
 use super::Outcome;
+use crate::data_stream::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
 use crate::delta::Basis;
 use crate::filter::{FilterSet, Verdict as FilterVerdict};
 use crate::fs::paths::RelPath;
 use crate::hasher::{Freshness, Hashed};
+use crate::part_file::MAX_HELD_CHUNKS;
 use crate::platform::clone::{Cloned, Clones};
-use crate::recv::MAX_HELD_CHUNKS;
 use crate::scan::{ScanItem, ScanSummary};
-use crate::send::{SendProgress, Sender, DEFAULT_SPLIT_THRESHOLD};
 use crate::telemetry::meter::Counter;
 use crate::telemetry::PhaseKind;
 use irsync_proto::v1::plan_item::Action;
@@ -360,7 +362,7 @@ impl SenderRole {
                 hard_links: self.ctx.opts.preserve.hard_links,
                 recursive: self.ctx.opts.preserve.recursive,
                 dirs: self.ctx.opts.preserve.dirs,
-                bus: Some(self.ctx.hooks.bus.clone()),
+                bus: Some(self.ctx.bus.clone()),
                 cold: None,
                 busy: Some(self.ctx.busy.clone()),
                 activity: Some(self.ctx.activity.clone()),
@@ -548,7 +550,6 @@ impl SenderRole {
         // Given up and reported: not checked again at the end.
         self.final_stats.remove(&f.path);
         self.ctx
-            .hooks
             .bus
             .emit(super::Event::Failed(f.path.clone(), msg.clone()));
         self.errors.push((f.path.clone(), msg.clone()));
@@ -734,16 +735,13 @@ impl SenderRole {
         };
         // `-n -v` lists the files that would be transferred.
         if self.ctx.opts.dry_run && i.code.starts_with('>') && i.code[1..].starts_with('f') {
-            self.ctx
-                .hooks
-                .bus
-                .emit(super::Event::WouldTransfer(path.clone()));
+            self.ctx.bus.emit(super::Event::WouldTransfer(path.clone()));
         }
         let code = match i.code.strip_prefix('>') {
             Some(rest) => format!("<{rest}"),
             None => i.code,
         };
-        self.ctx.hooks.bus.emit(super::Event::Itemized(path, code));
+        self.ctx.bus.emit(super::Event::Itemized(path, code));
     }
 
     fn on_digested(
@@ -919,7 +917,7 @@ impl SenderRole {
             .filter(|&i| (i as usize) < digest.chunks.len())
             .collect();
         // What the receiver holds of the chunks it asks for: those start
-        // there (`send::split_ranges` ignores a count that is not less
+        // there (`data_stream::split_ranges` ignores a count that is not less
         // than the chunk).
         let from: BTreeMap<u32, u32> = if n.held.is_empty() {
             BTreeMap::new()
@@ -948,7 +946,6 @@ impl SenderRole {
                 f.started = super::wait_start(&self.ctx.meter);
             }
             self.ctx
-                .hooks
                 .bus
                 .emit(super::Event::FileMatched(f.path.clone(), matched));
         }
@@ -1096,10 +1093,7 @@ impl SenderRole {
             if f.gen == gen {
                 f.streams = f.streams.saturating_sub(1);
                 if f.streams == 0 && f.pending.is_none() && result.is_ok() {
-                    self.ctx
-                        .hooks
-                        .bus
-                        .emit(super::Event::FileSent(f.path.clone()));
+                    self.ctx.bus.emit(super::Event::FileSent(f.path.clone()));
                 }
             }
         }
@@ -1333,10 +1327,7 @@ impl SenderRole {
                     let size = f.digest.as_ref().map_or(0, |d| d.size);
                     super::record_file(&self.ctx.meter, f.started, size);
                     self.transferred_size += size;
-                    self.ctx
-                        .hooks
-                        .bus
-                        .emit(super::Event::FileDone(f.path, size));
+                    self.ctx.bus.emit(super::Event::FileDone(f.path, size));
                 }
                 self.files_done += 1;
                 self.persist.done(file_id);
@@ -1348,7 +1339,6 @@ impl SenderRole {
                     let msg = format!("receiver: {}", a.message);
                     tracing::info!(path = ?f.path, error = %msg, "file failed");
                     self.ctx
-                        .hooks
                         .bus
                         .emit(super::Event::Failed(f.path.clone(), msg.clone()));
                     self.errors.push((f.path, msg));
@@ -1467,7 +1457,6 @@ impl SenderRole {
     fn on_rechecked(&mut self, vanished: Vec<RelPath>, errors: Vec<(RelPath, String)>) {
         for (path, msg) in &errors {
             self.ctx
-                .hooks
                 .bus
                 .emit(super::Event::Failed(path.clone(), msg.clone()));
         }
@@ -1497,17 +1486,14 @@ impl SenderRole {
         self.would_delete = paths(&d.would_delete_paths);
         self.would_delete_omitted = d.would_delete_omitted;
         for p in &self.deleted {
-            self.ctx.hooks.bus.emit(super::Event::Itemized(
+            self.ctx.bus.emit(super::Event::Itemized(
                 p.clone(),
                 crate::plan::DELETING.into(),
             ));
-            self.ctx.hooks.bus.emit(super::Event::Deleted(p.clone()));
+            self.ctx.bus.emit(super::Event::Deleted(p.clone()));
         }
         for p in &self.would_delete {
-            self.ctx
-                .hooks
-                .bus
-                .emit(super::Event::WouldDelete(p.clone()));
+            self.ctx.bus.emit(super::Event::WouldDelete(p.clone()));
         }
         self.created = d.created;
         self.peer_listed = d.listed.as_ref().map(crate::scan::ListStats::from_wire);
@@ -1999,7 +1985,7 @@ pub(super) async fn run(
     ));
     sender.set_meter(ctx.meter.clone());
     {
-        let (bus, activity) = (ctx.hooks.bus.clone(), ctx.activity.clone());
+        let (bus, activity) = (ctx.bus.clone(), ctx.activity.clone());
         #[cfg(feature = "test-hooks")]
         let (fault, conn, wire) = (
             ctx.fault.clone(),

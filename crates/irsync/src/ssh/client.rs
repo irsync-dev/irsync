@@ -11,7 +11,7 @@ use super::onboard::SetupFlags;
 use super::payload::{Contents, Packed, Staged};
 use super::release;
 use super::setup::SetupReport;
-use crate::build::{BuildInfo, LONG_VERSION};
+use crate::build_info::{BuildInfo, LONG_VERSION};
 use crate::config::names::short_host_name;
 
 /// irsync on the server, relative to the remote home: where the release
@@ -473,7 +473,7 @@ pub fn setup_command(client: EndpointId, client_name: &str, flags: SetupFlags) -
 /// passes `--recheck` (a saved host: never add back a removed grant),
 /// `no_dht` passes `--no-dht` (turn the daemon's DHT publishing off),
 /// `no_service` passes `--no-service` (no user service).
-pub fn run_setup(
+pub(crate) fn run_setup(
     rsh: &Rsh,
     dest: &str,
     client: EndpointId,

@@ -19,7 +19,7 @@ use super::engine::{
     PeerError, SessionRefused, TransportError,
 };
 use super::{control::hex, LocalSide, Outcome, SessionRecord, SyncHello, CLOSE_SUPERSEDED};
-use crate::cli::SyncOptions;
+use crate::options::SyncOptions;
 use crate::platform::local_time;
 use crate::telemetry::{phase, Phase, PhaseKind, Side};
 
@@ -219,7 +219,7 @@ fn describe_close(code: u32, reason: &str, remote: &str, client: &EndpointId) ->
 /// A failed dial to `target`. When no lookup found any address for it, the
 /// usual cause is a host entry holding the server's client ID instead of its
 /// daemon's, or a daemon that isn't running, so the message says how to check.
-pub fn describe_dial(target: &EndpointId, err: &ConnectError) -> String {
+pub(crate) fn describe_dial(target: &EndpointId, err: &ConnectError) -> String {
     let no_address = matches!(
         err,
         ConnectError::Connect {
@@ -246,7 +246,7 @@ pub const WRONG_ID_HINT: &str = "if you added this server's ID by hand, it must 
 
 /// A name that is neither a saved server nor an EndpointId. `config_file`
 /// is where saved servers are looked up.
-pub fn not_paired(host: &str, config_file: &std::path::Path) -> String {
+pub(crate) fn not_paired(host: &str, config_file: &std::path::Path) -> String {
     format!(
         "{host} is not a saved server or an EndpointId (saved servers are in {}). \
          To set it up over ssh: irsync pair {host}. To add it by hand: \
@@ -256,7 +256,7 @@ pub fn not_paired(host: &str, config_file: &std::path::Path) -> String {
 }
 
 /// A name saved as a client only, with no server of that name.
-pub fn client_only(host: &str) -> String {
+pub(crate) fn client_only(host: &str) -> String {
     format!(
         "{host} is saved as a client only: this machine has never dialled its \
          daemon. To set it up over ssh: irsync pair {host}"
@@ -271,7 +271,7 @@ pub fn client_only(host: &str) -> String {
 pub const PAIRED_FIRST_DIAL: Duration = Duration::from_secs(15);
 
 /// A saved server with an `ssh` value that never answered.
-pub fn not_answering(alias: &str) -> String {
+pub(crate) fn not_answering(alias: &str) -> String {
     format!(
         "{alias} did not answer. On {alias}, check that the daemon is running: \
          systemctl --user status irsync (Linux) or launchctl list \
@@ -284,7 +284,7 @@ pub fn not_answering(alias: &str) -> String {
 /// A server that never answered, explained: `paired` (the name of a saved
 /// server with an `ssh` value) is told how to start its daemon again; any
 /// other gets [`WRONG_ID_HINT`] (see [`with_wrong_id_hint`]).
-pub fn never_reached(err: anyhow::Error, paired: Option<&str>) -> anyhow::Error {
+pub(crate) fn never_reached(err: anyhow::Error, paired: Option<&str>) -> anyhow::Error {
     match paired {
         Some(alias) => anyhow::anyhow!("{err:#}; {}", not_answering(alias)),
         None => with_wrong_id_hint(err),
@@ -293,7 +293,7 @@ pub fn never_reached(err: anyhow::Error, paired: Option<&str>) -> anyhow::Error 
 
 /// `err` with [`WRONG_ID_HINT`] after it, unless it already points at
 /// `irsync id show --daemon` (as a dial that found no address does).
-pub fn with_wrong_id_hint(err: anyhow::Error) -> anyhow::Error {
+pub(crate) fn with_wrong_id_hint(err: anyhow::Error) -> anyhow::Error {
     let text = format!("{err:#}");
     if text.contains("irsync id show --daemon") {
         err
@@ -326,6 +326,33 @@ pub fn explain(
     }
 }
 
+/// One dial of `target` from `endpoint`, bounded by `limit` (`None`:
+/// iroh's own handshake timeout, about 60 s). The connection is marked with
+/// this side's id for a capture. The error is the line that says why the
+/// dial failed.
+pub(crate) async fn dial_once(
+    endpoint: &Endpoint,
+    target: &EndpointAddr,
+    limit: Option<Duration>,
+) -> Result<Connection, String> {
+    let dial = endpoint.connect(target.clone(), irsync_proto::ALPN);
+    let conn = match limit {
+        Some(limit) => match tokio::time::timeout(limit, dial).await {
+            Ok(r) => r.map_err(|e| describe_dial(&target.id, &e))?,
+            Err(_) => {
+                return Err(format!(
+                    "connecting to {}: no answer within {} s",
+                    target.id,
+                    limit.as_secs()
+                ))
+            }
+        },
+        None => dial.await.map_err(|e| describe_dial(&target.id, &e))?,
+    };
+    crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
+    Ok(conn)
+}
+
 /// With `require`, closes `conn` and fails unless its handshake agreed on
 /// the post-quantum hybrid key exchange. Call it before the first irsync
 /// message is sent. The error is final: a redial would get the same answer.
@@ -347,53 +374,48 @@ pub fn check_pq_key_exchange(
     ))
 }
 
-/// What `path` is on the daemon ([`super::single::probe`]), asked before a
-/// pull picks its local root. Dials the way a session's first connection
-/// does: each dial bounded by `opts.first_dial_timeout`, up to
-/// `opts.dial_retries` retries with backoff within `opts.max`. A connection
-/// lost before the reply, or no reply within `timeout` (`--idle-timeout`),
-/// counts as a failed try too; a daemon that never answered gives
-/// [`NeverReached`]. A refusal or a final close is explained as for a
-/// session and not retried.
-pub async fn probe_path(
+/// Runs `ask`, one request and its reply, on a connection to `target`,
+/// dialled the way a session's first connection is: each dial bounded by
+/// `opts.first_dial_timeout`, up to `opts.dial_retries` retries with backoff
+/// within `opts.max`. A connection lost before the reply counts as a failed
+/// try too; a daemon that never answered gives [`NeverReached`]. A refusal
+/// or a final close is explained as for a session and not retried.
+pub(crate) async fn ask_with_retries<T, F, Fut>(
     endpoint: &Endpoint,
     target: EndpointAddr,
-    path: &[u8],
     remote: &str,
     opts: ReconnectOpts,
-    timeout: Option<Duration>,
-) -> anyhow::Result<irsync_proto::v1::path_info::Kind> {
+    ask: F,
+) -> anyhow::Result<T>
+where
+    F: Fn(Connection) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
     let start = Instant::now();
     let mut attempt = 0u32;
     // Set once a dial has gone through.
     let mut reached = false;
     loop {
-        let dial = endpoint.connect(target.clone(), irsync_proto::ALPN);
-        let dialled = match opts.first_dial_timeout {
-            Some(limit) => match tokio::time::timeout(limit, dial).await {
-                Ok(r) => r.map_err(|e| describe_dial(&target.id, &e)),
-                Err(_) => Err(format!(
-                    "connecting to {}: no answer within {} s",
-                    target.id,
-                    limit.as_secs()
-                )),
-            },
-            None => dial.await.map_err(|e| describe_dial(&target.id, &e)),
-        };
+        let dialled = dial_once(endpoint, &target, opts.first_dial_timeout).await;
         let err = match dialled {
             Ok(conn) => {
                 reached = true;
-                crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
                 let res = match check_pq_key_exchange(&conn, opts.require_pq, &target.id) {
-                    Ok(()) => super::single::probe(&conn, path, timeout).await,
+                    Ok(()) => ask(conn.clone()).await,
                     Err(e) => Err(e),
                 };
+                // Read while the connection is as the daemon left it: once
+                // closed here, it no longer says why the daemon closed it.
+                let res = res.map_err(|e| match classify(&e, Some(&conn)) {
+                    // Lost underneath the request: try again, as for a dial.
+                    Next::Retry => Ok(e),
+                    _ => Err(explain(e, Some(&conn), remote, &endpoint.id())),
+                });
                 conn.close(0u32.into(), b"done");
                 match res {
-                    Ok(kind) => return Ok(kind),
-                    // Lost underneath the probe: try again, as for a dial.
-                    Err(e) if matches!(classify(&e, Some(&conn)), Next::Retry) => e,
-                    Err(e) => return Err(explain(e, Some(&conn), remote, &endpoint.id())),
+                    Ok(answer) => return Ok(answer),
+                    Err(Ok(retry)) => retry,
+                    Err(Err(fatal)) => return Err(fatal),
                 }
             }
             Err(msg) => anyhow::Error::new(TransportError(msg)),
@@ -420,6 +442,23 @@ pub async fn probe_path(
         );
         tokio::time::sleep(wait).await;
     }
+}
+
+/// What `path` is on the daemon ([`super::single::probe`]), asked before a
+/// pull picks its local root, through [`ask_with_retries`]. No reply within
+/// `timeout` (`--idle-timeout`) counts as a failed try.
+pub async fn probe_path(
+    endpoint: &Endpoint,
+    target: EndpointAddr,
+    path: &[u8],
+    remote: &str,
+    opts: ReconnectOpts,
+    timeout: Option<Duration>,
+) -> anyhow::Result<irsync_proto::v1::path_info::Kind> {
+    ask_with_retries(endpoint, target, remote, opts, |conn| async move {
+        super::single::probe(&conn, path, timeout).await
+    })
+    .await
 }
 
 /// The hint for a `Hello` the daemon refused as unauthorized (a key with
@@ -534,7 +573,7 @@ async fn attempts(
     span: &tracing::Span,
     mut on_state: impl FnMut(ConnState),
 ) -> anyhow::Result<Outcome> {
-    let bus = local.hooks.bus.clone();
+    let bus = local.bus.clone();
     // How the latest connection was made, for the outcome.
     let kind = std::sync::Arc::new(std::sync::Mutex::new(None));
     // The attempt's `connect` phase, open until the connection reports its path.
@@ -593,25 +632,14 @@ async fn attempts(
         let mut tried = Attempt::default();
         let connect = phase(PhaseKind::Connect, Side::Client, role, None);
         connect.span().record("attempt", attempt);
-        let dial = endpoint
-            .connect(target.clone(), irsync_proto::ALPN)
-            .instrument(connect.span().clone());
-        let dialled = match opts.first_dial_timeout.filter(|_| !reached) {
-            Some(limit) => match tokio::time::timeout(limit, dial).await {
-                Ok(r) => r.map_err(|e| describe_dial(&target.id, &e)),
-                Err(_) => Err(format!(
-                    "connecting to {}: no answer within {} s",
-                    target.id,
-                    limit.as_secs()
-                )),
-            },
-            None => dial.await.map_err(|e| describe_dial(&target.id, &e)),
-        };
+        let limit = opts.first_dial_timeout.filter(|_| !reached);
+        let dialled = dial_once(endpoint, &target, limit)
+            .instrument(connect.span().clone())
+            .await;
         *connecting.lock().unwrap() = Some(connect);
         let (res, conn) = match dialled {
             Ok(conn) => {
                 reached = true;
-                crate::net::tap::ConnTap::of(&conn).set_local_id(endpoint.id());
                 key_exchange = crate::net::key_exchange(&conn);
                 tracing::info!(
                     key_exchange = key_exchange.as_deref().unwrap_or("unknown"),

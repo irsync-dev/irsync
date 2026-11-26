@@ -4,8 +4,8 @@ use futures_util::stream::{self, Stream, StreamExt};
 use irsync_proto::chunk::FileDigest;
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
-use crate::cli::{Append, Preserve};
 use crate::fs::paths::RelPath;
+use crate::options::{Append, Preserve};
 
 /// One path's view on one side: its listing entry and, when known, its digest.
 #[derive(Debug, Clone)]
@@ -60,7 +60,7 @@ fn mtime(e: &FileEntry) -> (i64, u32) {
 
 /// Whether the metadata selected by `p` differs between the two entries.
 /// Whether the attributes `p` preserves differ between `src` and `dst`.
-pub fn meta_differs(src: &FileEntry, dst: &FileEntry, p: &Preserve) -> bool {
+pub(crate) fn meta_differs(src: &FileEntry, dst: &FileEntry, p: &Preserve) -> bool {
     (p.perms && src.mode & 0o7777 != dst.mode & 0o7777)
         || (p.times && mtime(src) != mtime(dst))
         || (p.owner && src.uid != dst.uid)

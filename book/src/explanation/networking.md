@@ -18,7 +18,7 @@ and its API at [docs.rs/iroh](https://docs.rs/iroh).
   irsync messages     Hello, Control, DataChunk, ...       proto/irsync/v1/
   frames              varint length + one protobuf         net/frame.rs
   ------------------------------------------------------------------------
-  QUIC streams        control, listing, data               session/, send.rs
+  QUIC streams        control, listing, data               session/, data_stream.rs
   QUIC connection     RFC 9000, multipath extension        iroh
   TLS 1.3 in QUIC     RFC 8446, RFC 9001, RFC 7250, ALPN   iroh
   paths               direct UDP (hole punched) or relay   iroh
@@ -221,8 +221,8 @@ except data streams on a pull:
   side's listing (`crates/irsync/src/session/listing_stream.rs`);
 - **data streams**, unidirectional, from the side that sends files to the side
   that receives them, one per run of chunks of one file
-  (`crates/irsync/src/send.rs` opens them, `crates/irsync/src/session/recv_io.rs`
-  accepts them). On a push the client opens them; on a pull the daemon does.
+  (`crates/irsync/src/data_stream.rs` opens them,
+  `crates/irsync/src/session/receiver/file_io.rs` accepts them). On a push the client opens them; on a pull the daemon does.
 
 When a connection ends, the side that closes it gives a QUIC application
 close code: 0 done, 1 unauthorized, 2 rejected, 3 superseded, 4 idle.

@@ -3,53 +3,34 @@
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{bail, Context};
-use iroh::{EndpointAddr, EndpointId, TransportAddr};
-use irsync::build::BuildInfo;
-use irsync::cli::location::Location;
+use irsync::build_info::BuildInfo;
 use irsync::cli::progress::render::Geometry;
 use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
-use irsync::cli::progress::summary::SessionSummary;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
-    Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode, Direction,
-    ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs, LogArgs,
-    PairArgs, RemoteArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
+    Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, ExportArgs, ExportCmd,
+    FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs, LogArgs, PairArgs, RemoteArgs,
+    ServerAddArgs, ServerArgs, ServerCmd,
 };
 use irsync::config::clients::Clients;
 use irsync::config::dial::{Dial, DialFlags};
 use irsync::config::file::Config;
-use irsync::config::paths::{state_dir, Paths};
-use irsync::config::servers::{ServerEntry, Servers};
-use irsync::config::settings::{PqKeyExchange, Settings};
-use irsync::filter::FilterSet;
+use irsync::config::paths::Paths;
+use irsync::config::settings::Settings;
 use irsync::fs::paths::{escape_path, escape_text};
-use irsync::identity::{
-    load_client_identity, load_or_generate, parse_endpoint_id, KeySource, PassphraseSource,
-};
+use irsync::identity::{load_or_generate, parse_endpoint_id, KeySource, PassphraseSource};
 use irsync::index::Index;
-use irsync::manage::{self, PeerSpec};
-use irsync::net::{build_endpoint, client_endpoint_opts};
-use irsync::session::engine::list_exports;
-use irsync::session::reconnect::{
-    describe_dial, explain, never_reached, probe_path, run_with_reconnect, ConnState, NeverReached,
-    ReconnectOpts, PAIRED_FIRST_DIAL,
-};
-use irsync::session::single::{
-    is_one_component, place_file, source_is_single, split_last, PlaceError,
-};
-use irsync::session::{
-    resolve_roots, Event, EventBus, LocalSide, Outcome, Party, SyncHello, HASH_WORKERS,
-};
+use irsync::location::Location;
+use irsync::manage;
+use irsync::options::{Direction, SyncOptions};
+use irsync::session::{EventBus, Outcome, Party, HASH_WORKERS};
 use irsync::ssh::onboard::SetupFlags;
 use irsync::telemetry::init::trace_files_from_env;
-use irsync::telemetry::meter::Usage;
 use irsync::telemetry::{self, OtlpConfig, Side, Telemetry, TelemetryConfig};
-use irsync_proto::v1::{export_entry, hello, path_info, Hello, ListExports, SyncRequest};
-use irsync_proto::PROTOCOL_VERSION;
+use irsync_proto::v1::export_entry;
 
 mod remote;
 
@@ -275,7 +256,8 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             tokio::spawn(r.run(bus.subscribe(), None))
         };
         let start = Instant::now();
-        let result = sync(args, opts, &bus, &log).await;
+        let operands = args.sync_args().operands();
+        let result = irsync::client::sync(&operands, opts, &bus, &|line| log.eprintln(line)).await;
         // Every session has dropped its sender clone: the reporter drains and stops.
         drop(bus);
         let reporter = task.await.ok();
@@ -290,7 +272,7 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
         r.clear();
     }
     let code = match result {
-        Ok(Totals {
+        Ok(irsync::client::Totals {
             outcome,
             sessions,
             failed,
@@ -364,12 +346,6 @@ fn combine_exit_codes(outcomes: &[Outcome], failed: usize, total: usize) -> i32 
     }
 }
 
-/// Partial files and sessions untouched for this long are collected: as
-/// long as a daemon keeps them by default.
-const CLIENT_GC_AGE: std::time::Duration = irsync::config::settings::DORMANT_SESSION_TIMEOUT;
-/// A partial record untouched this long makes the next run's GC walk due.
-const CLIENT_GC_STALE: std::time::Duration = std::time::Duration::from_secs(3600);
-
 fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
     let result = (|| -> anyhow::Result<usize> {
         let dir = Config::load(&file_paths(files))?.settings.state_dir;
@@ -429,7 +405,7 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
             }
             for root in &roots {
                 // A root inside this one has its own index: leave it to that.
-                let skip = irsync::daemon::nested_roots(root, roots.iter().map(PathBuf::as_path));
+                let skip = irsync::gc::nested_roots(root, roots.iter().map(PathBuf::as_path));
                 let root = root.clone();
                 let index = match Index::open(&dir, &root) {
                     Ok(i) => i.into_handle(),
@@ -439,7 +415,14 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                         continue;
                     }
                 };
-                match irsync::daemon::gc_skipping(index, &root, CLIENT_GC_AGE, dry_run, &skip).await
+                match irsync::gc::gc_skipping(
+                    index,
+                    &root,
+                    irsync::client::CLIENT_GC_AGE,
+                    dry_run,
+                    &skip,
+                )
+                .await
                 {
                     Ok(r) => {
                         for p in &r.parts_removed {
@@ -495,187 +478,6 @@ fn verb(dry_run: bool) -> &'static str {
     }
 }
 
-/// The daemon's EndpointId: a server's name, else the host string itself
-/// must be an EndpointId. `clients` is only for the message about a name
-/// that is a client's and no server's.
-fn resolve_target(servers: &Servers, clients: &Clients, host: &str) -> anyhow::Result<EndpointId> {
-    if let Some(entry) = servers.get(host) {
-        return Ok(entry.endpoint_id);
-    }
-    if clients.get(host).is_some() {
-        bail!(
-            "{host} is saved in {} as a client only: it has no endpoint_id to dial",
-            servers.path.display()
-        );
-    }
-    parse_endpoint_id(host).map_err(|_| {
-        let missing = if servers.path.exists() {
-            ""
-        } else {
-            "; no such file"
-        };
-        anyhow::anyhow!(
-            "{host:?} is not a server in {} and not an EndpointId{missing}",
-            servers.path.display()
-        )
-    })
-}
-
-/// What all sessions of one invocation did together.
-struct Totals {
-    outcome: Outcome,
-    sessions: usize,
-    /// Sessions that ended in an error (their sources did not sync).
-    failed: usize,
-}
-
-/// A client endpoint ready to dial `host`, plus what the session setup
-/// still needs from the configuration.
-struct Connected {
-    endpoint: iroh::Endpoint,
-    target: EndpointAddr,
-    host_entry: Option<ServerEntry>,
-    /// The settings of the dial, decided.
-    dial: Dial,
-    /// The saved alias `host_entry` is under: the host as typed, or the
-    /// alias a first run saved it as.
-    alias: Option<String>,
-    /// `opts` with `parallel` and `state_dir` filled in from the config.
-    opts: SyncOptions,
-}
-
-impl Connected {
-    /// The name of a server `irsync pair` saved (one with an `ssh` value).
-    fn paired(&self) -> Option<&str> {
-        self.host_entry
-            .as_ref()
-            .filter(|h| h.ssh.is_some())
-            .and(self.alias.as_deref())
-    }
-
-    /// The bound on each dial before the daemon has answered: see
-    /// [`PAIRED_FIRST_DIAL`] for a paired server, else iroh's own.
-    fn first_dial(&self) -> Option<std::time::Duration> {
-        first_dial_limit(self.paired().map(|_| PAIRED_FIRST_DIAL))
-    }
-}
-
-/// Resolves `host`, the direct addresses, the client identity and the
-/// endpoint, the same way for a sync and for a listing.
-async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow::Result<Connected> {
-    let paths = Paths::resolve(opts.config.as_deref());
-    let config = Config::load(&paths)?;
-    let pass = PassphraseSource::from_env(
-        opts.passphrase_file.clone(),
-        config.settings.unsafe_config_allowed,
-    );
-    // An address that is the `ssh` value of a saved server finds that
-    // server: no ssh is needed for that.
-    let by_ssh = irsync::ssh::pair::saved_by_ssh(&config.servers, &config.clients, host)?;
-    if let Some(alias) = &by_ssh {
-        log.eprintln(&format!("irsync: {host} is saved as {alias}"));
-    }
-    let host = by_ssh.as_deref().unwrap_or(host);
-    // A sync never sets a server up: it says how to.
-    if config.servers.get(host).is_none() && parse_endpoint_id(host).is_err() {
-        if config.clients.get(host).is_some() {
-            bail!(irsync::session::reconnect::client_only(host));
-        }
-        bail!(irsync::session::reconnect::not_paired(host, &paths.config));
-    }
-    let Config {
-        settings,
-        servers,
-        clients,
-        ..
-    } = config;
-    let host_entry = servers.get(host).cloned();
-    let target = resolve_target(&servers, &clients, host)?;
-    let mut opts = opts.clone();
-    opts.state_dir = Some(settings.state_dir.clone());
-    let dial = Dial::resolve(&dial_flags(&opts)?, host_entry.as_ref(), &settings.defaults)
-        .map_err(anyhow::Error::msg)?;
-    opts.parallel = Some(dial.parallel);
-    opts.idle_timeout = Some(dial.idle_timeout).filter(|t| !t.is_zero());
-    // Any direct address means isolated mode: dial those and nothing else.
-    // Resolved before the identity is loaded so a bad address never prompts
-    // for a passphrase.
-    let addresses = &dial.address;
-    let mut resolved = Vec::new();
-    for entry in addresses {
-        let addrs = entry
-            .resolve()
-            .await
-            .with_context(|| format!("resolving address {entry}"))?;
-        if addrs.is_empty() {
-            bail!("address {entry} resolved to no addresses");
-        }
-        resolved.extend(addrs);
-    }
-    let secret = load_client_key(&opts, &settings, &pass)?;
-    if !addresses.is_empty() {
-        tracing::info!(
-            addresses = ?resolved,
-            "isolated mode: dialling directly, relay and lookups off"
-        );
-    }
-    let mut endpoint_opts = client_endpoint_opts(secret, &dial);
-    if !addresses.is_empty() {
-        // Bound to every interface, the client would offer the daemon all
-        // of them for extra paths; bound to the source of the dial, only
-        // that one.
-        endpoint_opts.bind_addrs = irsync::net::addr::source_binds(&resolved);
-        tracing::debug!(binds = ?endpoint_opts.bind_addrs, "isolated mode: binding");
-    }
-    let endpoint = build_endpoint(endpoint_opts).await?;
-    // Direct addresses replace everything; else the daemon's own report,
-    // when there is one, goes along with the lookups.
-    let target = if addresses.is_empty() {
-        EndpointAddr::from_parts(target, Vec::<TransportAddr>::new())
-    } else {
-        EndpointAddr::from_parts(target, dial_addrs(resolved)?)
-    };
-    Ok(Connected {
-        endpoint,
-        target,
-        alias: host_entry.is_some().then(|| host.to_string()),
-        host_entry,
-        dial,
-        opts,
-    })
-}
-
-/// What the command line says about a dial.
-fn dial_flags(opts: &SyncOptions) -> anyhow::Result<DialFlags> {
-    Ok(DialFlags {
-        parallel: opts.parallel,
-        reconnect: opts.reconnect,
-        dial_retries: opts.dial_retries,
-        relay: opts.relay.clone(),
-        no_dht: opts.no_dht,
-        no_dns: opts.no_dns,
-        no_mdns: opts.no_mdns,
-        pq_key_exchange: opts.pq_key_exchange,
-        idle_timeout: opts.idle_timeout,
-        address: opts.addresses.clone(),
-    })
-}
-
-/// The bound on each dial until the server has answered once: `usual`
-/// (`None`: iroh's own handshake timeout, about 60 s). A test-hooks build
-/// takes `IRSYNC_TEST_DIAL_SECS` seconds instead, when that is set, so a
-/// test of a host that does not answer need not wait the real time out.
-fn first_dial_limit(usual: Option<std::time::Duration>) -> Option<std::time::Duration> {
-    #[cfg(feature = "test-hooks")]
-    if let Some(secs) = std::env::var("IRSYNC_TEST_DIAL_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-    {
-        return Some(std::time::Duration::from_secs(secs));
-    }
-    usual
-}
-
 /// What setting a host up over ssh did, then the service how-to.
 fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
     for line in irsync::ssh::onboard::summary(o) {
@@ -714,7 +516,8 @@ fn run_pair(a: &PairArgs, quiet: LogArgs, files: &FilesArgs) -> i32 {
                 Some(alias) => irsync::ssh::onboard::check(alias, &t.dest)?,
                 None => irsync::ssh::onboard::check_dest(&t.dest)?,
             }
-            let secret = client_key(files.identity.as_deref(), &config.settings, &pass)?;
+            let secret =
+                irsync::client::client_key(files.identity.as_deref(), &config.settings, &pass)?;
             let rsh = irsync::ssh::client::Rsh::from_opts(a.rsh.as_deref());
             say(&format!("irsync: pairing with {} over ssh", t.host));
             let flags = SetupFlags {
@@ -766,60 +569,6 @@ fn run_pair(a: &PairArgs, quiet: LogArgs, files: &FilesArgs) -> i32 {
     )
 }
 
-/// The client identity for a sync, with a stderr notice when it was generated.
-fn load_client_key(
-    opts: &SyncOptions,
-    settings: &Settings,
-    pass: &PassphraseSource,
-) -> anyhow::Result<iroh::SecretKey> {
-    client_key(opts.identity.as_deref(), settings, pass)
-}
-
-/// As [`load_client_key`], for the identity file named on the command line.
-fn client_key(
-    explicit: Option<&Path>,
-    settings: &Settings,
-    pass: &PassphraseSource,
-) -> anyhow::Result<iroh::SecretKey> {
-    let (secret, source) = client_identity(explicit, settings, pass)?;
-    if let KeySource::Generated(path) = &source {
-        eprintln!("irsync: generated identity {}", path.display());
-        eprintln!("{}", irsync::identity::public_key_line(&secret, "irsync"));
-        eprintln!("{}", secret.public());
-    }
-    Ok(secret)
-}
-
-/// The transport addresses to dial: the fault layer's custom ones when it is on.
-fn dial_addrs(resolved: Vec<std::net::SocketAddr>) -> anyhow::Result<Vec<TransportAddr>> {
-    #[cfg(feature = "netsim")]
-    if irsync::net::netsim::active()?.is_some() {
-        return resolved
-            .into_iter()
-            .map(|a| match a {
-                std::net::SocketAddr::V4(v4) => {
-                    Ok(TransportAddr::Custom(irsync::net::netsim::custom_addr(v4)))
-                }
-                std::net::SocketAddr::V6(_) => bail!("netsim dials IPv4 addresses only, got {a}"),
-            })
-            .collect();
-    }
-    Ok(resolved.into_iter().map(TransportAddr::Ip).collect())
-}
-
-/// A throwaway state directory a listing swaps in for the configured one.
-static CLIENT_STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-/// The client's state directory: a listing's throwaway one, else the
-/// config's `state_dir`, else the default.
-fn client_state_dir(opts: &SyncOptions) -> PathBuf {
-    CLIENT_STATE
-        .get()
-        .or(opts.state_dir.as_ref())
-        .cloned()
-        .unwrap_or_else(state_dir)
-}
-
 /// `irsync HOST:` lists the exports this client may reach; `irsync
 /// HOST:PATH` lists a directory: a dry-run pull into a temporary directory
 /// that also holds the run's index, so nothing is written or kept.
@@ -840,7 +589,7 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
                 return 1;
             }
         };
-        let _ = CLIENT_STATE.set(tmp.path().join("state"));
+        irsync::client::use_state_dir(tmp.path().join("state"));
         // With the slash a listed file keeps its own name.
         let dest = format!("{}/", tmp.path().join("list").display());
         // The listing is a dry-run pull into the temporary directory.
@@ -869,75 +618,24 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
             return 1;
         }
     };
-    match rt.block_on(list_exports_of(&operand, opts, &log)) {
-        Ok(()) => 0,
+    let say = |line: &str| log.eprintln(line);
+    match rt.block_on(irsync::client::list_exports(&operand, opts, &say)) {
+        Ok(entries) => {
+            for e in entries {
+                let access = if e.access == export_entry::Access::Rw as i32 {
+                    "rw"
+                } else {
+                    "ro"
+                };
+                println!("{} {} {access}", escape_text(&e.name), escape_path(&e.path));
+            }
+            0
+        }
         Err(e) => {
             eprintln!("irsync: {}", escape_text(&format!("{e:#}")));
             1
         }
     }
-}
-
-async fn list_exports_of(operand: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow::Result<()> {
-    let Location::Remote { host, .. } = Location::parse(operand)? else {
-        bail!("internal: a listing takes a remote operand");
-    };
-    let c = connect_for(&host, opts, log).await?;
-    // Closed on every way out: an endpoint dropped open makes iroh log an
-    // error line before irsync's own message (#256).
-    let listed = list_exports_over(&c, operand).await;
-    c.endpoint.close().await;
-    listed
-}
-
-async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<()> {
-    let hello = Hello {
-        protocol_version: PROTOCOL_VERSION,
-        build: Some(BuildInfo::current().to_wire()),
-        request: Some(hello::Request::ListExports(ListExports {})),
-        ..Hello::default()
-    };
-    let client = c.endpoint.id();
-    let conn = dial(c).await?;
-    let entries = list_exports(&conn, hello)
-        .await
-        .map_err(|e| explain(e, Some(&conn), operand, &client))?;
-    for e in entries {
-        let access = if e.access == export_entry::Access::Rw as i32 {
-            "rw"
-        } else {
-            "ro"
-        };
-        println!("{} {} {access}", escape_text(&e.name), escape_path(&e.path));
-    }
-    conn.close(0u32.into(), b"done");
-    Ok(())
-}
-
-/// Dials the daemon of `c` once, bounded as a first dial is, and checks the
-/// post-quantum key exchange when it is required. For the one-shot exchanges
-/// (a listing, `remote`); the caller closes the connection.
-async fn dial(c: &Connected) -> anyhow::Result<iroh::endpoint::Connection> {
-    let dial = c.endpoint.connect(c.target.clone(), irsync_proto::ALPN);
-    let dialled = match c.first_dial() {
-        Some(limit) => match tokio::time::timeout(limit, dial).await {
-            Ok(r) => r.map_err(|e| describe_dial(&c.target.id, &e)),
-            Err(_) => Err(format!(
-                "connecting to {}: no answer within {} s",
-                c.target.id,
-                limit.as_secs()
-            )),
-        },
-        None => dial.await.map_err(|e| describe_dial(&c.target.id, &e)),
-    };
-    let conn = dialled.map_err(|msg| never_reached(anyhow::anyhow!(msg), c.paired()))?;
-    irsync::net::tap::ConnTap::of(&conn).set_local_id(c.endpoint.id());
-    irsync::session::reconnect::check_pq_key_exchange(
-        &conn,
-        c.dial.pq_key_exchange == PqKeyExchange::Require,
-        &c.target.id,
-    )?;
-    Ok(conn)
 }
 
 /// `irsync remote SERVER COMMAND`: one change or one read of the
@@ -959,7 +657,7 @@ fn run_remote(r: &RemoteArgs, opts: &SyncOptions) -> i32 {
         }
     };
     let done = rt.block_on(async {
-        let c = connect_for(&r.server, opts, &log).await?;
+        let c = irsync::client::connect(&r.server, opts, &|line| log.eprintln(line)).await?;
         // Closed on every way out (#256).
         let done = remote::run_remote(&c, plan.request).await;
         c.endpoint.close().await;
@@ -972,359 +670,6 @@ fn run_remote(r: &RemoteArgs, opts: &SyncOptions) -> i32 {
             1
         }
     }
-}
-
-/// `log`: where a failed source is reported (above the live block).
-async fn sync(
-    args: &Args,
-    opts: &SyncOptions,
-    bus: &EventBus,
-    log: &LogWriter,
-) -> anyhow::Result<Totals> {
-    let irsync::cli::Operands {
-        srcs,
-        dest,
-        direction,
-    } = args.sync_args().operands();
-    let remote = match direction {
-        Direction::ClientSends => &dest,
-        Direction::DaemonSends => &srcs[0],
-    };
-    let Location::Remote { host, .. } = remote else {
-        bail!("internal: no remote location");
-    };
-    // The operand as typed, for the no-access hint.
-    let remote_text: String = match direction {
-        Direction::ClientSends => args.sync_args().dest().unwrap_or_default().to_string(),
-        Direction::DaemonSends => args.sync_args().src()[0].clone(),
-    };
-
-    let conn = connect_for(host, opts, log).await?;
-    let filters = match FilterSet::from_rules(&conn.opts.filters).context("reading filter rules") {
-        Ok(f) => Arc::new(f),
-        Err(e) => {
-            conn.endpoint.close().await;
-            return Err(e);
-        }
-    };
-
-    // One session per source; several sources only when pushing.
-    let pairs: Vec<(&Location, &Location)> = srcs.iter().map(|s| (s, &dest)).collect();
-    let mut total = Outcome::default();
-    let (mut sessions, mut failed) = (0, 0);
-    let of = pairs.len();
-    for (index, (src, dst)) in pairs.into_iter().enumerate() {
-        let operand_from = args.sync_args().src()[index].clone();
-        let operand_to = args.sync_args().dest().unwrap_or_default().to_string();
-        bus.emit(Event::SessionStart {
-            index,
-            of,
-            from: operand_from.clone(),
-            to: operand_to.clone(),
-        });
-        let (local, remote) = match direction {
-            Direction::ClientSends => (src, dst),
-            Direction::DaemonSends => (dst, src),
-        };
-        let (
-            Location::Local {
-                path,
-                contents_only: local_co,
-            },
-            Location::Remote {
-                path: rpath,
-                contents_only: remote_co,
-                ..
-            },
-        ) = (local, remote)
-        else {
-            bail!("internal: unexpected location kinds");
-        };
-        let (root, name) = resolve_roots(direction, path, *local_co, rpath, *remote_co);
-        let dir_plan = Plan {
-            root,
-            local_contents_only: *local_co,
-            // The receiver-side options are filled in from `opts` by the session.
-            hello: SyncHello::new(
-                direction,
-                SyncRequest {
-                    path: rpath.clone(),
-                    name,
-                    contents_only: *remote_co,
-                    ..SyncRequest::default()
-                },
-            ),
-            single: None,
-        };
-        let several = of > 1;
-        let ropts = ReconnectOpts {
-            max: conn.dial.reconnect,
-            dial_retries: conn.dial.dial_retries,
-            source_index: index,
-            first_dial_timeout: conn.first_dial(),
-            require_pq: conn.dial.pq_key_exchange == PqKeyExchange::Require,
-            ..ReconnectOpts::default()
-        };
-        sessions += 1;
-        let started = Instant::now();
-        let result = {
-            let res = async {
-                let plan = match direction {
-                    Direction::ClientSends => {
-                        push_plan(dir_plan.clone(), path, *local_co, several)?
-                    }
-                    // With a trailing slash the remote path must be a directory.
-                    Direction::DaemonSends if !*remote_co => {
-                        let (endpoint, target) = (&conn.endpoint, conn.target.clone());
-                        let timeout = conn.opts.idle_timeout;
-                        let kind =
-                            probe_path(endpoint, target, rpath, &remote_text, ropts, timeout)
-                                .await?;
-                        pull_plan(dir_plan.clone(), kind, path, *local_co, rpath)?
-                    }
-                    Direction::DaemonSends => dir_plan.clone(),
-                };
-                session(
-                    &conn.endpoint,
-                    conn.target.clone(),
-                    &remote_text,
-                    direction,
-                    plan,
-                    &filters,
-                    &conn.opts,
-                    ropts,
-                    bus,
-                )
-                .await
-            }
-            .await;
-            // A server that was never reached (a refusal is final).
-            match res {
-                Err(e) if e.downcast_ref::<NeverReached>().is_some() => {
-                    Err(never_reached(e, conn.paired()))
-                }
-                res => res,
-            }
-        };
-        let mut summary = SessionSummary {
-            index,
-            of,
-            verb: match direction {
-                Direction::ClientSends => "push",
-                Direction::DaemonSends => "pull",
-            },
-            from: operand_from,
-            to: operand_to,
-            reconnects: 0,
-            conn: None,
-            key_exchange: None,
-            usage: Usage::default(),
-            files_transferred: 0,
-            files_hashed: 0,
-            bytes_sent: 0,
-            bytes_received: 0,
-            failed: false,
-        };
-        let out = match result {
-            Ok(out) => {
-                summary.reconnects = out.reconnects;
-                summary.conn = out.conn;
-                summary.key_exchange = out.key_exchange.clone();
-                summary.usage = out.usage.clone();
-                summary.files_transferred = out.files_transferred;
-                summary.files_hashed = out.files_hashed;
-                summary.bytes_sent = out.bytes_sent;
-                summary.bytes_received = out.bytes_received;
-                bus.emit(Event::SessionEnd(Arc::new(summary)));
-                out
-            }
-            Err(e) => {
-                summary.usage.wall = started.elapsed();
-                summary.failed = true;
-                bus.emit(Event::SessionEnd(Arc::new(summary)));
-                // Keep what earlier sources achieved; report this one and go on.
-                // The error may carry the daemon's own words.
-                let e = escape_text(&format!("{e:#}"));
-                log.eprintln(&format!("irsync: {}: {e}", path.display()));
-                failed += 1;
-                continue;
-            }
-        };
-        total.absorb(out);
-    }
-    conn.endpoint.close().await;
-    Ok(Totals {
-        outcome: total,
-        sessions,
-        failed,
-    })
-}
-
-/// One source's session: the local root, and the `Hello` to send.
-#[derive(Clone)]
-struct Plan {
-    root: PathBuf,
-    local_contents_only: bool,
-    hello: SyncHello,
-    /// The local name of the one file a single-file session copies.
-    single: Option<Vec<u8>>,
-}
-
-/// A push of `path`: a file is pushed on its own from the directory that
-/// holds it (a trailing slash on it is an error); anything else as `dir`.
-/// Several sources always go into the destination as a directory.
-fn push_plan(dir: Plan, path: &Path, contents_only: bool, several: bool) -> anyhow::Result<Plan> {
-    // The caller's message already starts with `path`.
-    let single = source_is_single(path, contents_only).map_err(|e| match e {
-        PlaceError::Io(_, e) => anyhow::Error::new(e),
-        PlaceError::NotADirectory(_) => anyhow::anyhow!("not a directory"),
-        e => e.into(),
-    })?;
-    if !single {
-        return Ok(dir);
-    }
-    let (root, name) = split_last(path);
-    let mut hello = dir.hello;
-    hello.req = SyncRequest {
-        single_file: true,
-        name: name.clone(),
-        contents_only: hello.req.contents_only || several,
-        ..hello.req
-    };
-    Ok(Plan {
-        root,
-        local_contents_only: false,
-        hello,
-        single: Some(name),
-    })
-}
-
-/// A pull of `rpath`, which the daemon says is `kind`, into `local`: a file
-/// is placed by rsync's rules and pulled on its own; anything else as `dir`.
-fn pull_plan(
-    dir: Plan,
-    kind: path_info::Kind,
-    local: &Path,
-    contents_only: bool,
-    rpath: &[u8],
-) -> anyhow::Result<Plan> {
-    if kind != path_info::Kind::File {
-        return Ok(dir);
-    }
-    let basename = rpath.rsplit(|&b| b == b'/').next().unwrap_or_default();
-    if !is_one_component(basename) || basename == b"~" {
-        bail!("cannot tell the file's name from {}", escape_path(rpath));
-    }
-    let placed = place_file(local, contents_only, basename, true)?;
-    let mut hello = dir.hello;
-    hello.req = SyncRequest {
-        single_file: true,
-        name: placed.name.clone(),
-        contents_only: false,
-        ..hello.req
-    };
-    Ok(Plan {
-        root: placed.root,
-        local_contents_only: false,
-        hello,
-        single: Some(placed.name),
-    })
-}
-
-/// One source: open the local index, then run the session, reconnecting and
-/// resuming as needed.
-#[allow(clippy::too_many_arguments)]
-async fn session(
-    endpoint: &iroh::Endpoint,
-    target: EndpointAddr,
-    remote: &str,
-    direction: Direction,
-    plan: Plan,
-    filters: &Arc<FilterSet>,
-    opts: &SyncOptions,
-    ropts: ReconnectOpts,
-    bus: &EventBus,
-) -> anyhow::Result<Outcome> {
-    let Plan {
-        root,
-        local_contents_only,
-        hello,
-        single,
-    } = plan;
-    // A single-file copy never deletes anything.
-    let single_opts;
-    let opts = match single {
-        Some(_) => {
-            single_opts = SyncOptions {
-                delete: DeleteMode::Off,
-                delete_excluded: false,
-                max_delete: None,
-                ..opts.clone()
-            };
-            &single_opts
-        }
-        None => opts,
-    };
-    let dry_run = opts.dry_run;
-    let state = client_state_dir(opts);
-    let index = tokio::task::spawn_blocking({
-        let root = root.clone();
-        move || -> anyhow::Result<_> {
-            // A dry run creates nothing (the receiver lists a missing root as empty).
-            if direction == Direction::DaemonSends && !dry_run {
-                std::fs::create_dir_all(&root)
-                    .with_context(|| format!("creating {}", root.display()))?;
-            }
-            Ok(Index::open(&state, &root)
-                .with_context(|| format!("opening index for {}", root.display()))?
-                .into_handle())
-        }
-    })
-    .await??;
-    // A single file's root is a directory that holds other things: no
-    // housekeeping there.
-    if !dry_run && single.is_none() {
-        // Housekeeping for this root, at most daily unless partial records
-        // have gone stale (an hour untouched) since; never fatal.
-        match irsync::daemon::gc_if_due(index.clone(), &root, CLIENT_GC_AGE, CLIENT_GC_STALE).await
-        {
-            Ok(Some(r)) => tracing::debug!(
-                parts_removed = r.parts_removed.len(),
-                sessions_removed = r.sessions_removed,
-                entries_removed = r.entries_removed,
-                "gc finished"
-            ),
-            Ok(None) => tracing::debug!("gc not due"),
-            Err(e) => tracing::debug!("gc failed: {e}"),
-        }
-    }
-    let mut side = LocalSide::new(root, local_contents_only, index, filters.clone());
-    if let Some(name) = single {
-        side = side.with_single(name);
-    }
-    side.hooks.bus = bus.clone();
-    #[cfg(feature = "test-hooks")]
-    {
-        side.hooks.no_change_checks = irsync::session::no_change_checks_from_env();
-    }
-    let hello_for = |id: Option<[u8; 16]>| {
-        let mut h = hello.clone();
-        h.req.session_id = id.map(|i| i.to_vec()).unwrap_or_default();
-        h
-    };
-    let target_id = target.id;
-    let on_state = |s: ConnState| match s {
-        ConnState::Connecting => tracing::info!(target = %target_id, "connecting"),
-        ConnState::Direct => tracing::info!("connected directly"),
-        ConnState::Relay => tracing::info!("connected through a relay"),
-        ConnState::Reconnecting { attempt } => {
-            tracing::info!(attempt, "reconnecting")
-        }
-    };
-    run_with_reconnect(
-        endpoint, target, remote, hello_for, side, opts, ropts, on_state,
-    )
-    .await
 }
 
 /// `irsync index`: hashes every regular file under each target into its
@@ -1579,87 +924,46 @@ fn run_config(c: &ConfigArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 Ok(())
             })(),
         ),
-        ConfigCmd::Set { key, values } => finish(
-            "config set",
-            (|| {
-                let path = cfg::parse_key(key)?;
-                let kind = cfg::kind_of(&path).ok_or_else(|| cfg::unknown_key(key))?;
-                cfg::writable(&path)?;
-                let value = cfg::parse_value(kind, values).with_context(|| key.to_string())?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let before = peer_ids(&msg, &paths.config);
-                cfg::set(&mut msg, &path, value).with_context(|| key.to_string())?;
-                lock.save(&mut msg).with_context(|| key.to_string())?;
-                note_moved_grants(log, "config set", &before, &msg, &paths.config);
-                Ok(())
-            })(),
-        ),
-        ConfigCmd::Unset { key } => finish(
-            "config unset",
-            (|| {
-                let path = cfg::parse_key(key)?;
-                if cfg::kind_of(&path).is_none() {
-                    return Err(cfg::unknown_key(key).into());
-                }
-                cfg::writable(&path)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let before = peer_ids(&msg, &paths.config);
-                // Unsetting a client's table or its id removes the client:
-                // like `client remove`, not while grants name it. A server
-                // goes whatever the grants say: they name clients only.
-                let clients = if path[0] == "clients" {
-                    // A file that does not load is that error, not a
-                    // refused save.
-                    Config::load(&paths)?;
-                    match path.get(1) {
-                        Some(name) => manage::canonicalize_without(&mut msg, &paths.config, name)?,
-                        None => manage::canonicalize_doc(&mut msg, &paths.config)?,
-                    };
-                    manage::clients::client_names(&msg)
-                } else {
-                    Vec::new()
-                };
-                cfg::unset(&mut msg, &path).with_context(|| key.to_string())?;
-                let left = manage::clients::client_names(&msg);
-                for name in clients.iter().filter(|a| !left.contains(a)) {
-                    let lists = manage::grants::lists_naming(&msg, name);
-                    if !lists.is_empty() {
-                        bail!(
-                            "client {name:?} is named by grants in {}: remove those grants \
-                             first, or use `irsync client remove {name} --force`",
-                            lists.join(", ")
-                        );
-                    }
-                }
-                lock.save(&mut msg).with_context(|| key.to_string())?;
-                note_moved_grants(log, "config unset", &before, &msg, &paths.config);
-                Ok(())
-            })(),
-        ),
+        ConfigCmd::Set { key, values } => {
+            saying("config set", log, cfg::set_in_file(&paths, key, values))
+        }
+        ConfigCmd::Unset { key } => saying("config unset", log, cfg::unset_in_file(&paths, key)),
     }
 }
 
-/// The id of each client of `msg`; see [`manage::clients::client_ids`].
-fn peer_ids(
-    msg: &irsync_proto::config::Config,
-    path: &Path,
-) -> std::collections::BTreeMap<String, iroh::EndpointId> {
-    manage::clients::client_ids(msg, path)
+/// [`finish`] for a command that says what it did: each line `r` gives
+/// goes to stderr (nothing with `-q`).
+fn saying(cmd: &str, log: LogArgs, r: anyhow::Result<impl Said>) -> i32 {
+    finish(
+        cmd,
+        r.map(|said| {
+            for line in said.lines() {
+                say!(log, "{line}");
+            }
+        }),
+    )
 }
 
-/// Says on stderr which grants now apply to another id; see
-/// [`manage::clients::moved_grant_notes`].
-fn note_moved_grants(
-    log: LogArgs,
-    cmd: &str,
-    before: &std::collections::BTreeMap<String, iroh::EndpointId>,
-    msg: &irsync_proto::config::Config,
-    path: &Path,
-) {
-    for note in manage::clients::moved_grant_notes(cmd, before, msg, path) {
-        say!(log, "{note}");
+/// What a management command gives to say: a line, maybe one, or several.
+trait Said {
+    fn lines(self) -> Vec<String>;
+}
+
+impl Said for String {
+    fn lines(self) -> Vec<String> {
+        vec![self]
+    }
+}
+
+impl Said for Option<String> {
+    fn lines(self) -> Vec<String> {
+        self.into_iter().collect()
+    }
+}
+
+impl Said for Vec<String> {
+    fn lines(self) -> Vec<String> {
+        self
     }
 }
 
@@ -1780,6 +1084,7 @@ fn run_ssh_setup(
 }
 
 fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
+    use manage::exports;
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ExportCmd::List;
@@ -1799,18 +1104,18 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 // config lock creates anything.
                 irsync::identity::refuse_to_generate_with_passphrase_file(daemon_key, &pass)
                     .with_context(|| format!("identity {}", daemon_key.display()))?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
                 let flags = manage::exports::ExportFlags {
                     read_only: a.read_only,
                     index_at_start: a.index_at_start,
                     fsync: a.fsync,
                 };
-                let old = manage::exports::add_export(&mut msg, &name, &path, flags)?;
-                // The daemon identity comes first: when it cannot be had, the
-                // export is not added either.
-                let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
-                lock.save(&mut msg)?;
+                let ((old, secret), _) = manage::edit_as_is(&paths.config, |msg| {
+                    let old = manage::exports::add_export(msg, &name, &path, flags)?;
+                    // The daemon identity comes first: when it cannot be had,
+                    // the export is not added either.
+                    let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
+                    Ok((old, secret))
+                })?;
                 say!(
                     log,
                     "{}",
@@ -1820,59 +1125,13 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 Ok(())
             })(),
         ),
-        ExportCmd::Remove { name } => finish(
-            "export remove",
-            (|| {
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::exports::remove_export(&mut msg, name)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::exports::removed_line(name, &paths.config)
-                );
-                Ok(())
-            })(),
-        ),
-        ExportCmd::Set { name, settings } => finish(
-            "export set",
-            (|| {
-                // Every pair is read before anything changes.
-                let settings: Vec<_> = settings
-                    .iter()
-                    .map(|s| manage::exports::parse_setting(s))
-                    .collect::<Result<_, _>>()?;
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::exports::export_set(&mut msg, name, &settings)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                if let Some(line) = manage::exports::set_line(&msg, name) {
-                    say!(log, "{line}");
-                }
-                Ok(())
-            })(),
-        ),
-        ExportCmd::Rename { old, new } => finish(
-            "export rename",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::exports::rename_export(&mut msg, old, new)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::exports::renamed_line(old, new, &paths.config)
-                );
-                Ok(())
-            })(),
-        ),
+        ExportCmd::Remove { name } => saying("export remove", log, exports::remove(&paths, name)),
+        ExportCmd::Set { name, settings } => {
+            saying("export set", log, exports::set(&paths, name, settings))
+        }
+        ExportCmd::Rename { old, new } => {
+            saying("export rename", log, exports::rename(&paths, old, new))
+        }
         ExportCmd::List => finish(
             "export list",
             (|| {
@@ -1891,65 +1150,23 @@ fn run_grant(g: &GrantArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     // A noun alone lists.
     let list = GrantCmd::List { target: None };
     match g.cmd.as_ref().unwrap_or(&list) {
-        GrantCmd::Add { export, who, ro } => finish(
+        GrantCmd::Add { export, who, ro } => saying(
             "grant add",
-            (|| {
-                manage::grants::check_add_export(export, *ro)?;
-                let Config {
-                    servers, clients, ..
-                } = Config::load(&paths)?;
-                let spec = PeerSpec::parse(who, &clients, &servers)?;
-                let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::grants::grant_add(&mut msg, export, &spec, *ro, &resolve)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::grants::added_line(&spec, &clients, export, *ro)
-                );
-                Ok(())
-            })(),
+            log,
+            manage::grants::add(&paths, export, who, *ro),
         ),
-        GrantCmd::Remove { export, who } => finish(
-            "grant remove",
-            (|| {
-                let Config {
-                    servers, clients, ..
-                } = Config::load(&paths)?;
-                let resolve = |s: &str| clients.get(s).map(|c| c.client_id);
-                manage::grants::check_remove(export, who)?;
-                let export = (export != "all").then_some(export.as_str());
-                let who = (who != "all").then_some(who.as_str());
-                let spec = who
-                    .map(|w| PeerSpec::or_literal(w, PeerSpec::parse(w, &clients, &servers)))
-                    .transpose()?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let removed =
-                    manage::grants::grant_remove(&mut msg, export, spec.as_ref(), &resolve);
-                let held =
-                    manage::grants::rights_still_held(&clients, export, spec.as_ref(), &resolve);
-                let n = match removed {
-                    Ok(n) => n,
-                    Err(e) => {
-                        for line in &held {
-                            eprintln!("{line}");
-                        }
-                        return Err(anyhow::Error::from(e)
-                            .context(format!("in {}", paths.config.display())));
+        GrantCmd::Remove { export, who } => {
+            let r = match manage::grants::remove(&paths, export, who) {
+                Ok(lines) => Ok(lines),
+                Err(f) => {
+                    for line in &f.held {
+                        eprintln!("{line}");
                     }
-                };
-                lock.save(&mut msg)?;
-                say!(log, "{}", manage::grants::removed_line(n));
-                for line in &held {
-                    say!(log, "{line}");
+                    Err(f.error)
                 }
-                Ok(())
-            })(),
-        ),
+            };
+            saying("grant remove", log, r)
+        }
         GrantCmd::List { target } => finish(
             "grant list",
             (|| {
@@ -2008,54 +1225,23 @@ fn grant_list_text(
     ))
 }
 
-/// A file that does not load is that error, not a refused save.
-fn load_first(paths: &Paths) -> anyhow::Result<()> {
-    Config::load(paths)?;
-    Ok(())
-}
-
 fn run_server(s: &ServerArgs, log: LogArgs, files: &FilesArgs) -> i32 {
+    use manage::servers;
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ServerCmd::List;
     match s.cmd.as_ref().unwrap_or(&list) {
         ServerCmd::Add(a) => finish("server add", server_add(a, log, &paths)),
-        ServerCmd::Remove { name } => finish(
-            "server remove",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::servers::server_remove(&mut msg, name)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(log, "removed server {name} from {}", paths.config.display());
-                Ok(())
-            })(),
-        ),
-        ServerCmd::Rename { old, new } => finish(
-            "server rename",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::servers::server_rename(&mut msg, old, new)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "renamed server {old} to {new} in {}",
-                    paths.config.display()
-                );
-                Ok(())
-            })(),
-        ),
+        ServerCmd::Remove { name } => saying("server remove", log, servers::remove(&paths, name)),
+        ServerCmd::Rename { old, new } => {
+            saying("server rename", log, servers::rename(&paths, old, new))
+        }
         ServerCmd::List => finish(
             "server list",
             (|| {
                 // Load first: a file that does not load is an error, not an
                 // empty list.
-                load_first(&paths)?;
+                manage::load_first(&paths)?;
                 for line in manage::servers::server_list(&manage::load_message(&paths.config)?) {
                     println!("{line}");
                 }
@@ -2066,83 +1252,34 @@ fn run_server(s: &ServerArgs, log: LogArgs, files: &FilesArgs) -> i32 {
 }
 
 fn run_client(c: &ClientArgs, log: LogArgs, files: &FilesArgs) -> i32 {
+    use manage::clients;
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ClientCmd::List;
     match c.cmd.as_ref().unwrap_or(&list) {
         ClientCmd::Add { name, id } => finish(
             "client add",
-            (|| {
-                let id = parse_endpoint_id(id).with_context(|| format!("ID {id:?}"))?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let before = peer_ids(&msg, &paths.config);
-                let old = manage::clients::client_add(&mut msg, name, id)?;
-                lock.save(&mut msg)?;
-                say_out!(log, "{}", manage::clients::added_line(name, old, id));
+            clients::add(&paths, name, id).map(|(line, notes)| {
+                say_out!(log, "{line}");
                 // The id the grants are for may have changed: say so.
-                note_moved_grants(log, "client add", &before, &msg, &paths.config);
-                Ok(())
-            })(),
-        ),
-        ClientCmd::Remove { name, force } => finish(
-            "client remove",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let grants = manage::clients::remove_client(&mut msg, &paths.config, name, *force)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::clients::removed_line(name, grants, &paths.config)
-                );
-                Ok(())
-            })(),
-        ),
-        ClientCmd::Rename { old, new } => finish(
-            "client rename",
-            (|| {
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                let grants = manage::clients::rename_client(&mut msg, &paths.config, old, new)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                say!(
-                    log,
-                    "{}",
-                    manage::clients::renamed_line(old, new, grants, &paths.config)
-                );
-                Ok(())
-            })(),
-        ),
-        ClientCmd::Set { name, settings } => finish(
-            "client set",
-            (|| {
-                // Every pair is read before anything changes.
-                let settings: Vec<_> = settings
-                    .iter()
-                    .map(|s| manage::clients::parse_setting(s))
-                    .collect::<Result<_, _>>()?;
-                load_first(&paths)?;
-                let mut lock = manage::lock_config(&paths.config)?;
-                let mut msg = lock.load()?;
-                manage::clients::client_set(&mut msg, name, &settings)
-                    .with_context(|| format!("in {}", paths.config.display()))?;
-                lock.save(&mut msg)?;
-                if let Some(line) = manage::clients::set_line(&msg, name) {
-                    say!(log, "{line}");
+                for note in notes {
+                    say!(log, "{note}");
                 }
-                Ok(())
-            })(),
+            }),
         ),
+        ClientCmd::Remove { name, force } => {
+            saying("client remove", log, clients::remove(&paths, name, *force))
+        }
+        ClientCmd::Rename { old, new } => {
+            saying("client rename", log, clients::rename(&paths, old, new))
+        }
+        ClientCmd::Set { name, settings } => {
+            saying("client set", log, clients::set(&paths, name, settings))
+        }
         ClientCmd::List => finish(
             "client list",
             (|| {
-                load_first(&paths)?;
+                manage::load_first(&paths)?;
                 for line in manage::clients::client_list(&manage::load_message(&paths.config)?) {
                     println!("{line}");
                 }
@@ -2150,31 +1287,6 @@ fn run_client(c: &ClientArgs, log: LogArgs, files: &FilesArgs) -> i32 {
             })(),
         ),
     }
-}
-
-/// The client identity: `explicit` (`--identity`) or the config's `identity`
-/// when set, else the default key, else `~/.ssh/id_ed25519`, else a key
-/// generated at the default path. Says where it came from.
-fn client_identity(
-    explicit: Option<&std::path::Path>,
-    settings: &irsync::config::settings::Settings,
-    pass: &PassphraseSource,
-) -> anyhow::Result<(iroh::SecretKey, KeySource)> {
-    let (path, ssh) = match explicit {
-        Some(p) => (p, None),
-        None => (
-            settings.identity.as_path(),
-            settings.ssh_identity.as_deref(),
-        ),
-    };
-    // Name the file actually read: with nothing at `path`, the ssh key.
-    let key = irsync::identity::client_key_path(path, ssh);
-    let (secret, source) = load_client_identity(path, ssh, pass, "irsync")
-        .with_context(|| format!("loading identity {}", key.display()))?;
-    if let KeySource::Ssh(p) = &source {
-        tracing::info!(path = %p.display(), "using the ssh key as the client identity");
-    }
-    Ok((secret, source))
 }
 
 /// Loads (generating if missing, with a stderr notice) the identity at `path`.
@@ -2328,7 +1440,7 @@ fn print_client_identity(
     settings: &Settings,
     pass: &PassphraseSource,
 ) -> anyhow::Result<()> {
-    let (secret, source) = client_identity(explicit, settings, pass)?;
+    let (secret, source) = irsync::client::client_identity(explicit, settings, pass)?;
     if let KeySource::Generated(p) = &source {
         eprintln!("irsync: generated identity {}", p.display());
     }
@@ -2427,7 +1539,8 @@ fn run_show(f: &FilesArgs) -> i32 {
                 f.passphrase_file.clone(),
                 settings.unsafe_config_allowed,
             );
-            let (client, source) = client_identity(f.identity.as_deref(), settings, &pass)?;
+            let (client, source) =
+                irsync::client::client_identity(f.identity.as_deref(), settings, &pass)?;
             if let KeySource::Generated(p) = &source {
                 eprintln!("irsync: generated identity {}", p.display());
             }
@@ -2476,14 +1589,8 @@ fn server_add(a: &ServerAddArgs, log: LogArgs, paths: &Paths) -> anyhow::Result<
         pq_key_exchange: a.pq_key_exchange,
         ssh: None,
     };
-    let mut lock = manage::lock_config(&paths.config)?;
-    let mut msg = lock.load()?;
-    let old = manage::servers::server_add(&mut msg, &a.name, id, &flags)?;
-    lock.save(&mut msg)?;
-    match old {
-        Some(old) => say_out!(log, "{}: {old} -> {id}", a.name),
-        None => say_out!(log, "{}: {id}", a.name),
-    }
+    let line = manage::servers::add(paths, &a.name, id, &flags)?;
+    say_out!(log, "{line}");
     Ok(())
 }
 
@@ -2507,35 +1614,6 @@ mod tests {
 
     fn filter_enables_irsync_trace(spec: &str) -> bool {
         filter_enables(spec, "irsync::session")
-    }
-
-    /// A name saved as a client only cannot be dialled. A sync stops before
-    /// this and names `irsync pair`, so this is the error for a config that
-    /// changed in between.
-    #[test]
-    fn a_client_only_host_is_no_target() {
-        let key = |n: u8| iroh::SecretKey::from_bytes(&[n; 32]).public();
-        let path = Path::new("/c/irsync.toml");
-        let text = format!(
-            "[clients.phone]\nclient_id = \"{}\"\n\
-             [servers.box]\nendpoint_id = \"{}\"\n[clients.box]\nclient_id = \"{}\"\n",
-            key(1),
-            key(2),
-            key(3)
-        );
-        let Config {
-            servers, clients, ..
-        } = Config::parse(&text, path).unwrap();
-        let target = |host: &str| resolve_target(&servers, &clients, host);
-        let e = target("phone").unwrap_err().to_string();
-        assert_eq!(
-            e,
-            "phone is saved in /c/irsync.toml as a client only: it has no endpoint_id to dial"
-        );
-        // The daemon's id is the one dialled, not the client's.
-        assert_eq!(target("box").unwrap(), key(2));
-        assert_eq!(target(&key(4).to_string()).unwrap(), key(4));
-        assert!(target("nobody").is_err());
     }
 
     #[test]

@@ -10,6 +10,7 @@
 use crate::fs::meta::{apply_metadata_fd_owned, fstat_entry_with_ctime, ApplyOpts};
 use crate::fs::paths::RelPath;
 use crate::fs::safe::{require_regular, Beneath};
+use crate::fs::temp_name::{is_temp_name, temp_name};
 use crate::index::{IndexHandle, Partial};
 use crate::platform::{cause, Cause, Create, Open, Stat};
 use crate::telemetry::meter::{Activity, Counter, Meter};
@@ -21,7 +22,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// Persist the partial record after this many newly verified chunks...
 const PERSIST_EVERY_CHUNKS: u32 = 64;
@@ -139,13 +140,6 @@ fn index_err(e: crate::index::IndexError) -> io::Error {
     io::Error::other(e)
 }
 
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 /// Validates `expected`'s records as tiling `[0, size)` exactly (they came
 /// off the wire) and copies them for the writer.
 fn native_chunks(expected: &FileDigest) -> io::Result<Vec<ChunkRecord>> {
@@ -165,7 +159,7 @@ fn native_chunks(expected: &FileDigest) -> io::Result<Vec<ChunkRecord>> {
             )));
         }
         // Chunks are buffered whole: never more than the chunker's maximum.
-        if c.len > MAX_CHUNK_LEN {
+        if c.len > irsync_proto::chunk::CHUNK_PARAMS.max {
             return Err(invalid(format!("chunk of {} bytes exceeds 1 MiB", c.len)));
         }
         next += u64::from(c.len);
@@ -246,7 +240,7 @@ fn paths(
 
 /// Removes a leftover `.part` of `rel` and its progress record, unless
 /// another writer holds the `.part` (then both stay for that writer).
-pub fn discard_part(
+pub(crate) fn discard_part(
     root: &Path,
     rel: &RelPath,
     partial_dir: Option<&PartialDir>,
@@ -271,53 +265,6 @@ pub fn discard_part(
         .remove_partial(rel)
         .map_err(io::Error::other)
 }
-
-/// The longest file name irsync creates, in bytes: `NAME_MAX` on Linux and macOS.
-pub const NAME_MAX: usize = 255;
-
-const TEMP_PREFIX: &[u8] = b".irsync.";
-/// Hex digits of the name hash in a shortened temporary name.
-const TEMP_HASH_HEX: usize = 16;
-
-/// irsync's temporary name for `name`: `.irsync.<name><suffix>`. When that
-/// would exceed [`NAME_MAX`], `<name>` is cut (on a character boundary if it
-/// is UTF-8) and `~` plus the first 16 hex digits of its BLAKE3 hash are put
-/// before the suffix, so the result fits and two long names that share a
-/// prefix still get distinct temporaries. Every temporary irsync makes
-/// (`.part` and `.tmp`) comes from here, so the mapping is one place.
-pub fn temp_name(name: &[u8], suffix: &[u8]) -> Vec<u8> {
-    let plain = TEMP_PREFIX.len() + name.len() + suffix.len();
-    let mut out = Vec::with_capacity(plain.min(NAME_MAX));
-    out.extend_from_slice(TEMP_PREFIX);
-    if plain <= NAME_MAX {
-        out.extend_from_slice(name);
-    } else {
-        let keep = NAME_MAX - TEMP_PREFIX.len() - 1 - TEMP_HASH_HEX - suffix.len();
-        let keep = match std::str::from_utf8(name) {
-            Ok(s) => (0..=keep)
-                .rev()
-                .find(|&i| s.is_char_boundary(i))
-                .unwrap_or(0),
-            Err(_) => keep,
-        };
-        out.extend_from_slice(&name[..keep]);
-        out.push(b'~');
-        out.extend_from_slice(blake3::hash(name).to_hex()[..TEMP_HASH_HEX].as_bytes());
-    }
-    out.extend_from_slice(suffix);
-    out
-}
-
-/// Whether a final path component is one of irsync's own temporary names
-/// (`.irsync.<name>.part` / `.irsync.<name>.tmp`, possibly shortened). Such
-/// names are never listed, never accepted from a peer and never created as
-/// destinations.
-pub fn is_temp_name(name: &[u8]) -> bool {
-    name.starts_with(TEMP_PREFIX) && (name.ends_with(b".part") || name.ends_with(b".tmp"))
-}
-
-/// The largest chunk a peer's `ChunkList` may describe (FastCDC's maximum).
-pub const MAX_CHUNK_LEN: u32 = 1024 * 1024;
 
 /// The error message when another writer holds the `.part` (`WouldBlock`).
 pub const PART_BUSY: &str = "part file busy";
@@ -797,7 +744,7 @@ impl FileWriter {
     /// Whether `finalize` compares the whole-file hash with the expected
     /// one. Off for an `APPEND`: the sender never read the prefix, so the
     /// receiver's folded hash is the only one there is.
-    pub fn set_verify_whole(&mut self, verify: bool) {
+    pub(crate) fn set_verify_whole(&mut self, verify: bool) {
         self.verify_whole = verify;
     }
 
@@ -1227,7 +1174,7 @@ impl FileWriter {
                     length: u64::from(n),
                 })
                 .collect(),
-            updated_at: now_secs(),
+            updated_at: crate::index::now_secs(),
         }
     }
 
@@ -1478,7 +1425,7 @@ impl Verified {
     /// it is left behind or adopted. In place there is no `.part`: the
     /// destination already holds the written data, and its progress is
     /// recorded as for any writer dropped.
-    pub async fn discard(self) {
+    pub(crate) async fn discard(self) {
         let Verified { mut w, file, .. } = self;
         if w.inplace {
             return;

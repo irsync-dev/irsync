@@ -75,8 +75,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::broadcast;
 
-use crate::cli::DeleteMode;
 use crate::fs::paths::RelPath;
+use crate::options::DeleteMode;
 use crate::plan::DELETING;
 use crate::session::reconnect::ConnState;
 use crate::session::{Event, Outcome, Party};
@@ -126,12 +126,6 @@ pub fn human(n: u64) -> String {
         }
     }
     n.to_string()
-}
-
-/// `h:mm:ss`.
-pub fn clock(d: Duration) -> String {
-    let s = d.as_secs();
-    format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
 }
 
 /// `1,234,567`, as rsync prints numbers in `--stats`.

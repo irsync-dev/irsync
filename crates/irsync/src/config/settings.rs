@@ -185,7 +185,7 @@ pub(crate) fn listen_problem(listen: &[HostPort]) -> Option<&'static str> {
 /// Resolves `listen` to the sockets to bind: each entry contributes the
 /// first IPv4 and the first IPv6 address it yields; two entries landing in
 /// one family is an error naming both.
-pub async fn listen_sockets(listen: &[HostPort]) -> anyhow::Result<Vec<SocketAddr>> {
+pub(crate) async fn listen_sockets(listen: &[HostPort]) -> anyhow::Result<Vec<SocketAddr>> {
     use anyhow::{anyhow, Context};
     let mut out: Vec<(SocketAddr, &HostPort)> = Vec::new();
     for entry in listen {
@@ -216,7 +216,7 @@ pub async fn listen_sockets(listen: &[HostPort]) -> anyhow::Result<Vec<SocketAdd
 }
 
 /// A debug HTTP address: `IP:PORT`, or a bare port on `127.0.0.1`.
-pub fn parse_debug_addr(s: &str) -> Result<SocketAddr, String> {
+pub(crate) fn parse_debug_addr(s: &str) -> Result<SocketAddr, String> {
     if let Ok(port) = s.parse::<u16>() {
         return Ok(SocketAddr::from(([127, 0, 0, 1], port)));
     }

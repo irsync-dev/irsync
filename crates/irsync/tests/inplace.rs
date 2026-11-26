@@ -58,7 +58,7 @@ async fn reflink_harness() -> Option<Harness> {
     fs::create_dir_all(base).unwrap();
     let a = fs::File::create(base.join(".probe-a")).unwrap();
     let b = fs::File::create(base.join(".probe-b")).unwrap();
-    let ok = irsync::recv::reflink(&a, &b).is_ok();
+    let ok = irsync::part_file::reflink(&a, &b).is_ok();
     let _ = fs::remove_file(base.join(".probe-a"));
     let _ = fs::remove_file(base.join(".probe-b"));
     if !ok {
@@ -107,10 +107,10 @@ async fn a_cloned_part_writes_only_the_changed_chunk() {
 }
 
 #[cfg(unix)]
-fn inplace_opts() -> irsync::cli::SyncOptions {
+fn inplace_opts() -> irsync::options::SyncOptions {
     let args = irsync::cli::Args::try_parse_from(["irsync", "-a", "--inplace", "src/", "host:m/"])
         .unwrap();
-    irsync::cli::SyncOptions::from_args(&args)
+    irsync::options::SyncOptions::from_args(&args)
 }
 
 #[cfg(unix)]
@@ -280,7 +280,7 @@ async fn inplace_resumes_after_a_connection_loss() {
     .await;
 }
 
-fn append_opts(verify: bool) -> irsync::cli::SyncOptions {
+fn append_opts(verify: bool) -> irsync::options::SyncOptions {
     let flag = if verify {
         "--append-verify"
     } else {
@@ -288,7 +288,7 @@ fn append_opts(verify: bool) -> irsync::cli::SyncOptions {
     };
     let args =
         irsync::cli::Args::try_parse_from(["irsync", "-a", flag, "src/", "host:m/"]).unwrap();
-    irsync::cli::SyncOptions::from_args(&args)
+    irsync::options::SyncOptions::from_args(&args)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

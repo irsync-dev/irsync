@@ -178,7 +178,7 @@ impl Region {
     }
 
     /// Checks that every copy in `ops` is a run of whole signed blocks.
-    pub fn admit(&self, ops: &[Op]) -> io::Result<()> {
+    pub(crate) fn admit(&self, ops: &[Op]) -> io::Result<()> {
         let block = u64::from(self.block);
         let end = self.offset + block * u64::from(self.blocks);
         for op in ops {

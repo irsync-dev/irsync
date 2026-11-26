@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, assert_trees_equal, with_stream_window, Flow, Harness};
-use irsync::cli::DeleteMode;
+use irsync::options::DeleteMode;
 use irsync::session::reconnect::ReconnectOpts;
 use irsync::session::PartsFault;
 use irsync_proto::v1::control::Msg;

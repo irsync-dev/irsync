@@ -205,10 +205,10 @@ fn compare(label: &str, a: &Path, b: &Path) {
     assert!(!ga.is_empty(), "{label}: fixture lost its hard-link pair");
 }
 
-fn opts() -> irsync::cli::SyncOptions {
+fn opts() -> irsync::options::SyncOptions {
     let args = irsync::cli::Args::try_parse_from(["irsync", "-aH", "--delete", "src/", "host:m/"])
         .unwrap();
-    irsync::cli::SyncOptions::from_args(&args)
+    irsync::options::SyncOptions::from_args(&args)
 }
 
 /// True for GNU rsync >= 3.1 (nanosecond mtimes). Apple's bundled rsync 2.6.9

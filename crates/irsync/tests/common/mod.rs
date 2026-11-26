@@ -242,7 +242,7 @@ pub struct DaemonHandle {
     pub slow_finalize: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
     /// Hooks for the daemon's side of every session (slow planner, in-flight
     /// cap, listing counters).
-    pub hooks: std::sync::Arc<std::sync::Mutex<irsync::session::DaemonHooks>>,
+    pub hooks: std::sync::Arc<std::sync::Mutex<irsync::session::SideHooks>>,
     sender_parallel: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// The limit on one key's dormant sessions per export; zero is none.
     pub max_dormant: std::sync::Arc<std::sync::atomic::AtomicU32>,
@@ -470,9 +470,9 @@ pub enum Flow {
 }
 
 /// `irsync -a` options as the CLI would build them.
-pub fn archive_opts() -> irsync::cli::SyncOptions {
+pub fn archive_opts() -> irsync::options::SyncOptions {
     let args = irsync::cli::Args::try_parse_from(["irsync", "-a", "src/", "host:m/"]).unwrap();
-    irsync::cli::SyncOptions::from_args(&args)
+    irsync::options::SyncOptions::from_args(&args)
 }
 
 /// A daemon serving export `m` (a temp dir) to one authorised client, plus the
@@ -571,7 +571,7 @@ impl Harness {
 
     /// Hello for the whole export, contents only (`host:m/`).
     pub fn hello(flow: Flow) -> irsync::session::SyncHello {
-        use irsync::cli::Direction;
+        use irsync::options::Direction;
         irsync::session::SyncHello::new(
             match flow {
                 Flow::Push => Direction::ClientSends,
@@ -608,7 +608,7 @@ impl Harness {
     /// with every connection.
     pub async fn run_reconnect(
         &self,
-        opts: &irsync::cli::SyncOptions,
+        opts: &irsync::options::SyncOptions,
         flow: Flow,
         ropts: irsync::session::reconnect::ReconnectOpts,
         local: irsync::session::LocalSide,
@@ -621,7 +621,7 @@ impl Harness {
     /// is replaced on each redial).
     pub async fn run_reconnect_hello(
         &self,
-        opts: &irsync::cli::SyncOptions,
+        opts: &irsync::options::SyncOptions,
         hello: irsync::session::SyncHello,
         ropts: irsync::session::reconnect::ReconnectOpts,
         local: irsync::session::LocalSide,
@@ -656,7 +656,7 @@ impl Harness {
     /// directory, and the CLI's filters apply on the client.
     pub async fn run_single_push(
         &self,
-        opts: &irsync::cli::SyncOptions,
+        opts: &irsync::options::SyncOptions,
         src_file: &std::path::Path,
         dest_path: &[u8],
         contents_only: bool,
@@ -693,7 +693,7 @@ impl Harness {
     /// rsync's rules and pulls into the directory that holds it.
     pub async fn run_single_pull(
         &self,
-        opts: &irsync::cli::SyncOptions,
+        opts: &irsync::options::SyncOptions,
         remote_path: &[u8],
         dest: &std::path::Path,
         contents_only: bool,
@@ -710,7 +710,7 @@ impl Harness {
         #[cfg(windows)]
         let remote = std::path::Path::new(&remote_os);
         let (_, basename) = split_last(remote);
-        let placed = place_file(dest, contents_only, &basename, true)?;
+        let placed = place_file(dest, contents_only, &basename)?;
         let mut hello = Self::hello(Flow::Pull);
         hello.req.path = remote_path.to_vec();
         hello.req.contents_only = false;
@@ -725,7 +725,7 @@ impl Harness {
     /// One complete session; waits until the daemon has finished its side too.
     pub async fn run(
         &self,
-        opts: &irsync::cli::SyncOptions,
+        opts: &irsync::options::SyncOptions,
         flow: Flow,
     ) -> anyhow::Result<irsync::session::Outcome> {
         self.run_side(opts, flow, self.local_side()).await
@@ -733,7 +733,7 @@ impl Harness {
 
     pub async fn run_side(
         &self,
-        opts: &irsync::cli::SyncOptions,
+        opts: &irsync::options::SyncOptions,
         flow: Flow,
         local: irsync::session::LocalSide,
     ) -> anyhow::Result<irsync::session::Outcome> {
@@ -743,7 +743,7 @@ impl Harness {
     /// Like [`Harness::run_side`] with a caller-built `Hello` (e.g. a sub-path).
     pub async fn run_hello(
         &self,
-        opts: &irsync::cli::SyncOptions,
+        opts: &irsync::options::SyncOptions,
         hello: irsync::session::SyncHello,
         local: irsync::session::LocalSide,
     ) -> anyhow::Result<irsync::session::Outcome> {
@@ -787,7 +787,7 @@ impl Harness {
 pub async fn sync_trees(
     src: impl FnOnce(&std::path::Path),
     dst: impl FnOnce(&std::path::Path),
-    opts: &irsync::cli::SyncOptions,
+    opts: &irsync::options::SyncOptions,
     flow: Flow,
 ) -> (irsync::session::Outcome, Harness) {
     let h = Harness::new().await;
@@ -802,7 +802,7 @@ pub async fn sync_trees(
 pub fn assert_trees_equal(
     a: &std::path::Path,
     b: &std::path::Path,
-    preserve: &irsync::cli::Preserve,
+    preserve: &irsync::options::Preserve,
 ) {
     #[cfg(unix)]
     use irsync::platform::testutil::is_fifo;

@@ -4,6 +4,7 @@
 
 use super::{id_bytes, id_of, ManageError};
 use crate::config::names::valid_alias;
+use crate::config::paths::Paths;
 use crate::config::servers::beside_address;
 use crate::config::settings::{PqKeyExchange, Relay, Spelled};
 use crate::config::writer;
@@ -191,4 +192,41 @@ pub fn server_rename(msg: &mut pb::Config, old: &str, new: &str) -> Result<(), M
         h.name = new.to_string();
     }
     Ok(())
+}
+
+// The commands, from the config file's lock to the line they say.
+
+/// `server remove NAME`; the line to say.
+pub fn remove(paths: &Paths, name: &str) -> anyhow::Result<String> {
+    super::load_first(paths)?;
+    super::edit(&paths.config, |msg| server_remove(msg, name))?;
+    Ok(format!(
+        "removed server {name} from {}",
+        paths.config.display()
+    ))
+}
+
+/// `server rename OLD NEW`; the line to say.
+pub fn rename(paths: &Paths, old: &str, new: &str) -> anyhow::Result<String> {
+    super::load_first(paths)?;
+    super::edit(&paths.config, |msg| server_rename(msg, old, new))?;
+    Ok(format!(
+        "renamed server {old} to {new} in {}",
+        paths.config.display()
+    ))
+}
+
+/// `server add NAME ID ...`; the line to print: `NAME: ID`, or `NAME: OLD
+/// -> NEW` when the id changed.
+pub fn add(
+    paths: &Paths,
+    name: &str,
+    id: EndpointId,
+    flags: &ServerFlags,
+) -> anyhow::Result<String> {
+    let (old, _) = super::edit_as_is(&paths.config, |msg| Ok(server_add(msg, name, id, flags)?))?;
+    Ok(match old {
+        Some(old) => format!("{name}: {old} -> {id}"),
+        None => format!("{name}: {id}"),
+    })
 }

@@ -8,6 +8,9 @@ use crate::authz::Access;
 use crate::config::clients::{Right, RIGHTS};
 use crate::config::file::Config;
 use crate::config::names::valid_alias;
+use crate::config::paths::Paths;
+use crate::identity::parse_endpoint_id;
+use anyhow::Context;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use std::collections::BTreeMap;
@@ -64,7 +67,7 @@ pub fn client_remove(msg: &mut pb::Config, name: &str, force: bool) -> Result<us
 /// `client remove` on a message loaded from `path`: as [`client_remove`],
 /// with the grants canonicalized first (see [`canonicalize_without`]), so
 /// an EndpointId written for this client is found as a grant naming it.
-pub fn remove_client(
+pub(crate) fn remove_client(
     msg: &mut pb::Config,
     path: &Path,
     name: &str,
@@ -81,7 +84,7 @@ pub fn remove_client(
 /// [`client_rename`], with the grants canonicalized first (see
 /// [`canonicalize_doc`]), so an EndpointId written for this client is
 /// renamed too.
-pub fn rename_client(
+pub(crate) fn rename_client(
     msg: &mut pb::Config,
     path: &Path,
     old: &str,
@@ -103,7 +106,7 @@ pub fn added_line(name: &str, old: Option<EndpointId>, id: EndpointId) -> String
 }
 
 /// What `client remove` reports, with the `grants` it removed.
-pub fn removed_line(name: &str, grants: usize, config: &Path) -> String {
+pub(crate) fn removed_line(name: &str, grants: usize, config: &Path) -> String {
     let also = match grants {
         0 => String::new(),
         1 => " and 1 grant".to_string(),
@@ -113,7 +116,7 @@ pub fn removed_line(name: &str, grants: usize, config: &Path) -> String {
 }
 
 /// What `client rename` reports, with the `grants` it updated.
-pub fn renamed_line(old: &str, new: &str, grants: usize, config: &Path) -> String {
+pub(crate) fn renamed_line(old: &str, new: &str, grants: usize, config: &Path) -> String {
     let also = match grants {
         0 => String::new(),
         1 => "; updated 1 grant".to_string(),
@@ -134,7 +137,7 @@ pub fn set_line(msg: &pb::Config, name: &str) -> Option<String> {
 
 /// The id of each client of `msg`, the id grants naming it are for; none
 /// when `msg` does not load.
-pub fn client_ids(msg: &pb::Config, path: &Path) -> BTreeMap<String, EndpointId> {
+pub(crate) fn client_ids(msg: &pb::Config, path: &Path) -> BTreeMap<String, EndpointId> {
     let Ok(config) = Config::from_message(msg, path) else {
         return BTreeMap::new();
     };
@@ -149,7 +152,7 @@ pub fn client_ids(msg: &pb::Config, path: &Path) -> BTreeMap<String, EndpointId>
 /// A grant by name follows the name. After an edit that changed which id
 /// a client's grants are for (`before`: [`client_ids`] from before it),
 /// one note per such client that grants name, for the command `cmd`.
-pub fn moved_grant_notes(
+pub(crate) fn moved_grant_notes(
     cmd: &str,
     before: &BTreeMap<String, EndpointId>,
     msg: &pb::Config,
@@ -250,7 +253,7 @@ pub fn client_set(
 
 /// The rights of a client as `client set` reports them: `KEY=VALUE` for
 /// every right, `none` for one that is not set.
-pub fn rights_summary(c: &pb::ClientEntry) -> String {
+pub(crate) fn rights_summary(c: &pb::ClientEntry) -> String {
     let words: Vec<String> = RIGHTS
         .iter()
         .map(|r| format!("{}={}", r.key(), r.get(c).map_or("none", Access::as_str)))
@@ -278,4 +281,48 @@ pub fn client_list(msg: &pb::Config) -> Vec<String> {
             line
         })
         .collect()
+}
+
+// The commands, from the config file's lock to the lines they say.
+
+/// `client add NAME ID`: the line to print, and notes on grants that now
+/// apply to another id (see [`moved_grant_notes`]).
+pub fn add(paths: &Paths, name: &str, id: &str) -> anyhow::Result<(String, Vec<String>)> {
+    let id = parse_endpoint_id(id).with_context(|| format!("ID {id:?}"))?;
+    let ((before, old), msg) = super::edit_as_is(&paths.config, |msg| {
+        let before = client_ids(msg, &paths.config);
+        Ok((before, client_add(msg, name, id)?))
+    })?;
+    let notes = moved_grant_notes("client add", &before, &msg, &paths.config);
+    Ok((added_line(name, old, id), notes))
+}
+
+/// `client remove NAME [--force]`; the line to say.
+pub fn remove(paths: &Paths, name: &str, force: bool) -> anyhow::Result<String> {
+    super::load_first(paths)?;
+    let (grants, _) = super::edit(&paths.config, |msg| {
+        remove_client(msg, &paths.config, name, force)
+    })?;
+    Ok(removed_line(name, grants, &paths.config))
+}
+
+/// `client rename OLD NEW`; the line to say.
+pub fn rename(paths: &Paths, old: &str, new: &str) -> anyhow::Result<String> {
+    super::load_first(paths)?;
+    let (grants, _) = super::edit(&paths.config, |msg| {
+        rename_client(msg, &paths.config, old, new)
+    })?;
+    Ok(renamed_line(old, new, grants, &paths.config))
+}
+
+/// `client set NAME RIGHT=ACCESS...`; the line to say, if any.
+pub fn set(paths: &Paths, name: &str, settings: &[String]) -> anyhow::Result<Option<String>> {
+    // Every pair is read before anything changes.
+    let settings: Vec<_> = settings
+        .iter()
+        .map(|s| parse_setting(s))
+        .collect::<Result<_, _>>()?;
+    super::load_first(paths)?;
+    let ((), msg) = super::edit(&paths.config, |msg| client_set(msg, name, &settings))?;
+    Ok(set_line(&msg, name))
 }

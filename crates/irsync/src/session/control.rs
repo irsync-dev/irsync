@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use iroh::endpoint::{RecvStream, SendStream};
 use irsync_proto::chunk::FileDigest;
@@ -60,7 +60,7 @@ pub(super) enum Ev {
     ProtocolError(String),
     /// Role-specific task completion.
     Recv(super::receiver::Done),
-    Send(super::sender_role::Done),
+    Send(super::sender::Done),
 }
 
 /// Handle the stream readers post peer events with: a frame waits while the
@@ -213,14 +213,14 @@ impl Out {
     /// caller instead of growing the queue. Only for spawned tasks that may
     /// wait on the peer, never a main loop. Frames from `send` and
     /// `send_paced` share one queue, so their order is kept.
-    pub async fn send_paced(&self, msg: Msg) {
+    pub(crate) async fn send_paced(&self, msg: Msg) {
         self.reserve(msg).await.send();
     }
 
     /// Waits for room for `msg` as [`Out::send_paced`] does, without
     /// queueing it yet, so a caller can check after the wait that the frame
     /// is still wanted. Once the writer is gone it returns at once.
-    pub async fn reserve(&self, msg: Msg) -> Paced {
+    pub(crate) async fn reserve(&self, msg: Msg) -> Paced {
         let frame = Control { msg: Some(msg) };
         let n = frame.encoded_len();
         let gone = tokio::select! {
@@ -463,7 +463,7 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
 pub(super) fn is_own_temp(path: &RelPath) -> bool {
     path.components()
         .last()
-        .is_some_and(crate::recv::is_temp_name)
+        .is_some_and(crate::fs::temp_name::is_temp_name)
 }
 
 /// Paths of regular files this side has listed, the only paths it will
@@ -792,7 +792,7 @@ fn list_single(
             return lstat_entry_with_ctime(&root, rel);
         }
         let (dir, name) =
-            crate::fs::safe::open_parent_beneath(base, &super::join_rel(prefix, rel))?;
+            crate::fs::safe::open_parent_beneath(base, &super::record::join_rel(prefix, rel))?;
         lstat_at(&dir, &name, rel)
     };
     match lstat(&RelPath::root()) {
@@ -836,12 +836,6 @@ fn list_single(
     sum
 }
 
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
-
 /// Keeps the session row in the index current, writing at most every 2 s.
 /// A resumed session continues from its stored record; a finished session's
 /// row is deleted, so the next run with the same key starts fresh.
@@ -862,7 +856,7 @@ pub(super) struct Persister {
 impl Persister {
     /// Continues the session's stored record (if any) and writes the row right away.
     pub async fn start(ctx: &Ctx) -> Persister {
-        let now = now_secs();
+        let now = crate::index::now_secs();
         let mut rec = ctx.record.clone().unwrap_or_else(|| SessionRecord {
             id: ctx.session_id,
             key: ctx.key.clone(),
@@ -906,11 +900,11 @@ impl Persister {
     }
 
     /// The plan as stored when this connection started (plus what was added since).
-    pub fn stored_plan(&self) -> &SessionPlan {
+    pub(crate) fn stored_plan(&self) -> &SessionPlan {
         &self.rec.plan
     }
 
-    pub fn is_done(&self, file_id: u64) -> bool {
+    pub(crate) fn is_done(&self, file_id: u64) -> bool {
         self.done.contains(&file_id)
     }
 
@@ -962,7 +956,7 @@ impl Persister {
         self.rec.progress.deleted_count
     }
 
-    pub fn add_deleted(&mut self, n: u64) {
+    pub(crate) fn add_deleted(&mut self, n: u64) {
         if n > 0 {
             self.rec.progress.deleted_count += n;
             self.dirty = true;
@@ -988,7 +982,7 @@ impl Persister {
     }
 
     /// What [`Persister::placed`] recorded, this connection and earlier ones.
-    pub fn placed_stats(&self) -> &[PlacedStat] {
+    pub(crate) fn placed_stats(&self) -> &[PlacedStat] {
         &self.rec.progress.placed
     }
 
@@ -1027,14 +1021,14 @@ impl Persister {
         self.dirty = false;
     }
 
-    pub async fn maybe_flush(&mut self) {
+    pub(crate) async fn maybe_flush(&mut self) {
         if self.dirty && self.last.elapsed() >= PERSIST_EVERY {
             self.flush().await;
         }
     }
 
     pub async fn flush(&mut self) {
-        self.rec.updated_at = now_secs();
+        self.rec.updated_at = crate::index::now_secs();
         let row = self.rec.to_row();
         let index = self.index.clone();
         let res = tokio::task::spawn_blocking(move || {

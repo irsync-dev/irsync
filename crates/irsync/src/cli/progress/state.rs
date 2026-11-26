@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use crate::cli::DeleteMode;
 use crate::fs::paths::RelPath;
+use crate::options::DeleteMode;
 use crate::session::reconnect::ConnState;
 use crate::session::{Event, Party};
 

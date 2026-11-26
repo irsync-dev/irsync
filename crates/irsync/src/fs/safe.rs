@@ -12,7 +12,7 @@ use crate::platform::{self, Cause, Dir, Kind, Open, Stat};
 
 /// Turns the error of an `O_NOFOLLOW` open of a symlink
 /// ([`Cause::LinkRefused`]) into one that says so.
-pub fn nofollow_error(e: io::Error, what: &Path) -> io::Error {
+pub(crate) fn nofollow_error(e: io::Error, what: &Path) -> io::Error {
     if platform::cause(&e) == Cause::LinkRefused {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -24,7 +24,7 @@ pub fn nofollow_error(e: io::Error, what: &Path) -> io::Error {
 }
 
 /// Fails unless the open file is a regular file.
-pub fn require_regular(f: &File, what: &Path) -> io::Result<()> {
+pub(crate) fn require_regular(f: &File, what: &Path) -> io::Result<()> {
     require_regular_stat(f, what).map(drop)
 }
 
@@ -100,7 +100,7 @@ fn refused_in(dir: &RelPath) -> impl FnOnce() -> String + '_ {
 /// may be reached through symlinks the user chose), every component of
 /// `dir` without following a link, so a symlink anywhere below `root` is
 /// refused.
-pub fn open_dir_beneath(root: &Path, dir: &RelPath) -> io::Result<Dir> {
+pub(crate) fn open_dir_beneath(root: &Path, dir: &RelPath) -> io::Result<Dir> {
     let mut d = Dir::open_root(root)?;
     for c in dir.components() {
         d = d.open_dir(c).map_err(|e| refused(e, refused_in(dir)))?;
@@ -161,7 +161,7 @@ impl DirStack {
 /// included, may have swapped a directory on the way for a symlink.
 /// Everything a session does to a path from the other side therefore
 /// starts here and goes on from the open directory.
-pub fn open_parent_beneath(base: &Path, rel: &RelPath) -> io::Result<(Dir, Vec<u8>)> {
+pub(crate) fn open_parent_beneath(base: &Path, rel: &RelPath) -> io::Result<(Dir, Vec<u8>)> {
     let (parent, name) = split_last(rel)?;
     let dir = open_dir_beneath(base, &parent)?;
     Ok((dir, name))
@@ -225,7 +225,7 @@ impl Beneath {
 
     /// Makes the directory that holds the place, and what is missing
     /// above, the root included (a name this side trusts, made by name).
-    pub fn make_parent(&self) -> io::Result<()> {
+    pub(crate) fn make_parent(&self) -> io::Result<()> {
         let (dir, _) = split_last(&self.rel)?;
         if !self.root.is_dir() {
             std::fs::create_dir_all(&self.root)?;

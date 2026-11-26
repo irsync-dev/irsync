@@ -1,7 +1,7 @@
 //! rsync-style include/exclude filters, matched on raw bytes.
 
-use crate::cli::FilterRule;
 use crate::fs::paths::RelPath;
+use crate::options::FilterRule;
 use irsync_glob::Glob;
 use std::io;
 
@@ -85,7 +85,7 @@ pub enum Rule {
 }
 
 impl Rule {
-    pub fn is_include(&self) -> bool {
+    pub(crate) fn is_include(&self) -> bool {
         matches!(self, Rule::Include(_))
     }
 
@@ -121,7 +121,7 @@ pub const MAX_PATTERN_BYTES: usize = 1024 * 1024;
 /// Checks a session's patterns against the limits above. Both sides check:
 /// the client its own rules before it connects, the daemon the rules in a
 /// `Hello` before it compiles them, since they come from the peer.
-pub fn check_limits<'a>(patterns: impl IntoIterator<Item = &'a [u8]>) -> Result<(), String> {
+pub(crate) fn check_limits<'a>(patterns: impl IntoIterator<Item = &'a [u8]>) -> Result<(), String> {
     let (mut rules, mut bytes) = (0usize, 0usize);
     for p in patterns {
         if p.len() > MAX_PATTERN {

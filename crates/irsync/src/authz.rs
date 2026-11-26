@@ -11,53 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Access {
-    ReadOnly,
-    ReadWrite,
-}
-
-impl Access {
-    pub fn permits(self, write: bool) -> bool {
-        !write || self == Access::ReadWrite
-    }
-
-    /// The word the file spells it with.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Access::ReadWrite => "rw",
-            Access::ReadOnly => "ro",
-        }
-    }
-
-    /// `"rw"` or `"ro"`; anything else is not an access.
-    pub fn parse(s: &str) -> Option<Access> {
-        match s {
-            "rw" => Some(Access::ReadWrite),
-            "ro" => Some(Access::ReadOnly),
-            _ => None,
-        }
-    }
-
-    /// The access a message value of `pb::Access` stands for; `None` for
-    /// unspecified or a number the message does not know.
-    pub fn from_message(n: i32) -> Option<Access> {
-        match irsync_proto::config::Access::try_from(n) {
-            Ok(irsync_proto::config::Access::Rw) => Some(Access::ReadWrite),
-            Ok(irsync_proto::config::Access::Ro) => Some(Access::ReadOnly),
-            _ => None,
-        }
-    }
-}
-
-impl From<Access> for irsync_proto::config::Access {
-    fn from(a: Access) -> Self {
-        match a {
-            Access::ReadWrite => irsync_proto::config::Access::Rw,
-            Access::ReadOnly => irsync_proto::config::Access::Ro,
-        }
-    }
-}
+pub use crate::config::access::Access;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grants {
@@ -251,7 +205,7 @@ pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// [`crate::manage::lock_config`]), waiting up to [`LOCK_WAIT`] while
 /// someone else holds it; then it is [`ManageError::Locked`]. Blocks:
 /// call it off the async runtime.
-pub fn lock_config_waiting(path: &Path) -> Result<crate::manage::ConfigLock, ManageError> {
+pub(crate) fn lock_config_waiting(path: &Path) -> Result<crate::manage::ConfigLock, ManageError> {
     let deadline = std::time::Instant::now() + LOCK_WAIT;
     loop {
         match crate::manage::lock_config(path) {

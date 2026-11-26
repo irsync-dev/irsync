@@ -20,7 +20,7 @@ pub fn parse(s: &str) -> Result<Duration, ConfigError> {
 
 /// A duration as the config message holds it. One past `i64::MAX`
 /// seconds stays at `i64::MAX`.
-pub fn to_proto(d: Duration) -> prost_types::Duration {
+pub(crate) fn to_proto(d: Duration) -> prost_types::Duration {
     prost_types::Duration {
         seconds: i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
         nanos: i32::try_from(d.subsec_nanos()).expect("under a second"),

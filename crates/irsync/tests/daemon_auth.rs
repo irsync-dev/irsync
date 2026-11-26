@@ -9,9 +9,9 @@ use common::{
 };
 use iroh::Endpoint;
 use irsync::authz::{Access, FileAuthorizer, Grants, MemoryAuthorizer};
-use irsync::cli::Direction;
 use irsync::config::paths::Paths;
 use irsync::net::frame::{read_body, read_msg, write_msg};
+use irsync::options::Direction;
 use irsync::session::SyncHello;
 use irsync_proto::v1::{
     error::Code, hello as wire_hello, hello_reply, Error, Hello, HelloAck, HelloReply, ListExports,

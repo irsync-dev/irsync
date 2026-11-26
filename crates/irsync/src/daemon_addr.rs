@@ -19,7 +19,7 @@ pub struct AddrInfo {
 }
 
 impl AddrInfo {
-    pub fn from_endpoint_addr(pid: u32, addr: &EndpointAddr) -> AddrInfo {
+    pub(crate) fn from_endpoint_addr(pid: u32, addr: &EndpointAddr) -> AddrInfo {
         AddrInfo {
             pid,
             relay: addr.relay_urls().next().cloned(),
@@ -72,7 +72,7 @@ pub fn read(state: &Path) -> Option<AddrInfo> {
 }
 
 /// Keeps `daemon.addr` current for `ep` until it closes.
-pub fn spawn_writer(state: PathBuf, ep: Endpoint) {
+pub(crate) fn spawn_writer(state: PathBuf, ep: Endpoint) {
     let pid = std::process::id();
     tokio::spawn(async move {
         let mut watch = ep.watch_addr();

@@ -8,7 +8,8 @@ use std::fs;
 use std::time::{Duration, SystemTime};
 
 use common::{Flow, Harness};
-use irsync::cli::{Args, SyncOptions};
+use irsync::cli::Args;
+use irsync::options::SyncOptions;
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(30), f)
@@ -89,7 +90,7 @@ async fn dry_run_verbose_push_lists_files() {
         let h = Harness::new().await;
         fs::write(h.local.path().join("new.txt"), b"x").unwrap();
         let local = h.local_side();
-        let mut rx = local.hooks.bus.subscribe();
+        let mut rx = local.bus.subscribe();
         let out = h
             .run_side(&opts(&["-n", "-v"]), Flow::Push, local)
             .await

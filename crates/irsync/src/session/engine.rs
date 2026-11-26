@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::build::BuildInfo;
+use crate::build_info::BuildInfo;
 use anyhow::{bail, Context};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::EndpointId;
@@ -34,19 +34,19 @@ use super::limits::{out_ceiling, LISTING_QUEUE};
 use super::listing_stream::{self, ListingSink};
 use super::single::{is_one_component, SingleFile};
 use super::{
-    receiver, sender_role, DaemonSessions, IndexScope, LocalSide, Outcome, SessionKey,
+    receiver, sender, DaemonSessions, IndexScope, LocalSide, Outcome, SessionClaim, SessionKey,
     SessionRecord, SideHooks, SyncHello, HASH_WORKERS,
 };
-use crate::cli::location::Location;
-use crate::cli::{Append, DeleteMode, Direction, Preserve, SyncOptions};
+use crate::data_stream::DEFAULT_PARALLEL;
 use crate::filter::FilterSet;
 use crate::fs::meta::ApplyOpts;
 use crate::fs::paths::RelPath;
 use crate::hasher::{HashEvent, HashProgress, Hasher};
 use crate::index::IndexHandle;
+use crate::location::Location;
 use crate::net::frame::{read_body, write_msg_tapped};
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
-use crate::send::DEFAULT_PARALLEL;
+use crate::options::{Append, DeleteMode, Direction, Preserve, SyncOptions};
 use crate::telemetry::meter::Meter;
 use crate::telemetry::{self, phase, Phase, PhaseKind, Role, Side};
 
@@ -164,6 +164,18 @@ impl RoleOpts {
         }
     }
 
+    /// These options with deletion off: a single-file session never
+    /// deletes anything, since nothing else in the file's directory is
+    /// part of it (see [`SyncOptions::without_deletion`] for the client).
+    fn without_deletion(self) -> RoleOpts {
+        RoleOpts {
+            delete: DeleteMode::Off,
+            delete_excluded: false,
+            max_delete: None,
+            ..self
+        }
+    }
+
     /// The daemon's options come from `Hello`: the client's preserve flags
     /// (`-l -p -t -g -o -D -H -S`) and, only when the daemon `receives` (the client pushes, which already
     /// requires write access to a writable export), the receiver-side
@@ -235,7 +247,7 @@ impl RoleOpts {
 /// Puts the client's options into `Hello`: the receiver-side ones (Ruling
 /// 19), which the daemon honours when it receives, the preserve flags (R36)
 /// and the compiled filter rules (R38), which it honours in both directions.
-pub fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: &FilterSet) {
+pub(crate) fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: &FilterSet) {
     // Relative only: an absolute one is this side's business (and refused on
     // a push by `check_options`).
     req.partial_dir = o
@@ -299,7 +311,7 @@ pub fn set_sync_options(req: &mut SyncRequest, o: &SyncOptions, filters: &Filter
 /// is the daemon's filesystem, so only a path inside the destination (a
 /// canonical relative path) may be chosen; an absolute one, or one with
 /// `..`, is refused.
-pub fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
+pub(crate) fn check_options(direction: Direction, o: &SyncOptions) -> anyhow::Result<()> {
     if direction == Direction::ClientSends {
         if let Some(pd) = &o.partial_dir {
             if pd.is_absolute()
@@ -385,6 +397,8 @@ pub(super) struct Ctx {
     pub privs: Privs,
     #[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
     pub hooks: SideHooks,
+    /// Progress events for the user interface.
+    pub bus: super::EventBus,
 }
 
 impl Ctx {
@@ -422,10 +436,10 @@ impl Ctx {
     /// `--partial-dir` for a file writer, which works from `base` with index
     /// keys: the option is relative to the session root, so the root's path
     /// below `base` is put in front (nothing, when they are the same).
-    pub fn partial_dir_from_base(&self) -> Option<crate::recv::PartialDir> {
+    pub(crate) fn partial_dir_from_base(&self) -> Option<crate::part_file::PartialDir> {
         let pd = self.opts.partial_dir.as_deref()?;
         let below = self.root.strip_prefix(&self.base).unwrap_or(Path::new(""));
-        Some(crate::recv::PartialDir {
+        Some(crate::part_file::PartialDir {
             dir: if pd.is_absolute() {
                 pd.to_path_buf()
             } else {
@@ -437,7 +451,7 @@ impl Ctx {
 
     /// An index key as a path below `base` (see [`Ctx::full_key`] for the
     /// single-file mapping): what the opens that follow no symlink take.
-    pub fn local_key(&self, key: &RelPath) -> RelPath {
+    pub(crate) fn local_key(&self, key: &RelPath) -> RelPath {
         match &self.single {
             Some(s) if *key == self.scope.key(&s.wire) => self.scope.key(&s.local),
             _ => key.clone(),
@@ -449,7 +463,7 @@ impl Ctx {
     /// key already built from the local name, so that mapping never fires;
     /// it is kept as a guard for a caller that passes the wire key.
     #[cfg(test)]
-    pub fn full_key(&self, key: &RelPath) -> PathBuf {
+    pub(crate) fn full_key(&self, key: &RelPath) -> PathBuf {
         let key = &self.local_key(key);
         if key.as_bytes().is_empty() {
             self.base.clone()
@@ -470,7 +484,7 @@ impl Ctx {
     }
 
     /// Which metadata to apply for `e` on this side.
-    pub fn apply_opts(&self, e: &FileEntry) -> ApplyOpts {
+    pub(crate) fn apply_opts(&self, e: &FileEntry) -> ApplyOpts {
         let p = &self.opts.preserve;
         ApplyOpts {
             perms: p.perms,
@@ -574,7 +588,7 @@ fn remote_location(daemon: EndpointId, req: &SyncRequest) -> Location {
 
 /// The client's [`SessionKey`] for a session with `daemon` described by
 /// `hello` over `local` (canonicalizes the local path, so off the async threads).
-pub async fn client_session_key(
+pub(crate) async fn client_session_key(
     daemon: EndpointId,
     hello: &SyncHello,
     local: &LocalSide,
@@ -742,7 +756,7 @@ pub(super) async fn run_client_inner(
     let index = local.index.metered(meter.clone());
     // Every file this side actually reads is reported on the bus.
     let on_hash: HashProgress = {
-        let bus = local.hooks.bus.clone();
+        let bus = local.bus.clone();
         Arc::new(move |p, e| match e {
             HashEvent::Start { size } => bus.emit(super::Event::FileHashing(p.clone(), size)),
             HashEvent::Done => bus.emit(super::Event::FileHashed(p.clone())),
@@ -750,47 +764,21 @@ pub(super) async fn run_client_inner(
     };
     // `-c`: no index row is trusted; every file this side lists or
     // compares is read.
-    let hasher = if opts.checksum {
-        Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
-            .with_force(true)
-            .with_activity(activity.clone())
-            .with_progress(on_hash.clone())
-            .with_meter(meter.clone())
+    let main = if opts.checksum {
+        Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS).with_force(true)
     } else {
         // Shares the side's worker limit and counters across attempts.
         Hasher::clone(&local.hasher)
-            .with_progress(on_hash.clone())
-            .with_meter(meter.clone())
     };
-    let forced = Hasher::new(index.clone(), local.root.clone(), 1)
-        .with_force(true)
-        .with_activity(activity.clone())
-        .with_progress(on_hash)
-        .with_meter(meter.clone());
-    let verify = Hasher::new(index.clone(), local.root.clone(), HASH_WORKERS)
-        .with_force(true)
-        .with_activity(activity.clone())
-        .with_meter(meter.clone());
-    #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = if local.hooks.no_change_checks {
-        (
-            hasher.without_change_check(),
-            forced.without_change_check(),
-            verify.without_change_check(),
-        )
-    } else {
-        (hasher, forced, verify)
-    };
-    #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = match &local.hooks.during_hash {
-        Some(h) => (
-            hasher.with_hash_hook(h.clone()),
-            forced.with_hash_hook(h.clone()),
-            verify.with_hash_hook(h.clone()),
-        ),
-        None => (hasher, forced, verify),
-    };
-    let (hasher, forced, verify) = (Arc::new(hasher), Arc::new(forced), Arc::new(verify));
+    let (hasher, forced, verify) = hashers(
+        main,
+        &index,
+        &local.root,
+        &activity,
+        &meter,
+        Some(on_hash),
+        &local.hooks,
+    );
     let ctx = Ctx {
         conn,
         session_id,
@@ -819,6 +807,7 @@ pub(super) async fn run_client_inner(
         opts: RoleOpts::client(opts),
         privs: Privs::current(),
         hooks: local.hooks,
+        bus: local.bus,
     };
     run_role(
         Arc::new(ctx),
@@ -951,7 +940,7 @@ pub struct Place {
 
 /// `HelloAck` and plays the role opposite to the client's.
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_daemon(
+pub(crate) async fn serve_daemon(
     conn: Connection,
     send: SendStream,
     recv: RecvStream,
@@ -1101,12 +1090,57 @@ fn record_net(span: &tracing::Span, net: &crate::telemetry::meter::NetUsage) {
     span.record("lost_packets", net.lost_packets);
 }
 
-/// The body of [`serve_daemon`]; `session` is its `session` span.
+/// The three hashers a role uses, built alike on both sides: `main`, as
+/// the caller prepared it (forced or not, shared or new); `forced` (one
+/// worker, always re-reads, for a file that changed); and `verify`
+/// (`--paranoid`'s second hash, always re-reads, with workers of its own,
+/// so the checks neither queue behind nor hold up retries on `forced`).
+/// `progress` hears of every file `main` and `forced` read.
+#[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
+fn hashers(
+    main: Hasher,
+    index: &IndexHandle,
+    root: &Path,
+    activity: &Arc<AtomicU64>,
+    meter: &Arc<Meter>,
+    progress: Option<HashProgress>,
+    hooks: &SideHooks,
+) -> (Arc<Hasher>, Arc<Hasher>, Arc<Hasher>) {
+    let fresh = |workers| Hasher::new(index.clone(), root.to_path_buf(), workers).with_force(true);
+    let finish = |h: Hasher, progress: Option<&HashProgress>| {
+        let h = h.with_activity(activity.clone()).with_meter(meter.clone());
+        let h = match progress {
+            Some(p) => h.with_progress(p.clone()),
+            None => h,
+        };
+        #[cfg(feature = "test-hooks")]
+        let h = if hooks.no_change_checks {
+            h.without_change_check()
+        } else {
+            h
+        };
+        #[cfg(feature = "test-hooks")]
+        let h = match &hooks.during_hash {
+            Some(k) => h.with_hash_hook(k.clone()),
+            None => h,
+        };
+        Arc::new(h)
+    };
+    (
+        finish(main, progress.as_ref()),
+        finish(fresh(1), progress.as_ref()),
+        finish(fresh(HASH_WORKERS), None),
+    )
+}
+
+/// The body of [`serve_daemon`]; `session` is its `session` span: the
+/// handshake ([`accept_session`]), the role's context ([`daemon_ctx`]),
+/// then the role.
 #[allow(clippy::too_many_arguments)]
 async fn serve_daemon_inner(
     conn: Connection,
     mut send: SendStream,
-    recv: RecvStream,
+    mut recv: RecvStream,
     tap: StreamTap,
     place: Place,
     hello: SyncHello,
@@ -1114,18 +1148,62 @@ async fn serve_daemon_inner(
     shared: DaemonSessions,
     session: &tracing::Span,
 ) -> anyhow::Result<Outcome> {
+    let (granted, _claim, listing) = accept_session(
+        &conn, &mut send, &mut recv, &tap, &place, &hello, &index, &shared, session,
+    )
+    .await?;
+    let sends = hello.direction == Direction::DaemonSends;
+    let ctx = daemon_ctx(conn, place, &hello.req, sends, index, &shared, granted);
+    run_role(
+        Arc::new(ctx),
+        (send, recv, tap),
+        listing,
+        sends,
+        Side::Daemon,
+    )
+    .await
+}
+
+/// The session a daemon's handshake settled on.
+struct Granted {
+    /// The session root, checked below the export root.
+    root: PathBuf,
+    session_id: [u8; 16],
+    key: Vec<u8>,
+    /// The stored record of a resumed session.
+    record: Option<SessionRecord>,
+    resumed: bool,
+}
+
+/// The daemon's handshake: checks the request and the session root, claims
+/// a new session or the stored one the client resumes, answers `HelloAck`
+/// and accepts the listing stream. A request it cannot serve is refused
+/// (see [`refuse`]). The claim is to be held while the session runs.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
+async fn accept_session(
+    conn: &Connection,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    tap: &StreamTap,
+    place: &Place,
+    hello: &SyncHello,
+    index: &IndexHandle,
+    shared: &DaemonSessions,
+    session: &tracing::Span,
+) -> anyhow::Result<(Granted, SessionClaim, (SendStream, RecvStream, StreamTap))> {
     let Place {
         root: export_root,
         export: export_name,
         rel,
-        fsync: export_fsync,
         single,
+        ..
     } = place;
     let handshake = phase(
         PhaseKind::Handshake,
         Side::Daemon,
         role_of(Side::Daemon, hello.direction),
-        Some(&export_name),
+        Some(export_name),
     );
     let (direction, req) = (hello.direction, &hello.req);
     // The daemon sends when the client receives.
@@ -1142,12 +1220,12 @@ async fn serve_daemon_inner(
             "bad partial-dir {:?}: must be a relative path inside the destination",
             String::from_utf8_lossy(&req.partial_dir)
         );
-        return refuse(&conn, &mut send, &tap, Code::BadPath, msg).await;
+        return refuse(conn, send, tap, Code::BadPath, msg).await;
     }
     // The rules come from the peer: checked before they are compiled, so
     // their size is bounded by more than the frame.
     if let Err(msg) = crate::filter::check_limits(req.filters.iter().map(|r| &r.pattern[..])) {
-        return refuse(&conn, &mut send, &tap, Code::BadRequest, msg).await;
+        return refuse(conn, send, tap, Code::BadRequest, msg).await;
     }
     let prepared = {
         let (m, r) = (export_root.clone(), rel.clone());
@@ -1157,16 +1235,15 @@ async fn serve_daemon_inner(
         Ok(r) => r,
         Err(e) => {
             let msg = format!("bad session path: {e}");
-            return refuse(&conn, &mut send, &tap, Code::BadPath, msg).await;
+            return refuse(conn, send, tap, Code::BadPath, msg).await;
         }
     };
     let remote = conn.remote_id();
-    let key =
-        SessionKey::for_daemon(remote, &export_name, &rel, &hello, single.as_ref()).into_bytes();
-    let (session_id, record, _claim) = if req.session_id.is_empty() {
+    let key = SessionKey::for_daemon(remote, export_name, rel, hello, single.as_ref()).into_bytes();
+    let (session_id, record, claim) = if req.session_id.is_empty() {
         let mut id = [0u8; 16];
         getrandom::fill(&mut id).expect("the system's random source");
-        let claim = shared.registry.claim(id, &conn).await?;
+        let claim = shared.registry.claim(id, conn).await?;
         (id, None, claim)
     } else {
         // Only the key that created a session may resume it, and only for
@@ -1174,25 +1251,25 @@ async fn serve_daemon_inner(
         let owned = |rec: &SessionRecord| rec.plan.remote_id == remote.as_bytes();
         let id = <[u8; 16]>::try_from(req.session_id.as_slice()).ok();
         let found = match id {
-            Some(id) => load_record(&index, id, &key).await.filter(owned),
+            Some(id) => load_record(index, id, &key).await.filter(owned),
             None => None,
         };
         let Some(id) = id.filter(|_| found.is_some()) else {
             let msg = "unknown session".to_string();
-            return refuse(&conn, &mut send, &tap, Code::BadSession, msg).await;
+            return refuse(conn, send, tap, Code::BadSession, msg).await;
         };
         // Stop an older connection still hosting it, then reload what it saved.
-        let claim = shared.registry.claim(id, &conn).await?;
-        let Some(rec) = load_record(&index, id, &key).await.filter(owned) else {
+        let claim = shared.registry.claim(id, conn).await?;
+        let Some(rec) = load_record(index, id, &key).await.filter(owned) else {
             let msg = "session finished".to_string();
-            return refuse(&conn, &mut send, &tap, Code::BadSession, msg).await;
+            return refuse(conn, send, tap, Code::BadSession, msg).await;
         };
         (id, Some(rec), claim)
     };
     let resumed = record.is_some();
-    ConnTap::of(&conn).set_session(&session_id);
+    ConnTap::of(conn).set_session(&session_id);
     write_msg_tapped(
-        &mut send,
+        send,
         &HelloReply {
             reply: Some(hello_reply::Reply::Ack(HelloAck {
                 session_id: session_id.to_vec(),
@@ -1204,7 +1281,7 @@ async fn serve_daemon_inner(
                     .unwrap_or_default(),
             })),
         },
-        &tap,
+        tap,
     )
     .await?;
     drop(handshake);
@@ -1212,11 +1289,10 @@ async fn serve_daemon_inner(
     session.record("resumed", resumed);
     #[cfg(feature = "test-hooks")]
     if shared.fault.as_ref().is_some_and(|f| f.drops_after_ack()) {
-        let mut recv = recv;
         let mut byte = [0u8; 1];
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            tokio::io::AsyncReadExt::read(&mut recv, &mut byte),
+            tokio::io::AsyncReadExt::read(recv, &mut byte),
         )
         .await;
         tracing::warn!("fault injection: dropping the connection after HelloAck");
@@ -1230,8 +1306,8 @@ async fn serve_daemon_inner(
         bail!("fault injection: stalled");
     }
     let listing = match tokio::time::timeout(
-        crate::daemon::HELLO_TIMEOUT,
-        listing_stream::accept(&conn, &session_id),
+        HELLO_TIMEOUT,
+        listing_stream::accept(conn, &session_id),
     )
     .await
     {
@@ -1258,6 +1334,42 @@ async fn serve_daemon_inner(
         peer_dirty = %peer_build.dirty_label(),
         "session started"
     );
+    let granted = Granted {
+        root,
+        session_id,
+        key,
+        record,
+        resumed,
+    };
+    Ok((granted, claim, listing))
+}
+
+/// The role's context for a daemon session: its hashers, its options from
+/// the client's request and the export, and its hooks.
+fn daemon_ctx(
+    conn: Connection,
+    place: Place,
+    req: &SyncRequest,
+    sends: bool,
+    index: IndexHandle,
+    shared: &DaemonSessions,
+    granted: Granted,
+) -> Ctx {
+    let Place {
+        root: export_root,
+        export: export_name,
+        rel,
+        fsync: export_fsync,
+        single,
+    } = place;
+    let Granted {
+        root,
+        session_id,
+        key,
+        record,
+        resumed,
+    } = granted;
+    let remote = conn.remote_id();
     // The export's index is opened for the export root: hash and key paths
     // from there, so rows stay export-relative whatever the session path.
     // Local work (hashing, writing, finalizing) bumps the same marker the
@@ -1270,41 +1382,22 @@ async fn serve_daemon_inner(
         telemetry::enabled(),
     );
     let index = index.metered(meter.clone());
+    #[cfg(feature = "test-hooks")]
+    let hooks = {
+        let mut h = shared.daemon_hooks.lock().unwrap().clone();
+        h.events = Some(shared.events.clone());
+        h.slow_finalize = *shared.slow_finalize.lock().unwrap();
+        h
+    };
+    #[cfg(not(feature = "test-hooks"))]
+    let hooks = SideHooks::default();
     // `-c` applies to both sides: the daemon reads every file it lists
     // or compares, whichever way the data flows.
-    let hasher = Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
-        .with_force(req.checksum)
-        .with_activity(activity.clone())
-        .with_meter(meter.clone());
-    let forced = Hasher::new(index.clone(), export_root.clone(), 1)
-        .with_force(true)
-        .with_activity(activity.clone())
-        .with_meter(meter.clone());
-    let verify = Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS)
-        .with_force(true)
-        .with_activity(activity.clone())
-        .with_meter(meter.clone());
-    #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = if shared.daemon_hooks.lock().unwrap().no_change_checks {
-        (
-            hasher.without_change_check(),
-            forced.without_change_check(),
-            verify.without_change_check(),
-        )
-    } else {
-        (hasher, forced, verify)
-    };
-    #[cfg(feature = "test-hooks")]
-    let (hasher, forced, verify) = match shared.daemon_hooks.lock().unwrap().during_hash.clone() {
-        Some(h) => (
-            hasher.with_hash_hook(h.clone()),
-            forced.with_hash_hook(h.clone()),
-            verify.with_hash_hook(h),
-        ),
-        None => (hasher, forced, verify),
-    };
-    let (hasher, forced, verify) = (Arc::new(hasher), Arc::new(forced), Arc::new(verify));
-    let ctx = Ctx {
+    let main =
+        Hasher::new(index.clone(), export_root.clone(), HASH_WORKERS).with_force(req.checksum);
+    let (hasher, forced, verify) =
+        hashers(main, &index, &export_root, &activity, &meter, None, &hooks);
+    Ctx {
         conn,
         session_id,
         key,
@@ -1339,11 +1432,8 @@ async fn serve_daemon_inner(
         opts: {
             let mut o = RoleOpts::daemon(req, !sends);
             o.fsync |= export_fsync && !sends;
-            // One file: nothing else in its directory is ever deleted.
             if single.is_some() {
-                o.delete = DeleteMode::Off;
-                o.delete_excluded = false;
-                o.max_delete = None;
+                o = o.without_deletion();
             }
             #[cfg(feature = "test-hooks")]
             if let Some(p) = std::num::NonZeroUsize::new(
@@ -1357,64 +1447,20 @@ async fn serve_daemon_inner(
         },
         single,
         privs: Privs::current(),
-        hooks: {
-            #[cfg_attr(not(feature = "test-hooks"), allow(unused_mut))]
-            let mut h = SideHooks::default();
-            #[cfg(feature = "test-hooks")]
-            {
-                let p = shared.daemon_hooks.lock().unwrap().clone();
-                h.events = Some(shared.events.clone());
-                h.slow_finalize = *shared.slow_finalize.lock().unwrap();
-                h.slow_plan = p.slow_plan;
-                h.slow_place = p.slow_place;
-                h.max_inflight = p.max_inflight;
-                h.listing_peak = p.listing_peak;
-                h.listing_waits = p.listing_waits;
-                h.peer_events_peak = p.peer_events_peak;
-                h.out_peak = p.out_peak;
-                h.basis_budget = p.basis_budget;
-                h.basis_peak = p.basis_peak;
-                h.send_tasks_peak = p.send_tasks_peak;
-                h.tamper_frames = p.tamper_frames;
-                h.tamper_listing = p.tamper_listing;
-                h.close_quiet = p.close_quiet;
-                h.close_timeout = p.close_timeout;
-                h.stop_reading_after_done = p.stop_reading_after_done;
-                h.list_budget = p.list_budget;
-                h.list_peak = p.list_peak;
-                h.lists_ahead_peak = p.lists_ahead_peak;
-                h.slow_peer_events = p.slow_peer_events;
-                h.cut_listing_after = p.cut_listing_after;
-                h.inject_listing = p.inject_listing;
-                h.during_hash = p.during_hash;
-                h.on_first_chunk_sent = p.on_first_chunk_sent;
-                h.file_report = p.file_report;
-                h.skip_place_stat = p.skip_place_stat;
-                h.clones_within = p.clones_within;
-                h.no_change_checks = p.no_change_checks;
-            }
-            h
-        },
-    };
-    run_role(
-        Arc::new(ctx),
-        (send, recv, tap),
-        listing,
-        sends,
-        Side::Daemon,
-    )
-    .await
+        hooks,
+        bus: super::EventBus::default(),
+    }
 }
 
 /// Answers `Hello` with an `Error`, waits (bounded) until the client has it,
 /// and closes the connection.
-async fn refuse(
+async fn refuse<T>(
     conn: &Connection,
     send: &mut SendStream,
     tap: &StreamTap,
     code: Code,
     msg: String,
-) -> anyhow::Result<Outcome> {
+) -> anyhow::Result<T> {
     tracing::info!(peer = %conn.remote_id().fmt_short(), ?code, %msg, "refusing session");
     let refusal = HelloReply {
         reply: Some(hello_reply::Reply::Error(Error {
@@ -1508,6 +1554,7 @@ async fn run_role(
         (!sends && !ctx.opts.numeric_ids).then(crate::fs::ids::IdMap::new),
         peer_ev_tx.clone(),
         &ctx.hooks,
+        ctx.bus.clone(),
         ctx.activity.clone(),
         scan.clone(),
         listing_tap,
@@ -1515,7 +1562,7 @@ async fn run_role(
     let reader = control::spawn_reader(
         recv,
         peer_ev_tx,
-        ctx.hooks.bus.clone(),
+        ctx.bus.clone(),
         ctx.activity.clone(),
         ctx.progress.clone(),
         scan,
@@ -1533,7 +1580,7 @@ async fn run_role(
     let sampler = crate::telemetry::enabled()
         .then(|| crate::telemetry::sampler::spawn(&ctx.meter, ctx.conn.clone()));
     let res = if sends {
-        sender_role::run(
+        sender::run(
             ctx.clone(),
             out.clone(),
             listing_out,
@@ -1652,6 +1699,10 @@ async fn run_role(
 /// How long a side waits at a session's end for its writer (and the daemon
 /// for the client to close) while nothing moves on the connection (see
 /// [`await_end`]).
+/// How long a client may take to open the control stream and send `Hello`,
+/// and to open the listing stream after `HelloAck`.
+pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+
 const CLOSE_QUIET: Duration = Duration::from_secs(30);
 
 /// At a session's end: waits for the control writer to write what it
@@ -1925,6 +1976,7 @@ pub(super) async fn test_ctx() -> TestCtx {
         },
         privs: Privs::current(),
         hooks: SideHooks::default(),
+        bus: super::EventBus::default(),
     };
     TestCtx {
         ctx: Arc::new(ctx),

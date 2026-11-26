@@ -6,8 +6,8 @@ use std::path::Path;
 use bin::{irsync_command, StateHome};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use irsync::daemon::gc;
 use irsync::fs::paths::RelPath;
+use irsync::gc::gc;
 use irsync::identity::endpoint_id_of_public_key;
 use irsync::index::{Index, Partial, SessionRow};
 #[cfg(unix)]
@@ -370,7 +370,7 @@ async fn gc_dry_run_counts_sessions() {
 
 #[test]
 fn client_gc_skipped_within_24h() {
-    use irsync::daemon::gc_due;
+    use irsync::gc::gc_due;
     let t = 1_700_000_000;
     assert!(gc_due(None, t, false), "never collected");
     assert!(!gc_due(Some(t), t + 3600, false));
@@ -383,7 +383,7 @@ fn client_gc_skipped_within_24h() {
 
 #[tokio::test]
 async fn gc_if_due_records_and_skips() {
-    use irsync::daemon::gc_if_due;
+    use irsync::gc::gc_if_due;
     let f = fixture();
     let (age, stale) = (Duration::from_secs(7 * DAY), Duration::from_secs(3600));
     let first = gc_if_due(f.ix.clone(), f.root.path(), age, stale)
@@ -425,7 +425,7 @@ fn long_name(c: u8) -> Vec<u8> {
 }
 
 fn long_part(c: u8) -> RelPath {
-    RelPath::new(&irsync::recv::temp_name(&long_name(c), b".part")).unwrap()
+    RelPath::new(&irsync::fs::temp_name::temp_name(&long_name(c), b".part")).unwrap()
 }
 
 #[tokio::test]
@@ -663,6 +663,7 @@ fn irsync_gc_end_to_end() {
 
 /// `irsync gc` that cannot remove a file says so and exits 23, as
 /// `irsync index` does for a file it cannot read.
+#[cfg(unix)]
 #[test]
 fn irsync_gc_exits_23_after_an_error() {
     if irsync::platform::is_root() {
@@ -700,7 +701,7 @@ fn irsync_gc_exits_23_after_an_error() {
 #[tokio::test]
 async fn outer_gc_leaves_a_nested_export_alone() {
     use irsync::config::exports::Export;
-    use irsync::daemon::{gc_skipping, nested_roots};
+    use irsync::gc::{gc_skipping, nested_roots};
     let f = fixture();
     let r = f.root.path();
     std::fs::create_dir_all(r.join("photos/sub")).unwrap();

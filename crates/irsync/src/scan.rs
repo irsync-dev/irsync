@@ -156,7 +156,7 @@ pub fn walk(
 /// With an empty `prefix` the root is a name this side trusts, and
 /// `opts.follow_root_symlink` applies to it as in [`walk`]. A root below a
 /// prefix is never followed.
-pub fn walk_below(
+pub(crate) fn walk_below(
     base: PathBuf,
     prefix: RelPath,
     filters: Arc<FilterSet>,
@@ -186,7 +186,7 @@ pub fn walk_below(
 /// per-file blocking calls: on the pool, such tasks of concurrent sessions
 /// took every thread (tokio's limit is 512) while those calls queued behind
 /// them, and no session moved again. Must be called within a runtime.
-pub fn spawn_thread<T: Send + 'static>(
+pub(crate) fn spawn_thread<T: Send + 'static>(
     name: &str,
     f: impl FnOnce() -> T + Send + 'static,
 ) -> tokio::task::JoinHandle<T> {

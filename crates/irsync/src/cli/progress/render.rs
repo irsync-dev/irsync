@@ -10,10 +10,11 @@ use std::time::{Duration, Instant};
 use console::Style;
 
 use super::state::{DeletePhase, Live, Row, RowState, Walk};
-use super::{clock, commas, conn_label, human, shown};
+use super::{commas, conn_label, human, shown};
 use crate::fs::paths::RelPath;
 use crate::session::reconnect::ConnState;
 use crate::session::Party;
+use crate::telemetry::timing::clock;
 
 /// Cells in the bars on the `transfer` and `delete` lines.
 const PHASE_BAR: usize = 30;
@@ -70,7 +71,7 @@ impl Geometry {
 
 /// True when LC_ALL, else LC_CTYPE, else LANG contains "utf-8"/"utf8"
 /// (case-insensitive).
-pub fn locale_is_utf8() -> bool {
+pub(crate) fn locale_is_utf8() -> bool {
     let value = ["LC_ALL", "LC_CTYPE", "LANG"]
         .iter()
         .filter_map(|k| std::env::var(k).ok())

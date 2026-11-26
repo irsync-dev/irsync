@@ -57,7 +57,7 @@ impl Default for Dial {
     fn default() -> Dial {
         let reconnect = crate::session::reconnect::ReconnectOpts::default();
         Dial {
-            parallel: crate::send::DEFAULT_PARALLEL as u32,
+            parallel: crate::data_stream::DEFAULT_PARALLEL as u32,
             reconnect: reconnect.max,
             dial_retries: reconnect.dial_retries,
             ssh_install: true,

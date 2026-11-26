@@ -306,7 +306,7 @@ async fn delete_pass_has_its_span_under_the_receiving_session() {
     let _serial = capture().await;
     let args =
         irsync::cli::Args::try_parse_from(["irsync", "-a", "--delete", "src/", "host:m/"]).unwrap();
-    let opts = irsync::cli::SyncOptions::from_args(&args);
+    let opts = irsync::options::SyncOptions::from_args(&args);
     let h = Harness::new().await;
     five_files(h.src(Flow::Pull));
     let extra = h.dst(Flow::Pull).join("extra.txt");

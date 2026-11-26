@@ -1,5 +1,6 @@
 //! Settings, servers, clients and exports (TOML) configuration.
 
+pub mod access;
 pub mod clients;
 mod comments;
 pub mod dial;

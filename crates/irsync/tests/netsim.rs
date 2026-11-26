@@ -162,7 +162,7 @@ fn without_the_variable_nothing_changes() {
 async fn sync_through(
     h: &Harness,
     flow: Flow,
-    opts: &irsync::cli::SyncOptions,
+    opts: &irsync::options::SyncOptions,
 ) -> (
     anyhow::Result<irsync::session::Outcome>,
     u32,
@@ -359,7 +359,6 @@ async fn single_file_pull_resumes_after_blackout() {
             &h.local.path().join("copy.bin"),
             false,
             b"big.bin",
-            true,
         )
         .unwrap();
         let mut hello = Harness::hello(Flow::Pull);

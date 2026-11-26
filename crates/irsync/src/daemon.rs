@@ -2,7 +2,7 @@
 //! anything, resolves and validates the requested export, then hands off to a session.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{self, IsTerminal};
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -14,8 +14,8 @@ use iroh::endpoint::{Connection, Incoming, SendStream};
 use iroh::{Endpoint, EndpointId, SecretKey};
 use irsync_proto::chunk::CHUNK_PARAMS;
 use irsync_proto::v1::{
-    error::Code, export_entry, hello, hello_reply, path_info, Error, ExportEntry, ExportList,
-    Hello, HelloReply, PathInfo, SyncRequest,
+    error::Code, export_entry, hello, hello_reply, Error, ExportEntry, ExportList, Hello,
+    HelloReply, PathInfo, SyncRequest,
 };
 use irsync_proto::PROTOCOL_VERSION;
 use tokio::sync::Notify;
@@ -23,30 +23,27 @@ use tokio_util::sync::CancellationToken;
 
 use crate::authz::{Access, Authorizer, AuthzError, FileAuthorizer, Grants, Snapshot};
 use crate::autoexport::{auto_root, check_root, AutoRootError};
-use crate::cli::Direction;
 use crate::config::exports::Export;
 use crate::config::file::Config;
 use crate::config::paths::Paths;
 use crate::config::settings::{
     listen_sockets, DaemonSettings, PqKeyExchange, Relay, Settings, TelemetrySettings,
 };
-use crate::filter::FilterSet;
 use crate::fs::paths::{escape_path, RelPath};
+use crate::gc::{gc_if_due_skipping, nested_roots};
 use crate::identity::PassphraseSource;
 use crate::index::{Index, IndexHandle};
 use crate::net::addr::HostPort;
 use crate::net::frame::{read_msg_tapped, write_msg_tapped};
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::net::{build_endpoint, daemon_endpoint_opts};
+use crate::options::Direction;
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
-use crate::scan::WalkOpts;
-use crate::session::engine::{prepare_root, serve_daemon, Missing, Place};
-use crate::session::single::{is_one_component, FilePlace, PlaceError, SingleFile};
+use crate::session::engine::{serve_daemon, Place, HELLO_TIMEOUT};
+use crate::session::single::{is_one_component, place_single, probe_kind};
 #[cfg(feature = "test-hooks")]
 use crate::session::FaultInjector;
 use crate::session::{DaemonSessions, SyncHello, HASH_WORKERS};
-use irsync_proto::v1::SessionPlan;
-use prost::Message;
 
 mod admin;
 pub use admin::{ADMIN_IDLE, ADMIN_MAX_CHANGES, ADMIN_MAX_PENDING, ADMIN_MAX_REQUEST};
@@ -55,10 +52,6 @@ pub use admin::{ADMIN_IDLE, ADMIN_MAX_CHANGES, ADMIN_MAX_PENDING, ADMIN_MAX_REQU
 /// run (so startup stays quick).
 const GC_INTERVAL: Duration = Duration::from_secs(3600);
 const GC_FIRST_RUN: Duration = Duration::from_secs(60);
-
-/// How long a client may take to open the control stream and send `Hello`,
-/// and to open the listing stream after `HelloAck`.
-pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Shared {
     /// Consulted afresh on every connection.
@@ -330,7 +323,7 @@ impl Daemon {
 
     /// Hooks for the daemon's side of every session.
     #[cfg(feature = "test-hooks")]
-    pub fn daemon_hooks(&self) -> Arc<std::sync::Mutex<crate::session::DaemonHooks>> {
+    pub fn daemon_hooks(&self) -> Arc<std::sync::Mutex<crate::session::SideHooks>> {
         self.shared.hosting().daemon_hooks
     }
 
@@ -985,239 +978,6 @@ fn admit<'a>(
     Ok((resolved, rel))
 }
 
-/// A single-file session at `rel` in the export at `export_root`: the
-/// directory that holds the file (export-relative) and the file's names.
-/// A push places the file by rsync's rules ([`place_file`]); a pull sends
-/// the file `rel` names, under the receiver's name `hello.req.name`.
-/// Nothing is looked at through a symlink: the directories above the file
-/// are checked as `prepare_root` checks a session root, first.
-fn place_single(
-    export_root: &Path,
-    rel: &RelPath,
-    hello: &SyncHello,
-) -> Result<(RelPath, SingleFile), (Code, String)> {
-    if hello.direction == Direction::DaemonSends {
-        return source_single(export_root, rel, &hello.req);
-    }
-    let hello = &hello.req;
-    // A missing directory is created later, by the session.
-    prepare_root(export_root, &rel.parent(), Missing::Allow).map_err(bad_session_path)?;
-    let dest = if rel.as_bytes().is_empty() {
-        export_root.to_path_buf()
-    } else {
-        export_root.join(rel.to_os())
-    };
-    let placed = place_file_beneath(export_root, rel, &dest, hello.contents_only, &hello.name)
-        .map_err(|e| match e {
-            PlaceError::SymlinkToDirectory(_) | PlaceError::SymlinkNotFollowed(_) => {
-                (Code::BadPath, format!("bad session path: {e}"))
-            }
-            e => (Code::BadPath, e.to_string()),
-        })?;
-    let root = placed
-        .root
-        .strip_prefix(export_root)
-        .ok()
-        .and_then(|r| RelPath::new(&crate::platform::os_to_bytes(r.as_os_str())).ok());
-    let name = RelPath::new(&placed.name)
-        .ok()
-        .filter(|_| is_one_component(&placed.name));
-    match (root, name) {
-        (Some(root), Some(name)) => Ok((
-            root,
-            SingleFile {
-                wire: name.clone(),
-                local: name,
-            },
-        )),
-        _ => Err((Code::BadPath, "invalid path".into())),
-    }
-}
-
-/// [`place_file`] for the daemon: where a single file named `src_name`
-/// lands for the destination `rel` in the export at `export_root` (`dest`
-/// is the same place as a path, for the result and for messages). What is
-/// at the destination is looked at from the export's directory with no
-/// symlink followed on the way, so a directory above it that was swapped
-/// for a link says nothing about what the link leads to.
-fn place_file_beneath(
-    export_root: &Path,
-    rel: &RelPath,
-    dest: &Path,
-    contents_only: bool,
-    src_name: &[u8],
-) -> Result<FilePlace, PlaceError> {
-    use crate::fs::safe::Beneath;
-    use crate::platform::Kind as FileKind;
-    let io_at = |p: &Path, e: io::Error| PlaceError::Io(p.to_path_buf(), e);
-    let missing = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
-    let in_dir = if rel.as_bytes().is_empty() {
-        // The export's own directory.
-        true
-    } else {
-        match Beneath::new(export_root, rel.clone()).lstat() {
-            Ok(st) if st.kind == FileKind::Dir => true,
-            Ok(st) => {
-                let link = st.kind == FileKind::Symlink;
-                // Only decides; nothing is written through the link.
-                if link {
-                    match link_leads_to(export_root, rel) {
-                        LinkTo::Directory => {
-                            return Err(PlaceError::SymlinkToDirectory(dest.to_path_buf()))
-                        }
-                        LinkTo::NotFollowed => {
-                            return Err(PlaceError::SymlinkNotFollowed(dest.to_path_buf()))
-                        }
-                        LinkTo::Other => {}
-                    }
-                }
-                if contents_only {
-                    return Err(PlaceError::NotADirectory(dest.to_path_buf()));
-                }
-                false
-            }
-            Err(e) if missing(&e) => contents_only,
-            Err(e) => return Err(io_at(dest, e)),
-        }
-    };
-    if !in_dir {
-        let (root, name) = crate::session::single::split_last(dest);
-        return Ok(FilePlace { root, name });
-    }
-    let target = dest.join(crate::platform::bytes_to_os(src_name).map_err(|e| io_at(dest, e))?);
-    let target_rel = rel
-        .join(src_name)
-        .map_err(|e| io_at(&target, io::Error::new(io::ErrorKind::InvalidInput, e)))?;
-    match Beneath::new(export_root, target_rel).lstat() {
-        Ok(st) if st.kind == FileKind::Dir => return Err(PlaceError::IsADirectory(target)),
-        Ok(_) => {}
-        Err(e) if missing(&e) => {}
-        Err(e) => return Err(io_at(&target, e)),
-    }
-    Ok(FilePlace {
-        root: dest.to_path_buf(),
-        name: src_name.to_vec(),
-    })
-}
-
-/// What the symlink at a single file's destination leads to, as far as the
-/// daemon looks.
-#[derive(Debug, PartialEq, Eq)]
-enum LinkTo {
-    /// A directory in the export.
-    Directory,
-    /// A file in the export, or a name in it that is not there: the link
-    /// is a file to replace.
-    Other,
-    /// Out of the export, or through another symlink. What is there is
-    /// not looked at, so the answer is the same whatever it is.
-    NotFollowed,
-}
-
-/// Where the symlink at `rel` in the export at `export_root` leads. Its
-/// target is read as text and worked out inside the export: an absolute
-/// target, or one that climbs out with `..`, is not followed, and neither
-/// is one whose way passes another symlink. A client can put a link at the
-/// destination itself, so looking at what an outside link leads to would
-/// tell it what is at a path it may not see.
-fn link_leads_to(export_root: &Path, rel: &RelPath) -> LinkTo {
-    use crate::fs::safe::{open_parent_beneath, Beneath};
-    use crate::platform::Kind as FileKind;
-    let Ok((dir, name)) = open_parent_beneath(export_root, rel) else {
-        return LinkTo::NotFollowed;
-    };
-    let Ok(target) = dir.read_link(&name) else {
-        return LinkTo::NotFollowed;
-    };
-    let target = &target[..];
-    if target.is_empty() || target[0] == b'/' || target.contains(&0) {
-        return LinkTo::NotFollowed;
-    }
-    let parent = rel.parent();
-    let mut parts: Vec<&[u8]> = parent.components().collect();
-    for c in target.split(|&b| b == b'/') {
-        match c {
-            b"" | b"." => {}
-            b".." => {
-                if parts.pop().is_none() {
-                    return LinkTo::NotFollowed;
-                }
-            }
-            c => parts.push(c),
-        }
-    }
-    if parts.is_empty() {
-        // The export's own directory.
-        return LinkTo::Directory;
-    }
-    let Ok(to) = RelPath::new(&parts.join(&b'/')) else {
-        return LinkTo::NotFollowed;
-    };
-    match Beneath::new(export_root, to).lstat() {
-        Ok(st) if st.kind == FileKind::Dir => LinkTo::Directory,
-        Ok(st) if st.kind == FileKind::Symlink => LinkTo::NotFollowed,
-        Ok(_) => LinkTo::Other,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => LinkTo::Other,
-        Err(_) => LinkTo::NotFollowed,
-    }
-}
-
-/// The pull half of [`place_single`]: `rel` must name an existing entry
-/// that is not a directory. Its directory becomes the session root.
-fn source_single(
-    export_root: &Path,
-    rel: &RelPath,
-    hello: &SyncRequest,
-) -> Result<(RelPath, SingleFile), (Code, String)> {
-    let parent = rel.parent();
-    let dir = prepare_root(export_root, &parent, Missing::Refuse).map_err(bad_session_path)?;
-    let invalid = || (Code::BadPath, "invalid name".to_string());
-    let Some(name) = rel.components().last() else {
-        return Err((Code::BadPath, PlaceError::IsADirectory(dir).to_string()));
-    };
-    let file = dir.join(crate::platform::bytes_to_os(name).map_err(|_| invalid())?);
-    // Looked at from the export's directory with no symlink followed: the
-    // directories above may have changed since they were checked.
-    match crate::fs::safe::Beneath::new(export_root, rel.clone()).lstat() {
-        Ok(st) if st.kind == crate::platform::Kind::Dir => {
-            return Err((Code::BadPath, PlaceError::IsADirectory(file).to_string()))
-        }
-        Ok(_) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let e = io::Error::new(e.kind(), format!("{} does not exist", file.display()));
-            return Err(bad_session_path(e));
-        }
-        Err(e) => return Err((Code::BadPath, PlaceError::Io(file, e).to_string())),
-    }
-    let wire = RelPath::new(&hello.name).map_err(|_| invalid())?;
-    let local = RelPath::new(name).map_err(|_| invalid())?;
-    Ok((parent, SingleFile { wire, local }))
-}
-
-/// What `rel` is in the export at `export_root`, for a probe. Like a
-/// pull, it never looks through a symlink: a parent that is one, or is
-/// missing, makes the path missing. The last component is not followed.
-fn probe_kind(export_root: &Path, rel: &RelPath) -> path_info::Kind {
-    use path_info::Kind;
-    if prepare_root(export_root, &rel.parent(), Missing::Refuse).is_err() {
-        return Kind::Missing;
-    }
-    if rel.as_bytes().is_empty() {
-        return Kind::Directory;
-    }
-    // From the export's directory, with no symlink followed on the way.
-    match crate::fs::safe::Beneath::new(export_root, rel.clone()).lstat() {
-        Ok(st) if st.kind == crate::platform::Kind::Dir => Kind::Directory,
-        Ok(_) => Kind::File,
-        Err(_) => Kind::Missing,
-    }
-}
-
-/// The reply `serve_daemon` gives for a session root it cannot use.
-fn bad_session_path(e: io::Error) -> (Code, String) {
-    (Code::BadPath, format!("bad session path: {e}"))
-}
-
 async fn reject(
     conn: &Connection,
     send: &mut SendStream,
@@ -1316,7 +1076,7 @@ pub async fn run_from_settings(
     if std::io::stdout().is_terminal() {
         print!(
             "{}",
-            startup_banner(crate::build::LONG_VERSION.as_str(), &settings)
+            startup_banner(crate::build_info::LONG_VERSION.as_str(), &settings)
         );
     }
     let announce: Arc<dyn Fn(&Endpoint) + Send + Sync> = Arc::new(move |ep: &Endpoint| {
@@ -1347,7 +1107,7 @@ pub async fn run_from_settings(
 
 /// What the daemon prints first when stdout is a terminal: its version and
 /// which network services it uses.
-pub fn startup_banner(version: &str, settings: &Settings) -> String {
+pub(crate) fn startup_banner(version: &str, settings: &Settings) -> String {
     let d = &settings.daemon;
     let relay = match &d.relay {
         Relay::Default => "default (n0)".to_string(),
@@ -1376,409 +1136,6 @@ fn listen_addrs(ep: &Endpoint) -> Vec<SocketAddr> {
         return vec![a.into()];
     }
     ep.bound_sockets()
-}
-
-/// What a [`gc`] run removed (or, on a dry run, would remove).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GcReport {
-    /// Relative paths of the removed `.irsync.<name>.part` files.
-    pub parts_removed: Vec<RelPath>,
-    /// Stale-looking partial records kept because a session still references them.
-    pub parts_kept: usize,
-    /// Sessions removed (on a dry run: that would be removed).
-    pub sessions_removed: u32,
-    /// Index entries of regular files that are gone or were replaced
-    /// (another inode or size) since they were indexed, removed with their
-    /// chunk rows (on a dry run: that would be removed).
-    pub entries_removed: usize,
-    /// Stale records whose in-place `.part` file does not exist (for example
-    /// it lives in a `--partial-dir`, which records do not remember). The
-    /// record is dropped; the file, if any, is collected as an orphan later.
-    pub rows_without_file: usize,
-    /// Paths that could not be removed or walked; the pass carries on.
-    pub errors: Vec<(RelPath, String)>,
-}
-
-fn io_err(e: impl std::fmt::Display) -> io::Error {
-    io::Error::other(e.to_string())
-}
-
-/// True for the exact name pattern the receiver gives its partial files.
-fn is_part_name(name: &[u8]) -> bool {
-    name.len() > ".irsync.".len() + ".part".len()
-        && name.starts_with(b".irsync.")
-        && name.ends_with(b".part")
-}
-
-/// The `.part` file the receiver keeps for destination `rel`. The name may
-/// be shortened (see [`crate::recv::temp_name`]), so there is no inverse:
-/// the GC maps every known destination forward and compares.
-fn part_of(rel: &RelPath) -> Option<RelPath> {
-    let b = rel.as_bytes();
-    let i = b.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1);
-    let mut p = b[..i].to_vec();
-    p.extend_from_slice(&crate::recv::temp_name(&b[i..], b".part"));
-    RelPath::new(&p).ok()
-}
-
-/// What [`remove_part`] did.
-#[derive(Debug, PartialEq, Eq)]
-enum Removal {
-    Removed,
-    Missing,
-    /// Not ours to remove: wrong name, not a regular file, or touched since.
-    Skipped,
-}
-
-/// Removes `root/rel` if its name is a part name, it is a regular file
-/// and its mtime is not newer than `cutoff`. With `dry_run` only
-/// classifies. No symlink is followed, the final name's or a directory's
-/// on the way (one swapped in since the path was recorded): such a path
-/// holds no part of ours, so it counts as missing.
-fn remove_part(root: &Path, rel: &RelPath, cutoff: i64, dry_run: bool) -> io::Result<Removal> {
-    use crate::fs::safe::{open_dir_beneath, split_last};
-    use crate::platform::{cause, Cause, Kind as FileKind};
-    if !rel.components().last().is_some_and(is_part_name) {
-        return Ok(Removal::Skipped);
-    }
-    let (dir, name) = split_last(rel)?;
-    let name = &name[..];
-    let dfd = match open_dir_beneath(root, &dir) {
-        Ok(fd) => fd,
-        // A symlinked or non-directory component (`InvalidInput`), or gone.
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
-            ) =>
-        {
-            return Ok(Removal::Missing);
-        }
-        Err(e) => return Err(e),
-    };
-    match dfd.stat(name) {
-        Ok(st) if st.kind == FileKind::File && st.mtime.0 <= cutoff => {
-            if !dry_run {
-                dfd.remove_file(name)?;
-            }
-            Ok(Removal::Removed)
-        }
-        Ok(_) => Ok(Removal::Skipped),
-        Err(e) if cause(&e) == Cause::NotThere => Ok(Removal::Missing),
-        Err(e) => Err(e),
-    }
-}
-
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
-
-/// The `others` (export or index roots) strictly inside `root`, relative
-/// to it, sorted. An export's GC leaves those subtrees to their own index
-/// (the home exported automatically holds every export below it).
-pub fn nested_roots<'a>(root: &Path, others: impl IntoIterator<Item = &'a Path>) -> Vec<RelPath> {
-    let outer = crate::resolve::parts_of(root);
-    let mut out: Vec<RelPath> = others
-        .into_iter()
-        .filter_map(|p| {
-            let inner = crate::resolve::parts_of(p);
-            if inner.len() <= outer.len() || inner[..outer.len()] != outer[..] {
-                return None;
-            }
-            RelPath::new(&inner[outer.len()..].join(&b'/')).ok()
-        })
-        .collect();
-    out.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-    out.dedup();
-    out
-}
-
-/// `rel` is `top` or below it.
-fn is_under(rel: &RelPath, top: &RelPath) -> bool {
-    let (r, t) = (rel.as_bytes(), top.as_bytes());
-    r == t || (r.len() > t.len() && r.starts_with(t) && r[t.len()] == b'/')
-}
-
-/// Garbage-collects resume state under `root`: abandoned `.part` files and
-/// their `partials` rows, then dormant sessions, all older than `older_than`.
-/// A part is only removed when no session plan references its path and its
-/// record (or, for an orphan without a record, its mtime) is stale. With
-/// `dry_run` nothing is changed. Parts are collected before sessions, so a
-/// part freed by an expiring session goes on the next run.
-pub async fn gc(
-    index: IndexHandle,
-    root: &Path,
-    older_than: Duration,
-    dry_run: bool,
-) -> io::Result<GcReport> {
-    gc_skipping(index, root, older_than, dry_run, &[]).await
-}
-
-/// [`gc`], leaving alone everything at or below the paths in `skip`
-/// (relative to `root`): the roots of other exports ([`nested_roots`]).
-/// No part, record or index entry there is removed.
-pub async fn gc_skipping(
-    index: IndexHandle,
-    root: &Path,
-    older_than: Duration,
-    dry_run: bool,
-    skip: &[RelPath],
-) -> io::Result<GcReport> {
-    let skip = skip.to_vec();
-    let skipped = move |p: &RelPath| skip.iter().any(|s| is_under(p, s));
-    let cutoff = unix_now().saturating_sub(older_than.as_secs().min(i64::MAX as u64) as i64);
-
-    // Orphan candidates: stale `.part` files on disk (the walk never follows symlinks).
-    let (mut rx, summary) = crate::scan::walk(
-        root.to_path_buf(),
-        Arc::new(FilterSet::new(vec![])),
-        WalkOpts {
-            follow_root_symlink: false,
-            threads: 2,
-            max_depth: None,
-        },
-        None,
-    );
-    let mut on_disk = Vec::new();
-    // Every regular file the walk saw, by inode and size.
-    let mut seen = std::collections::HashMap::new();
-    while let Some(ev) = rx.recv().await {
-        // Gaps are in the summary's errors.
-        let crate::scan::ScanEvent::Entry(item) = ev else {
-            continue;
-        };
-        if skipped(&item.path) {
-            continue;
-        }
-        let is_reg = item.entry.kind() == irsync_proto::v1::file_entry::Kind::Regular;
-        let named = item.path.components().last().is_some_and(is_part_name);
-        if is_reg && named && item.entry.mtime_sec <= cutoff {
-            on_disk.push(item.path);
-        } else if is_reg {
-            seen.insert(item.path, (item.entry.inode, item.entry.size));
-        }
-    }
-    let mut walk_errors = Vec::new();
-    if let Ok(sum) = summary.await {
-        walk_errors = sum.errors;
-    }
-
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || -> io::Result<GcReport> {
-        let mut ix = index.lock().map_err(|_| io_err("index lock poisoned"))?;
-        let mut referenced: Vec<Vec<u8>> = Vec::new();
-        for row in ix.all_sessions().map_err(io_err)? {
-            let plan = SessionPlan::decode(&row.plan[..]).map_err(io_err)?;
-            referenced.extend(plan.entries.into_iter().map(|e| e.path));
-        }
-        // The `.part` of every referenced path, so a part on disk can be
-        // matched without inverting its (possibly shortened) name.
-        let referenced_parts: Vec<Vec<u8>> = referenced
-            .iter()
-            .filter_map(|p| RelPath::new(p).ok())
-            .filter_map(|p| part_of(&p))
-            .map(|p| p.as_bytes().to_vec())
-            .collect();
-        // Plan paths are relative to the session root, which may sit below the
-        // index root: match on a whole-component suffix to stay conservative.
-        let suffix_of = |rel: &RelPath, list: &[Vec<u8>]| {
-            let b = rel.as_bytes();
-            list.iter().any(|p| {
-                !p.is_empty()
-                    && (b == &p[..]
-                        || (b.len() > p.len()
-                            && b.ends_with(p)
-                            && b[b.len() - p.len() - 1] == b'/'))
-            })
-        };
-        let is_ref = |rel: &RelPath| suffix_of(rel, &referenced);
-        let mut report = GcReport::default();
-        let mut handled = std::collections::HashSet::new();
-
-        // Stale records, with their part files. The index lock is held, so a
-        // live receiver cannot refresh a record between check and removal.
-        for dest in ix.partials_older_than(older_than).map_err(io_err)? {
-            if skipped(&dest) {
-                continue;
-            }
-            if is_ref(&dest) {
-                report.parts_kept += 1;
-                continue;
-            }
-            let Some(part) = part_of(&dest) else { continue };
-            handled.insert(part.clone());
-            match remove_part(&root, &part, cutoff, dry_run) {
-                Ok(Removal::Removed) => report.parts_removed.push(part),
-                Ok(Removal::Missing) => report.rows_without_file += 1,
-                Ok(Removal::Skipped) => {
-                    report.parts_kept += 1;
-                    continue;
-                }
-                Err(e) => {
-                    tracing::warn!(path = %part.to_os().to_string_lossy(), "gc: {e}");
-                    report.errors.push((part, e.to_string()));
-                    continue;
-                }
-            }
-            if !dry_run {
-                ix.remove_partial(&dest).map_err(io_err)?;
-            }
-        }
-        // Orphans: stale files with no record. A part with a record of any
-        // age is not an orphan (the stale ones were handled above).
-        let recorded: std::collections::HashSet<RelPath> = ix
-            .partial_paths()
-            .map_err(io_err)?
-            .iter()
-            .filter_map(part_of)
-            .collect();
-        for part in on_disk {
-            if handled.contains(&part) || recorded.contains(&part) {
-                continue;
-            }
-            if is_ref(&part) || suffix_of(&part, &referenced_parts) {
-                report.parts_kept += 1;
-                continue;
-            }
-            match remove_part(&root, &part, cutoff, dry_run) {
-                Ok(Removal::Removed) => report.parts_removed.push(part),
-                Ok(Removal::Missing | Removal::Skipped) => {}
-                Err(e) => {
-                    tracing::warn!(path = %part.to_os().to_string_lossy(), "gc: {e}");
-                    report.errors.push((part, e.to_string()));
-                }
-            }
-        }
-        report.parts_removed.sort();
-        report.sessions_removed = if dry_run {
-            ix.count_sessions_older_than(older_than).map_err(io_err)?
-        } else {
-            ix.delete_sessions_older_than(older_than)
-                .map_err(io_err)?
-                .len() as u32
-        };
-        report.entries_removed =
-            prune_entries(&mut ix, &root, &seen, &walk_errors, &skipped, dry_run)?;
-        report.errors.extend(walk_errors);
-        if !dry_run {
-            ix.set_last_gc_at(unix_now()).map_err(io_err)?;
-        }
-        Ok(report)
-    })
-    .await
-    .map_err(io_err)?
-}
-
-/// Removes the index entries of regular files that are gone or were
-/// replaced (another inode or size), unless `dry_run`; returns how many.
-/// `seen` is what the walk found. A path under one of the walk's `errors`
-/// may only be unreadable, so it stays; one the walk missed or saw
-/// differently may have been placed since, so it is looked at once more
-/// (the index lock is held: a receiver cannot index it meanwhile). A walk
-/// that found no file at all prunes nothing: the root may be a mount point
-/// whose filesystem is not mounted.
-fn prune_entries(
-    ix: &mut crate::index::Index,
-    root: &Path,
-    seen: &std::collections::HashMap<RelPath, (u64, u64)>,
-    errors: &[(RelPath, String)],
-    skipped: &dyn Fn(&RelPath) -> bool,
-    dry_run: bool,
-) -> io::Result<usize> {
-    if seen.is_empty() {
-        return Ok(0);
-    }
-    let regular = irsync_proto::v1::file_entry::Kind::Regular as i32;
-    let unreadable = |p: &RelPath| {
-        errors.iter().any(|(e, _)| {
-            let (e, p) = (e.as_bytes(), p.as_bytes());
-            e.is_empty() || p == e || (p.starts_with(e) && p.get(e.len()) == Some(&b'/'))
-        })
-    };
-    let mut removed = 0;
-    for (path, kind, inode, size) in ix.entry_identities().map_err(io_err)? {
-        if kind != regular
-            || seen.get(&path) == Some(&(inode, size))
-            || unreadable(&path)
-            || skipped(&path)
-        {
-            continue;
-        }
-        let here = crate::platform::symlink_metadata(&root.join(path.to_os()))
-            .ok()
-            .filter(|m| m.kind == crate::platform::Kind::File)
-            .map(|m| (m.ino, m.size));
-        if here == Some((inode, size)) {
-            continue;
-        }
-        removed += 1;
-        if !dry_run {
-            ix.remove_entry(&path).map_err(io_err)?;
-        }
-    }
-    Ok(removed)
-}
-
-/// A full GC walk is due at most this often, unless stale partials wait.
-pub const GC_EVERY: Duration = Duration::from_secs(24 * 3600);
-
-/// Whether a GC walk is due: never walked, the last walk is [`GC_EVERY`]
-/// old (or in the future: the clock stepped back), or partial records have
-/// gone stale since (Ruling 32).
-pub fn gc_due(last_gc_at: Option<i64>, now: i64, stale_partials: bool) -> bool {
-    stale_partials || last_gc_at.is_none_or(|t| now < t || now - t >= GC_EVERY.as_secs() as i64)
-}
-
-/// Runs [`gc`] only when [`gc_due`] says so; `stale_after` is the age at
-/// which a partial record counts as stale. `None` when skipped.
-pub async fn gc_if_due(
-    index: IndexHandle,
-    root: &Path,
-    older_than: Duration,
-    stale_after: Duration,
-) -> io::Result<Option<GcReport>> {
-    gc_if_due_skipping(index, root, older_than, stale_after, &[]).await
-}
-
-/// [`gc_if_due`] with [`gc_skipping`]'s `skip`.
-pub async fn gc_if_due_skipping(
-    index: IndexHandle,
-    root: &Path,
-    older_than: Duration,
-    stale_after: Duration,
-    skip: &[RelPath],
-) -> io::Result<Option<GcReport>> {
-    let ix = index.clone();
-    let due = tokio::task::spawn_blocking(move || -> io::Result<bool> {
-        let ix = ix.lock().map_err(|_| io_err("index lock poisoned"))?;
-        let (last, now) = (ix.last_gc_at().map_err(io_err)?, unix_now());
-        // Records that went stale since the last walk: one stale at that
-        // walk already was looked at, and kept (younger than `older_than`,
-        // or still referenced); it must not make every run walk again.
-        let stale = match last {
-            Some(t) if t <= now => {
-                let since = Duration::from_secs((now - t) as u64);
-                let stale_now = ix.partials_older_than(stale_after).map_err(io_err)?;
-                let stale_then = ix
-                    .partials_older_than(stale_after + since)
-                    .map_err(io_err)?;
-                stale_now.len() > stale_then.len()
-            }
-            // Due anyway.
-            _ => false,
-        };
-        Ok(gc_due(last, now, stale))
-    })
-    .await
-    .map_err(io_err)??;
-    if !due {
-        return Ok(None);
-    }
-    gc_skipping(index, root, older_than, false, skip)
-        .await
-        .map(Some)
 }
 
 #[cfg(test)]
@@ -1822,101 +1179,5 @@ mod banner_tests {
         assert!(b.starts_with("irsync daemon 9.9.9 started\n"));
         assert!(b.contains("relay: disabled"));
         assert!(b.contains("discovery: dns, mdns"));
-    }
-
-    #[test]
-    fn a_probe_looks_at_nothing_through_a_symlink() {
-        use path_info::Kind;
-        let export = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::fs::create_dir(export.path().join("d")).unwrap();
-        std::fs::write(export.path().join("d/f"), b"x").unwrap();
-        std::fs::write(outside.path().join("f"), b"x").unwrap();
-        crate::platform::testutil::symlink(outside.path(), &export.path().join("link")).unwrap();
-        let kind = |p: &str| probe_kind(export.path(), &RelPath::new(p.as_bytes()).unwrap());
-        assert_eq!(kind(""), Kind::Directory);
-        assert_eq!(kind("d"), Kind::Directory);
-        assert_eq!(kind("d/f"), Kind::File);
-        assert_eq!(kind("d/none"), Kind::Missing);
-        // The link itself is an entry; nothing behind it is.
-        assert_eq!(kind("link"), Kind::File);
-        assert_eq!(kind("link/f"), Kind::Missing);
-    }
-
-    /// Where a pushed single file lands is decided from the export's
-    /// directory, with no symlink followed on the way to the destination.
-    #[test]
-    fn a_single_file_is_placed_without_looking_through_a_symlink() {
-        let export = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::fs::create_dir(export.path().join("d")).unwrap();
-        std::fs::write(export.path().join("d/old"), b"x").unwrap();
-        std::fs::create_dir(outside.path().join("sub")).unwrap();
-        std::fs::write(outside.path().join("old"), b"x").unwrap();
-        crate::platform::testutil::symlink(outside.path(), &export.path().join("link")).unwrap();
-        let place = |p: &str, contents_only: bool| {
-            let rel = RelPath::new(p.as_bytes()).unwrap();
-            let dest = export.path().join(p);
-            place_file_beneath(export.path(), &rel, &dest, contents_only, b"f.iso")
-        };
-        // Into a directory, onto a file, onto a name that is not there.
-        let p = place("d", false).unwrap();
-        assert_eq!(
-            (p.root, p.name),
-            (export.path().join("d"), b"f.iso".to_vec())
-        );
-        for name in ["d/old", "d/new"] {
-            let p = place(name, false).unwrap();
-            assert_eq!(p.root, export.path().join("d"));
-            assert_eq!(p.name, name.as_bytes()[2..].to_vec());
-        }
-        assert!(matches!(
-            place("d/old", true),
-            Err(PlaceError::NotADirectory(_))
-        ));
-        // Behind the link, a directory, a file and a missing name all get
-        // the same answer: none is looked at.
-        for name in ["link/sub", "link/old", "link/new"] {
-            for contents_only in [false, true] {
-                match place(name, contents_only) {
-                    Err(PlaceError::Io(_, e)) => {
-                        assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{name}: {e}")
-                    }
-                    other => panic!("{name}: {other:?}"),
-                }
-            }
-        }
-    }
-
-    /// Where a link at a single file's destination leads is worked out
-    /// inside the export only.
-    #[test]
-    fn a_link_at_the_destination_is_followed_only_inside_the_export() {
-        let export = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(export.path().join("d/sub")).unwrap();
-        std::fs::write(export.path().join("d/file"), b"x").unwrap();
-        std::fs::create_dir(outside.path().join("dir")).unwrap();
-        let link = |name: &str, to: &std::path::Path| {
-            crate::platform::testutil::symlink(to, &export.path().join(name)).unwrap();
-            link_leads_to(export.path(), &RelPath::new(name.as_bytes()).unwrap())
-        };
-        let p = std::path::Path::new;
-        assert_eq!(link("a", p("d/sub")), LinkTo::Directory);
-        assert_eq!(link("d/b", p("sub")), LinkTo::Directory);
-        assert_eq!(link("d/c", p("../d/./sub/")), LinkTo::Directory);
-        assert_eq!(link("d/e", p("..")), LinkTo::Directory);
-        assert_eq!(link("f", p("d/file")), LinkTo::Other);
-        assert_eq!(link("g", p("d/none")), LinkTo::Other);
-        // Out of the export: absolute, or climbing out, whatever is there.
-        assert_eq!(link("h", &outside.path().join("dir")), LinkTo::NotFollowed);
-        assert_eq!(link("i", &outside.path().join("none")), LinkTo::NotFollowed);
-        assert_eq!(link("j", p("../x")), LinkTo::NotFollowed);
-        assert_eq!(link("d/k", p("../../x")), LinkTo::NotFollowed);
-        // An absolute link back into the export is not worked out either.
-        assert_eq!(link("l", &export.path().join("d")), LinkTo::NotFollowed);
-        // Through, or onto, another link.
-        assert_eq!(link("m", p("a")), LinkTo::NotFollowed);
-        assert_eq!(link("n", p("a/x")), LinkTo::NotFollowed);
     }
 }
