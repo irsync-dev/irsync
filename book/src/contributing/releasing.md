@@ -21,30 +21,61 @@ published.
 
 ## Where a release is cut from
 
-- A pre-release (`X.Y.Z-beta.N`, `X.Y.Z-alpha.N`) and a new minor or major
-  version (`X.Y.0`) are cut from `main`.
-- A patch release (`X.Y.Z` with `Z` above 0) is cut from the branch
-  `release-X.Y`. The resume run creates that branch after `X.Y.0` is
-  published.
+Every release of the line `X.Y` is cut from the branch `release-X.Y`:
+its alphas, its betas, `X.Y.0` and its patches. A line goes through these
+steps, in this order:
+
+1. `X.Y.0-alpha.1`, `X.Y.0-alpha.2`, …
+2. `X.Y.0-beta.1`, `X.Y.0-beta.2`, …
+3. `X.Y.0`, then the patches `X.Y.1`, `X.Y.2`, …
+
+A beta follows an alpha or a lower beta. A stable release follows an alpha,
+a beta or a lower stable release. Going back is refused: no alpha after a
+beta, no beta after `X.Y.0`. A line may skip steps and start with a beta
+or with `X.Y.0`. The gate allows that, with a warning that it is not the
+usual order. Pre-releases are only of `X.Y.0`: there is no
+`X.Y.1-beta.1`.
+
+Until `X.Y.0` is out, `release-X.Y` follows `main`. Before each alpha,
+beta and `X.Y.0`, the workflow `release-prepare.yml` creates
+`release-X.Y` at `main`, or rebases it onto `main`. Rebasing replays the
+branch's own commits, if it has any, on top of `main`. Once `X.Y.0` is
+out, the branch no longer moves with `main`, and only takes fixes.
 
 `main` and every `release-X.Y` branch only take changes through a pull
-request that passed the `CI result` check. The gate refuses to run on the
-wrong branch.
+request that passed the `CI result` check. The one exception is
+`release-prepare.yml`, which pushes `release-X.Y` with a deploy key (see
+[One-time setup](#one-time-setup)). The gate refuses to run on the wrong
+branch, and refuses a version out of the line's order.
 
 ## Cutting a release
 
-The three cases differ only in the branch. All the steps are the same.
+There are three cases. They differ only in where the version bump goes:
 
-1. Switch to the branch the release is cut from, up to date and with no
-   uncommitted changes: `main` for a pre-release or `X.Y.0`, `release-X.Y`
-   for a patch. Run the bump script with the new version, without the `v`:
+- **`main` is on the line.** A pre-release or `X.Y.0` while `main`
+  still works towards `X.Y`, including the first alpha of a new line. The
+  bump goes to `main`, then `release-prepare.yml` brings `release-X.Y`
+  up to `main` (step 5).
+- **`main` has left the line.** `main` already holds a later version,
+  such as `1.4.0-alpha.1` while `1.3` is still in beta. The bump goes to
+  `release-X.Y` through a pull request, and `release-X.Y` does not move
+  with `main` any more.
+- **A patch** (`X.Y.Z` with `Z` above 0). The bump goes to `release-X.Y`.
+
+`bump-version.sh` works out which case it is, from the version and from
+`origin/main`, and prints the right commands.
+
+1. Fetch, and switch to the branch the bump goes to, up to date and with no
+   uncommitted changes. Run the bump script with the new version, without
+   the `v`:
 
    ```sh
+   git fetch origin
    git switch main && git pull --ff-only     # or release-1.2
    .github/scripts/bump-version.sh 1.2.3
    ```
 
-   It stops if you are on the wrong branch. It sets the version in
+   It stops if you are on the wrong branch, and names the right one. It sets the version in
    `Cargo.toml` (`[workspace.package]`) and `packaging/dist/dist.toml`, and
    updates `Cargo.lock` and `fuzz/Cargo.lock` to match. It commits the four
    files as `Release v1.2.3` on a new branch, `bump-v1.2.3`. It doesn't
@@ -57,8 +88,7 @@ The three cases differ only in the branch. All the steps are the same.
    git commit -m 'Release notes for v1.2.3' -- CHANGELOG.md
    ```
 
-3. Open a pull request against the branch the release is cut from. Use
-   `--base`:
+3. Open a pull request against the branch the bump goes to. Use `--base`:
 
    ```sh
    git push -u origin bump-v1.2.3
@@ -73,15 +103,28 @@ The three cases differ only in the branch. All the steps are the same.
    [The release versions](website.md#the-release-versions) and
    [The books](website.md#the-books)). Until the release is published,
    the site cannot be promoted to irsync.org.
-5. Start the release gate on that branch, with the version:
+5. If the bump went to `main`, bring `release-X.Y` up to `main`. Start
+   `release-prepare.yml` on `main`, with the version:
 
    ```sh
-   gh workflow run release-gate.yml --ref main -f version=1.2.3
+   gh workflow run release-prepare.yml --ref main -f version=1.2.0-beta.1
    ```
 
-   For a patch, use `--ref release-1.2`. In the browser: Actions, Release
-   gate, Run workflow, pick the branch, enter the version.
-6. When the gate is done, it prints `Draft ready. Sign it:` and the
+   It checks that `main` holds the version and that nothing of the line is
+   being released, then waits for you to approve the `release-branch`
+   environment. Then it creates `release-1.2` at `main`, or rebases it
+   onto `main`. If the rebase conflicts, it pushes nothing; see
+   [If the rebase conflicts](#if-the-rebase-conflicts). Skip this step when
+   the bump went to `release-X.Y`.
+6. Start the release gate on `release-X.Y`, with the version:
+
+   ```sh
+   gh workflow run release-gate.yml --ref release-1.2 -f version=1.2.3
+   ```
+
+   In the browser: Actions, Release gate, Run workflow, pick the branch,
+   enter the version.
+7. When the gate is done, it prints `Draft ready. Sign it:` and the
    commands. Plug in the USB stick with the release key and sign the draft,
    with the version:
 
@@ -92,7 +135,7 @@ The three cases differ only in the branch. All the steps are the same.
    It checks the draft, asks you to confirm, asks for the key's password
    once, signs every file and uploads the signatures. The release stays a
    draft. Look at it on GitHub.
-7. Publish it by running the same command with `--publish`:
+8. Publish it by running the same command with `--publish`:
 
    ```sh
    .github/scripts/sign-release.sh --key /media/$USER/irsync-key/irsync-release.key --publish 1.2.3
@@ -101,7 +144,7 @@ The three cases differ only in the branch. All the steps are the same.
    It signs again, publishes the release and starts the resume run. It
    also re-runs the newest staging build of the site, which now reads the
    release from its tag. See [Signing the release](#signing-the-release).
-8. Put the new version on irsync.org. The script ends by printing the
+9. Put the new version on irsync.org. The script ends by printing the
    command. Wait for the staging run it started, check that
    [dev.irsync.org](https://dev.irsync.org/) shows the version and that
    `/book/` there documents it, then run:
@@ -112,12 +155,30 @@ The three cases differ only in the branch. All the steps are the same.
 
    See [Promoting to irsync.org](website.md#promoting-to-irsyncorg).
 
-This is the same for a patch release. Its bump lands on `release-X.Y`,
-which does not rebuild the site, but publishing it does.
+A bump that lands on `release-X.Y` does not rebuild the site, but
+publishing the release does.
 
-For a pre-release, use a version such as `1.2.3-beta.1` or `1.2.3-alpha.1`.
-For `1.3.0`, the resume run also creates the branch `release-1.3` at the
-released commit.
+For a pre-release, use a version such as `1.3.0-beta.1` or `1.3.0-alpha.1`.
+
+### If the rebase conflicts
+
+When `release-X.Y` has commits of its own that clash with `main`,
+`release-prepare.yml` stops and pushes nothing. Its error names the files.
+Rebase the branch by hand into a branch of your own, then hand that in:
+
+```sh
+git fetch origin
+git switch -c fix-1.3 origin/release-1.3
+git rebase origin/main      # resolve each conflict, git add, git rebase --continue
+git push origin fix-1.3
+gh workflow run release-prepare.yml --ref main -f version=1.3.0-beta.2 -f fixed-branch=fix-1.3
+```
+
+The workflow checks the fixed branch: it must start at the current `main`,
+have no merge commits, and hold only commits of `release-1.3`, in the same
+order (a commit `main` already has may be left out). Then it makes it
+`release-1.3` and deletes `fix-1.3`. If someone moved `release-1.3`
+meanwhile, it pushes nothing; start it again.
 
 Don't start the gate twice for the same version while one run is going. The
 second run deletes the draft the first one made.
@@ -179,8 +240,10 @@ These checks catch a mismatch:
 
 ## Copying a fix to a release branch
 
-Only the newest `release-X.Y` branch gets fixes. Land the fix on `main`
-first. Then copy it to the release branch with a pull request (here for
+Fixes go to the lines that have not reached `X.Y.0` yet, and to the
+newest stable line. Land the fix on `main` first. Before `X.Y.0`, a line
+whose branch still follows `main` gets the fix with the next
+`release-prepare.yml` run, and needs nothing else. Otherwise copy it. Then copy it to the release branch with a pull request (here for
 `release-1.2`):
 
 ```sh
@@ -195,6 +258,10 @@ gh pr create --fill --base release-1.2
 once `CI result` passes. Then release the patch as above, from
 `release-1.2`.
 
+Before `X.Y.0`, a commit added to `release-X.Y` this way stays on it: each
+`release-prepare.yml` run replays it on top of `main`, and drops it once
+`main` has the same change.
+
 ## What the workflow does
 
 You start `.github/workflows/release-gate.yml` by hand. It is the only way a
@@ -205,9 +272,11 @@ release starts. It does this, in order:
    one you gave. It checks that `CHANGELOG.md` has the release notes of
    that version (see [The release notes](#the-release-notes)). It checks that the tag doesn't exist yet and that there are
    no stray release tags (see
-   [Protecting the release tags](#protecting-the-release-tags)). For `X.Y.0`
-   it checks that `release-X.Y` doesn't exist yet. For a patch it checks
-   that `release-X.Y` does. This takes seconds.
+   [Protecting the release tags](#protecting-the-release-tags)). It checks
+   that `release-X.Y` exists and that the version follows the line's
+   earlier releases (see
+   [Where a release is cut from](#where-a-release-is-cut-from)). This takes
+   seconds.
 2. **Test.** It runs `ci.yml` on the branch's commit, with the musl release
    targets added. If anything fails, it stops. Nothing is published, and no
    tag exists.
@@ -238,8 +307,6 @@ be replaced or added. The script then starts
 rest, because the secrets of the `release` environment open only for runs
 on a `v*` tag:
 
-- **Branch** (`X.Y.0` only). It creates `release-X.Y` at the released
-  commit.
 - **Packages and Homebrew** (stable releases only). Both jobs wait for
   you to approve the `release` environment. Open the resume run, click
   "Review deployments", tick `release` and approve: one click lets both
@@ -332,8 +399,9 @@ abandoned, land the next bump or promote with `allow-unpublished` (see
 
 **The check failed.** Nothing ran. Read the error. Usually the version in
 the two files does not match, `CHANGELOG.md` has no notes for the version,
-or you are on the wrong branch, or the branch `release-X.Y` is missing or
-already there. Fix it and start the gate again.
+or you are on the wrong branch, or the branch `release-X.Y` is missing
+(run `release-prepare.yml` first), or the version is out of the line's
+order. Fix it and start the gate again.
 A stray tag is different: see
 [Protecting the release tags](#protecting-the-release-tags).
 
@@ -367,9 +435,7 @@ Actions tab under the release workflow: it may still be running.
 
 **The tag exists, but the release is not finished.** The gate refuses to
 start again, since the tag can't be reused. Finish the release with the
-resume workflow (see below). For `X.Y.0`, also create the branch
-`release-X.Y` at the released commit by hand, if it is missing (see
-[Creating `release-X.Y` by hand](#creating-release-xy-by-hand)).
+resume workflow (see below).
 
 **The packages or Homebrew step failed.** Fix the cause (often a token in
 the `release` environment), then re-run that job from the resume run, or
@@ -381,7 +447,7 @@ nothing.
 **The notes step failed.** Re-run that job, or start a new resume run. It
 does nothing if the heading is already there.
 
-**The release is out, but the branch, packages, Homebrew or the notes did
+**The release is out, but the packages, Homebrew or the notes did
 not happen.** This is what you see if the resume run was cancelled, or
 `sign-release.sh` could not start it. Start the
 resume run by hand:
@@ -586,6 +652,23 @@ git ls-remote --heads origin 'release-*'
 
 and delete each one with `git push origin --delete <name>`.
 
+**Release branch key.** `release-prepare.yml` pushes `release-X.Y` with a
+deploy key. The `Release branches` ruleset lets every deploy key of the
+repository past, so this must be the only one; `tools/github_settings.py
+check` reports any other. Make the key, add it, store its private half in
+the `release-branch` environment, and delete both files:
+
+```sh
+ssh-keygen -t ed25519 -N '' -C release-branch -f release-branch
+gh repo deploy-key add release-branch.pub --title release-branch --allow-write
+gh secret set RELEASE_BRANCH_KEY --env release-branch < release-branch
+rm release-branch release-branch.pub
+```
+
+Run `tools/github_settings.py apply` first, so the environment exists.
+Applying never creates the key, so the private half never passes through
+that tool.
+
 **Repository settings.** `tools/github_settings.py apply` sets the
 rulesets (including [the release tags](#protecting-the-release-tags) and
 the release branches), the environments, secret scanning and immutable
@@ -593,21 +676,22 @@ releases. See [Checking the settings](supply-chain.md#checking-the-settings).
 
 ## Creating `release-X.Y` by hand
 
-The resume run creates `release-X.Y` after the release is public. If it
-fails, or the branch is missing, create it at the released commit:
+`release-prepare.yml` creates `release-X.Y`. A line released before it
+existed has no branch: create it at the line's newest release. For the
+`0.1` line:
 
 ```sh
-git push origin vX.Y.Z:refs/heads/release-X.Y
+git push origin v0.1.0-beta.6:refs/heads/release-0.1
 ```
 
-The `Release branches` ruleset may refuse to create the ref. If it does, an
+The `Release branches` ruleset refuses to create the ref for a person. An
 admin disables that ruleset for a moment, pushes the branch, and turns the
 ruleset on again with `tools/github_settings.py apply`.
 
-**Watch the first stable release.** The first `X.Y.0` is the first time the
-resume run creates `release-X.Y`, and it runs after the release is
-public. The `Release branches` ruleset may block it. If it does, create the
-branch by hand as above, and fix the ruleset or the workflow.
+**Watch the first prepare run.** The first run of `release-prepare.yml` is
+the first push through the deploy key. If the ruleset blocks it, check
+`tools/github_settings.py check`: the `Release branches` ruleset must let
+deploy keys past, and the key must have write access.
 
 **Watch the first patch release.** The first release from a `release-X.Y`
 branch should be watched. The gate creates `pinned/vX.Y.Z` with the
