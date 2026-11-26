@@ -10,6 +10,29 @@ through it. This page covers the options.
 never does: it dials the daemon over iroh. A sync to a name irsync does not
 know stops and tells you to run `irsync pair`.
 
+## The connection check
+
+Last, `pair` dials the new daemon over iroh, the way a sync will: by the
+lookups, with no help from the ssh session. It asks the daemon for the
+exports this client may use, so the check also shows that the grant works:
+
+```text
+irsync: checking that myserver answers over iroh
+irsync: myserver answers over iroh
+irsync: paired with myserver; syncs go over iroh, not ssh
+```
+
+A daemon that has just started is usually found within seconds. When it is
+looked up in the DHT only, it can take a few seconds more. `pair` keeps
+trying for up to 30 seconds. If the daemon cannot be found by then, `pair`
+fails. The server stays set up and saved: run the same `irsync pair` again
+to check once more. See
+[Troubleshooting](troubleshooting.md#pair-could-not-reach-the-daemon-over-iroh).
+
+The check takes the connection flags of a sync, such as `--relay`,
+`--no-dht` and `--address`, and the server's and `[defaults]` settings.
+The flags are used for the check only, not saved.
+
 ## The names pair saves
 
 On the client, the server name depends on the host you gave `irsync pair`:

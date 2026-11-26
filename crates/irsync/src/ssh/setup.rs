@@ -498,8 +498,8 @@ pub fn run(
         }
     };
 
-    // 5. Where the daemon can be reached: a daemon that just started has
-    // published nothing yet, so the client dials this first.
+    // 5. Where the daemon can be reached, as it knows it: when `pair`'s
+    // check cannot find the daemon, this says whether it is up at all.
     let want_relay = settings.daemon.relay != Relay::Disabled;
     let reached = probe(state)
         .filter(|i| i.pid != 0)

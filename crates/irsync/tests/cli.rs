@@ -466,8 +466,15 @@ fn irsync_flags_and_misc() {
     assert!(!o.numeric_ids, "names are mapped unless asked not to");
     let plain = opts(&["a", "h:m"]);
     assert!(!plain.no_dht && !plain.no_dns && !plain.no_mdns);
-    // pair's flag is for the server's publishing: no lookup flag there.
-    assert!(Args::try_parse_from(["irsync", "pair", "--no-dht", "h"]).is_err());
+    // pair's `--no-dht` is for its connection check, as for a sync;
+    // `--server-no-dht` is the one for the server's publishing.
+    match parse(&["pair", "--no-dht", "--address", "127.0.0.1:1", "h"]).cmd {
+        Some(Command::Pair(p)) => {
+            assert!(p.conn.no_dht && !p.server_no_dht);
+            assert_eq!(p.conn.address.len(), 1);
+        }
+        c => panic!("not Pair: {c:?}"),
+    }
     assert!(opts(&["--numeric-ids", "a", "h:m"]).numeric_ids);
     assert!(!o.fsync, "no flush unless asked, as in rsync");
     assert!(opts(&["--fsync", "a", "h:m"]).fsync);

@@ -87,7 +87,10 @@ fn main() {
         Some(Command::Grant(g)) => std::process::exit(run_grant(g, log, files)),
         Some(Command::Id(i)) => std::process::exit(run_id(i, log, files)),
         Some(Command::Config(c)) => std::process::exit(run_config(c, log, files)),
-        Some(Command::Pair(a)) => std::process::exit(run_pair(a, log, files)),
+        Some(Command::Pair(a)) => {
+            let opts = SyncOptions::for_pair(&args, &a.conn);
+            std::process::exit(run_pair(a, &opts, log, files))
+        }
         Some(Command::Show) => std::process::exit(run_show(files)),
         Some(Command::Remote(r)) => {
             let opts = SyncOptions::for_command(&args);
@@ -491,7 +494,7 @@ fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
 }
 
 /// `irsync pair HOST`: sets the server up over ssh and saves it.
-fn run_pair(a: &PairArgs, quiet: LogArgs, files: &FilesArgs) -> i32 {
+fn run_pair(a: &PairArgs, opts: &SyncOptions, quiet: LogArgs, files: &FilesArgs) -> i32 {
     let log = LogWriter::new();
     // What pair did, line by line; nothing with `-q`.
     let say = |line: &str| {
@@ -560,6 +563,29 @@ fn run_pair(a: &PairArgs, quiet: LogArgs, files: &FilesArgs) -> i32 {
                     &format!("{}:", o.name),
                     &secret.public()
                 ));
+            }
+            // Last, the daemon is dialled as a sync will dial it (#312).
+            let name = &o.name;
+            say(&format!("irsync: checking that {name} answers over iroh"));
+            let limit = irsync::client::pair_check_limit();
+            let rt = tokio::runtime::Runtime::new()?;
+            let checked = rt.block_on(irsync::client::check_paired(name, opts, limit, &|line| {
+                log.eprintln(line)
+            }));
+            match checked {
+                Ok(()) => say(&format!("irsync: {name} answers over iroh")),
+                Err(e)
+                    if e.downcast_ref::<irsync::session::reconnect::NeverReached>()
+                        .is_some() =>
+                {
+                    tracing::info!(error = %format!("{e:#}"), "pair check gave up");
+                    bail!(irsync::ssh::onboard::not_found(&o, limit));
+                }
+                Err(e) => {
+                    return Err(e.context(format!(
+                        "{name} is set up, but its daemon refused this client"
+                    )))
+                }
             }
             say(&format!(
                 "irsync: {}",

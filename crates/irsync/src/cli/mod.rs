@@ -841,6 +841,9 @@ pub struct PairArgs {
     /// your own way.
     #[arg(long)]
     pub no_service: bool,
+    /// How the check at the end reaches the daemon, as for a sync.
+    #[command(flatten)]
+    pub conn: ConnArgs,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1297,6 +1300,22 @@ impl SyncOptions {
     /// (`remote`): the defaults, with the global flags.
     pub fn for_command(args: &Args) -> SyncOptions {
         Self::with(args, &args.sync)
+    }
+
+    /// The options of `irsync pair`'s connection check: the defaults, with
+    /// the global flags and the connection flags `conn` of `pair`.
+    pub fn for_pair(args: &Args, conn: &ConnArgs) -> SyncOptions {
+        SyncOptions {
+            idle_timeout: conn.idle_timeout,
+            dial_retries: conn.dial_retries,
+            relay: conn.relay.clone(),
+            pq_key_exchange: conn.pq_key_exchange,
+            no_dht: conn.no_dht,
+            no_dns: conn.no_dns,
+            no_mdns: conn.no_mdns,
+            addresses: conn.address.clone(),
+            ..Self::for_command(args)
+        }
     }
 
     fn with(args: &Args, a: &SyncArgs) -> SyncOptions {

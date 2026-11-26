@@ -165,12 +165,21 @@ more times first. When the daemon does not
 answer, the sync stops and names `irsync pair` as the way to start it again.
 See [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
 
+Last, `pair` checks that the daemon can be reached over iroh. It dials the
+daemon the way a sync will, by the lookups (or by `--address`), and asks for
+the exports this client may use. It tries for up to 30 seconds. When the
+daemon cannot be found in that time, `pair` fails with what the server said
+about where its daemon can be reached; the server stays set up and saved, and
+running the same `irsync pair` again checks once more. A daemon that answers
+but refuses the client fails `pair` at once.
+
 | Flag | Meaning |
 | --- | --- |
 | `--rsh CMD` | The remote shell, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
 | `--no-ssh-install` | Copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
 | `--server-no-dht` | Turn the server's DHT publishing off (`[daemon] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
 | `--no-service` | Do not make the daemon a user service: start it in the background, until the server reboots. For a daemon you run your own way. |
+| `--relay`, `--no-dht`, `--no-dns`, `--no-mdns`, `--address ADDR`, `--pq-key-exchange`, `--dial-retries N`, `--idle-timeout DUR` | How the check at the end reaches the daemon, as for a sync. They are not saved. `--no-dht` is about this machine's lookups; `--server-no-dht` about the server's publishing. |
 
 ## rsync-compatible flags
 
