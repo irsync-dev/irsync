@@ -136,7 +136,7 @@ pub fn rename_export(msg: &mut pb::Config, old: &str, new: &str) -> Result<(), M
         return Err(ManageError::Reserved(new.to_string()));
     }
     if crate::config::exports::name_problem(new).is_some() {
-        return Err(ManageError::BadName(new.to_string()));
+        return Err(ManageError::BadExportName(new.to_string()));
     }
     if msg.exports.iter().any(|e| e.name == new) {
         return Err(ManageError::Exists(new.to_string()));
@@ -191,13 +191,13 @@ pub(crate) fn unique_auto_name(path: &Path, taken: impl Fn(&str) -> bool) -> Str
     name
 }
 
-/// Add an automatic export of `path` that lists `peer` under `ro` for
+/// Add an automatic export of `path` that lists `client` under `ro` for
 /// read-only `access`, else under `rw`; the name it got (`-2`, `-3`, ...
 /// when the name is taken).
 pub fn add_auto_export(
     msg: &mut pb::Config,
     path: &Path,
-    peer: EndpointId,
+    client: EndpointId,
     access: Access,
 ) -> Result<String, ManageError> {
     let name = unique_auto_name(path, |n| msg.exports.iter().any(|e| e.name == n));
@@ -208,7 +208,7 @@ pub fn add_auto_export(
         ..Default::default()
     };
     let listed = vec![pb::Entry {
-        value: peer.to_string(),
+        value: client.to_string(),
         comment: None,
     }];
     match access {
@@ -334,7 +334,7 @@ fn add_target_in(
     let (name, raw) = match split_target(arg) {
         (Some(n), p) => {
             if n.is_empty() {
-                return Err(ManageError::BadName(n.to_string()));
+                return Err(ManageError::BadExportName(n.to_string()));
             }
             (Some(n.to_string()), p)
         }

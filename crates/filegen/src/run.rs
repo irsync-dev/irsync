@@ -14,7 +14,7 @@ use crate::caps::{self, Caps};
 use crate::chain::{cap_pressure, Chain};
 use crate::cli::{self, RunArgs};
 use crate::config::{self, Config, ConfigError};
-use crate::escape::{escape, unescape};
+use crate::escape::{log_escape, log_unescape};
 use crate::kind::OpKind;
 use crate::log::{Footer, Header, LogWriter, Post, PostStat, Stats, Timing};
 use crate::model::{Model, NodeId};
@@ -316,7 +316,7 @@ impl Runner {
         }
         let (rng, last_kind, anchor, steps_done) = match resumed {
             Some(s) => {
-                let anchor = unescape(&s.chain_state.anchor)
+                let anchor = log_unescape(&s.chain_state.anchor)
                     .ok()
                     .and_then(|rel| model.resolve(&rel))
                     .map_or(model.root(), |id| anchor_of(&model, id));
@@ -537,7 +537,7 @@ impl Runner {
             rng: self.rng.clone(),
             chain_state: ChainState {
                 last_kind: self.last_kind,
-                anchor: escape(&self.model.rel_path(self.anchor)),
+                anchor: log_escape(&self.model.rel_path(self.anchor)),
             },
             dry_run: self.dry,
             platform: self.platform,
@@ -1028,7 +1028,7 @@ mod tests {
         let log = text(&out.join("filegen-17.log"));
         let out_canon = fs::canonicalize(&out).unwrap();
         // Paths in the log are escaped (a `\` doubled).
-        let logged = |p: &Path| escape(&platform::path_to_bytes(p));
+        let logged = |p: &Path| log_escape(&platform::path_to_bytes(p));
         assert!(log.contains(&format!("log=\"{}", logged(&out_canon))));
         // Absolute symlink targets name the real root, never the link.
         let sep = logged(Path::new(std::path::MAIN_SEPARATOR_STR));
@@ -1248,7 +1248,7 @@ mod tests {
         // Every path the model knows, escaped as in the log; "" is the root.
         let known: std::collections::BTreeSet<String> = triples(r.model())
             .into_iter()
-            .map(|(p, _, _)| escape(&p))
+            .map(|(p, _, _)| log_escape(&p))
             .chain([String::new()])
             .collect();
         fs::remove_dir_all(&root).unwrap();

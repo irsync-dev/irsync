@@ -31,21 +31,7 @@ pub fn set_parent(_span: &tracing::Span, _traceparent: &str, _tracestate: &str) 
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Which end of the connection this process is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    Client,
-    Daemon,
-}
-
-impl Side {
-    pub fn label(self) -> &'static str {
-        match self {
-            Side::Client => "client",
-            Side::Daemon => "daemon",
-        }
-    }
-}
+use crate::side::Side;
 
 /// Which direction data flows for this end of the session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -61,7 +61,7 @@ fn session(id: u8, path: &str, age_days: i64) -> SessionRow {
         progress: vec![],
         created_at: t,
         updated_at: t,
-        peer: vec![],
+        owner: vec![],
     }
 }
 
@@ -469,7 +469,7 @@ async fn gc_handles_shortened_part_names() {
             progress: vec![],
             created_at: t,
             updated_at: t,
-            peer: vec![],
+            owner: vec![],
         })
         .unwrap();
     }

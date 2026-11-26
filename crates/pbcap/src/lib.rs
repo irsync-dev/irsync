@@ -1,11 +1,11 @@
 //! The protocol capture file format: pcapng packets holding Wireshark
-//! "exported PDU" tags and a protobuf body. `write` builds the blocks
+//! "exported PDU" tags and a protobuf body. [`pcapng`] builds the blocks
 //! irsync writes; `Reader` reads them back.
 
 #![forbid(unsafe_code)]
 
+pub mod pcapng;
 mod read;
-pub mod write;
 
 pub use read::{Error, Packet, Reader, MAX_PACKET_BLOCK};
 

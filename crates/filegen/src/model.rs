@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use unicode_normalization::UnicodeNormalization;
 
-use crate::escape::escape;
+use crate::escape::log_escape;
 use crate::platform;
 
 /// First inode number handed out by [`Model::synthetic_ino`].
@@ -157,7 +157,7 @@ impl Model {
     pub(crate) fn fold_bytes(name: &[u8]) -> String {
         match std::str::from_utf8(name) {
             Ok(s) => Model::fold(s),
-            Err(_) => escape(name),
+            Err(_) => log_escape(name),
         }
     }
 
@@ -187,7 +187,11 @@ impl Model {
             // A stored path always has a name here on Unix; a platform that
             // cannot name it is a bug in filegen, not a step that fails.
             platform::rel_to_path(root, &rel).unwrap_or_else(|e| {
-                panic!("cannot name {} below {}: {e}", escape(&rel), root.display())
+                panic!(
+                    "cannot name {} below {}: {e}",
+                    log_escape(&rel),
+                    root.display()
+                )
             })
         }
     }
@@ -223,7 +227,7 @@ impl Model {
         assert_eq!(self.node(dir).kind, NodeKind::Dir, "parent is not a dir");
         let name = self.node(id).name.clone();
         let pos = match self.child_pos(dir, &name) {
-            Ok(_) => panic!("duplicate name {} in dir {dir}", escape(&name)),
+            Ok(_) => panic!("duplicate name {} in dir {dir}", log_escape(&name)),
             Err(pos) => pos,
         };
         self.node_mut(dir).children.insert(pos, id);

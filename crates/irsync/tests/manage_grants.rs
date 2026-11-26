@@ -4,18 +4,18 @@ use irsync::config::file::Config;
 use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::grants::{
-    canonicalize, grant_add, grant_remove, list_all, list_export, list_peer, lists_naming,
+    canonicalize, grant_add, grant_remove, list_all, list_client, list_export, lists_naming,
     remove_named, rename_named,
 };
-use irsync::manage::{ManageError, PeerSpec};
+use irsync::manage::{ClientSpec, ManageError};
 use irsync_proto::config as pb;
 use std::path::Path;
 
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
-fn peer(n: u8) -> PeerSpec {
-    PeerSpec::Id {
+fn client(n: u8) -> ClientSpec {
+    ClientSpec::Id {
         id: id(n),
         comment: None,
     }
@@ -46,13 +46,13 @@ fn grant_add_moves_between_arrays_replaces_other_spelling_and_keeps_comment() {
         id(1)
     ));
     let resolve = |s: &str| (s == "laptop").then(|| id(1));
-    let laptop = PeerSpec::Alias("laptop".into());
+    let laptop = ClientSpec::Name("laptop".into());
     grant_add(&mut m, "p", &laptop, false, &resolve).unwrap(); // replaces the raw id
     assert_eq!(values(&export(&m, "p").rw), ["laptop"]);
     grant_add(&mut m, "p", &laptop, true, &resolve).unwrap(); // rw -> ro
     assert!(export(&m, "p").rw.is_empty() && export(&m, "p").rw_set);
     assert_eq!(values(&export(&m, "p").ro), ["laptop"]);
-    let keyed = PeerSpec::Id {
+    let keyed = ClientSpec::Id {
         id: id(2),
         comment: Some("mike@laptop".into()),
     };
@@ -66,7 +66,7 @@ fn grant_add_moves_between_arrays_replaces_other_spelling_and_keeps_comment() {
         write(&m)
     );
     assert!(matches!(
-        grant_add(&mut m, "zz", &peer(3), false, &resolve),
+        grant_add(&mut m, "zz", &client(3), false, &resolve),
         Err(ManageError::NotFound(_))
     ));
 }
@@ -77,14 +77,14 @@ fn grant_remove_by_export_by_all_and_everywhere() {
     let resolve = |s: &str| (s == "lap").then(|| id(1));
     let mut m = msg(&text);
     assert_eq!(
-        grant_remove(&mut m, Some("p"), Some(&peer(1)), &resolve).unwrap(),
+        grant_remove(&mut m, Some("p"), Some(&client(1)), &resolve).unwrap(),
         2
-    ); // raw id and the alias that resolves to it
+    ); // raw id and the name that resolves to it
     assert_eq!(export(&m, "p").rw.len(), 1);
     assert!(export(&m, "p").ro.is_empty());
     let mut m = msg(&text);
     assert_eq!(
-        grant_remove(&mut m, None, Some(&peer(1)), &resolve).unwrap(),
+        grant_remove(&mut m, None, Some(&client(1)), &resolve).unwrap(),
         3
     ); // every export
     let mut m = msg(&text);
@@ -99,12 +99,12 @@ fn grant_remove_by_export_by_all_and_everywhere() {
 fn a_second_grant_add_after_a_comment_keeps_the_comment_and_valid_toml() {
     let mut m = msg("[exports.p]\npath = \"/p\"\n");
     let none = |_: &str| None;
-    let keyed = PeerSpec::Id {
+    let keyed = ClientSpec::Id {
         id: id(1),
         comment: Some("c1".into()),
     };
     grant_add(&mut m, "p", &keyed, false, &none).unwrap();
-    grant_add(&mut m, "p", &peer(2), false, &none).unwrap();
+    grant_add(&mut m, "p", &client(2), false, &none).unwrap();
     let text = write(&m);
     let back = msg(&text);
     assert_eq!(typed(&back).exports.exports["p"].rw.len(), 2, "{text}");
@@ -119,7 +119,7 @@ fn removing_an_entry_takes_its_comment_and_leaves_the_others() {
         id(1)
     ));
     assert_eq!(
-        grant_remove(&mut m, Some("p"), Some(&peer(1)), &|_| None).unwrap(),
+        grant_remove(&mut m, Some("p"), Some(&client(1)), &|_| None).unwrap(),
         1
     );
     let rw = &export(&m, "p").rw;
@@ -130,11 +130,11 @@ fn removing_an_entry_takes_its_comment_and_leaves_the_others() {
 }
 
 #[test]
-fn grant_remove_matches_a_dangling_alias_by_literal_text() {
+fn grant_remove_matches_a_dangling_name_by_literal_text() {
     let mut m = msg("[exports.p]\npath = \"/p\"\nrw = [\"gone\"]\n");
     let none = |_: &str| None;
     assert_eq!(
-        grant_remove(&mut m, None, Some(&PeerSpec::Alias("gone".into())), &none).unwrap(),
+        grant_remove(&mut m, None, Some(&ClientSpec::Name("gone".into())), &none).unwrap(),
         1
     );
     // The emptied list stays in the file, as today.
@@ -147,7 +147,7 @@ fn grant_add_refuses_a_comment_with_control_characters_and_leaves_the_message() 
     let before = m.clone();
     let none = |_: &str| None;
     for c in [INJECTED, "a\rb", "tab\there"] {
-        let evil = PeerSpec::Id {
+        let evil = ClientSpec::Id {
             id: id(1),
             comment: Some(c.into()),
         };
@@ -161,8 +161,15 @@ fn grant_add_refuses_a_comment_with_control_characters_and_leaves_the_message() 
 fn a_name_or_comment_with_brackets_makes_no_second_table() {
     let mut m = msg("[exports.p]\npath = \"/p\"\n");
     let none = |_: &str| None;
-    grant_add(&mut m, "p", &PeerSpec::Alias(INJECTED.into()), false, &none).unwrap();
-    let bracket = PeerSpec::Id {
+    grant_add(
+        &mut m,
+        "p",
+        &ClientSpec::Name(INJECTED.into()),
+        false,
+        &none,
+    )
+    .unwrap();
+    let bracket = ClientSpec::Id {
         id: id(1),
         comment: Some("x ] [etc] path = \"/etc\"".into()),
     };
@@ -215,12 +222,12 @@ fn grant_edits_reach_inline_tables() {
     );
     let mut m = msg(&text);
     assert_eq!(
-        grant_remove(&mut m, None, Some(&peer(1)), &|_| None).unwrap(),
+        grant_remove(&mut m, None, Some(&client(1)), &|_| None).unwrap(),
         1
     );
     let x = typed(&m).exports;
     assert!(x.exports["photos"].rw.is_empty());
-    grant_add(&mut m, "photos", &peer(2), true, &|_| None).unwrap();
+    grant_add(&mut m, "photos", &client(2), true, &|_| None).unwrap();
     let x = typed(&m).exports;
     assert_eq!(x.exports["photos"].ro, vec![id(2).to_string()]);
     let mut m = msg(&format!(
@@ -228,7 +235,7 @@ fn grant_edits_reach_inline_tables() {
         a = id(1)
     ));
     assert_eq!(
-        grant_remove(&mut m, None, Some(&peer(1)), &|_| None).unwrap(),
+        grant_remove(&mut m, None, Some(&client(1)), &|_| None).unwrap(),
         2
     );
     assert_eq!(
@@ -299,7 +306,7 @@ fn written(body: &str) -> String {
 const BOX: &[(&str, u8)] = &[("box", 1)];
 
 #[test]
-fn id_becomes_alias() {
+fn id_becomes_name() {
     let (text, changed) = canon(
         BOX,
         &format!("[exports.p]\npath = \"/p\"\nrw = [\"{}\"]\n", id(1)),
@@ -342,7 +349,7 @@ fn every_grant_list_is_visited() {
 }
 
 #[test]
-fn first_alias_in_order_wins() {
+fn first_name_in_order_wins() {
     let (text, _) = canon(
         &[("zed", 1), ("amy", 1)],
         &format!("[exports.p]\npath = \"/p\"\nrw = [\"{}\"]\n", id(1)),
@@ -351,7 +358,7 @@ fn first_alias_in_order_wins() {
 }
 
 #[test]
-fn existing_alias_is_left_alone() {
+fn existing_name_is_left_alone() {
     let body = "[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n";
     assert_eq!(
         canon(&[("zed", 1), ("amy", 1)], body),
@@ -416,7 +423,7 @@ fn rw_wins_over_ro() {
 }
 
 #[test]
-fn two_aliases_of_one_id_both_stay() {
+fn two_names_of_one_id_both_stay() {
     let body = "[exports.p]\npath = \"/p\"\nrw = [\"amy\", \"zed\"]\n";
     assert_eq!(
         canon(&[("zed", 1), ("amy", 1)], body),
@@ -445,7 +452,7 @@ fn comments_are_kept() {
 
 #[test]
 fn canonicalize_keeps_the_comment_of_the_entry_that_stays() {
-    // rw holds the id (with a comment) and its alias: the first stays, renamed to the alias, with its comment.
+    // rw holds the id (with a comment) and its name: the first stays, renamed to the name, with its comment.
     let mut m = msg(&format!("[clients.laptop]\nclient_id = \"{0}\"\n[exports.p]\npath = \"/p\"\nrw = [\n    \"{0}\", # mine\n    \"laptop\",\n]\n", id(1)));
     let hosts = Config::from_message(&m, Path::new("f")).unwrap().clients;
     assert!(canonicalize(&mut m, &hosts));
@@ -516,7 +523,7 @@ fn removing_a_middle_entry_keeps_the_lines_above_it_on_the_next() {
     let text = after(
         "[exports.p]\npath = \"/p\"\nrw = [\n    \"a\",\n    # about b\n    \"b\", # bee\n    \"c\",\n]\n",
         |m| {
-            grant_remove(m, Some("p"), Some(&PeerSpec::Alias("b".into())), &|_| None).unwrap();
+            grant_remove(m, Some("p"), Some(&ClientSpec::Name("b".into())), &|_| None).unwrap();
         },
     );
     assert_eq!(
@@ -530,7 +537,7 @@ fn removing_the_last_entry_moves_the_lines_before_the_bracket_above_the_one_befo
     let text = after(
         "[exports.p]\npath = \"/p\"\nrw = [\n    \"a\",\n    \"b\", # bee\n    # tail\n]\n",
         |m| {
-            grant_remove(m, Some("p"), Some(&PeerSpec::Alias("b".into())), &|_| None).unwrap();
+            grant_remove(m, Some("p"), Some(&ClientSpec::Name("b".into())), &|_| None).unwrap();
         },
     );
     assert_eq!(
@@ -571,7 +578,7 @@ fn grant_add_moves_an_entry_with_its_comment_and_replaces_another_spelling() {
     // Same text, rw to ro: the whole comment goes along.
     let text = after(
         "[exports.p]\npath = \"/p\"\nrw = [\n    \"x\",\n    # the laptop\n    \"lap\", # mine\n]\n",
-        |m| grant_add(m, "p", &PeerSpec::Alias("lap".into()), true, &resolve).unwrap(),
+        |m| grant_add(m, "p", &ClientSpec::Name("lap".into()), true, &resolve).unwrap(),
     );
     assert_eq!(
         text,
@@ -583,7 +590,7 @@ fn grant_add_moves_an_entry_with_its_comment_and_replaces_another_spelling() {
             "[exports.p]\npath = \"/p\"\nrw = [\n    \"x\",\n    # the laptop\n    \"{}\", # old\n]\n",
             id(1)
         ),
-        |m| grant_add(m, "p", &PeerSpec::Alias("lap".into()), false, &resolve).unwrap(),
+        |m| grant_add(m, "p", &ClientSpec::Name("lap".into()), false, &resolve).unwrap(),
     );
     assert_eq!(
         text,
@@ -665,17 +672,17 @@ fn grant_list_shows_all_paths_rights() {
         format!("all_paths:\n    rw: laptop ({})\n", id(1))
     );
     assert_eq!(
-        list_peer(&e, &h, true, "laptop", &id(1)),
+        list_client(&e, &h, true, "laptop", &id(1)),
         "laptop:\n    all_paths: rw\n    auto-h: rw\n"
     );
     // all_exports never reaches an automatic export.
-    assert_eq!(list_peer(&e, &h, true, "other", &id(2)), "other:\n");
+    assert_eq!(list_client(&e, &h, true, "other", &id(2)), "other:\n");
 }
 
 #[test]
-fn list_peer_marks_inherited_and_capped_grants() {
+fn list_client_marks_inherited_and_capped_grants() {
     let (h, e) = fixture();
-    let s = list_peer(&e, &h, true, &format!("laptop ({})", id(1)), &id(1));
+    let s = list_client(&e, &h, true, &format!("laptop ({})", id(1)), &id(1));
     assert_eq!(
         s,
         format!(
@@ -684,10 +691,10 @@ fn list_peer_marks_inherited_and_capped_grants() {
         )
     );
     assert_eq!(
-        list_peer(&e, &h, true, &id(2).to_string(), &id(2)),
+        list_client(&e, &h, true, &id(2).to_string(), &id(2)),
         format!("{}:\n    photos: ro\n", id(2))
     );
-    assert_eq!(list_peer(&e, &h, true, "x", &id(3)), "x:\n");
+    assert_eq!(list_client(&e, &h, true, "x", &id(3)), "x:\n");
 }
 
 fn parse_clients(
@@ -705,15 +712,15 @@ fn parse_exports(
 }
 
 #[test]
-fn alias_of_is_the_first_alias_in_order() {
+fn name_of_is_the_first_name_in_order() {
     let h = parse_clients(
         &host_tables(&[("zed", 1), ("amy", 1), ("bob", 2)]),
         Path::new("h"),
     )
     .unwrap();
-    assert_eq!(h.alias_of(&id(1)), Some("amy"));
-    assert_eq!(h.alias_of(&id(2)), Some("bob"));
-    assert_eq!(h.alias_of(&id(3)), None);
+    assert_eq!(h.name_of(&id(1)), Some("amy"));
+    assert_eq!(h.name_of(&id(2)), Some("bob"));
+    assert_eq!(h.name_of(&id(3)), None);
 }
 
 #[test]

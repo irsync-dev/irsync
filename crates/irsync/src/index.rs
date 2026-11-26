@@ -721,9 +721,10 @@ pub struct SessionRow {
     pub progress: Vec<u8>,
     pub created_at: i64,
     pub updated_at: i64,
-    /// The key of the other side of the session; empty when not recorded
-    /// (a row written before the column existed).
-    pub peer: Vec<u8>,
+    /// The EndpointId of the client that owns the session (daemon only);
+    /// empty when not recorded (on the client, or a row written before the
+    /// column existed).
+    pub owner: Vec<u8>,
 }
 
 enum SessionBy {
@@ -1003,16 +1004,16 @@ impl Index {
              CREATE TABLE IF NOT EXISTS sessions (
                id BLOB PRIMARY KEY, key BLOB NOT NULL UNIQUE, plan BLOB NOT NULL,
                progress BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-               peer BLOB);",
+               owner BLOB);",
         )?;
-        // An index made before sessions recorded their peer gets the
+        // An index made before sessions recorded their owner gets the
         // column; its rows keep NULL there. An older irsync names its
         // columns, so it still reads and writes this table.
-        let has_peer = tx
-            .prepare_cached("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'peer'")?
+        let has_owner = tx
+            .prepare_cached("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'owner'")?
             .exists([])?;
-        if !has_peer {
-            tx.execute_batch("ALTER TABLE sessions ADD COLUMN peer BLOB")?;
+        if !has_owner {
+            tx.execute_batch("ALTER TABLE sessions ADD COLUMN owner BLOB")?;
         }
         let have_v: Option<i64> = tx
             .prepare_cached("SELECT value FROM meta WHERE key = 'schema_version'")?
@@ -1166,11 +1167,11 @@ impl Index {
         tx.prepare_cached("DELETE FROM sessions WHERE key = ?1 AND id != ?2")?
             .execute(params![s.key, &s.id[..]])?;
         tx.prepare_cached(
-            "INSERT INTO sessions (id, key, plan, progress, created_at, updated_at, peer)
+            "INSERT INTO sessions (id, key, plan, progress, created_at, updated_at, owner)
              VALUES (?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(id) DO UPDATE SET key=excluded.key, plan=excluded.plan,
                progress=excluded.progress, created_at=excluded.created_at,
-               updated_at=excluded.updated_at, peer=excluded.peer",
+               updated_at=excluded.updated_at, owner=excluded.owner",
         )?
         .execute(params![
             &s.id[..],
@@ -1179,7 +1180,7 @@ impl Index {
             s.progress,
             s.created_at,
             s.updated_at,
-            (!s.peer.is_empty()).then_some(&s.peer)
+            (!s.owner.is_empty()).then_some(&s.owner)
         ])?;
         tx.commit()?;
         evicted.map(|id| arr(id, "session id")).transpose()
@@ -1196,11 +1197,11 @@ impl Index {
     fn load_session(&self, by: SessionBy, v: &[u8]) -> Result<Option<SessionRow>> {
         let sql = match by {
             SessionBy::Id => {
-                "SELECT id, key, plan, progress, created_at, updated_at, peer
+                "SELECT id, key, plan, progress, created_at, updated_at, owner
                  FROM sessions WHERE id = ?1"
             }
             SessionBy::Key => {
-                "SELECT id, key, plan, progress, created_at, updated_at, peer
+                "SELECT id, key, plan, progress, created_at, updated_at, owner
                  FROM sessions WHERE key = ?1"
             }
         };
@@ -1216,7 +1217,7 @@ impl Index {
                         progress: r.get(3)?,
                         created_at: r.get(4)?,
                         updated_at: r.get(5)?,
-                        peer: r.get::<_, Option<Vec<u8>>>(6)?.unwrap_or_default(),
+                        owner: r.get::<_, Option<Vec<u8>>>(6)?.unwrap_or_default(),
                     },
                 ))
             })
@@ -1228,23 +1229,23 @@ impl Index {
         .transpose()
     }
 
-    /// Keeps the `keep` most recently written sessions of `peer` and
+    /// Keeps the `keep` most recently written sessions of `owner` and
     /// deletes its older ones, returning their ids. Of sessions written in
     /// the same second, the one stored first counts as older. A session in `live` is
     /// neither counted nor deleted.
     pub fn trim_sessions_of(
         &mut self,
-        peer: &[u8],
+        owner: &[u8],
         live: &std::collections::HashSet<[u8; 16]>,
         keep: usize,
     ) -> Result<Vec<[u8; 16]>> {
         let tx = self.conn.transaction()?;
         let ids = {
             let mut st = tx.prepare_cached(
-                "SELECT id FROM sessions WHERE peer = ?1
+                "SELECT id FROM sessions WHERE owner = ?1
                  ORDER BY updated_at DESC, created_at DESC, rowid DESC",
             )?;
-            let rows = st.query_map([peer], |r| r.get::<_, Vec<u8>>(0))?;
+            let rows = st.query_map([owner], |r| r.get::<_, Vec<u8>>(0))?;
             rows.map(|r| arr(r?, "session id"))
                 .collect::<Result<Vec<[u8; 16]>>>()?
         };

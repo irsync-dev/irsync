@@ -1,6 +1,7 @@
 //! Per-session meter: busy time per activity, idle time as peer wait, and counters.
 
-use super::{Role, Side};
+use super::Role;
+use crate::side::Side;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};

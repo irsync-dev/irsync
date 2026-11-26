@@ -133,7 +133,8 @@ impl Drop for SamplerHandle {
 mod tests {
     use super::*;
     use crate::net::{build_endpoint, EndpointOpts};
-    use crate::telemetry::{Role, Side};
+    use crate::side::Side;
+    use crate::telemetry::Role;
 
     async fn loopback() -> iroh::Endpoint {
         let mut opts = EndpointOpts::isolated(iroh::SecretKey::generate());

@@ -27,7 +27,7 @@ impl SessionRecord {
             progress: self.progress.encode_to_vec(),
             created_at: self.created_at,
             updated_at: self.updated_at,
-            peer: self.plan.remote_id.clone(),
+            owner: self.plan.owner.clone(),
         }
     }
 
@@ -46,7 +46,7 @@ impl SessionRecord {
 /// The index a session uses, and where the session root sits below the root
 /// the index was opened for. Index rows are always relative to that index
 /// root (the export root on the daemon), so `key` maps session-relative paths
-/// to index keys and `strip` maps index keys back.
+/// to index keys.
 #[derive(Clone)]
 pub struct IndexScope {
     pub handle: IndexHandle,
@@ -61,19 +61,6 @@ impl IndexScope {
     /// The index key for a session-relative path.
     pub fn key(&self, rel: &RelPath) -> RelPath {
         join_rel(&self.prefix, rel)
-    }
-
-    /// The session-relative path of an index key, if it lies inside the session root.
-    pub fn strip(&self, key: &RelPath) -> Option<RelPath> {
-        let (k, p) = (key.as_bytes(), self.prefix.as_bytes());
-        if p.is_empty() {
-            return Some(key.clone());
-        }
-        match k.strip_prefix(p) {
-            Some([]) => Some(RelPath::root()),
-            Some([b'/', rest @ ..]) => RelPath::new(rest).ok(),
-            _ => None,
-        }
     }
 }
 
@@ -107,13 +94,8 @@ mod tests {
         let s = IndexScope::new(ix.clone(), r(b"sub/d"));
         assert_eq!(s.key(&r(b"f")), r(b"sub/d/f"));
         assert_eq!(s.key(&RelPath::root()), r(b"sub/d"));
-        assert_eq!(s.strip(&r(b"sub/d/x/y")), Some(r(b"x/y")));
-        assert_eq!(s.strip(&r(b"sub/d")), Some(RelPath::root()));
-        assert_eq!(s.strip(&r(b"sub/dd/x")), None);
-        assert_eq!(s.strip(&r(b"other")), None);
         let root = IndexScope::new(ix, RelPath::root());
         assert_eq!(root.key(&r(b"f")), r(b"f"));
-        assert_eq!(root.strip(&r(b"f")), Some(r(b"f")));
     }
 
     #[test]
@@ -131,7 +113,7 @@ mod tests {
                     append_from: 0,
                 }],
                 plan_complete: true,
-                remote_id: vec![4; 32],
+                owner: vec![4; 32],
                 ..SessionPlan::default()
             },
             progress: SessionProgress {

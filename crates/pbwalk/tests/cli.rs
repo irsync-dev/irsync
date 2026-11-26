@@ -28,14 +28,14 @@ fn hello_record(encoded_len: Option<u32>) -> Record {
 }
 
 fn capture(records: &[Record]) -> Vec<u8> {
-    let mut f = pbcap::write::section_header();
-    f.extend(pbcap::write::interface(
+    let mut f = pbcap::pcapng::section_header();
+    f.extend(pbcap::pcapng::interface(
         pbcap::LINKTYPE_WIRESHARK_UPPER_PDU,
         0,
     ));
     for r in records {
-        let pdu = pbcap::write::exported_pdu("irsync", A, A, 1, 1, &r.encode_to_vec());
-        f.extend(pbcap::write::packet(1, &pdu));
+        let pdu = pbcap::pcapng::exported_pdu("irsync", A, A, 1, 1, &r.encode_to_vec());
+        f.extend(pbcap::pcapng::packet(1, &pdu));
     }
     f
 }

@@ -2,9 +2,10 @@
 
 use super::flame::{FlameLayer, FlameState};
 use super::http::{self, Routes};
+use super::publish;
 use super::timing::{TimingLayer, TimingState};
-use super::{publish, Side};
 use crate::config::settings::{OtlpProtocol, TelemetrySettings};
+use crate::side::Side;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::io;
 use std::net::SocketAddr;
@@ -267,11 +268,6 @@ fn warn_without_otel(cfg: &mut TelemetryConfig) {
 }
 
 impl Telemetry {
-    /// The Prometheus recorder's handle, when the debug port is on.
-    pub fn prometheus(&self) -> Option<&PrometheusHandle> {
-        self.prometheus.as_ref()
-    }
-
     /// Starts the background work the sinks need: publishing the meters
     /// and the debug server. Returns the debug server's bound address, or
     /// the bind error; `None` when the debug port is off.

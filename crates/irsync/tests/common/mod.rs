@@ -119,7 +119,8 @@ pub async fn with_netsim<F: std::future::Future>(
 async fn endpoint_for(side: EndpointSide) -> Endpoint {
     #[cfg(feature = "netsim")]
     if let Ok(n) = NETSIM.try_with(Netsim::clone) {
-        use irsync::net::netsim::{Side, Spec, WireChoice};
+        use irsync::net::netsim::{Spec, WireChoice};
+        use irsync::side::Side;
         // Each client endpoint gets its own fault stream.
         static STREAMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let (side, stream) = match side {
@@ -524,14 +525,14 @@ impl Harness {
             Some(b) => tempfile::tempdir_in(b).unwrap(),
             None => tempfile::tempdir().unwrap(),
         };
-        use irsync::authz::{Access, Grants, MemoryAuthorizer};
+        use irsync::authz::{Access, MemoryAuthorizer, Permissions};
         let client = client_endpoint().await;
         let guest = client_endpoint().await;
         let export = tmp();
         seed(export.path());
-        let grants = Grants {
+        let grants = Permissions {
             all_exports: Some(Access::ReadWrite),
-            ..Grants::default()
+            ..Permissions::default()
         };
         let authz = MemoryAuthorizer::single(client.id(), grants.clone()).with(guest.id(), grants);
         let mut m = irsync::config::exports::Export {

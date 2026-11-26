@@ -99,7 +99,7 @@ pub struct Probe {
     pub installed: Option<String>,
     /// The ssh user is root (`id -u` is 0).
     pub root: bool,
-    /// The server's short host name (`uname -n`), when it can be an alias.
+    /// The server's short host name (`uname -n`), when it can be a server name.
     pub hostname: Option<String>,
 }
 

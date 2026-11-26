@@ -18,7 +18,7 @@ message Entry {                // one element of a string array
 
 enum Congestion { CONGESTION_UNSPECIFIED = 0; CONGESTION_BBR = 1; CONGESTION_CUBIC = 2; }
 enum PqKeyExchange { PQ_KEY_EXCHANGE_UNSPECIFIED = 0; PQ_KEY_EXCHANGE_PREFER = 1; PQ_KEY_EXCHANGE_REQUIRE = 2; }
-// A right a client can hold over every export or every path; unset: none.
+// The access a grant or a right gives: read-write or read-only; unset: none.
 enum Access { ACCESS_UNSPECIFIED = 0; ACCESS_RW = 1; ACCESS_RO = 2; }
 enum OtlpProtocol { OTLP_PROTOCOL_UNSPECIFIED = 0; OTLP_PROTOCOL_GRPC = 1; OTLP_PROTOCOL_HTTP = 2; }
 
@@ -105,7 +105,7 @@ message ServerEntry {
   bool ssh_aliases_set = 19;
 }
 
-// A peer that grants name.
+// A client that grants name.
 message ClientEntry {
   Comment comment = 1; map<string, Comment> key_comments = 2; repeated string tail = 3;
   string name = 4;

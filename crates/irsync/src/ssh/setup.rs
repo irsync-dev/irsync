@@ -295,7 +295,7 @@ pub fn check_client_name(
     name: &str,
 ) -> anyhow::Result<()> {
     let Config { clients, .. } = Config::from_message(msg, path)?;
-    if clients.alias_of(&client).is_some() {
+    if clients.name_of(&client).is_some() {
         return Ok(());
     }
     // The same rule the client applies to its own name before it sends it.
@@ -341,7 +341,7 @@ pub fn grant_client(
 ) -> anyhow::Result<bool> {
     check_client_name(msg, path, client, name)?;
     let clients = Config::from_message(msg, path)?.clients;
-    let alias = match clients.alias_of(&client) {
+    let saved_name = match clients.name_of(&client) {
         Some(a) => a.to_string(),
         None => {
             manage::clients::client_add(msg, name, client)?;
@@ -351,13 +351,17 @@ pub fn grant_client(
     let c = msg
         .clients
         .iter()
-        .find(|c| c.name == alias)
+        .find(|c| c.name == saved_name)
         .context("the client entry just found is gone")?;
     let rw = Some(Access::ReadWrite);
     if Right::AllPaths.get(c) == rw && Right::Admin.get(c) == rw {
         return Ok(false);
     }
-    manage::clients::client_set(msg, &alias, &[(Right::AllPaths, rw), (Right::Admin, rw)])?;
+    manage::clients::client_set(
+        msg,
+        &saved_name,
+        &[(Right::AllPaths, rw), (Right::Admin, rw)],
+    )?;
     Ok(true)
 }
 

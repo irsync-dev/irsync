@@ -5,7 +5,7 @@
 //! daemon loads and saves the message and holds the config lock around
 //! [`apply`].
 
-use super::{clients, config, exports, grants, typed, ManageError, PeerSpec};
+use super::{clients, config, exports, grants, typed, ClientSpec, ManageError};
 use crate::authz::Access;
 use crate::config::clients::{Clients, RIGHTS};
 use iroh::EndpointId;
@@ -132,7 +132,7 @@ fn apply_one(
         Op::GrantAdd(g) => {
             grants::check_add_export(&g.export, g.ro)?;
             let config = typed(msg, path)?;
-            let spec = PeerSpec::parse_text(&g.who, &config.clients, &config.servers)?;
+            let spec = ClientSpec::parse_text(&g.who, &config.clients, &config.servers)?;
             let resolve = |s: &str| config.clients.get(s).map(|c| c.client_id);
             grants::grant_add(msg, &g.export, &spec, g.ro, &resolve)?;
             Ok(grants::added_line(&spec, &config.clients, &g.export, g.ro))
@@ -145,7 +145,7 @@ fn apply_one(
             let export = (g.export != "all").then_some(g.export.as_str());
             let spec = (g.who != "all")
                 .then(|| {
-                    PeerSpec::or_literal(&g.who, PeerSpec::parse_text(&g.who, clients, servers))
+                    ClientSpec::or_literal(&g.who, ClientSpec::parse_text(&g.who, clients, servers))
                 })
                 .transpose()?;
             let n = grants::grant_remove(msg, export, spec.as_ref(), &resolve)?;

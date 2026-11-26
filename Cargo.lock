@@ -2992,6 +2992,7 @@ dependencies = [
  "anyhow",
  "clap",
  "filegen",
+ "irsync",
  "jiff",
  "nix 0.32.0",
  "rand 0.10.4",

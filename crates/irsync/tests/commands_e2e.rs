@@ -101,7 +101,7 @@ fn export_add_grant_add_grant_remove_export_remove_round_trip_with_default_paths
 }
 
 #[test]
-fn host_add_then_grant_add_by_alias_then_list() {
+fn host_add_then_grant_add_by_name_then_list() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
@@ -326,7 +326,7 @@ fn id_derives_the_key_line_from_the_key_not_a_pub_file() {
 }
 
 #[test]
-fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
+fn show_lists_files_identities_exports_and_flags_unknown_names() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
@@ -343,7 +343,7 @@ fn show_lists_files_identities_exports_and_flags_unknown_aliases() {
     assert!(irsync(&home, &["grant", "add", "p", "laptop"])
         .status
         .success());
-    // A hand edit of the one file: an alias nobody defines.
+    // A hand edit of the one file: a name nobody defines.
     let config = home.join(".config/irsync/irsync.toml");
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(text.contains("rw = [\"laptop\"]"), "{text}");
@@ -958,7 +958,7 @@ fn server_list_prints_the_servers_section_of_show() {
 }
 
 #[test]
-fn grant_list_prefers_an_export_over_an_alias_of_the_same_name() {
+fn grant_list_prefers_an_export_over_an_name_of_the_same_name() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("p")).unwrap();
@@ -969,12 +969,12 @@ fn grant_list_prefers_an_export_over_an_alias_of_the_same_name() {
         &["export", "add", &format!("p:{}", home.join("p").display())],
     );
     ok(&home, &["grant", "add", "p", "p"]);
-    // The export's block, not the peer's reach.
+    // The export's block, not the client's reach.
     assert_eq!(
         ok(&home, &["grant", "list", "p"]),
         format!("p:\n    rw: p ({id})\n")
     );
-    // The peer is still reachable by its id.
+    // The client is still reachable by its id.
     assert_eq!(
         ok(&home, &["grant", "list", &id]),
         format!("{id}:\n    p: rw\n")
@@ -1054,7 +1054,7 @@ fn grant_remove_with_a_star_points_at_all() {
         assert_eq!(o.status.code(), Some(1), "{args:?}");
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(
-            err.contains("\"*\" names no peer") && err.contains(hint),
+            err.contains("\"*\" names no client") && err.contains(hint),
             "{args:?}: {err}"
         );
     }
@@ -1534,7 +1534,7 @@ fn peer_id(n: u8) -> String {
 }
 
 #[test]
-fn grant_add_by_id_writes_and_prints_the_alias() {
+fn grant_add_by_id_writes_and_prints_the_name() {
     let d = tempfile::tempdir().unwrap();
     let (home, file) = home_with(&d, "");
     let id = peer_id(5);
@@ -1601,7 +1601,7 @@ fn unrelated_config_set_cleans_the_file() {
 }
 
 #[test]
-fn alias_set_through_config_renames_grants() {
+fn name_set_through_config_renames_grants() {
     let d = tempfile::tempdir().unwrap();
     let id = peer_id(5);
     let (home, file) = home_with(
@@ -1617,7 +1617,7 @@ fn alias_set_through_config_renames_grants() {
 }
 
 #[test]
-fn key_comment_stays_beside_the_alias() {
+fn key_comment_stays_beside_the_name() {
     let d = tempfile::tempdir().unwrap();
     let (home, file) = home_with(&d, "");
     let secret = iroh::SecretKey::from_bytes(&[5; 32]);
@@ -1748,7 +1748,7 @@ fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
             hosts(&["amy", "zed"])
         ),
     );
-    // The id is not amy's alone: zed still names the peer.
+    // The id is not amy's alone: zed still names the client.
     ok(&home, &["client", "remove", "amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
@@ -2280,7 +2280,7 @@ fn server_and_client_rename_take_their_grants_in_the_file() {
     let cfg = home.join(".config/irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
-    // Export `a` names the host by its id and `b` by its alias; `p` also
+    // Export `a` names the host by its id and `b` by its name; `p` also
     // names `work`, which is no host yet.
     let text = format!(
         "[servers.laptop]\nendpoint_id = \"{id}\"\n[clients.laptop]\nclient_id = \"{id}\"\n\
@@ -2972,7 +2972,7 @@ fn grant_remove_names_the_rights_the_client_still_holds() {
     assert!(err.contains("laptop still has all_exports=rw"), "{err}");
     assert!(!err.contains("phone still has"), "{err}");
     assert_eq!(std::fs::read(&file).unwrap(), before);
-    // All peers: every client that holds a right.
+    // All clients: every client that holds a right.
     let o = irsync(&home, &["grant", "remove", "all", "all"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(

@@ -1,7 +1,7 @@
 use irsync::config::clients::Clients;
 use irsync::config::exports::Exports;
 use irsync::config::file::Config;
-use irsync::config::names::{short_host_name, valid_alias};
+use irsync::config::names::{short_host_name, valid_name};
 use irsync::config::paths::Paths;
 use irsync::config::servers::Servers;
 use irsync::config::settings::{Relay, Settings};
@@ -154,11 +154,11 @@ fn servers_parse_and_clients_resolve_a_name_before_an_id() {
     assert_eq!(h.get("home").unwrap().endpoint_id, id(1));
     assert_eq!(h.get("home").unwrap().parallel, Some(4));
     assert_eq!(h.get("home").unwrap().address.len(), 1);
-    assert_eq!(c.clients.resolve_peer("laptop").unwrap(), id(2));
-    assert_eq!(c.clients.resolve_peer(&id(3).to_string()).unwrap(), id(3));
+    assert_eq!(c.clients.resolve_client("laptop").unwrap(), id(2));
+    assert_eq!(c.clients.resolve_client(&id(3).to_string()).unwrap(), id(3));
     // Grants name clients: a server's name is nobody.
     for nobody in ["nope", "home"] {
-        match c.clients.resolve_peer(nobody) {
+        match c.clients.resolve_client(nobody) {
             Err(ConfigError::UnknownClient { name, path }) => {
                 assert_eq!(name, nobody);
                 assert_eq!(path, p());
@@ -180,11 +180,11 @@ fn server_without_endpoint_id_is_error_with_line() {
 }
 
 #[test]
-fn alias_validity() {
-    assert!(valid_alias("home-server"));
-    assert!(!valid_alias("") && !valid_alias("a:b") && !valid_alias("a/b"));
-    assert!(!valid_alias(&id(1).to_string()));
-    assert!(!valid_alias("all") && !valid_alias("*"));
+fn name_validity() {
+    assert!(valid_name("home-server"));
+    assert!(!valid_name("") && !valid_name("a:b") && !valid_name("a/b"));
+    assert!(!valid_name(&id(1).to_string()));
+    assert!(!valid_name("all") && !valid_name("*"));
 }
 
 #[test]
@@ -216,9 +216,9 @@ fn short_host_names() {
 
 #[test]
 fn server_by_ssh_destination() {
-    let host = |alias: &str, n: u8, ssh: &str| {
+    let host = |name: &str, n: u8, ssh: &str| {
         format!(
-            "[servers.\"{alias}\"]\nendpoint_id = \"{}\"\nssh = \"{ssh}\"\n",
+            "[servers.\"{name}\"]\nendpoint_id = \"{}\"\nssh = \"{ssh}\"\n",
             id(n)
         )
     };
@@ -289,11 +289,11 @@ fn a_machine_as_a_server_and_a_client() {
     assert_eq!(servers.get("laptop").unwrap().endpoint_id, id(1));
     assert_eq!(clients.get("laptop").unwrap().client_id, id(2));
     // Grants go by the client id: the daemon of a machine is not its client.
-    assert_eq!(clients.resolve_peer("laptop").unwrap(), id(2));
-    assert_eq!(clients.alias_of(&id(2)), Some("laptop"));
-    assert_eq!(clients.alias_of(&id(1)), None);
-    assert_eq!(clients.alias_of(&id(3)), Some("phone"));
-    assert_eq!(clients.alias_of(&id(4)), None);
+    assert_eq!(clients.resolve_client("laptop").unwrap(), id(2));
+    assert_eq!(clients.name_of(&id(2)), Some("laptop"));
+    assert_eq!(clients.name_of(&id(1)), None);
+    assert_eq!(clients.name_of(&id(3)), Some("phone"));
+    assert_eq!(clients.name_of(&id(4)), None);
     assert!(servers.get("phone").is_none());
     // A bad client id names its line.
     let e = parse_clients("[clients.x]\nclient_id = \"nope\"\n", p())

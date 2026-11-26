@@ -9,7 +9,7 @@
 use super::access::Access;
 use super::clients::{Right, RIGHTS};
 use super::exports::{name_problem, not_absolute};
-use super::names::{invalid_name, valid_alias};
+use super::names::{invalid_name, valid_name};
 use super::servers::beside_address;
 use super::settings::{
     listen_problem, parallel_problem, parse_debug_addr, Congestion, OtlpProtocol, PqKeyExchange,
@@ -435,7 +435,7 @@ fn servers(
     let mut servers = Vec::new();
     for (name, r) in raw {
         let start = r.span().start;
-        if !valid_alias(&name) {
+        if !valid_name(&name) {
             return Err(at(start, invalid_name(&name)));
         }
         let r = r.into_inner();
@@ -490,7 +490,7 @@ fn clients(
     let mut clients = Vec::new();
     for (name, r) in raw {
         let start = r.span().start;
-        if !valid_alias(&name) {
+        if !valid_name(&name) {
             return Err(at(start, invalid_name(&name)));
         }
         let what = format!("client {name:?}");

@@ -8,7 +8,7 @@ use common::{
     spawn_daemon_with_state, within, DaemonHandle,
 };
 use iroh::Endpoint;
-use irsync::authz::{Access, FileAuthorizer, Grants, MemoryAuthorizer};
+use irsync::authz::{Access, FileAuthorizer, MemoryAuthorizer, Permissions};
 use irsync::config::paths::Paths;
 use irsync::net::frame::{read_body, read_msg, write_msg};
 use irsync::options::Direction;
@@ -40,10 +40,10 @@ fn listing_hello() -> Hello {
     }
 }
 
-fn grants(access: Access) -> Grants {
-    Grants {
+fn grants(access: Access) -> Permissions {
+    Permissions {
         all_exports: Some(access),
-        ..Grants::default()
+        ..Permissions::default()
     }
 }
 
@@ -52,7 +52,7 @@ async fn exchange(access: Access, h: impl Into<Hello>) -> Result<HelloAckOrError
     exchange_with(grants(access), h).await
 }
 
-async fn exchange_with(g: Grants, h: impl Into<Hello>) -> Result<HelloAckOrError, String> {
+async fn exchange_with(g: Permissions, h: impl Into<Hello>) -> Result<HelloAckOrError, String> {
     let dir = tempfile::tempdir().unwrap();
     exchange_in(dir.path(), g, h).await
 }
@@ -82,7 +82,7 @@ fn reply(r: Result<HelloAckOrError, String>) -> (i32, String) {
 /// whose home is `dir`'s parent.
 async fn exchange_in(
     dir: &std::path::Path,
-    g: Grants,
+    g: Permissions,
     h: impl Into<Hello>,
 ) -> Result<HelloAckOrError, String> {
     let client = client_endpoint().await;
@@ -151,7 +151,7 @@ async fn unauthorized_key_connection_closed_before_hello() {
 
 #[tokio::test]
 async fn empty_grants_closed_before_hello() {
-    closed_before_hello(|id| MemoryAuthorizer::single(id, Grants::default())).await;
+    closed_before_hello(|id| MemoryAuthorizer::single(id, Permissions::default())).await;
 }
 
 async fn closed_before_hello(mk: impl FnOnce(iroh::EndpointId) -> MemoryAuthorizer) {
@@ -215,9 +215,9 @@ async fn read_only_grant_cannot_send() {
 /// the directory under the name it has a grant for.
 #[tokio::test]
 async fn an_ungranted_name_is_no_export_even_with_a_granted_twin_on_the_same_path() {
-    let g = || Grants {
+    let g = || Permissions {
         exports: [("ro".to_string(), Access::ReadWrite)].into(),
-        ..Grants::default()
+        ..Permissions::default()
     };
     for name in [&b"rw"[..], b"no-such-export"] {
         for direction in [Direction::DaemonSends, Direction::ClientSends] {
@@ -250,9 +250,9 @@ async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
         vec![("srv", srv.clone(), false), ("photos", inner.clone(), true)],
         MemoryAuthorizer::single(
             client.id(),
-            Grants {
+            Permissions {
                 exports: [("srv".to_string(), Access::ReadWrite)].into(),
-                ..Grants::default()
+                ..Permissions::default()
             },
         ),
         None,
@@ -437,9 +437,9 @@ async fn dotdot_is_bad_path_for_a_granted_key() {
 #[tokio::test]
 async fn ungranted_reply_does_not_reveal_whether_a_path_exists() {
     let (dir, _, abs) = export_dir();
-    let none = Grants {
+    let none = Permissions {
         exports: [("other".to_string(), Access::ReadWrite)].into(),
-        ..Grants::default()
+        ..Permissions::default()
     };
     let mut existing = abs.clone();
     existing.extend_from_slice(b"/sub");
@@ -555,7 +555,7 @@ async fn list_exports_names_only_what_the_key_may_use() {
     let (dir, ..) = export_dir();
     let path = irsync::platform::os_to_bytes(dir.path().as_os_str());
     let client = client_endpoint().await;
-    let spawn = |g: Grants| {
+    let spawn = |g: Permissions| {
         spawn_daemon_home(
             vec![
                 ("rw", dir.path().to_path_buf(), false),
@@ -566,9 +566,9 @@ async fn list_exports_names_only_what_the_key_may_use() {
         )
     };
     // Granted on rw only: one entry.
-    let d = spawn(Grants {
+    let d = spawn(Permissions {
         exports: [("rw".to_string(), Access::ReadWrite)].into(),
-        ..Grants::default()
+        ..Permissions::default()
     })
     .await;
     assert_eq!(
@@ -589,7 +589,7 @@ async fn list_exports_names_only_what_the_key_may_use() {
     d.shutdown.cancel();
     let _ = within(d.task).await;
     // No grants at all: closed before Hello, as for a sync.
-    let d = spawn(Grants::default()).await;
+    let d = spawn(Permissions::default()).await;
     assert!(list_against(&d, &client).await.is_err());
     d.shutdown.cancel();
     let _ = within(d.task).await;
@@ -620,10 +620,10 @@ async fn a_refused_listing_reaches_the_client_as_a_refusal() {
     let _ = within(d.task).await;
 }
 
-fn all_paths() -> Grants {
-    Grants {
+fn all_paths() -> Permissions {
+    Permissions {
         all_paths: Some(Access::ReadWrite),
-        ..Grants::default()
+        ..Permissions::default()
     }
 }
 
@@ -687,9 +687,9 @@ async fn all_paths_off_rejects_unexported_path() {
     std::fs::create_dir(&exported).unwrap();
     std::fs::create_dir(&elsewhere).unwrap();
     let client = client_endpoint().await;
-    let g = Grants {
+    let g = Permissions {
         exports: [("other".to_string(), Access::ReadWrite)].into(),
-        ..Grants::default()
+        ..Permissions::default()
     };
     let export = irsync::config::exports::Export {
         path: exported,
@@ -807,7 +807,7 @@ fn export_at(
 }
 
 /// `all_exports` covers the exports written by hand only: an automatic
-/// export belongs to the peer it was made for, so a client with
+/// export belongs to the client it was made for, so a client with
 /// `all_exports = "rw"` can neither use nor list it.
 #[tokio::test]
 async fn all_grant_does_not_reach_auto_exports() {
@@ -851,8 +851,8 @@ async fn all_grant_does_not_reach_auto_exports() {
     let _ = within(d.task).await;
 }
 
-/// An `all_paths` peer's relative path names another client's export: the
-/// short name only counts for exports this peer may use, so the path
+/// An `all_paths` client's relative path names another client's export: the
+/// short name only counts for exports this client may use, so the path
 /// resolves under the home instead and the shared export is untouched.
 #[tokio::test]
 async fn all_paths_relative_path_does_not_take_another_clients_export() {
@@ -868,9 +868,9 @@ async fn all_paths_relative_path_does_not_take_another_clients_export() {
         MemoryAuthorizer::single(client.id(), all_paths())
             .with(
                 other.id(),
-                Grants {
+                Permissions {
                     exports: [("photos".to_string(), Access::ReadWrite)].into(),
-                    ..Grants::default()
+                    ..Permissions::default()
                 },
             )
             .with_exports(
@@ -900,7 +900,10 @@ async fn all_paths_relative_path_does_not_take_another_clients_export() {
     assert_eq!(autos, vec![home.join("photos")]);
     let at_shared = snap.exports.values().filter(|e| e.path == shared).count();
     assert_eq!(at_shared, 1, "{:?}", snap.exports);
-    assert!(!snap.grants(&client.id()).exports.contains_key("photos"));
+    assert!(!snap
+        .permissions(&client.id())
+        .exports
+        .contains_key("photos"));
     d.shutdown.cancel();
     let _ = within(d.task).await;
 }
@@ -1088,9 +1091,9 @@ async fn all_paths_alone_is_refused_when_not_allowed() {
 async fn a_client_with_only_admin_passes_the_gate() {
     let (dir, ..) = export_dir();
     let client = client_endpoint().await;
-    let only_admin = Grants {
+    let only_admin = Permissions {
         admin: Some(Access::ReadOnly),
-        ..Grants::default()
+        ..Permissions::default()
     };
     let d = spawn_daemon_home(
         vec![("rw", dir.path().to_path_buf(), false)],
@@ -1104,7 +1107,7 @@ async fn a_client_with_only_admin_passes_the_gate() {
     // No rights at all: still closed.
     let d = spawn_daemon_home(
         vec![("rw", dir.path().to_path_buf(), false)],
-        MemoryAuthorizer::single(client.id(), Grants::default()),
+        MemoryAuthorizer::single(client.id(), Permissions::default()),
         None,
     )
     .await;

@@ -34,7 +34,7 @@ fn location_bytes(l: &Location) -> Vec<u8> {
             v.push(*contents_only as u8);
             v.extend_from_slice(&os_to_bytes(canon.as_os_str()));
         }
-        // The host string is an alias; the daemon id passed alongside identifies it.
+        // The host string is a server name; the daemon id passed alongside identifies it.
         Location::Remote {
             path,
             contents_only,

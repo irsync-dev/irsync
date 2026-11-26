@@ -72,7 +72,7 @@ fn add_refuses_an_invalid_name() {
         assert!(
             matches!(
                 server_add(&mut m, bad, id(1), &ServerFlags::default()),
-                Err(ManageError::BadAlias(_))
+                Err(ManageError::BadName(_))
             ),
             "{bad:?}"
         );
@@ -146,7 +146,7 @@ fn rename_to_an_existing_name_or_bad_name_is_refused_and_to_itself_is_a_no_op() 
     assert_eq!(e.to_string(), "server \"b\" already exists");
     assert!(matches!(
         server_rename(&mut m, "a", "a:b"),
-        Err(ManageError::BadAlias(_))
+        Err(ManageError::BadName(_))
     ));
     assert!(matches!(
         server_rename(&mut m, "nobody", "c"),

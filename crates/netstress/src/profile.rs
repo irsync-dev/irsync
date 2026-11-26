@@ -81,11 +81,19 @@ impl Profile {
 mod tests {
     use super::*;
 
+    /// Every profile is one irsync's netsim knows, by the same name, and
+    /// the command line spells it that way too: a rename in irsync fails
+    /// here.
     #[test]
     fn profile_names_match_irsync() {
-        assert_eq!(Profile::FourGVehicle.name(), "4g-vehicle");
-        assert_eq!(Profile::DslVideo.name(), "dsl-video");
-        assert_eq!(Profile::TestBlackout.name(), "test-blackout");
-        assert_eq!(Profile::LongRtt.name(), "long-rtt");
+        use irsync::net::netsim::ProfileName;
+        for p in Profile::value_variants() {
+            let parsed: ProfileName = p
+                .name()
+                .parse()
+                .unwrap_or_else(|e| panic!("irsync does not know {}: {e}", p.name()));
+            assert_eq!(parsed.to_string(), p.name());
+            assert_eq!(p.to_possible_value().unwrap().get_name(), p.name());
+        }
     }
 }

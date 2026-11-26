@@ -115,14 +115,6 @@ impl Screen {
         self.set_block(&[]);
     }
 
-    /// Runs `f` with the block hidden (for stderr writers).
-    pub fn suspend<R>(&self, f: impl FnOnce() -> R) -> R {
-        match self {
-            Screen::Plain(_) => f(),
-            Screen::Tty { mp, .. } => mp.suspend(f),
-        }
-    }
-
     /// The MultiProgress, for `LogWriter`. None for Plain.
     pub fn multi(&self) -> Option<MultiProgress> {
         match self {

@@ -1,11 +1,15 @@
 //! Escaping of byte strings for the operation log and state file.
+//!
+//! Reversible ([`log_unescape`] reads it back), unlike fileset's `escape`
+//! (report lines) and irsync's `fs::paths::escape_path` (messages), which
+//! are for display only.
 
 use std::fmt::Write;
 
 /// Escape arbitrary bytes for the log. Valid printable UTF-8 passes through;
 /// `\` becomes `\\`, `"` becomes `\"`; control bytes, DEL and invalid UTF-8
 /// bytes become lowercase `\xNN`.
-pub fn escape(bytes: &[u8]) -> String {
+pub fn log_escape(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len());
     let mut rest = bytes;
     while !rest.is_empty() {
@@ -38,8 +42,8 @@ pub fn escape(bytes: &[u8]) -> String {
     out
 }
 
-/// Invert [`escape`]. Errors on a dangling or unknown escape or bad hex.
-pub fn unescape(s: &str) -> Result<Vec<u8>, String> {
+/// Invert [`log_escape`]. Errors on a dangling or unknown escape or bad hex.
+pub fn log_unescape(s: &str) -> Result<Vec<u8>, String> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -82,22 +86,22 @@ mod tests {
             "ü.txt".as_bytes(),
             b"",
         ] {
-            assert_eq!(unescape(&escape(raw)).unwrap(), raw);
+            assert_eq!(log_unescape(&log_escape(raw)).unwrap(), raw);
         }
-        assert_eq!(escape(b"q\"\n"), "q\\\"\\x0a");
-        assert!(unescape("\\x4").is_err());
+        assert_eq!(log_escape(b"q\"\n"), "q\\\"\\x0a");
+        assert!(log_unescape("\\x4").is_err());
     }
 
     #[test]
     fn unescape_rejects_malformed() {
         for bad in ["\\", "\\q", "\\xzz", "\\x"] {
-            assert!(unescape(bad).is_err(), "{bad}");
+            assert!(log_unescape(bad).is_err(), "{bad}");
         }
     }
 
     #[test]
     fn escape_del_and_truncated_sequence() {
-        assert_eq!(escape(b"a\x7fb"), "a\\x7fb");
-        assert_eq!(escape(b"a\xc3"), "a\\xc3");
+        assert_eq!(log_escape(b"a\x7fb"), "a\\x7fb");
+        assert_eq!(log_escape(b"a\xc3"), "a\\xc3");
     }
 }

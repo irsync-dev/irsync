@@ -51,6 +51,7 @@ use crate::filter::FilterSet;
 use crate::fs::paths::RelPath;
 use crate::options::DeleteMode;
 use crate::part_file::{FileWriter, FinalizeError, Verified};
+use crate::side::Side;
 use crate::telemetry::meter::Counter;
 use crate::telemetry::PhaseKind;
 pub(super) use delete::capped_paths;
@@ -247,7 +248,7 @@ struct RFile {
 /// Itemizes a file from the receiver: to the sending client when this is
 /// a daemon asked for `-i`, and on the local bus.
 fn emit_itemized(ctx: &Ctx, out: &Out, path: &RelPath, code: String) {
-    if ctx.opts.itemize && ctx.remote_id.is_some() {
+    if ctx.opts.itemize && ctx.meter.side() == Side::Daemon {
         out.send(Msg::Itemized(Itemized {
             path: path.as_bytes().to_vec(),
             code: code.clone(),
@@ -283,9 +284,9 @@ struct Receiver {
     max_delete_reached: bool,
     /// The stored plan says every path is planned.
     plan_complete: bool,
-    files_done: u64,
+    files_placed: u64,
     /// Summed size of the files placed.
-    transferred_size: u64,
+    placed_size: u64,
     errors: Vec<(RelPath, String)>,
     persist: Persister,
     transfer: TransferPhase,
@@ -1404,9 +1405,9 @@ impl Receiver {
                 // Settled in place is a metadata-only update, not a transfer.
                 if !f.identical {
                     super::record_file(&self.ctx.meter, f.started, size);
-                    self.transferred_size += size;
+                    self.placed_size += size;
                     self.ctx.bus.emit(super::Event::FileDone(path, size));
-                    self.files_done += 1;
+                    self.files_placed += 1;
                 }
                 // What this session did not take from the sender: local
                 // copies, earlier sessions' progress, or all of a file
@@ -1621,8 +1622,8 @@ pub(super) async fn run(
         would_delete: Vec::new(),
         max_delete_reached: false,
         plan_complete: false,
-        files_done: 0,
-        transferred_size: 0,
+        files_placed: 0,
+        placed_size: 0,
         errors: Vec::new(),
         persist,
         transfer: TransferPhase::default(),
@@ -1821,14 +1822,14 @@ pub(super) async fn run(
     let (deleted, deleted_omitted) = capped_paths(&r.deleted);
     let (would_delete, would_delete_omitted) = capped_paths(&r.would_delete);
     out.send(Msg::Done(SessionDone {
-        files_placed: r.files_done,
+        files_placed: r.files_placed,
         bytes_received: bytes_total,
         errors: capped_errors(&errors),
         deleted_paths: deleted,
         would_delete_paths: would_delete,
         max_delete_reached: r.max_delete_reached,
         created: report.created,
-        placed_size: r.transferred_size,
+        placed_size: r.placed_size,
         deleted_omitted,
         would_delete_omitted,
         listed: Some(report.listed.to_wire()),
@@ -1856,12 +1857,12 @@ pub(super) async fn run(
     Ok(Outcome {
         session_id: ctx.session_id,
         resumed: ctx.resumed,
-        files_transferred: r.files_done,
+        files_transferred: r.files_placed,
         bytes_transferred: bytes_total,
         files_skipped: report.skipped,
         listed: report.listed,
         created: report.created,
-        transferred_size: r.transferred_size,
+        transferred_size: r.placed_size,
         bytes_sent: ctx.conn.stats().udp_tx.bytes,
         bytes_received: ctx.conn.stats().udp_rx.bytes,
         files_hashed: ctx.files_hashed() - hashed_before,

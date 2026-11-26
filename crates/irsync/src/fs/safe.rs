@@ -42,13 +42,9 @@ fn require_regular_stat(f: &File, what: &Path) -> io::Result<Stat> {
 
 /// Opens `path` read-only, refusing a symlink as the final component and
 /// anything that is not a regular file (`O_NONBLOCK` so a FIFO planted
-/// there cannot block the open; it has no effect on regular files). A
-/// momentary descriptor shortage is waited out (see [`super::transient`]).
-pub fn open_regular_nofollow(path: &Path) -> io::Result<File> {
-    open_regular_nofollow_stat(path).map(|(f, _)| f)
-}
-
-/// [`open_regular_nofollow`], also returning the open file's `fstat`.
+/// there cannot block the open; it has no effect on regular files), and
+/// returns it with its `fstat`. A momentary descriptor shortage is waited
+/// out (see [`super::transient`]).
 pub fn open_regular_nofollow_stat(path: &Path) -> io::Result<(File, Stat)> {
     let f = super::transient::retry(|| platform::open_read_nofollow(path))
         .map_err(|e| nofollow_error(e, path))?;
@@ -260,7 +256,7 @@ impl Beneath {
     }
 }
 
-/// [`open_regular_nofollow`] for `base/rel`, with no symlink followed in
+/// [`open_regular_nofollow_stat`] for `base/rel`, with no symlink followed in
 /// any component of `rel` (see [`open_parent_beneath`]).
 pub fn open_regular_beneath(base: &Path, rel: &RelPath) -> io::Result<File> {
     open_regular_beneath_stat(base, rel).map(|(f, _)| f)
@@ -379,14 +375,14 @@ mod tests {
     }
 
     #[test]
-    fn open_regular_nofollow_refuses_symlinks_and_non_files() {
+    fn open_regular_nofollow_stat_refuses_symlinks_and_non_files() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("f"), b"x").unwrap();
         symlink(&d.path().join("f"), &d.path().join("l")).unwrap();
-        assert!(open_regular_nofollow(&d.path().join("f")).is_ok());
-        let e = open_regular_nofollow(&d.path().join("l")).unwrap_err();
+        assert!(open_regular_nofollow_stat(&d.path().join("f")).is_ok());
+        let e = open_regular_nofollow_stat(&d.path().join("l")).unwrap_err();
         assert!(e.to_string().contains("refusing to follow symlink"), "{e}");
-        assert!(open_regular_nofollow(d.path()).is_err());
+        assert!(open_regular_nofollow_stat(d.path()).is_err());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use irsync::authz::{Access, Grants};
+use irsync::authz::{Access, Permissions};
 use irsync::config::exports::Export;
 use irsync::resolve::{containing, resolve, resolve_path, ResolveError};
 use std::collections::BTreeMap;
@@ -22,17 +22,17 @@ fn exports(v: &[(&str, &str)]) -> BTreeMap<String, Export> {
         .collect()
 }
 
-fn all(a: Access) -> Grants {
-    Grants {
+fn all(a: Access) -> Permissions {
+    Permissions {
         all_exports: Some(a),
-        ..Grants::default()
+        ..Permissions::default()
     }
 }
 
-fn only(n: &str, a: Access) -> Grants {
-    Grants {
+fn only(n: &str, a: Access) -> Permissions {
+    Permissions {
         exports: [(n.to_string(), a)].into(),
-        ..Grants::default()
+        ..Permissions::default()
     }
 }
 
@@ -136,13 +136,13 @@ fn only_exports_the_peer_may_use_count() {
 #[test]
 fn equal_paths_best_access_wins() {
     let ex = exports(&[("a", "/data"), ("b", "/data")]);
-    let g = Grants {
+    let g = Permissions {
         exports: [
             ("a".to_string(), Access::ReadOnly),
             ("b".to_string(), Access::ReadWrite),
         ]
         .into(),
-        ..Grants::default()
+        ..Permissions::default()
     };
     assert_eq!(
         containing(Path::new("/data/x"), &ex, &g, None)
@@ -215,13 +215,13 @@ fn a_short_name_prefers_its_export_among_equal_paths_and_ties_rank_by_effective_
         .is_none());
     let mut with_home = ex.clone();
     with_home.insert("home".to_string(), export("/h", false));
-    let g2 = Grants {
+    let g2 = Permissions {
         exports: [
             ("ro".to_string(), Access::ReadWrite),
             ("home".to_string(), Access::ReadWrite),
         ]
         .into(),
-        ..Grants::default()
+        ..Permissions::default()
     };
     let r = resolve(b"rw/x", Some(Path::new("/h")), &with_home, &g2)
         .unwrap()
@@ -258,13 +258,13 @@ fn the_name_of_an_export_out_of_reach_is_a_directory_under_the_home() {
         assert_eq!((r.name, r.rel.as_bytes()), ("home", &b"photos/2024"[..]));
     }
     // With a grant for it, the name is the export.
-    let both = Grants {
+    let both = Permissions {
         exports: [
             ("home".to_string(), Access::ReadWrite),
             ("photos".to_string(), Access::ReadOnly),
         ]
         .into(),
-        ..Grants::default()
+        ..Permissions::default()
     };
     let r = resolve(b"photos/2024", home, &with, &both)
         .unwrap()

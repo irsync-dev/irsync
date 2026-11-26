@@ -11,6 +11,8 @@
 //!
 //! This is safe, platform-neutral code, compiled and tested everywhere; only
 //! the step between units and an `OsString` is in `platform/windows.rs`.
+//! irsync and fileset have copies of the same code, kept so by fileset's
+//! `tests/wtf8_copies.rs`.
 
 /// Bytes that are not WTF-8.
 #[derive(Debug, PartialEq, Eq)]

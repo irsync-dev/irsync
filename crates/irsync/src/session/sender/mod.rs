@@ -256,7 +256,7 @@ struct SenderRole {
     listed: ListedFiles,
     listing: Listing,
     /// Summed size of the files acknowledged placed.
-    transferred_size: u64,
+    placed_size: u64,
     /// Items the receiver reported creating.
     created: u64,
     /// What the receiver counted in our listing (`SessionDone`): reported
@@ -278,7 +278,8 @@ struct SenderRole {
     list_budget: u64,
     /// Every file id ever planned (duplicate detection).
     seen: HashSet<u64>,
-    files_done: u64,
+    /// Files the receiver acknowledged placed.
+    files_placed: u64,
     bytes: u64,
     /// Send tasks not yet reported back, one per file in flight at most.
     tasks: SendTasks,
@@ -1326,10 +1327,10 @@ impl SenderRole {
                 if let Some(f) = self.remove_file(file_id) {
                     let size = f.digest.as_ref().map_or(0, |d| d.size);
                     super::record_file(&self.ctx.meter, f.started, size);
-                    self.transferred_size += size;
+                    self.placed_size += size;
                     self.ctx.bus.emit(super::Event::FileDone(f.path, size));
                 }
-                self.files_done += 1;
+                self.files_placed += 1;
                 self.persist.done(file_id);
             }
             Status::HashMismatch => self.retry(file_id, "whole-file hash mismatch".into()),
@@ -1500,8 +1501,8 @@ impl SenderRole {
         // The receiver knows what it placed: a file whose content was
         // already there is acknowledged DONE but settled in place, a
         // metadata-only update rather than a transfer.
-        self.files_done = d.files_placed;
-        self.transferred_size = d.placed_size;
+        self.files_placed = d.files_placed;
+        self.placed_size = d.placed_size;
         self.max_delete_reached = d.max_delete_reached;
         if d.deleted_omitted + d.would_delete_omitted > 0 {
             tracing::info!(
@@ -2034,9 +2035,9 @@ pub(super) async fn run(
         lists: ListCredit::new(list_budget(&ctx.hooks)),
         list_budget: list_budget(&ctx.hooks),
         seen: HashSet::new(),
-        files_done: 0,
+        files_placed: 0,
         bytes: 0,
-        transferred_size: 0,
+        placed_size: 0,
         created: 0,
         peer_listed: None,
         tasks: SendTasks::default(),
@@ -2244,12 +2245,12 @@ pub(super) async fn run(
     Ok(Outcome {
         session_id: ctx.session_id,
         resumed: ctx.resumed,
-        files_transferred: s.files_done,
+        files_transferred: s.files_placed,
         bytes_transferred: s.bytes,
         files_skipped: 0,
         listed,
         created: s.created,
-        transferred_size: s.transferred_size,
+        transferred_size: s.placed_size,
         bytes_sent: ctx.conn.stats().udp_tx.bytes,
         bytes_received: ctx.conn.stats().udp_rx.bytes,
         files_hashed: ctx.files_hashed() - hashed_before,
@@ -2382,9 +2383,9 @@ mod tests {
             lists: ListCredit::new(1000),
             list_budget: 1000,
             seen: HashSet::new(),
-            files_done: 0,
+            files_placed: 0,
             bytes: 0,
-            transferred_size: 0,
+            placed_size: 0,
             created: 0,
             peer_listed: None,
             tasks: SendTasks::default(),

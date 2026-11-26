@@ -47,8 +47,9 @@ use crate::location::Location;
 use crate::net::frame::{read_body, write_msg_tapped};
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
 use crate::options::{Append, DeleteMode, Direction, Preserve, SyncOptions};
+use crate::side::Side;
 use crate::telemetry::meter::Meter;
-use crate::telemetry::{self, phase, Phase, PhaseKind, Role, Side};
+use crate::telemetry::{self, phase, Phase, PhaseKind, Role};
 
 /// The daemon refused the request: the `Error` of its reply to `Hello`.
 #[derive(Debug, Clone)]
@@ -355,8 +356,8 @@ pub(super) struct Ctx {
     pub resumed: bool,
     /// This side's stored record of the session, when resumed and found.
     pub record: Option<SessionRecord>,
-    /// Daemon: the client's EndpointId, stored with the session.
-    pub remote_id: Option<Vec<u8>>,
+    /// Daemon: the client that owns the session, stored with it.
+    pub owner: Option<EndpointId>,
     /// Set once file data crossed or a file was acknowledged DONE.
     pub progress: Arc<AtomicBool>,
     /// Bumped for every control frame received, every data chunk moved, and
@@ -785,7 +786,7 @@ pub(super) async fn run_client_inner(
         key,
         resumed: ack.resumed,
         record,
-        remote_id: None,
+        owner: None,
         progress: attempt.progress.clone(),
         activity,
         meter,
@@ -1248,7 +1249,7 @@ async fn accept_session(
     } else {
         // Only the key that created a session may resume it, and only for
         // the same export, path and direction.
-        let owned = |rec: &SessionRecord| rec.plan.remote_id == remote.as_bytes();
+        let owned = |rec: &SessionRecord| rec.plan.owner == remote.as_bytes();
         let id = <[u8; 16]>::try_from(req.session_id.as_slice()).ok();
         let found = match id {
             Some(id) => load_record(index, id, &key).await.filter(owned),
@@ -1403,7 +1404,7 @@ fn daemon_ctx(
         key,
         resumed,
         record,
-        remote_id: Some(remote.as_bytes().to_vec()),
+        owner: Some(remote),
         progress: Arc::default(),
         activity,
         meter,
@@ -1933,7 +1934,7 @@ pub(super) async fn test_ctx() -> TestCtx {
         key: b"test".to_vec(),
         resumed: false,
         record: None,
-        remote_id: None,
+        owner: None,
         progress: Arc::default(),
         activity: Arc::default(),
         meter: Meter::new(Side::Client, Role::Sender, None, false),

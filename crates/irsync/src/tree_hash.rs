@@ -164,7 +164,8 @@ impl TreeHash {
     }
 
     /// Nodes held (a test looks at the frontier's size).
-    pub fn nodes(&self) -> usize {
+    #[cfg(test)]
+    fn nodes(&self) -> usize {
         self.nodes.len()
     }
 

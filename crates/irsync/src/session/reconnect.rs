@@ -21,7 +21,8 @@ use super::engine::{
 use super::{control::hex, LocalSide, Outcome, SessionRecord, SyncHello, CLOSE_SUPERSEDED};
 use crate::options::SyncOptions;
 use crate::platform::local_time;
-use crate::telemetry::{phase, Phase, PhaseKind, Side};
+use crate::side::Side;
+use crate::telemetry::{phase, Phase, PhaseKind};
 
 /// How long to keep trying, and how long to wait between attempts.
 #[derive(Debug, Clone, Copy)]
@@ -271,13 +272,13 @@ pub(crate) fn client_only(host: &str) -> String {
 pub const PAIRED_FIRST_DIAL: Duration = Duration::from_secs(15);
 
 /// A saved server with an `ssh` value that never answered.
-pub(crate) fn not_answering(alias: &str) -> String {
+pub(crate) fn not_answering(name: &str) -> String {
     format!(
-        "{alias} did not answer. On {alias}, check that the daemon is running: \
+        "{name} did not answer. On {name}, check that the daemon is running: \
          systemctl --user status irsync (Linux) or launchctl list \
          org.irsync.daemon (macOS). Its log: journalctl --user -u irsync for a \
          systemd service, else ~/.local/state/irsync/daemon.log. To start it again \
-         from here: irsync pair {alias}"
+         from here: irsync pair {name}"
     )
 }
 
@@ -286,7 +287,7 @@ pub(crate) fn not_answering(alias: &str) -> String {
 /// other gets [`WRONG_ID_HINT`] (see [`with_wrong_id_hint`]).
 pub(crate) fn never_reached(err: anyhow::Error, paired: Option<&str>) -> anyhow::Error {
     match paired {
-        Some(alias) => anyhow::anyhow!("{err:#}; {}", not_answering(alias)),
+        Some(name) => anyhow::anyhow!("{err:#}; {}", not_answering(name)),
         None => with_wrong_id_hint(err),
     }
 }

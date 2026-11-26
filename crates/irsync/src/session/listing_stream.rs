@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
-use super::control::{side_of, Ev, Listed, PeerTx, DRAIN_TIMEOUT};
+use super::control::{view_of, Ev, Listed, PeerTx, DRAIN_TIMEOUT};
 use super::limits::LISTING_QUEUE;
 use super::SideHooks;
 use crate::fs::ids::IdMap;
@@ -341,7 +341,7 @@ async fn read_listing<R: tokio::io::AsyncRead + Unpin>(
                 }
                 if let Some(tx) = &planner {
                     // A planner gone means the session is ending.
-                    let _ = tx.send(Listed::Side(side_of(e))).await;
+                    let _ = tx.send(Listed::View(view_of(e))).await;
                     #[cfg(feature = "test-hooks")]
                     if let Some(p) = &hooks.listing_peak {
                         p.fetch_max(tx.max_capacity() - tx.capacity(), Ordering::SeqCst);

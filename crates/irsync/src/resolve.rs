@@ -2,7 +2,7 @@
 //! the daemon's home, or an absolute path, in that order, then the export
 //! that contains it.
 
-use crate::authz::{Access, Grants};
+use crate::authz::{Access, Permissions};
 use crate::config::exports::Export;
 use crate::fs::paths::RelPath;
 use crate::platform::{bytes_to_os, os_to_bytes};
@@ -22,7 +22,7 @@ pub struct Resolved<'a> {
     pub export: &'a Export,
     /// The remainder below the export's path.
     pub rel: RelPath,
-    /// The peer's access to the export; `read_only` is not applied here.
+    /// The client's access to the export; `read_only` is not applied here.
     pub access: Access,
 }
 
@@ -107,17 +107,17 @@ pub(crate) fn parts_of(p: &Path) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// The export containing `abs` among those the peer may use: the longest
+/// The export containing `abs` among those the client may use: the longest
 /// path wins; between equal paths `prefer` (the export a short name named)
 /// wins, then the one with the best effective access (`read_only`
-/// applied). Exports the peer has no grant for do not take part: a grant
+/// applied). Exports the client has no grant for do not take part: a grant
 /// on an outer export reaches everything below it, and the reply for a
 /// path never depends on where ungranted exports sit. `None` when no
-/// export the peer may use contains `abs`.
+/// export the client may use contains `abs`.
 pub fn containing<'a>(
     abs: &Path,
     exports: &'a BTreeMap<String, Export>,
-    grants: &Grants,
+    grants: &Permissions,
     prefer: Option<&str>,
 ) -> Option<Resolved<'a>> {
     let target = parts_of(abs);
@@ -156,18 +156,18 @@ pub fn containing<'a>(
 }
 
 /// Both steps for the daemon: `Err(BadPath)`, or `Ok(None)` when the path
-/// cannot be resolved or lies outside every export the peer may use.
+/// cannot be resolved or lies outside every export the client may use.
 ///
-/// A first component stands for an export only when the peer has a grant
+/// A first component stands for an export only when the client has a grant
 /// for that export. The name of any other export is read as a directory
-/// under the home, as if the export were not there, also when the peer
+/// under the home, as if the export were not there, also when the client
 /// may use that export's directory through another export: what a path
-/// means to a peer never depends on exports it has no grant for.
+/// means to a client never depends on exports it has no grant for.
 pub fn resolve<'a>(
     path: &[u8],
     home: Option<&Path>,
     exports: &'a BTreeMap<String, Export>,
-    grants: &Grants,
+    grants: &Permissions,
 ) -> Result<Option<Resolved<'a>>, ResolveError> {
     let usable = |name: &str, e: &Export| grants.access_to(name, e).is_some();
     Ok(resolve_path_where(path, home, exports, usable)?

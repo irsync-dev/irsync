@@ -15,7 +15,7 @@ use irsync::config::clients::{Clients, RIGHTS};
 use irsync::config::file::Config;
 use irsync::config::servers::Servers;
 use irsync::fs::paths::escape_text;
-use irsync::manage::{self, PeerSpec};
+use irsync::manage::{self, ClientSpec};
 use irsync::net::frame::{read_body, write_msg_tapped};
 use irsync::net::tap::{ConnTap, StreamKind, StreamTap};
 use irsync::session::engine::{read_hello_reply, SessionRefused};
@@ -193,8 +193,8 @@ fn client_id_of(id: &str) -> anyhow::Result<iroh::EndpointId> {
     let empty = Path::new("");
     let clients = Clients::from_message(&[], empty)?;
     let servers = Servers::from_message(&[], empty)?;
-    match PeerSpec::parse(id, &clients, &servers) {
-        Ok(PeerSpec::Id { id, .. }) => Ok(id),
+    match ClientSpec::parse(id, &clients, &servers) {
+        Ok(ClientSpec::Id { id, .. }) => Ok(id),
         _ => Err(irsync::identity::parse_endpoint_id(id)
             .map_or_else(anyhow::Error::from, |_| anyhow::anyhow!("not an ID"))
             .context(format!("ID {id:?}"))),
@@ -204,7 +204,7 @@ fn client_id_of(id: &str) -> anyhow::Result<iroh::EndpointId> {
 /// Sends `req` to the server of `c` and returns its answer. A refusal, a
 /// NACK or a failure is the error.
 pub async fn run_remote(c: &Connected, req: RemoteRequest) -> anyhow::Result<RemoteOutcome> {
-    let server = c.alias.clone().unwrap_or_else(|| c.target.id.to_string());
+    let server = c.name.clone().unwrap_or_else(|| c.target.id.to_string());
     let client = c.endpoint.id();
     let conn = irsync::client::dial(c).await?;
     let answer = converse(&conn, &server, req).await;

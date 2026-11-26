@@ -24,7 +24,8 @@ use tokio::time::Instant;
 use super::link::Link;
 use super::outage::{Change, Outages, State};
 use super::profile::{link, outages, Dir};
-use super::{custom_addr, fault_seed, socket_addr, Purpose, Side, Spec, TRANSPORT_ID};
+use super::{custom_addr, fault_seed, socket_addr, Purpose, Spec, TRANSPORT_ID};
+use crate::side::Side;
 
 /// Where the last bound transport's socket listens.
 pub(super) static BOUND: Mutex<Option<SocketAddrV4>> = Mutex::new(None);

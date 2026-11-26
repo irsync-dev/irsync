@@ -9,6 +9,8 @@ use anyhow::{anyhow, bail, Context};
 use iroh::endpoint::transports::CustomTransport;
 use iroh_base::CustomAddr;
 
+use crate::side::Side;
+
 pub mod link;
 pub mod outage;
 pub mod profile;
@@ -21,13 +23,6 @@ pub const ENV: &str = "IRSYNC_NETSIM";
 
 /// The custom transport's id: "netsim" in ASCII.
 pub const TRANSPORT_ID: u64 = 0x6e65_7473_696d;
-
-/// Which end of the connection this process is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    Client,
-    Daemon,
-}
 
 /// A named fault profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

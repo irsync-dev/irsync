@@ -3,7 +3,7 @@
 //! saving belong to the caller.
 
 use super::{id_bytes, id_of, ManageError};
-use crate::config::names::valid_alias;
+use crate::config::names::valid_name;
 use crate::config::paths::Paths;
 use crate::config::servers::beside_address;
 use crate::config::settings::{PqKeyExchange, Relay, Spelled};
@@ -60,8 +60,8 @@ pub fn server_add(
     id: EndpointId,
     flags: &ServerFlags,
 ) -> Result<Option<EndpointId>, ManageError> {
-    if !valid_alias(name) {
-        return Err(ManageError::BadAlias(name.to_string()));
+    if !valid_name(name) {
+        return Err(ManageError::BadName(name.to_string()));
     }
     let h = server_entry(msg, name);
     let old = id_of(&h.endpoint_id).filter(|old| *old != id);
@@ -182,8 +182,8 @@ pub fn server_rename(msg: &mut pb::Config, old: &str, new: &str) -> Result<(), M
     if old == new {
         return Ok(());
     }
-    if !valid_alias(new) {
-        return Err(ManageError::BadAlias(new.to_string()));
+    if !valid_name(new) {
+        return Err(ManageError::BadName(new.to_string()));
     }
     if msg.servers.iter().any(|h| h.name == new) {
         return Err(ManageError::ServerExists(new.to_string()));

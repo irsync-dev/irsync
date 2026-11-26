@@ -7,7 +7,7 @@ use super::{canonicalize_doc, canonicalize_without, id_bytes, id_of, ManageError
 use crate::authz::Access;
 use crate::config::clients::{Right, RIGHTS};
 use crate::config::file::Config;
-use crate::config::names::valid_alias;
+use crate::config::names::valid_name;
 use crate::config::paths::Paths;
 use crate::identity::parse_endpoint_id;
 use anyhow::Context;
@@ -23,8 +23,8 @@ pub fn client_add(
     name: &str,
     id: EndpointId,
 ) -> Result<Option<EndpointId>, ManageError> {
-    if !valid_alias(name) {
-        return Err(ManageError::BadAlias(name.to_string()));
+    if !valid_name(name) {
+        return Err(ManageError::BadName(name.to_string()));
     }
     let i = match msg.clients.iter().position(|c| c.name == name) {
         Some(i) => i,
@@ -159,14 +159,14 @@ pub(crate) fn moved_grant_notes(
     path: &Path,
 ) -> Vec<String> {
     let mut notes = Vec::new();
-    for (alias, new) in client_ids(msg, path) {
-        let Some(old) = before.get(&alias).filter(|old| **old != new) else {
+    for (name, new) in client_ids(msg, path) {
+        let Some(old) = before.get(&name).filter(|old| **old != new) else {
             continue;
         };
-        let lists = lists_naming(msg, &alias);
+        let lists = lists_naming(msg, &name);
         if !lists.is_empty() {
             notes.push(format!(
-                "irsync {cmd}: note: the grants that name {alias} (in {}) now apply to {new} (was {old})",
+                "irsync {cmd}: note: the grants that name {name} (in {}) now apply to {new} (was {old})",
                 lists.join(", ")
             ));
         }
@@ -189,8 +189,8 @@ pub fn client_rename(msg: &mut pb::Config, old: &str, new: &str) -> Result<usize
     if old == new {
         return Ok(0);
     }
-    if !valid_alias(new) {
-        return Err(ManageError::BadAlias(new.to_string()));
+    if !valid_name(new) {
+        return Err(ManageError::BadName(new.to_string()));
     }
     if msg.clients.iter().any(|c| c.name == new) {
         return Err(ManageError::ClientExists(new.to_string()));

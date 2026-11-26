@@ -305,7 +305,7 @@ fn grant_remove_refuses_as_the_cli_does() {
     )
     .unwrap_err();
     assert_eq!(nack.change, 1);
-    assert!(nack.reason.contains("names no peer"), "{}", nack.reason);
+    assert!(nack.reason.contains("names no client"), "{}", nack.reason);
 }
 
 #[test]

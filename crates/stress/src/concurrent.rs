@@ -13,7 +13,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use ::filegen::escape::escape;
+use ::filegen::escape::log_escape;
 use ::filegen::log::{parse_step_line, StepLine};
 use ::filegen::pace::Pace;
 use anyhow::{anyhow, bail, Context, Result};
@@ -367,7 +367,7 @@ pub fn round(
                 writeln!(
                     f,
                     "# removed the partial file of a given-up path: {}",
-                    escape(p)
+                    log_escape(p)
                 )
                 .with_context(|| format!("writing {}", layout.judge_report(i).display()))?;
             }
@@ -537,7 +537,7 @@ fn write_judge_report(path: &Path, i: u64, j: &RoundJudgement) -> Result<()> {
         j.failures.len()
     );
     for (p, rule) in &j.failures {
-        text.push_str(&format!("{}\t{rule}\n", escape(p)));
+        text.push_str(&format!("{}\t{rule}\n", log_escape(p)));
     }
     fs::write(path, text).with_context(|| format!("writing {}", path.display()))
 }
@@ -810,7 +810,7 @@ pub fn print_failure(r: &ConcurrentRound, layout: &Layout, rerun: &str, kept: &P
         )
     }));
     for (p, rule) in failing.iter().take(SHOWN_FAILURES) {
-        println!("  {}: {rule}", escape(p));
+        println!("  {}: {rule}", log_escape(p));
     }
     if failing.len() > SHOWN_FAILURES {
         println!("  ... {} failing paths in all", failing.len());

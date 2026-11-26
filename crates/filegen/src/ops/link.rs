@@ -136,7 +136,7 @@ fn draw_target(ctx: &mut OpCtx, dir: NodeId) -> Target {
         let path = platform::rel_to_path(ctx.root, &rel).unwrap_or_else(|e| {
             panic!(
                 "cannot name {} below {}: {e}",
-                crate::escape::escape(&rel),
+                crate::escape::log_escape(&rel),
                 ctx.root.display()
             )
         });

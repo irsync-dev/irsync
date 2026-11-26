@@ -32,6 +32,7 @@ pub mod platform;
 pub mod resolve;
 pub mod scan;
 pub mod session;
+pub mod side;
 pub mod signature;
 pub mod ssh;
 pub mod telemetry;

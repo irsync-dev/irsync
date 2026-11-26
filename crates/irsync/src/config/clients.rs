@@ -1,8 +1,8 @@
-//! The `[clients]` table of `irsync.toml`: names for the peers that
+//! The `[clients]` table of `irsync.toml`: names for the clients that
 //! grants are given to.
 
 use super::access::Access;
-use super::names::{invalid_name, valid_alias};
+use super::names::{invalid_name, valid_name};
 use super::{endpoint_id_from, file_error, ConfigError};
 use crate::identity::parse_endpoint_id;
 use iroh::EndpointId;
@@ -45,12 +45,13 @@ impl Right {
         }
     }
 
-    /// The right of the entry; none when unset (or not a known value).
+    /// The access this right of the entry gives; none when unset (or not
+    /// a known value).
     pub fn get(self, c: &pb::ClientEntry) -> Option<Access> {
         self.field(c).and_then(Access::from_message)
     }
 
-    /// The right of a typed entry; none when unset.
+    /// The access this right of a typed entry gives; none when unset.
     pub fn of(self, c: &ClientEntry) -> Option<Access> {
         match self {
             Right::AllExports => c.all_exports,
@@ -59,7 +60,8 @@ impl Right {
         }
     }
 
-    /// Sets or, with `None`, removes the right of the entry.
+    /// Sets the access this right of the entry gives or, with `None`,
+    /// removes the right.
     pub fn set(self, c: &mut pb::ClientEntry, a: Option<Access>) {
         *self.field_mut(c).0 = a.map(|a| pb::Access::from(a) as i32);
     }
@@ -136,7 +138,7 @@ impl Clients {
     pub fn from_message(clients: &[pb::ClientEntry], path: &Path) -> Result<Clients, ConfigError> {
         let mut entries = BTreeMap::new();
         for c in clients {
-            if !valid_alias(&c.name) {
+            if !valid_name(&c.name) {
                 return Err(file_error(path, invalid_name(&c.name)));
             }
             let entry = ClientEntry::from_message(c).map_err(|m| file_error(path, m))?;
@@ -159,7 +161,7 @@ impl Clients {
 
     /// The name that stands for the client `id`: the first in
     /// lexicographic order when several entries have it.
-    pub fn alias_of(&self, id: &EndpointId) -> Option<&str> {
+    pub fn name_of(&self, id: &EndpointId) -> Option<&str> {
         self.entries
             .iter()
             .find(|(_, e)| e.client_id == *id)
@@ -167,7 +169,7 @@ impl Clients {
     }
 
     /// A name first, then a literal EndpointId.
-    pub fn resolve_peer(&self, s: &str) -> Result<EndpointId, ConfigError> {
+    pub fn resolve_client(&self, s: &str) -> Result<EndpointId, ConfigError> {
         if let Some(e) = self.get(s) {
             return Ok(e.client_id);
         }

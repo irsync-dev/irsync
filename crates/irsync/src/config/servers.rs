@@ -1,6 +1,6 @@
-//! The `[servers]` table of `irsync.toml`: aliases for daemons to dial.
+//! The `[servers]` table of `irsync.toml`: names for daemons to dial.
 
-use super::names::{invalid_name, valid_alias};
+use super::names::{invalid_name, valid_name};
 use super::settings::{addresses_from, duration_from, parallel_problem};
 use super::{endpoint_id_from, file_error, ConfigError};
 use crate::config::settings::{relay_from, Congestion, PqKeyExchange, Relay, Spelled};
@@ -102,7 +102,7 @@ impl Servers {
     pub fn from_message(servers: &[pb::ServerEntry], path: &Path) -> Result<Servers, ConfigError> {
         let mut entries = BTreeMap::new();
         for s in servers {
-            if !valid_alias(&s.name) {
+            if !valid_name(&s.name) {
                 return Err(file_error(path, invalid_name(&s.name)));
             }
             let entry = ServerEntry::from_message(s).map_err(|m| file_error(path, m))?;
