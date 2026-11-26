@@ -21,6 +21,7 @@ CHANGELOG = os.path.join(SCRIPTS, "changelog-section.sh")
 PIN = os.path.join(SCRIPTS, "pin-release.sh")
 BRANCH = os.path.join(SCRIPTS, "release-branch.sh")
 LINE = os.path.join(SCRIPTS, "release-line.sh")
+BUMP_BRANCH = os.path.join(SCRIPTS, "bump-branch.sh")
 FORMULA_MAN = os.path.join(SCRIPTS, "formula-man-pages.sh")
 FORMULA = os.path.join(HERE, "fixtures", "irsync.rb")
 HEADING = "## What's changed"
@@ -158,6 +159,8 @@ class BumpVersionTests(unittest.TestCase):
         self.run_ok("cargo", "generate-lockfile", "--quiet", "--manifest-path", "fuzz/Cargo.toml")
         self.run_ok("git", "add", "-A")
         self.run_ok("git", "commit", "-q", "-m", "start")
+        # bump-version.sh reads main's version from origin/main.
+        self.run_ok("git", "update-ref", "refs/remotes/origin/main", "HEAD")
 
     def write(self, path, text):
         path = os.path.join(self.dir, path)
@@ -191,7 +194,7 @@ class BumpVersionTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("git push -u origin bump-v1.3.0-beta.1", r.stdout)
         self.assertIn("gh pr create --fill --base main", r.stdout)
-        self.assertIn("gh workflow run release-gate.yml --ref main -f version=1.3.0-beta.1",
+        self.assertIn("gh workflow run release-gate.yml --ref release-1.3 -f version=1.3.0-beta.1",
                       r.stdout)
         # The gate ends at a draft; signing it is the last step.
         self.assertEqual(r.stdout.rstrip().splitlines()[-1].strip(),
@@ -270,6 +273,43 @@ class BumpVersionTests(unittest.TestCase):
         r = self.bump("1.3.0-beta.1")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("git switch main", r.stderr)
+
+    def test_prints_prepare_then_gate(self):
+        self.set_main_version("1.3.0-alpha.1")
+        r = self.bump("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        prepare = "gh workflow run release-prepare.yml --ref main -f version=1.3.0-beta.1"
+        gate = "gh workflow run release-gate.yml --ref release-1.3 -f version=1.3.0-beta.1"
+        self.assertIn(prepare, r.stdout)
+        self.assertIn(gate, r.stdout)
+        self.assertLess(r.stdout.index(prepare), r.stdout.index(gate))
+        self.assertIn("gh pr create --fill --base main", r.stdout)
+
+    def test_line_main_has_left(self):
+        self.set_main_version("1.4.0-alpha.1")
+        r = self.bump("1.3.0")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("release-1.3", r.stderr)
+
+    def test_patch_prints_no_prepare(self):
+        self.run_ok("git", "switch", "-q", "-c", "release-1.2")
+        r = self.bump("1.2.4")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("release-prepare.yml", r.stdout)
+
+    def test_no_origin_main(self):
+        self.run_ok("git", "update-ref", "-d", "refs/remotes/origin/main")
+        r = self.bump("1.3.0-beta.1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("git fetch origin", r.stderr)
+
+    def set_main_version(self, version):
+        """A commit on main (and origin/main) with this workspace version."""
+        cargo = self.read("Cargo.toml").replace('version = "1.2.3"', f'version = "{version}"')
+        self.write("Cargo.toml", cargo)
+        self.run_ok("git", "commit", "-q", "-am", "main moves on")
+        self.run_ok("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.run_ok("git", "reset", "-q", "--hard", "HEAD~1")
 
 
 class NotesTests(FakeGh):
@@ -478,8 +518,8 @@ class ReleaseBranchTests(unittest.TestCase):
         return subprocess.run([BRANCH, version], capture_output=True, text=True)
 
     def test_branches(self):
-        for version, want in [("1.3.0-beta.1", "main"), ("1.3.0-alpha.2", "main"),
-                              ("1.3.0", "main"), ("1.2.1", "release-1.2"),
+        for version, want in [("1.3.0-beta.1", "release-1.3"), ("1.3.0-alpha.2", "release-1.3"),
+                              ("1.3.0", "release-1.3"), ("1.2.1", "release-1.2"),
                               ("1.20.3", "release-1.20")]:
             r = self.branch(version)
             self.assertEqual((r.returncode, r.stdout), (0, want + "\n"), version)
@@ -494,6 +534,30 @@ class ReleaseBranchTests(unittest.TestCase):
         r = self.branch("v1.2.1")
         self.assertEqual(r.returncode, 1)
         self.assertIn("without the v", r.stderr)
+
+
+class BumpBranchTests(unittest.TestCase):
+    def bump_branch(self, version, main_version):
+        return subprocess.run([BUMP_BRANCH, version, main_version], capture_output=True, text=True)
+
+    def test_bump_branches(self):
+        for version, main_version, want in [("1.3.0-beta.1", "1.3.0-alpha.2", "main"),
+                                            ("1.3.0", "1.3.0-beta.2", "main"),
+                                            ("1.3.0-alpha.1", "1.2.4", "main"),
+                                            ("1.3.0-beta.3", "1.4.0-alpha.1", "release-1.3"),
+                                            ("1.3.0", "1.4.0-alpha.1", "release-1.3"),
+                                            ("1.3.0", "2.0.0-alpha.1", "release-1.3"),
+                                            ("1.3.1", "1.3.0", "release-1.3"),
+                                            ("1.3.1", "1.3.1", "release-1.3")]:
+            r = self.bump_branch(version, main_version)
+            self.assertEqual((r.returncode, r.stdout), (0, want + "\n"), (version, main_version))
+
+    def test_bad_input(self):
+        for version, main_version in [("1.3", "1.3.0"), ("v1.3.0", "1.3.0"),
+                                      ("1.3.0", "1.3"), ("1.3.0", "x;y")]:
+            r = self.bump_branch(version, main_version)
+            self.assertNotEqual(r.returncode, 0, (version, main_version))
+            self.assertEqual(r.stdout, "", (version, main_version))
 
 
 class ReleaseLineTests(FakeGh):
