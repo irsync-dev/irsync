@@ -526,7 +526,59 @@ def env_name(job):
     return e.get("name") if isinstance(e, dict) else e
 
 
+class PrepareTests(unittest.TestCase):
+    NAME = "release-prepare.yml"
+
+    def wf(self):
+        return load_workflows()[self.NAME]
+
+    def test_starts_only_by_hand(self):
+        on = triggers(self.wf())
+        self.assertEqual(set(on), {"workflow_dispatch"})
+        self.assertEqual(set(on["workflow_dispatch"]["inputs"]), {"version", "fixed-branch"})
+
+    def test_one_run_at_a_time(self):
+        self.assertEqual(self.wf()["concurrency"],
+                         {"group": "release-prepare", "cancel-in-progress": False})
+
+    def test_check_job_has_no_secrets(self):
+        job = jobs(self.wf())["check"]
+        self.assertNotIn("secrets.", job_text(self.NAME, "check"))
+        self.assertIsNone(env_name(job))
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertIn("prepare-check.sh", job_text(self.NAME, "check"))
+
+    def test_push_job_in_release_branch_env(self):
+        job = jobs(self.wf())["push"]
+        self.assertEqual(env_name(job), "release-branch")
+        self.assertIn("check", job["needs"])
+        self.assertEqual(job["permissions"], {})
+        checkout = [s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout@")]
+        self.assertEqual(len(checkout), 1)
+        self.assertEqual(checkout[0]["with"]["ssh-key"], "${{ secrets.RELEASE_BRANCH_KEY }}")
+        self.assertEqual(checkout[0]["with"]["fetch-depth"], 0)
+        self.assertIn("prepare-branch.sh", job_text(self.NAME, "push"))
+
+    def test_inputs_only_through_env(self):
+        for job_id, job in jobs(self.wf()).items():
+            for step in job.get("steps", []):
+                self.assertNotIn("${{", step.get("run", ""), f"{job_id}: {step.get('name')}")
+
+    def test_points_to_the_gate(self):
+        self.assertIn("release-gate.yml --ref", job_text(self.NAME, "push"))
+
+
 class EnvironmentTests(unittest.TestCase):
+    def test_branch_key_only_in_release_branch_env(self):
+        found = False
+        for name, wf in load_workflows().items():
+            for job_id, job in jobs(wf).items():
+                if "secrets.RELEASE_BRANCH_KEY" in job_text(name, job_id):
+                    found = True
+                    self.assertEqual(env_name(job), "release-branch", f"{name}: {job_id}")
+                    self.assertNotIn("uses", job, f"{name}: {job_id}")
+        self.assertTrue(found)
+
     def test_release_secrets_only_in_release_env(self):
         for name, wf in load_workflows().items():
             for job_id, job in jobs(wf).items():
