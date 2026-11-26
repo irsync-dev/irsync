@@ -26,8 +26,15 @@ SECURITY_ON = {
 }
 
 
-def ruleset(target, include, rules):
-    return {"target": target, "include": include, "rules": rules, "bypass_actors": []}
+# Every deploy key of the repository: GitHub can't name a single key in a
+# ruleset's bypass list (actor_id stays null). So deploy_keys below allows
+# exactly one key, the one release-prepare.yml pushes release-X.Y with.
+DEPLOY_KEYS_BYPASS = {"actor_id": None, "actor_type": "DeployKey", "bypass_mode": "always"}
+
+
+def ruleset(target, include, rules, bypass=()):
+    return {"target": target, "include": include, "rules": rules,
+            "bypass_actors": list(bypass)}
 
 
 def desired(maintainer_id):
@@ -52,16 +59,28 @@ def desired(maintainer_id):
                             "prevent_self_review": False},
                 "site": {"policies": [{"name": "main", "type": "branch"}],
                          "reviewers": [], "prevent_self_review": False},
+                # Holds RELEASE_BRANCH_KEY, the private half of the deploy
+                # key below; only release-prepare.yml's push job, on main,
+                # after the maintainer's approval.
+                "release-branch": {"policies": [{"name": "main", "type": "branch"}],
+                                   "reviewers": [maintainer_id],
+                                   "prevent_self_review": False},
             },
+            # Added by hand (book/src/contributing/releasing.md, one-time
+            # setup): apply never creates a key, so the private half never
+            # passes through this tool.
+            "deploy_keys": [{"title": "release-branch", "read_only": False}],
             "rulesets": {
                 "main": ruleset("branch", ["~DEFAULT_BRANCH"], dict(protect, **{
                     "pull_request": {"required_approving_review_count": 0},
                     "required_status_checks": {"contexts": [REQUIRED_CHECK]},
                 })),
+                # Only the deploy key gets past, for release-prepare.yml's
+                # rebase of release-X.Y onto main.
                 "Release branches": ruleset("branch", ["refs/heads/release-*"], dict(protect, **{
                     "pull_request": {"required_approving_review_count": 0},
                     "required_status_checks": {"contexts": [REQUIRED_CHECK]},
-                })),
+                }), bypass=[DEPLOY_KEYS_BYPASS]),
                 # The release gate creates and deletes these; nobody can move one.
                 "Pinned release commits": ruleset("branch", ["refs/heads/pinned/*"],
                                                   {"update": {}, "non_fast_forward": {}}),
@@ -192,6 +211,9 @@ def fetch(repo):
                                key=lambda p: (p["type"], p["name"])),
             "reviewers": reviewers, "prevent_self_review": self_review}
     state["environments"] = envs
+    state["deploy_keys"] = sorted(({"title": k["title"], "read_only": k["read_only"]}
+                                   for k in gh(f"repos/{repo}/keys", ok_missing=True) or []),
+                                  key=lambda k: (k["title"], k["read_only"]))
     state["rulesets"] = {r["name"]: normalize_ruleset(gh(f"repos/{repo}/rulesets/{r['id']}"))
                          for r in gh(f"repos/{repo}/rulesets") or []}
     return state
@@ -265,6 +287,15 @@ def apply(repo, want):
             if not any(h["name"] == p["name"] and h.get("type", "branch") == p["type"]
                        for h in have):
                 gh(base, "-X", "POST", body=p)
+    if "deploy_keys" in want:
+        have = [{"title": k["title"], "read_only": k["read_only"]}
+                for k in gh(f"repos/{repo}/keys", ok_missing=True) or []]
+        if have != want["deploy_keys"]:
+            print(f"{repo}: the deploy keys should be exactly "
+                  f"{', '.join(k['title'] for k in want['deploy_keys'])} (with write access); "
+                  f"there are: {', '.join(k['title'] for k in have) or 'none'}. Add or remove "
+                  "the deploy key by hand (not done automatically): see 'One-time setup' in "
+                  "book/src/contributing/releasing.md.")
     existing = {r["name"]: r["id"] for r in gh(f"repos/{repo}/rulesets") or []}
     for name, rs in want.get("rulesets", {}).items():
         if repo == MAIN and name in ("main", "Release branches") and name not in existing \
