@@ -1,12 +1,14 @@
 //! Networking: the iroh endpoint and length-prefixed protobuf framing.
 
 pub mod addr;
+mod answer;
 mod endpoint;
 pub mod frame;
 #[cfg(feature = "netsim")]
 pub mod netsim;
 pub mod tap;
 
+pub use answer::{finish_answer, ANSWER_WAIT};
 #[cfg(feature = "test-hooks")]
 pub use endpoint::build_endpoint_with_stream_window;
 #[cfg(feature = "netsim")]

@@ -1470,10 +1470,7 @@ async fn refuse<T>(
         })),
     };
     write_msg_tapped(send, &refusal, tap).await?;
-    send.finish()?;
-    tap.finished();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), send.stopped()).await;
-    conn.close(2u32.into(), b"rejected");
+    crate::net::finish_answer(conn, send, tap, 2, b"rejected").await?;
     bail!(msg);
 }
 

@@ -36,7 +36,7 @@ use crate::index::{Index, IndexHandle};
 use crate::net::addr::HostPort;
 use crate::net::frame::{read_msg_tapped, write_msg_tapped};
 use crate::net::tap::{ConnTap, StreamKind as TapStream, StreamTap};
-use crate::net::{build_endpoint, daemon_endpoint_opts};
+use crate::net::{build_endpoint, daemon_endpoint_opts, finish_answer};
 use crate::options::Direction;
 use crate::resolve::{containing, resolve, resolve_path, ResolveError, Resolved};
 use crate::session::engine::{serve_daemon, Place, HELLO_TIMEOUT};
@@ -758,7 +758,8 @@ async fn admit_target<'a>(
 }
 
 /// Writes `reply` as the answer to `Hello` and closes the connection once
-/// the client has it: a listing's or a probe's, which ends the connection.
+/// the client has it ([`finish_answer`]): a listing's or a probe's, which
+/// ends the connection.
 async fn answer(
     conn: &Connection,
     send: &mut SendStream,
@@ -767,11 +768,7 @@ async fn answer(
 ) -> Result<()> {
     let reply = HelloReply { reply: Some(reply) };
     write_msg_tapped(send, &reply, tap).await?;
-    send.finish()?;
-    tap.finished();
-    let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
-    conn.close(0u32.into(), b"done");
-    Ok(())
+    finish_answer(conn, send, tap, 0, b"done").await
 }
 
 /// The exports `grants` cover, by name, with the real path and the
@@ -992,12 +989,7 @@ async fn reject(
         })),
     };
     write_msg_tapped(send, &refusal, tap).await?;
-    send.finish()?;
-    tap.finished();
-    // Wait (bounded) for the peer to read the error before closing the connection.
-    let _ = tokio::time::timeout(Duration::from_secs(5), send.stopped()).await;
-    conn.close(2u32.into(), b"rejected");
-    Ok(())
+    finish_answer(conn, send, tap, 2, b"rejected").await
 }
 
 fn load_or_generate_identity(path: &Path, pass: &PassphraseSource) -> Result<SecretKey> {
