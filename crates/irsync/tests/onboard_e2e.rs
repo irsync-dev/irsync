@@ -152,17 +152,28 @@ impl World {
 
     /// Pairs the client with `host`, over ssh; returns the stderr.
     fn pair(&self, host: &str) -> String {
-        ok(&self.irsync_bare(&["pair", host]))
+        ok(&self.irsync_pair(&[host]))
+    }
+
+    /// `irsync pair` with `args`, its check dialling the server's daemon
+    /// at `self.port`: the daemons here are offline, so no lookup finds
+    /// them.
+    fn irsync_pair(&self, args: &[&str]) -> Output {
+        let addr = format!("127.0.0.1:{}", self.port);
+        let mut all = vec!["pair", "--address", &addr];
+        all.extend(args);
+        self.irsync_bare(&all)
     }
 
     /// As [`World::pair`], run on the server machine, pairing it with the
     /// client machine.
     fn pair_back(&self, host: &str) -> String {
+        let addr = format!("127.0.0.1:{}", self.client_port);
         ok(&self.run(
             self.server.path(),
             self.client.path(),
             "myserver",
-            &["pair", host],
+            &["pair", "--address", &addr, host],
         ))
     }
 
@@ -437,12 +448,16 @@ fn user_at_host_saves_the_plain_name_too() {
 #[test]
 fn pair_sets_up_a_new_host() {
     let w = World::new();
-    let err = ok(&w.irsync_bare(&["pair", "myserver"]));
+    let err = ok(&w.irsync_pair(&["myserver"]));
     assert!(
         err.contains("irsync: paired with myserver; syncs go over iroh, not ssh"),
         "{err}"
     );
     assert!(err.contains("saved server myserver"), "{err}");
+    // The check dialled the daemon over iroh before pair said it was done.
+    let answers = err.find("irsync: myserver answers over iroh");
+    assert!(answers.is_some(), "{err}");
+    assert!(answers < err.find("paired with"), "{err}");
     let calls = w.ssh_calls();
     assert!(calls > 0);
     let dest = w.server.path().join("dest");
@@ -455,7 +470,7 @@ fn pair_sets_up_a_new_host() {
 #[test]
 fn pair_user_at_host_saves_both_names() {
     let w = World::new();
-    let err = ok(&w.irsync_bare(&["pair", "u@myserver"]));
+    let err = ok(&w.irsync_pair(&["u@myserver"]));
     assert!(err.contains("saved server u@myserver"), "{err}");
     assert!(err.contains("saved server myserver"), "{err}");
     let cfg: toml::Table = w.client_config().parse().unwrap();
@@ -464,16 +479,56 @@ fn pair_user_at_host_saves_both_names() {
     }
 }
 
+/// A daemon the check cannot reach fails the pairing, with what the server
+/// reported and the advice to pair again; pairing again checks once more
+/// and keeps what the first run set up (#312).
+#[test]
+fn pair_fails_when_the_check_cannot_reach_the_daemon() {
+    let mut w = World::new();
+    w.env
+        .push(("IRSYNC_TEST_PAIR_CHECK_SECS".into(), "2".into()));
+    w.env.push(("IRSYNC_TEST_DIAL_SECS".into(), "1".into()));
+    // Nothing listens there.
+    let wrong = format!("127.0.0.1:{}", free_port());
+    let o = w.irsync_bare(&["pair", "--address", &wrong, "myserver"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("irsync: checking that myserver answers over iroh"),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "myserver is set up and saved, but this machine could not reach its daemon \
+             over iroh within 2 s"
+        ),
+        "{err}"
+    );
+    // The server is offline: no relay, but its listen address.
+    assert!(
+        err.contains(&format!("direct addresses 127.0.0.1:{}", w.port)),
+        "{err}"
+    );
+    assert!(err.contains("Run `irsync pair myserver` again"), "{err}");
+    assert!(!err.contains("paired with"), "{err}");
+    let cfg: toml::Table = w.client_config().parse().unwrap();
+    assert!(cfg["servers"]["myserver"]["endpoint_id"].is_str(), "{cfg}");
+    // Again, reaching the daemon: the same command, now paired.
+    let err = w.pair("myserver");
+    assert!(err.contains("irsync: myserver answers over iroh"), "{err}");
+    assert!(err.contains("paired with myserver"), "{err}");
+}
+
 /// A second pairing checks the server but does not put back a grant the
 /// owner removed.
 #[test]
 fn pair_again_does_not_regrant() {
     let w = World::new();
-    ok(&w.irsync_bare(&["pair", "myserver"]));
+    ok(&w.irsync_pair(&["myserver"]));
     let id = client_id(w.client.path());
     common::set_all_paths(w.server.path(), &id, None);
     w.kill_daemon();
-    let o = w.irsync_bare(&["pair", "myserver"]);
+    let o = w.irsync_pair(&["myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -631,7 +686,7 @@ fn client_name_with_shell_characters_runs_nothing() {
 fn unusable_client_name_stops_before_ssh() {
     let mut w = World::new();
     w.client_name = "localhost".into();
-    let out = w.irsync_bare(&["pair", "myserver"]);
+    let out = w.irsync_pair(&["myserver"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("host name"), "{err}");
@@ -641,7 +696,7 @@ fn unusable_client_name_stops_before_ssh() {
 #[test]
 fn ipv6_without_a_server_name_changes_nothing() {
     let w = World::new();
-    let out = w.irsync_bare(&["pair", "fe80::1"]);
+    let out = w.irsync_pair(&["fe80::1"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("host name"), "{err}");
@@ -686,7 +741,7 @@ fn other_platform_changes_nothing() {
     let mut w = World::new();
     w.uname = Some("Linux riscv64".into());
     std::fs::remove_dir_all(w.server.path().join(".config")).unwrap();
-    let o = w.irsync_bare(&["pair", "myserver"]);
+    let o = w.irsync_pair(&["myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -730,7 +785,7 @@ fn other_platform_gets_the_release_binary() {
 fn unsavable_name_stops_before_ssh() {
     let w = World::new();
     // `all` means every client: it can never be a name.
-    let o = w.irsync_bare(&["pair", "all"]);
+    let o = w.irsync_pair(&["all"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(!err.contains("over ssh"), "{err}");
@@ -1089,7 +1144,12 @@ fn a_machine_syncs_to_itself() {
     let dest = home.join("dest");
     let target = format!("myclient:{}", dest.display());
     let args = ["-a", &w.src_arg(), &target, "--address", &addr];
-    ok(&w.run(home, home, "myclient", &["pair", "myclient"]));
+    ok(&w.run(
+        home,
+        home,
+        "myclient",
+        &["pair", "--address", &addr, "myclient"],
+    ));
     ok(&w.run(home, home, "myclient", &args));
     same_tree(w.src.path(), &dest);
     let t = config_in(home);
@@ -1128,7 +1188,7 @@ fn pair_takes_an_address_and_no_dht() {
         ("--server-no-dht", "turned off DHT publishing on myserver"),
         ("--no-ssh-install", "irsync: pairing with myserver over ssh"),
     ] {
-        let err = ok(&w.irsync_bare(&["pair", flag, "192.168.1.5"]));
+        let err = ok(&w.irsync_pair(&[flag, "192.168.1.5"]));
         assert!(err.contains("192.168.1.5 is saved as myserver"), "{err}");
         assert!(err.contains(said), "{flag}: {err}");
     }
@@ -1186,7 +1246,7 @@ fn a_taken_client_name_is_refused_and_changes_no_configuration() {
         &format!("[clients.myclient]\nclient_id = \"{other}\"\n"),
     );
     let before = w.server_toml();
-    let out = w.irsync_bare(&["pair", "myserver"]);
+    let out = w.irsync_pair(&["myserver"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("[clients.myclient]"), "{err}");
@@ -1202,7 +1262,7 @@ fn a_taken_client_name_is_refused_and_changes_no_configuration() {
     assert!(err.contains(note), "{err}");
     assert!(w.server.path().join(".local/bin/irsync").exists());
     // Again, with nothing to install: nothing at all is changed.
-    let out = w.irsync_bare(&["pair", "myserver"]);
+    let out = w.irsync_pair(&["myserver"]);
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("[clients.myclient]"), "{err}");
@@ -1336,7 +1396,7 @@ fn pair_checks_a_saved_host() {
 fn pair_refuses_an_endpoint_id() {
     let w = World::new();
     let id = iroh::SecretKey::from_bytes(&[9; 32]).public().to_string();
-    let o = w.irsync_bare(&["pair", &id]);
+    let o = w.irsync_pair(&[&id]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success(), "{err}");
     assert!(
@@ -1354,7 +1414,7 @@ fn no_dht_turns_server_publishing_off() {
     let cfg = w.server.path().join(".config/irsync/irsync.toml");
     let text = std::fs::read_to_string(&cfg).unwrap();
     irsync::fs::private::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
-    let err = ok(&w.irsync_bare(&["pair", "--server-no-dht", "myserver"]));
+    let err = ok(&w.irsync_pair(&["--server-no-dht", "myserver"]));
     assert!(
         err.contains("irsync:   turned off DHT publishing on myserver ([daemon] dht = false)"),
         "{err}"
@@ -1382,7 +1442,7 @@ fn assert_stopped_by_no_install(w: &World, o: &Output) {
 #[test]
 fn pair_no_install_stops_a_first_pairing() {
     let w = World::new();
-    let o = w.irsync_bare(&["pair", "--no-ssh-install", "myserver"]);
+    let o = w.irsync_pair(&["--no-ssh-install", "myserver"]);
     assert_stopped_by_no_install(&w, &o);
 }
 
@@ -1393,7 +1453,7 @@ fn ssh_install_false_in_config_stops_a_first_pairing() {
     std::fs::create_dir_all(&cfg).unwrap();
     irsync::fs::private::write(cfg.join("irsync.toml"), "[defaults]\nssh_install = false\n")
         .unwrap();
-    let o = w.irsync_bare(&["pair", "myserver"]);
+    let o = w.irsync_pair(&["myserver"]);
     assert_stopped_by_no_install(&w, &o);
 }
 
@@ -1404,7 +1464,7 @@ fn a_root_account_is_refused_before_anything_is_installed() {
     let mut w = World::new();
     w.probe_root = true;
     std::fs::remove_dir_all(w.server.path().join(".config")).unwrap();
-    let o = w.irsync_bare(&["pair", "myserver"]);
+    let o = w.irsync_pair(&["myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -1434,7 +1494,7 @@ fn a_root_account_is_refused_before_anything_is_installed() {
 fn ssh_setup_itself_refuses_root_and_grants_nothing() {
     let mut w = World::new();
     w.server_root = true;
-    let o = w.irsync_bare(&["pair", "myserver"]);
+    let o = w.irsync_pair(&["myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -1466,7 +1526,7 @@ fn pair_through_a_root_account_is_refused() {
     w.pair("myserver");
     w.kill_daemon();
     w.probe_root = true;
-    let o = w.irsync_bare(&["pair", "myserver"]);
+    let o = w.irsync_pair(&["myserver"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{err}");
     assert!(
@@ -1612,7 +1672,7 @@ fn pair_twice_keeps_one_daemon() {
 fn pair_moves_a_background_daemon_into_the_service() {
     let mut w = World::new();
     w.service = true;
-    ok(&w.irsync_bare(&["pair", "--no-service", "myserver"]));
+    ok(&w.irsync_pair(&["--no-service", "myserver"]));
     let old = w.lock_pid();
     let err = w.pair("myserver");
     assert!(err.lines().any(|l| l == SYSTEMD_LINE), "{err}");
@@ -1624,7 +1684,7 @@ fn pair_moves_a_background_daemon_into_the_service() {
 fn pair_with_no_service_writes_no_unit() {
     let mut w = World::new();
     w.service = true;
-    let err = ok(&w.irsync_bare(&["pair", "--no-service", "myserver"]));
+    let err = ok(&w.irsync_pair(&["--no-service", "myserver"]));
     assert!(
         err.lines().any(|l| {
             l
@@ -1697,7 +1757,7 @@ fn pair_leaves_a_foreign_unit_alone() {
 fn pair_keeps_a_background_daemon_when_linger_is_refused() {
     let mut w = World::new();
     w.service = true;
-    ok(&w.irsync_bare(&["pair", "--no-service", "myserver"]));
+    ok(&w.irsync_pair(&["--no-service", "myserver"]));
     let pid = w.lock_pid();
     w.env.push(("FAKE_LINGER".into(), "no".into()));
     w.env.push(("FAKE_LINGER_REFUSED".into(), "1".into()));

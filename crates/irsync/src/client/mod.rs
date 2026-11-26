@@ -30,6 +30,28 @@ use connect::client_state_dir;
 pub use connect::{client_identity, client_key, connect, dial, use_state_dir, Connected};
 use plan::{pull_plan, push_plan, Plan};
 
+/// How long `irsync pair` keeps looking for the daemon it just set up
+/// before it gives up: a new daemon may need a few seconds before the
+/// lookups find it (#312).
+pub const PAIR_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// [`PAIR_CHECK`]; a test-hooks build takes `IRSYNC_TEST_PAIR_CHECK_SECS`
+/// seconds instead, when that is set, so a test of a daemon that cannot be
+/// found need not wait the real time out.
+pub fn pair_check_limit() -> std::time::Duration {
+    #[cfg(feature = "test-hooks")]
+    if let Some(secs) = std::env::var("IRSYNC_TEST_PAIR_CHECK_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
+        return std::time::Duration::from_secs(secs);
+    }
+    PAIR_CHECK
+}
+
+/// The wait between two tries of [`check_paired`] that found no daemon.
+const PAIR_CHECK_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Partial files and sessions untouched for this long are collected: as
 /// long as a daemon keeps them by default.
 pub const CLIENT_GC_AGE: std::time::Duration = crate::config::settings::DORMANT_SESSION_TIMEOUT;
@@ -346,6 +368,56 @@ pub async fn list_exports(
     let listed = list_exports_over(&c, operand).await;
     c.endpoint.close().await;
     listed
+}
+
+/// The last step of `irsync pair`: dials the saved server `host` as a sync
+/// will (its lookups, or the addresses `opts` gives) and asks its daemon
+/// for the exports this client may use, which also proves the grant works.
+/// A daemon that cannot be found yet is tried again until `limit` has
+/// passed; then the error carries [`NeverReached`]. A daemon that answers
+/// and refuses fails at once.
+pub async fn check_paired(
+    host: &str,
+    opts: &SyncOptions,
+    limit: std::time::Duration,
+    say: &dyn Fn(&str),
+) -> anyhow::Result<()> {
+    let c = connect(host, opts, say).await?;
+    let checked = check_over(&c, &format!("{host}:"), limit).await;
+    c.endpoint.close().await;
+    checked
+}
+
+async fn check_over(c: &Connected, remote: &str, limit: std::time::Duration) -> anyhow::Result<()> {
+    let hello = crate::session::hello(hello::Request::ListExports(ListExports {}));
+    let ask = |conn: iroh::endpoint::Connection| {
+        let hello = hello.clone();
+        async move { crate::session::engine::list_exports(&conn, hello).await }
+    };
+    let deadline = Instant::now() + limit;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        // One dial per try, bounded by what is left; the loop retries.
+        let mut opts = c.reconnect_opts();
+        opts.dial_retries = 0;
+        opts.first_dial_timeout = Some(
+            opts.first_dial_timeout
+                .unwrap_or(left)
+                .min(left)
+                .max(PAIR_CHECK_RETRY),
+        );
+        match ask_with_retries(&c.endpoint, c.target.clone(), remote, opts, ask).await {
+            Ok(_) => return Ok(()),
+            Err(e)
+                if e.downcast_ref::<NeverReached>().is_some()
+                    && Instant::now() + PAIR_CHECK_RETRY < deadline =>
+            {
+                tracing::info!(error = %format!("{e:#}"), "pair check: not found yet; retrying");
+                tokio::time::sleep(PAIR_CHECK_RETRY).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 async fn list_exports_over(c: &Connected, operand: &str) -> anyhow::Result<Vec<ExportEntry>> {

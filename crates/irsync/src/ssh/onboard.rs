@@ -421,6 +421,41 @@ pub fn summary(o: &Onboarded) -> Vec<String> {
 
 /// How the daemon runs, after the daemon line; none when the service was
 /// not touched. `log`: where a launchd agent's output goes.
+/// Why `irsync pair` failed when its check, for `limit`, never found the
+/// daemon it set up: what the daemon reported about where it can be
+/// reached, and that running `pair` again checks once more.
+pub fn not_found(o: &Onboarded, limit: std::time::Duration) -> String {
+    let name = &o.name;
+    let r = &o.report;
+    let mut where_ = Vec::new();
+    if let Some(relay) = &r.relay {
+        where_.push(format!("home relay {relay}"));
+    }
+    if !r.addrs.is_empty() {
+        let addrs: Vec<String> = r.addrs.iter().map(ToString::to_string).collect();
+        where_.push(format!("direct addresses {}", addrs.join(", ")));
+    }
+    let why = if where_.is_empty() {
+        format!(
+            "The daemon there reported no relay and no direct address, so it may not \
+             be on the network: see its log, {}.",
+            home_tilde(&r.log)
+        )
+    } else {
+        format!(
+            "The daemon there is running ({}), but the lookups have not found it yet; \
+             a daemon that has just started can take a minute to be found.",
+            where_.join("; ")
+        )
+    };
+    format!(
+        "{name} is set up and saved, but this machine could not reach its daemon over \
+         iroh within {} s. {why} Run `irsync pair {name}` again to check once more; \
+         it keeps what was set up.",
+        limit.as_secs()
+    )
+}
+
 fn service_line(s: &ServiceOutcome, log: &std::path::Path) -> Option<String> {
     const UNTIL: &str = "the daemon runs in the background until the server reboots";
     Some(match s {
@@ -701,6 +736,44 @@ mod tests {
             client: id(1),
             client_name: "myclient".into(),
         }
+    }
+
+    /// A check that never found the daemon says what the daemon reported,
+    /// or that it reported nothing, and to pair again.
+    #[test]
+    fn not_found_says_where_the_daemon_is() {
+        let mut o = onboarded(Install::Current, DaemonOutcome::Started, Some("linux"));
+        let limit = std::time::Duration::from_secs(30);
+        let m = not_found(&o, limit);
+        assert!(
+            m.starts_with(
+                "myserver is set up and saved, but this machine could not reach its \
+                 daemon over iroh within 30 s. The daemon there reported no relay and no \
+                 direct address"
+            ),
+            "{m}"
+        );
+        assert!(m.contains("/s/daemon.log"), "{m}");
+        assert!(
+            m.ends_with(
+                "Run `irsync pair myserver` again to check once more; it keeps what was set up."
+            ),
+            "{m}"
+        );
+        o.report.relay = Some("https://relay.example./".parse().unwrap());
+        o.report.addrs = vec![
+            "192.0.2.1:7000".parse().unwrap(),
+            "[2001:db8::1]:7000".parse().unwrap(),
+        ];
+        let m = not_found(&o, limit);
+        assert!(
+            m.contains(
+                "The daemon there is running (home relay https://relay.example./; direct \
+                 addresses 192.0.2.1:7000, [2001:db8::1]:7000), but the lookups have not \
+                 found it yet"
+            ),
+            "{m}"
+        );
     }
 
     const ALL: Contents = Contents {

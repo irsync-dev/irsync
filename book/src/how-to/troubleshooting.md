@@ -79,6 +79,26 @@ server up. `myserver` is not in your saved servers, or it was mistyped.
 saved as a client only gets a similar message: this machine has never dialled
 its daemon, so run `irsync pair` for it.
 
+## pair could not reach the daemon over iroh
+
+```text
+irsync pair: myserver is set up and saved, but this machine could not reach its daemon over iroh within 30 s. The daemon there is running (home relay https://euc1-1.relay.n0.iroh.link./; direct addresses 192.168.1.5:41641), but the lookups have not found it yet; a daemon that has just started can take a minute to be found. Run `irsync pair myserver` again to check once more; it keeps what was set up.
+```
+
+**Cause.** The server is set up and its daemon runs, but this machine cannot
+find it the way a sync looks for it. Right after the daemon started, the
+lookups may not know it yet, above all when only the DHT looks it up
+(`--no-dns`, or `dns = false` on this machine). Or something between the two machines
+blocks iroh: a firewall that drops UDP, or no route to a relay. When the
+message says the daemon reported no relay and no direct address, the
+daemon itself is not on the network: read the log it names.
+
+**Fix.** Wait a minute and run `irsync pair myserver` again. It sets nothing
+up twice and only checks once more. If it still fails, see
+[Connect directly or through a relay](direct-and-relay.md). To check one path,
+pass it to the check: `irsync pair --address 192.168.1.5:41641 myserver`
+dials that address only.
+
 ## pair stops: the server runs another OS or CPU
 
 ```text
