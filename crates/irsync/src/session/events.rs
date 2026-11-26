@@ -75,6 +75,11 @@ pub enum Event {
     /// nothing more (found up to date, or placed by an earlier connection).
     /// Every other file is requested again.
     Settled(u64),
+    /// This connection resumes a session and lists and plans again: bytes
+    /// of the files earlier connections placed. The planner does not report
+    /// them as skipped; it reports the files found up to date anew, and
+    /// every other file is requested again.
+    PlacedBefore(u64),
     /// File data bytes moved on a data stream (aggregate, as before).
     Bytes(u64),
     /// Listing progress for one side.
@@ -207,6 +212,7 @@ impl Busy {
             received_bytes: self.received.load(Relaxed),
             listed: None,
             listed_settled: 0,
+            placed_before: None,
         }
     }
 }

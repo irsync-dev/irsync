@@ -436,6 +436,7 @@ mod tests {
                 listed: totals(),
                 listed_settled: 4,
                 received_bytes: 5,
+                placed_before: Some(6),
             }),
             Msg::ChunkListStart(v1::ChunkListStart {
                 file_id: 4,

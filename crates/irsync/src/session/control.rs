@@ -417,6 +417,9 @@ async fn read_control<R: tokio::io::AsyncRead + Unpin>(
                     if h.received_bytes > 0 {
                         progress.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
+                    if let Some(placed) = h.placed_before {
+                        bus.emit(Event::PlacedBefore(placed));
+                    }
                     if h.skipped_bytes > 0 {
                         bus.emit(Event::PeerSkipped(h.skipped_bytes));
                     }
