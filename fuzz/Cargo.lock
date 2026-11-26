@@ -1158,7 +1158,7 @@ checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "fileset"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2097,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "irsync"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2160,11 +2160,11 @@ dependencies = [
 
 [[package]]
 name = "irsync-glob"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 
 [[package]]
 name = "irsync-proto"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "blake3",
  "fastcdc",
@@ -3160,7 +3160,7 @@ dependencies = [
 
 [[package]]
 name = "pbcap"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "prost",
  "prost-build",
@@ -3179,7 +3179,7 @@ dependencies = [
 
 [[package]]
 name = "pbwalk"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "anyhow",
  "clap",
