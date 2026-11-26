@@ -45,7 +45,7 @@ fn parse_fields(names: &[String]) -> Result<Vec<Field>, String> {
 
 /// Exits with 2. Safe while `main` holds the stdout lock: only stderr is written.
 fn fail(msg: &str) -> ! {
-    eprintln!("error: {msg}");
+    eprintln!("fileset: {msg}");
     std::process::exit(2);
 }
 

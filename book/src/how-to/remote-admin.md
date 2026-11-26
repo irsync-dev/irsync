@@ -59,7 +59,8 @@ The commands that work remotely:
 
 They take the same arguments as on the server; see
 [Management commands](../reference/management.md). Not remote: `config set`,
-`config unset`, `export update`, `id` and `server`. Do those on the
+`config unset`, `export set`, `export rename`, `id`, `server` and
+`index --export`. Do those on the
 server.
 
 The server answers each command. The lines it prints may name the server's

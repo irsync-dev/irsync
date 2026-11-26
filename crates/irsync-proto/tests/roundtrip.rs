@@ -313,7 +313,7 @@ fn admin_messages_round_trip() {
         change::Op::ExportAdd(ExportAdd {
             target: "photos:~/Photos".into(),
             read_only: true,
-            warm_index: true,
+            index_at_start: true,
         }),
         change::Op::ExportRemove(ExportRemove {
             name: "photos".into(),
@@ -370,7 +370,7 @@ fn admin_messages_round_trip() {
             name: "photos".into(),
             path: "/srv/photos".into(),
             read_only: true,
-            warm_index: true,
+            index_at_start: true,
             fsync: true,
             is_auto: true,
             rw: vec!["myclient".into()],

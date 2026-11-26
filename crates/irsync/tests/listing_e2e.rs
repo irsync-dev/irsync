@@ -54,7 +54,12 @@ fn setup() -> Setup {
     );
     ok(
         &server,
-        &["export", "add", &format!("docs:{}", docs.display()), "--ro"],
+        &[
+            "export",
+            "add",
+            &format!("docs:{}", docs.display()),
+            "--read-only",
+        ],
     );
     ok(
         &server,

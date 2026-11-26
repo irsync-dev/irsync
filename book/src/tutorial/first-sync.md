@@ -16,7 +16,7 @@ forwarding, dynamic DNS or SSH tunnel.
 
 You write no configuration file by hand. Each machine generates its key the
 first time a command needs it and says so on stderr:
-`generated identity <path>`.
+`irsync: generated identity <path>`.
 
 ## The quick way: over ssh
 
@@ -59,7 +59,7 @@ In steps, it:
   the same OS and CPU. Not every platform has a release (an Intel Mac has
   none). Otherwise irsync stops and says so; install irsync on both machines
   and [set the server up by hand](#set-the-server-up-by-hand). Add
-  `--no-install` to copy nothing and use the irsync already at
+  `--no-ssh-install` to copy nothing and use the irsync already at
   `~/.local/bin/irsync` there. The installer never edits your shell startup
   files. When the server's login shell does not find `irsync`, the installer
   prints the line to add to a startup file there, and you see it while
@@ -97,7 +97,7 @@ know stops too, and tells you to run `irsync pair`.
 
 [Pair with a server over ssh](../how-to/pair.md) covers the options: pairing
 again after you update irsync, keeping the daemon out of the public DHT with
-`--no-dht`, another ssh command with `--rsh`, and limiting the client to
+`--server-no-dht`, another ssh command with `--rsh`, and limiting the client to
 named exports.
 
 ### Run it again

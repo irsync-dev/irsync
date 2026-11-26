@@ -515,7 +515,7 @@ pub(crate) async fn read_reply_body(recv: &mut RecvStream) -> io::Result<Vec<u8>
 /// Reads the daemon's answer to `Hello` and reports it to `tap`. A
 /// refusal (its `error`) is a [`SessionRefused`]; a reply that does not
 /// decode, or holds nothing, is malformed. The wait ends after `timeout`
-/// (`--timeout`; none or zero: no limit).
+/// (`--idle-timeout`; none or zero: no limit).
 pub async fn read_hello_reply(
     recv: &mut RecvStream,
     tap: &StreamTap,
@@ -690,7 +690,7 @@ pub(super) async fn run_client_inner(
     write_msg_tapped(&mut send, &hello.to_hello(), &tap)
         .await
         .map_err(|e| TransportError(format!("sending Hello: {e}")))?;
-    let ack = match read_hello_reply(&mut recv, &tap, opts.timeout).await? {
+    let ack = match read_hello_reply(&mut recv, &tap, opts.idle_timeout).await? {
         hello_reply::Reply::Ack(ack) => ack,
         _ => bail!("the daemon's reply does not fit a session"),
     };
@@ -802,7 +802,7 @@ pub(super) async fn run_client_inner(
         activity,
         meter,
         busy: Arc::default(),
-        idle_timeout: opts.timeout.filter(|t| !t.is_zero()),
+        idle_timeout: opts.idle_timeout.filter(|t| !t.is_zero()),
         #[cfg(feature = "test-hooks")]
         fault: None,
         #[cfg(feature = "test-hooks")]
@@ -1786,7 +1786,7 @@ const CLOSE_IDLE: u32 = 4;
 /// stream every interval, so the peer's inactivity watchdog sees progress
 /// it could not otherwise see (R35: a daemon hashing a large tree for `-c`
 /// looked dead to the client). An idle peer sends none, so a dead or stuck
-/// peer still times out. The interval bounds the usable `--timeout` from
+/// peer still times out. The interval bounds the usable `--idle-timeout` from
 /// below: anything shorter than a few intervals is unreliable.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 

@@ -76,7 +76,7 @@ variables, with their defaults:
 | `SEEDS` | Seeds to run, as arguments to `seq`. | `1 50` |
 | `JOBS` | Runs at the same time. | `8` |
 | `ITER`, `STEPS`, `TOTAL`, `FILE` | Iterations, filegen steps, `--max-total-size` and `--max-file-size` of each run. | `20`, `200`, `4G`, `256M` |
-| `CLIENT` | Arguments for the irsync client, after `--`. | `--timeout 300` |
+| `CLIENT` | Arguments for the irsync client, after `--`. | `--idle-timeout 300` |
 | `CHECK` | A command run as `$CHECK <root>` after each passing run; if it fails, the run counts as failed (`exit=3`) and its root is kept. | none |
 | `DURATION` | A time budget in seconds. Once it has passed, no new run starts, and the runs not started get no line in `summary.txt`. Runs already going finish. | none |
 
@@ -138,7 +138,7 @@ The tools are looked up next to the `irsync-stress` binary first, then on
 The client runs with `-a -H --delete --reconnect 0`, `--address` set to the
 daemon's loopback address, and its own `--identity` and an empty
 `--config`, then the arguments after `--`. The harness sets no inactivity
-timeout, so a hung sync hangs the run; `-- --timeout N` makes such a client
+timeout, so a hung sync hangs the run; `-- --idle-timeout N` makes such a client
 fail instead, and the harness then exits 2.
 
 ### Output

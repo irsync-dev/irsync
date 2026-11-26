@@ -77,7 +77,7 @@ accepts any stream:
 Access combines in a fixed way. A key's entry in an export's own table decides
 its access there; without one, its client's `all_exports` does, so an export's `ro`
 entry limits a key whose `all_exports` is `"rw"`. Within one table, `rw` wins over
-`ro`. An export marked `read_only`, which `irsync export add --ro` sets,
+`ro`. An export marked `read_only`, which `irsync export add --read-only` sets,
 refuses pushes from everyone, whatever they are granted. The rules are listed
 in [Configuration](../reference/configuration.md#exports).
 

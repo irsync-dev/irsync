@@ -117,8 +117,13 @@ fn apply_one(
         Op::ExportAdd(a) => {
             let (name, written) = exports::parse_remote_target(&a.target, home)?;
             let written = Path::new(&written);
-            exports::add_export(msg, &name, written, a.read_only, a.warm_index)?;
-            Ok(exports::added_line(&name, written, path))
+            let flags = exports::ExportFlags {
+                read_only: a.read_only,
+                index_at_start: a.index_at_start,
+                fsync: false,
+            };
+            let old = exports::add_export(msg, &name, written, flags)?;
+            Ok(exports::added_line(&name, written, old.as_deref(), path))
         }
         Op::ExportRemove(r) => {
             exports::remove_export(msg, &r.name)?;
@@ -205,7 +210,7 @@ pub fn view(
                 name: e.name.clone(),
                 path: under(&e.path, home),
                 read_only: e.read_only.unwrap_or(false),
-                warm_index: e.warm_index.unwrap_or(false),
+                index_at_start: e.index_at_start.unwrap_or(false),
                 fsync: e.fsync.unwrap_or(false),
                 is_auto: e.auto.unwrap_or(false),
                 rw: values(&e.rw),
@@ -270,8 +275,8 @@ pub fn summary(change: &v1::Change) -> String {
             if a.read_only {
                 s.push_str(" read_only");
             }
-            if a.warm_index {
-                s.push_str(" warm_index");
+            if a.index_at_start {
+                s.push_str(" index_at_start");
             }
             s
         }

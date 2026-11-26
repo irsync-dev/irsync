@@ -40,6 +40,7 @@ dns = true
 mdns = true
 congestion = "bbr"           # or "cubic", for pushes
 pq_key_exchange = "prefer"   # or "require"
+idle_timeout = "0"           # "0": never
 
 [daemon]
 identity = "~/.config/irsync/daemon_ed25519"
@@ -94,7 +95,7 @@ admin = "rw"                 # manage this server remotely
 [exports.photos]
 path = "/srv/photos"
 rw = ["myclient"]
-warm_index = false
+index_at_start = false
 fsync = false
 
 [exports.docs]
@@ -174,13 +175,14 @@ built-in default.
 | `parallel` | `128` | Data streams a push keeps open at once; at least 1. Flag: `--parallel`. |
 | `reconnect` | `1d` | How long a sync keeps redialling after a dropped connection; `0` gives up at once. Flag: `--reconnect`. |
 | `dial_retries` | `4` | How often a sync retries a server that has not answered yet, waiting about 1, 2, 4, 8 seconds and so on between tries, before it gives up; `0` gives up on the first failure. `reconnect` applies only once the server has answered. A server `irsync pair` saved is dialled once when no `dial_retries` is set: not here, not in its table and not by the flag. Flag: `--dial-retries`. |
-| `ssh_install` | `true` | Copy irsync to the server when `irsync pair` sets it up. `false` copies nothing: `pair` uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-install`. |
+| `ssh_install` | `true` | Copy irsync to the server when `irsync pair` sets it up. `false` copies nothing: `pair` uses the irsync already at `~/.local/bin/irsync` there, and stops if it is missing or another version. Flag: `--no-ssh-install`. |
 | `relay` | `default` | Which relay to use when no direct path works: `default` for n0's public relays, `disabled` for direct connections only (the lookups stay on), or the URL of a relay of your own. Flag: `--relay`. |
 | `dht` | `true` | Look daemons up in the mainline DHT. Flag: `--no-dht`. |
-| `dns` | `true` | Look daemons up through n0's DNS service. |
-| `mdns` | `true` | Look daemons up with mDNS on the local network. |
+| `dns` | `true` | Look daemons up through n0's DNS service. Flag: `--no-dns`. |
+| `mdns` | `true` | Look daemons up with mDNS on the local network. Flag: `--no-mdns`. |
 | `congestion` | `bbr` | QUIC's congestion controller when the client sends, that is for a push: `bbr` or `cubic`. |
 | `pq_key_exchange` | `prefer` | `require`: refuse a daemon that does not offer the post-quantum key exchange. See [Post-quantum key exchange](#post-quantum-key-exchange). Flag: `--pq-key-exchange`. |
+| `idle_timeout` | `0` | Drop a connection that moves no data and no control message for this long, and reconnect; `0` never does. The daemon's own is `[daemon] idle_timeout`. Flag: `--idle-timeout`. |
 
 `congestion` picks the congestion controller of the side that sends: the
 client's (the server's, else `[defaults]`'s) for a push, the daemon's for a pull.
@@ -304,9 +306,9 @@ be `all`, `all_exports`, `all_paths` or `admin`. Those words are reserved.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `path` | required | The directory, an absolute path; `~` is expanded. |
-| `read_only` | `false` | Refuse pushes from everyone, even from peers under `rw`. |
-| `warm_index` | `false` | Hash the files already in the export into its index whenever the daemon starts, so files `irsync` did not place are reused. |
-| `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. |
+| `read_only` | `false` | Refuse pushes from everyone, even from peers under `rw`. Flag: `irsync export add --read-only`. |
+| `index_at_start` | `false` | Hash the files already in the export into its index whenever the daemon starts, so files `irsync` did not place are reused. `irsync index --export NAME` does the same once. Flag: `irsync export add --index-at-start`. |
+| `fsync` | `false` | Flush every file a push writes to disk before it is renamed into place, as if the client had passed `--fsync`. Read on every connection. Flag: `irsync export add --fsync`. |
 | `rw` | `[]` | Peers with read-write access: client names or `EndpointId`s. |
 | `ro` | `[]` | Peers with read-only access. |
 | `auto` | `false` | Marks an automatic export, one the daemon made for a client with `all_paths`; see [Rights on a client](#rights-on-a-client). |

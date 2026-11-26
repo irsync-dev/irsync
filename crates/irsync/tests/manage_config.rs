@@ -225,7 +225,7 @@ fn every_key_has_a_default_or_says_it_has_none() {
 fn export_flags_default_to_off_for_an_export_that_exists() {
     use irsync::manage::config::get_or_default;
     let m = msg("[exports.p]\npath = \"/srv/p\"\n");
-    for flag in ["read_only", "warm_index", "fsync", "auto"] {
+    for flag in ["read_only", "index_at_start", "fsync", "auto"] {
         assert_eq!(
             get_or_default(&m, &p(&format!("exports.p.{flag}"))).unwrap(),
             Some(strings(&["false"])),
@@ -566,6 +566,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("defaults.relay", &["https://r/"]),
     ("defaults.congestion", &["cubic"]),
     ("defaults.pq_key_exchange", &["require"]),
+    ("defaults.idle_timeout", &["45s"]),
     ("daemon.identity", &["/d"]),
     ("daemon.idle_timeout", &["10m"]),
     ("daemon.dormant_session_timeout", &["1d"]),
@@ -602,7 +603,7 @@ const ALL_KEYS: &[(&str, &[&str])] = &[
     ("clients.nas.admin", &["rw"]),
     ("exports.p.path", &["/srv/q"]),
     ("exports.p.read_only", &["true"]),
-    ("exports.p.warm_index", &["true"]),
+    ("exports.p.index_at_start", &["true"]),
     ("exports.p.fsync", &["true"]),
     ("exports.p.auto", &["true"]),
     ("exports.p.rw", &["nas"]),

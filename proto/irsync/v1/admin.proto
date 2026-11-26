@@ -37,7 +37,7 @@ message Change {
 message ExportAdd {
   string target = 1; // "[NAME:]PATH", PATH absolute or ~
   bool read_only = 2;
-  bool warm_index = 3;
+  bool index_at_start = 3;
 }
 
 message ExportRemove {
@@ -121,7 +121,7 @@ message ExportView {
   string name = 1;
   string path = 2;
   bool read_only = 3;
-  bool warm_index = 4;
+  bool index_at_start = 4;
   bool fsync = 5;
   bool is_auto = 6;
   repeated string rw = 7;

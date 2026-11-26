@@ -2,23 +2,12 @@
 
 use std::process::exit;
 
-use clap::error::ErrorKind;
 use clap::Parser;
 use netstress::cli::Cli;
 use netstress::run::run;
 
 fn main() {
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
-        Err(e) => {
-            let code = match e.kind() {
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
-                _ => 2,
-            };
-            let _ = e.print();
-            exit(code);
-        }
-    };
+    let cli = Cli::parse();
     match run(&cli) {
         Ok(code) => exit(code),
         Err(e) => {

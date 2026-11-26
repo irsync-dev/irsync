@@ -141,12 +141,12 @@ redial, not to the end of the session:
   [Connections](connections.md#keeping-a-connection-alive).
 - **The daemon's `idle_timeout`**, 30 minutes by default: nothing has happened
   on the session for that long.
-- **The client's `--timeout SECS`**, off by default: no control message, no
-  data and no local progress for `SECS` seconds. It also bounds the wait for
-  the daemon's reply to `Hello`.
+- **The client's `--idle-timeout`**, or `idle_timeout` under `[defaults]`,
+  off by default: no control message, no data and no local progress for that
+  long. It also bounds the wait for the daemon's reply to `Hello`.
 
 Local progress (hashing, writing, finalizing, deleting) counts as activity, so
 that a side busy with a large file does not look dead. The busy side tells the
 other with a `Heartbeat` every 500 ms in which it made progress; an idle side
-sends none. Since heartbeats come every half second, a `--timeout` below a few
+sends none. Since heartbeats come every half second, an `--idle-timeout` below a few
 seconds is unreliable.

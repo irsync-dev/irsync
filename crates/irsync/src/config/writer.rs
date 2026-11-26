@@ -104,6 +104,7 @@ fn defaults(c: &pb::Defaults) -> Keys<'_> {
         "pq_key_exchange",
         c.pq_key_exchange.and_then(spelled::<PqKeyExchange>),
     );
+    k.duration("idle_timeout", c.idle_timeout.as_ref());
     k
 }
 
@@ -185,7 +186,7 @@ fn export(e: &pb::Export) -> Keys<'_> {
     let mut k = Keys::new(&e.key_comments);
     k.string("path", Some(&e.path));
     k.bool("read_only", e.read_only);
-    k.bool("warm_index", e.warm_index);
+    k.bool("index_at_start", e.index_at_start);
     k.bool("fsync", e.fsync);
     k.bool("auto", e.auto);
     k.array("rw", &e.rw, e.rw_set);

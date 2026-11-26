@@ -299,7 +299,7 @@ pub async fn spawn_daemon(
                 Export {
                     path,
                     read_only,
-                    warm_index: false,
+                    index_at_start: false,
                     fsync: false,
                     auto: false,
                     rw: Vec::new(),
@@ -327,7 +327,7 @@ pub async fn spawn_daemon_home(
                 Export {
                     path,
                     read_only,
-                    warm_index: false,
+                    index_at_start: false,
                     fsync: false,
                     auto: false,
                     rw: Vec::new(),
@@ -502,9 +502,9 @@ impl Harness {
     }
 
     /// A harness whose export is filled by `seed` before the daemon starts,
-    /// with `warm_index` set on it.
+    /// with `index_at_start` set on it.
     pub async fn warm(seed: impl FnOnce(&std::path::Path)) -> Harness {
-        Self::build(None, |e| e.warm_index = true, seed).await.0
+        Self::build(None, |e| e.index_at_start = true, seed).await.0
     }
 
     /// A harness whose export is first adjusted by `configure`.
@@ -537,7 +537,7 @@ impl Harness {
         let mut m = irsync::config::exports::Export {
             path: export.path().to_path_buf(),
             read_only: false,
-            warm_index: false,
+            index_at_start: false,
             fsync: false,
             auto: false,
             rw: Vec::new(),

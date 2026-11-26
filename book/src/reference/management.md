@@ -2,8 +2,8 @@
 
 These commands read and edit the config file, `~/.config/irsync/irsync.toml`
 (see [Configuration](configuration.md)). There are four nouns, `server`,
-`client`, `export` and `grant`, each with `add`, `remove` and `list` (`server`
-and `client` also `rename`), plus `export update`; `id` for the identities; `config` for any key by its dotted
+`client`, `export` and `grant`, each with `add`, `remove` and `list` (`server`,
+`client` and `export` also `rename`, `client` and `export` also `set`); `id` for the identities; `config` for any key by its dotted
 path; and `show` for an overview.
 
 A noun on its own runs its `list`: `irsync server`, `irsync client`, `irsync export`,
@@ -48,13 +48,13 @@ the how-to "Manage a server from your client". It needs
 
 | Remote | Not remote |
 | --- | --- |
-| `export list`, `add`, `remove` | `export update` |
+| `export list`, `add`, `remove` | `export set`, `export rename` |
 | `grant list`, `add`, `remove` | `config set`, `config unset` |
 | `client list`, `add`, `remove`, `rename`, `set` | `id` |
 | `show`, `config get`, `config list` | `server` |
 
 A remote `export add` takes an absolute path or one that starts with `~`,
-quoted so that your shell leaves it alone. A client cannot remove or lower its
+quoted so that your shell leaves it alone. It has no `--fsync`. A client cannot remove or lower its
 own `admin` right this way.
 
 A running daemon picks up `client`, `export` and `grant` changes on its next
@@ -72,7 +72,8 @@ connection; nothing needs a restart.
 The flags of `server add` set the keys of the server's table; see
 [Configuration](configuration.md#servers) for what each does. `--address`
 replaces the stored list and may be repeated. `--dht`, `--dns` and `--mdns` take
-`yes` or `no` (also `true` or `false`). `--pq-key-exchange require` refuses this
+`yes` or `no` (also `true` or `false`): they store the setting, where a sync's
+`--no-dht`, `--no-dns` and `--no-mdns` turn a lookup off for one run. `--pq-key-exchange require` refuses this
 server when it does not offer post-quantum key exchange.
 
 ## client
@@ -92,17 +93,23 @@ entries.
 
 | Command | Effect |
 | --- | --- |
-| `irsync export add NAME:PATH [--ro] [--warm-index]` | Export a directory under `NAME`. Prints the daemon's `EndpointId` on stdout, generating the daemon's key if it does not exist yet. |
-| `irsync export add PATH [--ro] [--warm-index]` | The same, named after the directory's last component. |
+| `irsync export add NAME:PATH [--read-only] [--index-at-start] [--fsync]` | Export a directory under `NAME`. For an existing name, change its path and turn the flags given on; its other settings and its grants stay. Prints the daemon's `EndpointId` on stdout, generating the daemon's key if it does not exist yet. |
+| `irsync export add PATH [--read-only] [--index-at-start] [--fsync]` | The same, named after the directory's last component. |
+| `irsync export set NAME KEY=VALUE...` | Set an export's settings. `KEY` is `read_only`, `index_at_start` or `fsync`, and `VALUE` is `true` or `false`. Give several pairs to change them together: if one is wrong, nothing changes. Prints the export's settings afterwards. |
+| `irsync export rename OLD NEW` | Rename an export. Its path, settings and grants stay, and so does its place in the file. Refused, with nothing changed, when `OLD` is no export, `NEW` is not a valid export name or `NEW` is an export already. Clients then name it `NEW` in `HOST:PATH`. |
 | `irsync export remove NAME` | Stop exporting a directory. Its grants go with it. |
-| `irsync export list` | One block per export: `NAME: PATH`, then `read_only`, `warm_index` and `fsync` when set, then its grant lines. |
-| `irsync export update [-n] [-v] [-q] NAME...` | Hash the files of the named exports into their indexes, so that files `irsync` did not place are reused from the next session on. `all` names every export. `-n` counts what would be hashed. See [Seed the index](../how-to/seed-the-index.md). |
+| `irsync export list` | One block per export: `NAME: PATH`, then `read_only`, `index_at_start` and `fsync` when set, then its grant lines. |
 
 `export add` joins a relative `PATH` onto the working directory, expands a
 leading `~` (`irsync export add home:~` exports the home directory), and
 requires an existing directory. The text before the first `:` is a name only
-when it has no `/`. `--ro` sets `read_only`, which refuses pushes from
-everyone; `--warm-index` sets `warm_index`.
+when it has no `/`. `--read-only` sets `read_only`, which refuses pushes from
+everyone; `--index-at-start` sets `index_at_start`, which hashes the export's
+files into its index whenever the daemon starts; `--fsync` sets `fsync`, which
+flushes every file pushed into the export to disk. A flag left out leaves the
+setting alone; to turn one off, use `irsync export set NAME KEY=false`. To
+hash the files once, now, run `irsync index --export NAME`. See
+[Seed the index](../how-to/seed-the-index.md).
 
 ## grant
 
@@ -133,11 +140,11 @@ export has one of them as its name.
 
 | Command | Effect |
 | --- | --- |
-| `irsync id list [--passphrase-file PATH]` | Print every identity this machine has: `client:` with the client's public key line and `EndpointId`, then `daemon:` with the daemon's when a daemon key exists. Generates the client's key if no key serves; never the daemon's. |
-| `irsync id show [--passphrase-file PATH]` | Print `client:`, then the client's public key line and `EndpointId`, generating the key if no key serves. On a machine that also has a daemon key, a note on stderr says that clients connect to the daemon's `EndpointId` and that `irsync id show --daemon` prints it. |
+| `irsync id list [--identity FILE] [--passphrase-file PATH]` | Print every identity this machine has: `client:` with the client's public key line and `EndpointId`, then `daemon:` with the daemon's when a daemon key exists. Generates the client's key if no key serves; never the daemon's. |
+| `irsync id show [--identity FILE] [--passphrase-file PATH]` | Print `client:`, then the client's public key line and `EndpointId`, generating the key if no key serves. On a machine that also has a daemon key, a note on stderr says that clients connect to the daemon's `EndpointId` and that `irsync id show --daemon` prints it. |
 | `irsync id show --daemon` | The same for the daemon, under `daemon:`. Never generates the daemon's key: without one it fails and says how to make one. |
 | `irsync id show -a` | Both, each under its label. |
-| `irsync id generate [--daemon \| --out PATH] [-f] [--passphrase-file PATH]` | Write a new Ed25519 key pair at the client's path (default), the daemon's path, or `PATH`, with the public key beside it as `.pub`, and print the public key line and `EndpointId`. Refuses to overwrite an existing key or `.pub` file unless given `-f`/`--force`. With `--passphrase-file`, the private key is written encrypted with the passphrase on the first line of that file (its line ending, LF or CR+LF, is not part of it). A file that is missing or empty is an error and nothing is written. `IRSYNC_PASSPHRASE` does not encrypt a new key. |
+| `irsync id generate [--daemon] [--out PATH] [-f] [--passphrase-file PATH]` | Write a new Ed25519 key pair, with the public key beside it as `.pub`: the client's (default) or with `--daemon` the daemon's, at its configured path (for the client's, `--identity FILE` when given) or at `--out PATH`, and print the public key line and `EndpointId`. Refuses to overwrite an existing key or `.pub` file unless given `-f`/`--force`. With `--passphrase-file`, the private key is written encrypted with the passphrase on the first line of that file (its line ending, LF or CR+LF, is not part of it). A file that is missing or empty is an error and nothing is written. `IRSYNC_PASSPHRASE` does not encrypt a new key. |
 
 Some commands generate a missing key automatically: a sync, a listing,
 `id show`, `id list`, `show`, `export add` and the daemon. A key generated
@@ -147,7 +154,8 @@ do not generate a missing key. They fail, write nothing, and tell you to run
 daemon's key.
 
 The client's key is found the way ssh picks one; see
-[Configuration](configuration.md#identity-and-state). After `irsync id
+[Configuration](configuration.md#identity-and-state). `--identity FILE`
+names it for one command. After `irsync id
 generate` has written `~/.config/irsync/id_ed25519`, `~/.ssh/id_ed25519` is no
 longer consulted. Replacing a key with `--force` is permanent: every grant made
 for the old key stops working.
@@ -182,7 +190,7 @@ writes that string as a grant entry that matches nobody.
 ## show
 
 ```text
-irsync show [--passphrase-file PATH]
+irsync show [--identity FILE] [--passphrase-file PATH]
 ```
 
 Prints the config file's path, the client's `EndpointId` and public key line,

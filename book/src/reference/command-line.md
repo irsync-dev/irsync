@@ -111,7 +111,11 @@ names `irsync pair`; see [irsync pair](#irsync-pair).
   `irsync HOST:PATH` prints the files a pull would fetch (just that file, if
   `PATH` is a file) and writes nothing; it
   recurses unless `--no-recursive` is given. A listing does not redial: if the
-  connection fails, it exits instead of waiting out the reconnect window.
+  connection fails, it exits instead of waiting out the reconnect window. It
+  takes the flags that say how to reach the server (`--relay`,
+  `--pq-key-exchange`, `--no-dht`, `--no-dns`, `--no-mdns`, `--address`,
+  `--dial-retries`, `--idle-timeout`), the filters and `--no-recursive`. A
+  sync's other flags, such as `-a` or `--delete`, are refused.
 
 The daemon honours the client's flags in both directions, filters included.
 
@@ -162,10 +166,9 @@ See [Your first sync](../tutorial/first-sync.md#the-quick-way-over-ssh).
 | Flag | Meaning |
 | --- | --- |
 | `--rsh CMD` | The remote shell, split on spaces like rsync's `-e`, for example `--rsh "ssh -p 2222"`. Default: `IRSYNC_RSH`, else `ssh`. |
-| `--no-install` | Copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
-| `--no-dht` | Turn the server's DHT publishing off (`[daemon] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
+| `--no-ssh-install` | Copy nothing to the server: use the irsync already at `~/.local/bin/irsync` there, and stop if it is missing or another version. Default: `ssh_install` in the config file, else install. |
+| `--server-no-dht` | Turn the server's DHT publishing off (`[daemon] dht = false`); a running daemon re-reads its settings. Without it the server's setting is left alone, and new servers publish. |
 | `--no-service` | Do not make the daemon a user service: start it in the background, until the server reboots. For a daemon you run your own way. |
-| `--identity FILE` | The private key to pair with. Default as for a sync. |
 
 ## rsync-compatible flags
 
@@ -195,7 +198,7 @@ different meaning have a section of their own:
 | `-u`, `--update` | Skip files that are newer on the destination. |
 | `--delete-before` | Delete before the transfer, once both sides are listed. |
 | `--delete-during` | Delete each directory's extraneous entries as the run leaves that directory, so space is freed as the run goes. |
-| `--delete-after` | Delete after the transfer; what `--delete` does. |
+| `--delete-after` | Delete after the transfer; what `--delete` does. Only one of `--delete-before`, `--delete-during` and `--delete-after` may be given. |
 | `--max-delete N` | Stop deleting after `N` removals. The run exits with code 25. |
 | `--exclude PATTERN` | Exclude paths that match an rsync pattern: `*`, `**`, `?`, `[...]`; a leading `/` anchors the pattern to the root, a trailing `/` matches directories only. |
 | `--include PATTERN` | Include paths that match, even if a later `--exclude` would hide them. |
@@ -224,7 +227,6 @@ wins.
 | `--delete` | Delete destination files that are gone from the source, after the transfer, the same as `--delete-after`. Nothing is deleted without one of the `--delete` flags. | The same as `--delete-during`. |
 | `--delete-excluded` | Also delete destination files that the filters exclude. Implies `--delete`, so the deletions run after the transfer. | Implies `--delete`, so the deletions run during the transfer. |
 | `-S`, `--sparse` | Leave chunks that are all zeros as holes. Without it, only files that are sparse in the source are written sparse. | Finds runs of zeros at write granularity, not only whole chunks. |
-| `--timeout SECS` | Drop a connection that moves no data and no control message for `SECS` seconds; the session then reconnects. `0`, the default, means no timeout. | A connection idle for `SECS` seconds ends the run with code 30. |
 | `--progress` | Draws the live progress block (see [Output](#output)) when stdout is a terminal. | Prints the progress of each file. |
 | `-P` | The same as `--progress`. irsync always keeps partial files. | The same as `--partial --progress`. |
 | `--info SPEC` | Only `progress1` and `progress2` are read, as `--progress`; the rest is ignored. | Selects informational output, such as the progress of the whole transfer with `--info=progress2`. |
@@ -302,13 +304,16 @@ These have no rsync counterpart.
 | --- | --- |
 | `--parallel N` | Data streams a push keeps open at once, across all files. Default: `parallel` from the server entry, else from `[defaults]`, else 128. A pull uses the daemon's 128. See [Files in flight and streams](../explanation/transfer-algorithm.md#files-in-flight-and-streams). |
 | `--reconnect DUR` | How long to keep redialling after a dropped connection, as `N[s\|m\|h\|d]`. `0` gives up at once, like rsync. Default: `reconnect` from the server entry, else from `[defaults]`, else 24h. This window applies only once the server has answered; before that, `--dial-retries` applies. |
+| `--idle-timeout DUR` | Drop a connection that moves no data and no control message for this long; the session then reconnects. `DUR` is written as for `--reconnect`; a bare number is seconds. `0` never drops one. Default: `idle_timeout` from `[defaults]`, else `0`. rsync's `--timeout SECS`, which ends the run instead, is not accepted. |
 | `--dial-retries N` | How often to retry a server that has not answered yet, before the run gives up. The waits grow: about 1, 2, 4, 8 seconds and so on, capped at a minute. `0` gives up on the first failure. Default: `dial_retries` from the server entry, else from `[defaults]`, else 4. For a server `irsync pair` saved (one with `ssh`), the default is 0 instead of 4; each try there waits at most 15 seconds. |
 | `--relay default\|disabled\|URL` | The relay for this sync: `default` for n0's public relays, `disabled` for direct connections only (the address lookups stay on), or the URL of a relay of your own. Default: `relay` from the server entry, else from `[defaults]`, else `default`. Cannot be combined with `--address`. |
 | `--pq-key-exchange prefer\|require` | `require`: refuse a daemon that does not offer the post-quantum key exchange, such as an irsync built without it; nothing is sent to it. `prefer`: use that key exchange when the daemon offers it. Default: `pq_key_exchange` from the server entry, else from `[defaults]`, else `prefer`. See [Post-quantum key exchange](configuration.md#post-quantum-key-exchange). |
-| `--no-dht` | Do not look the daemon up in the mainline DHT. |
+| `--no-dht` | Do not look the daemon up in the mainline DHT for this run. |
+| `--no-dns` | Do not look the daemon up through n0's DNS service for this run. |
+| `--no-mdns` | Do not look the daemon up with mDNS on the local network for this run. |
 | `--address ADDR` | Dial the daemon at `ip:port`, `[ipv6]:port` or `host:port` directly; repeatable. Turns the relay, DNS, DHT, mDNS and the port mapper off, and binds the client to the local address it dials from (see [Keep to one path](../how-to/direct-and-relay.md#keep-to-one-path)). The daemon's `EndpointId` is still required and still checked. |
 | `--config PATH` | The config file. Default: `~/.config/irsync/irsync.toml`. |
-| `--identity FILE` | The private key to connect with. Default: `[defaults] identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
+| `--identity FILE` | The private key to connect with. Every command that uses the client's key takes it; see [Flags every command takes](#flags-every-command-takes). Default: `[defaults] identity` in the config file, else `~/.config/irsync/id_ed25519` when it exists, else `~/.ssh/id_ed25519` when it exists, else a key generated at `~/.config/irsync/id_ed25519`. A named file is the whole answer: when it is missing, a key is generated there. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted key from the first line of this file. Without it, `IRSYNC_PASSPHRASE` is used, else a prompt when stdin is a terminal. |
 | `--no-resume` | Start a fresh plan instead of resuming a dormant session. Partial files are still picked up. |
 | `--no-rename-detection` | Do not fill files from other files on the receiving side that hold the same content or parts of it, so a moved or copied file is transferred again. A changed file still reuses its own old version. |
@@ -319,6 +324,11 @@ The connection settings resolve in this order: the flag, then the server's
 table, then `[defaults]`, then the built-in default. See
 [Configuration](configuration.md#defaults).
 
+An on/off setting has a `--no-` flag here, which turns it off for this run
+only: `--no-dht`, `--no-dns`, `--no-mdns`. `irsync server add` stores
+such a setting instead, so its flags take a value, `--dht yes` or `--dht no`;
+the value can be changed back later the same way.
+
 ## Subcommands
 
 | Command | What it does |
@@ -328,9 +338,9 @@ table, then `[defaults]`, then the built-in default. See
 | `irsync pair` | Set a server up over ssh and save it as a server. See [irsync pair](#irsync-pair). |
 | `irsync remote` | Manage a server's exports, clients and grants from this client. See [irsync remote](#irsync-remote). |
 | `irsync daemon` | Run the daemon. Its flags are under [irsync daemon](#irsync-daemon). |
-| `irsync index` | Hash the files under local roots into their index. See [Seed the index](../how-to/seed-the-index.md). |
+| `irsync index` | Hash the files under local roots, or of the daemon's exports, into their index. See [Seed the index](../how-to/seed-the-index.md). |
 | `irsync gc` | Remove abandoned partial files, dormant sessions, stale index entries and the index files of older irsync builds. See [Clean up state](../how-to/clean-up.md). |
-| `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config` and `--passphrase-file` too. `irsync client set NAME all_paths=rw` lets a client reach any path, read-write; it is what `irsync pair` sets. |
+| `irsync server`, `client`, `export`, `grant`, `id`, `config`, `show` | Manage servers, clients, exports, grants, identities and settings. See [Management commands](management.md). Each of the first six alone runs its `list`. They take `-v`, `-q`, `--config`, `--passphrase-file` and `--identity` too. `irsync client set NAME all_paths=rw` lets a client reach any path, read-write; it is what `irsync pair` sets. |
 
 ### irsync remote
 
@@ -354,8 +364,8 @@ The book has a how-to, "Manage a server from your client".
 
 ### Flags every command takes
 
-`-v`, `-q`, `--config PATH` and `--passphrase-file PATH` are accepted before
-or after any command: `irsync -v gc` and `irsync id show -vv` both work. A
+`-v`, `-q`, `--config PATH`, `--passphrase-file PATH` and `--identity FILE`
+are accepted before or after any command: `irsync -v gc` and `irsync id show -vv` both work. A
 command name right after these flags is the command. So a directory called
 `gc` is written `./gc`: `irsync -v ./gc host:path`. The same goes for `sync`
 and `list`: `irsync -av ./sync myserver:` pushes the directory `sync`.
@@ -363,7 +373,11 @@ and `list`: `irsync -av ./sync myserver:` pushes the directory `sync`.
 - `-v` asks for the command's own extra output. Where a command has none,
   `-v` shows nothing more. `-vv` gives info logs, `-vvv` debug, `-vvvv`
   trace, and `-vvvvv` trace plus every protocol message.
-- `-q` logs errors only and prints no summary. It wins over `-v`.
+- `-q` logs errors only and prints no summary. It wins over `-v`. A
+  management command or `pair` then also leaves out the lines that say what it
+  did, such as `removed server myserver from …`. What the command is run for,
+  such as a list or an id, still prints, and so do errors and the note that a
+  key was generated.
 - `RUST_LOG` overrides the log level.
 - `--config PATH` names the config file for every command:
   `irsync --config f server list`.
@@ -377,6 +391,10 @@ and `list`: `irsync -av ./sync myserver:` pushes the directory `sync`.
   instead. They write nothing and name `irsync id generate --passphrase-file
   PATH`. The file must be for its owner only (`chmod 600`); see
   [File permissions](configuration.md#file-permissions).
+- `--identity FILE` names the client's key for every command that uses it:
+  a sync, a listing, `pair`, `remote`, `id show`, `id list` and `show`.
+  `irsync id generate` writes the new client key there. The daemon has a
+  key of its own and ignores the flag.
 - `irsync show --passphrase-file PATH` reads both the client's and the
   daemon's key. Both must exist already: without the flag it would generate
   the missing one.
@@ -406,14 +424,15 @@ first prints a banner with its version, relay and discovery settings.
 | `--config PATH` | The config file. |
 | `--passphrase-file PATH` | Read the passphrase of an encrypted daemon key from the first line of this file. |
 | `--listen ADDR` | Bind this socket (`ip:port`, `[ipv6]:port` or `host:port`; port 0 lets the system pick) instead of the config's `listen` list. Repeatable, at most one IPv4 and one IPv6. |
-| `--run-as-root-i-know-what-i-am-doing` | Start even as root. Without it, or `allow_root = true` under `[daemon]`, the daemon refuses to run as root: it has not had a security audit, and as root any client with write access can create setuid files and device nodes. |
+| `--run-as-root-i-know-what-i-am-doing` | Start even as root. Without it, or [`allow_root = true`](configuration.md#daemon) under `[daemon]`, the daemon refuses to run as root: it has not had a security audit, and as root any client with write access can create setuid files and device nodes. |
 | `-v`, `--verbose` | Nothing extra; `-vv` and up log more. See [Flags every command takes](#flags-every-command-takes). |
 | `-q`, `--quiet` | Log errors only. |
 
 ### irsync index
 
 ```text
-irsync index [-n] [-v] [-q] [--config PATH] ROOT...
+irsync index [-n] [-v] [-q] [--config PATH]
+             [--export NAME]... [ROOT]...
 ```
 
 | Flag | Meaning |
@@ -421,7 +440,10 @@ irsync index [-n] [-v] [-q] [--config PATH] ROOT...
 | `-n`, `--dry-run` | Walk and count what would be hashed; read nothing. |
 | `-v`, `--verbose` | Nothing extra; `-vv` and up log more. |
 | `-q`, `--quiet` | Log errors only and print no summary. |
-| `--config PATH` | The config file, for `state_dir`. |
+| `--config PATH` | The config file, for `state_dir` and the exports. |
+| `--export NAME` | Hash the files of the daemon's export `NAME` too; `all` for every export. Repeatable. Run it as the daemon's account, with its `--config`, so the rows land where the daemon reads them. |
+
+Give at least one `ROOT` or `--export`.
 
 ### irsync gc
 
@@ -451,8 +473,8 @@ irsync gc [-n] [-v] [-q] [--config PATH]
 | Code | Meaning |
 | --- | --- |
 | 0 | Success. |
-| 1 | Nothing got through: a configuration, identity or connection error; an operand pair `irsync` rejects (both sides local, both remote, several sources on a pull); or every source failed. |
-| 2 | The command line could not be parsed: an unknown flag, a bad value, a missing operand. |
+| 1 | Nothing got through: a configuration, identity or connection error, or every source failed. |
+| 2 | The command line is wrong: an unknown flag, a bad value, a missing operand, or operands `irsync` rejects (both sides local, both remote, several sources on a pull, an empty host). |
 | 23 | Partial transfer: some files could not be transferred, or some sources of a push failed while others synced. |
 | 24 | Some source files vanished. Only `--paranoid`, in its final re-check, gives this. |
 | 25 | Deletions stopped at `--max-delete`. |
@@ -464,6 +486,7 @@ When several apply, 1 wins over 25, 25 over 23, and 23 over 24. A file listing, 
 uses the same codes; the export listing, `irsync HOST:`, exits 0 or 1.
 
 The other commands exit 0 on success and 1 on an error, with these
-additions: `irsync index` and `irsync export update` exit 23 when a file could
-not be read or a directory could not be listed, and `irsync config get` exits
+additions: `irsync index` exits 23 when a file could
+not be read or a directory could not be listed, `irsync gc` exits 23 when
+something could not be read or removed (it goes on with the rest), and `irsync config get` exits
 1 for a key that is not set and has no default.

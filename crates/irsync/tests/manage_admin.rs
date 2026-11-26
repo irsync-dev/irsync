@@ -42,7 +42,7 @@ fn export_add(target: &str) -> v1::Change {
     change(Op::ExportAdd(v1::ExportAdd {
         target: target.to_string(),
         read_only: false,
-        warm_index: false,
+        index_at_start: false,
     }))
 }
 
@@ -328,7 +328,7 @@ fn view_lists_exports_and_clients_with_rights() {
             name: "photos".into(),
             path: "/srv/photos".into(),
             read_only: true,
-            warm_index: false,
+            index_at_start: false,
             fsync: false,
             is_auto: false,
             rw: vec!["me".into()],

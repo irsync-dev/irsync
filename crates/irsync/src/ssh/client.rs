@@ -208,8 +208,8 @@ pub fn ensure_installed(rsh: &Rsh, dest: &str, probe: &Probe, no_install: bool) 
             None => "found none".to_string(),
         };
         bail!(
-            "--no-install: {dest} has no irsync {} at ~/.local/bin/irsync ({found}). \
-             Install that version there, or run without --no-install (or set \
+            "--no-ssh-install: {dest} has no irsync {} at ~/.local/bin/irsync ({found}). \
+             Install that version there, or run without --no-ssh-install (or set \
              ssh_install = true in the config). Nothing was changed.",
             *LONG_VERSION
         );

@@ -610,7 +610,7 @@ fn export_list_prints_the_export_blocks_of_show() {
             "export",
             "add",
             &format!("p:{}", home.join("p").display()),
-            "--ro",
+            "--read-only",
         ],
         vec!["export", "add", &format!("q:{}", home.join("q").display())],
         vec!["grant", "add", "p", "laptop"],
@@ -655,7 +655,7 @@ fn grant_list_by_export_by_peer_and_for_an_unknown_name() {
             "export",
             "add",
             &format!("q:{}", home.join("q").display()),
-            "--ro",
+            "--read-only",
         ],
         vec!["grant", "add", "p", "laptop"],
         vec!["grant", "add", "q", "laptop"],
@@ -754,7 +754,7 @@ fn grant_remove_all_all_empties_the_exports_but_keeps_client_rights() {
 }
 
 #[test]
-fn export_update_hashes_the_named_export_into_the_daemon_state() {
+fn index_export_hashes_the_named_export_into_the_daemon_state() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("srv/photos")).unwrap();
@@ -767,14 +767,14 @@ fn export_update_hashes_the_named_export_into_the_daemon_state() {
     let text = std::fs::read_to_string(&config).unwrap();
     irsync::fs::private::write(&config, format!("state_dir = {:?}\n{text}", state)).unwrap();
     // A dry run reads nothing and creates no index.
-    let o = irsync(&home, &["export", "update", "-n", "all"]);
+    let o = irsync(&home, &["index", "-n", "--export", "all"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(
         out.contains("2 file(s), 2 to hash (12288 bytes)"),
         "{out:?}"
     );
-    let o = irsync(&home, &["export", "update", "photos"]);
+    let o = irsync(&home, &["index", "--export", "photos"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(out.contains("2 file(s), 2 hashed (12288 bytes)"), "{out:?}");
@@ -783,23 +783,23 @@ fn export_update_hashes_the_named_export_into_the_daemon_state() {
         .next()
         .is_some());
     // A second run finds every row fresh.
-    let o = irsync(&home, &["export", "update", "all"]);
+    let o = irsync(&home, &["index", "--export", "all"]);
     let out = String::from_utf8(o.stdout).unwrap();
     assert!(out.contains("2 file(s), 0 hashed (0 bytes)"), "{out:?}");
     // `all` stands alone.
-    let o = irsync(&home, &["export", "update", "all", "photos"]);
+    let o = irsync(&home, &["index", "--export", "all", "--export", "photos"]);
     assert_eq!(o.status.code(), Some(1));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("irsync export update: all names every export; give it alone"),
+        err.contains("irsync index: --export all names every export; give it alone"),
         "{err}"
     );
     // An unknown name fails and names the file.
-    let o = irsync(&home, &["export", "update", "music"]);
+    let o = irsync(&home, &["index", "--export", "music"]);
     assert_eq!(o.status.code(), Some(1));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
-        err.contains("irsync export update: no export \"music\" in"),
+        err.contains("irsync index: no export \"music\" in"),
         "{err}"
     );
     assert!(err.contains("irsync.toml"), "{err}");
@@ -2025,6 +2025,37 @@ fn id_generate_encrypts_with_daemon_out_and_force() {
     assert!(ssh_key::PrivateKey::read_openssh_file(&out)
         .unwrap()
         .is_encrypted());
+    // --identity names the client key that id show prints.
+    let shown = irsync(
+        &home,
+        &["id", "show", "--identity", out_s, "--passphrase-file", pf_s],
+    );
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    let pub_line = std::fs::read_to_string(home.join("elsewhere/key.pub")).unwrap();
+    assert!(
+        String::from_utf8_lossy(&shown.stdout).contains(pub_line.trim()),
+        "{}",
+        String::from_utf8_lossy(&shown.stdout)
+    );
+    // A daemon key at a path of your own: its comment says whose it is.
+    let dkey = home.join("elsewhere/daemon_key");
+    let o = irsync(
+        &home,
+        &[
+            "id",
+            "generate",
+            "--daemon",
+            "--out",
+            dkey.to_str().unwrap(),
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let line = std::fs::read_to_string(home.join("elsewhere/daemon_key.pub")).unwrap();
+    assert!(line.trim_end().ends_with(" irsync-daemon"), "{line}");
 }
 
 #[test]
@@ -2299,8 +2330,106 @@ fn server_and_client_rename_take_their_grants_in_the_file() {
     );
 }
 
+/// `export add` on an existing name updates it, as `server add` and
+/// `client add` do; `export set` and `export rename` change one export.
+#[test]
+fn export_add_updates_and_set_and_rename_change_an_export() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    for dir in ["p", "q"] {
+        std::fs::create_dir_all(home.join(dir)).unwrap();
+    }
+    let ok = |args: &[&str]| {
+        let o = irsync(&home, args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let at = |dir: &str| format!("photos:{}", home.join(dir).display());
+    ok(&["export", "add", &at("p"), "--read-only"]);
+    let err = ok(&["export", "add", &at("q"), "--fsync"]);
+    assert!(err.contains("updated export photos ("), "{err}");
+    let get = |key: &str| {
+        let o = irsync(&home, &["config", "get", &format!("exports.photos.{key}")]);
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    assert_eq!(get("path"), home.join("q").display().to_string());
+    assert_eq!(
+        (get("read_only"), get("fsync")),
+        ("true".into(), "true".into())
+    );
+    let err = ok(&[
+        "export",
+        "set",
+        "photos",
+        "read_only=false",
+        "index_at_start=true",
+    ]);
+    assert!(
+        err.contains("photos: read_only=false index_at_start=true fsync=true"),
+        "{err}"
+    );
+    ok(&["export", "rename", "photos", "pics"]);
+    let o = irsync(&home, &["export", "list"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.starts_with("pics: "), "{out}");
+    let o = irsync(&home, &["export", "set", "photos", "fsync=false"]);
+    assert_eq!(o.status.code(), Some(1));
+}
+
+/// `-q` leaves out the lines that say what a management command did; what
+/// it is run for (a list, an id) and errors still print.
+#[test]
+fn quiet_management_commands_print_only_results_and_errors() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    std::fs::create_dir_all(home.join("p")).unwrap();
+    let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
+    let p = format!("p:{}", home.join("p").display());
+    for args in [
+        vec!["-q", "server", "add", "s", &id],
+        vec!["server", "rename", "s", "t", "-q"],
+        vec!["-q", "client", "add", "c", &id],
+        vec!["-q", "client", "set", "c", "all_exports=ro"],
+        vec!["-q", "grant", "add", "p", "c"],
+        vec!["-q", "grant", "remove", "p", "c"],
+        vec!["-q", "config", "set", "defaults.parallel", "3"],
+        vec!["-q", "server", "remove", "t"],
+    ] {
+        if args.contains(&"grant") && args.contains(&"add") {
+            let o = irsync(&home, &["-q", "export", "add", &p]);
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            // A key made on the way is still said: it is a new file.
+            let err = String::from_utf8_lossy(&o.stderr);
+            assert!(
+                err.lines().all(|l| l.contains("generated identity")),
+                "{err}"
+            );
+            // The daemon's id is what export add is run for.
+            assert_eq!(String::from_utf8_lossy(&o.stdout).trim().len(), 64);
+        }
+        let o = irsync(&home, &args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(
+            o.stdout.is_empty() && o.stderr.is_empty(),
+            "{args:?}: {o:?}"
+        );
+    }
+    let o = irsync(&home, &["-q", "client", "list"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("c: "));
+    let o = irsync(&home, &["-q", "server", "remove", "nobody"]);
+    assert!(!o.status.success() && !o.stderr.is_empty());
+}
+
 /// `irsync --help` names `sync` and `list` and keeps the transfer options;
-/// each has its own help, `list` with its one operand.
+/// each has its own help, `list` with its one operand and its own flags.
 #[test]
 fn help_names_sync_and_list_and_each_has_its_own() {
     let d = tempfile::tempdir().unwrap();
@@ -2316,16 +2445,19 @@ fn help_names_sync_and_list_and_each_has_its_own() {
         top.contains("--archive"),
         "transfer options stay at the top: {top}"
     );
-    for (cmd, want) in [("sync", "SRC... DEST"), ("list", "HOST[:PATH]")] {
-        let o = irsync(&home, &[cmd, "--help"]);
-        assert!(o.status.success(), "{cmd}");
-        let h = String::from_utf8_lossy(&o.stdout);
-        assert!(h.contains(want) && h.contains("--archive"), "{cmd}: {h}");
-    }
+    let o = irsync(&home, &["sync", "--help"]);
+    assert!(o.status.success());
+    let h = String::from_utf8_lossy(&o.stdout);
+    assert!(h.contains("SRC... DEST") && h.contains("--archive"), "{h}");
     let o = irsync(&home, &["list", "--help"]);
+    assert!(o.status.success());
     let h = String::from_utf8_lossy(&o.stdout);
     assert!(h.contains("irsync list [OPTIONS] <HOST[:PATH]>\n"), "{h}");
-    assert!(!h.contains("several sources"), "{h}");
+    assert!(h.contains("--no-recursive") && h.contains("--relay"), "{h}");
+    assert!(
+        !h.contains("several sources") && !h.contains("--archive"),
+        "{h}"
+    );
 }
 
 /// A `list` usage error shows the usage of `list`.

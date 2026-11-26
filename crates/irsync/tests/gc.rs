@@ -661,6 +661,39 @@ fn irsync_gc_end_to_end() {
     assert_eq!(gc(&["-q"]), "");
 }
 
+/// `irsync gc` that cannot remove a file says so and exits 23, as
+/// `irsync index` does for a file it cannot read.
+#[test]
+fn irsync_gc_exits_23_after_an_error() {
+    if irsync::platform::is_root() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let (home, root, state) = (
+        d.path().join("home"),
+        d.path().join("root"),
+        d.path().join("state"),
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(root.join("ro")).unwrap();
+    let config = d.path().join("irsync.toml");
+    irsync::fs::private::write(&config, format!("state_dir = {state:?}\n")).unwrap();
+    std::fs::write(root.join("ro/.irsync.stuck.part"), b"x").unwrap();
+    touch_ago(&root.join("ro/.irsync.stuck.part"), 8);
+    drop(Index::open(&state, &root).unwrap());
+    set_mode(&root.join("ro"), 0o555).unwrap();
+    let o = irsync_command(&home)
+        .args(["gc", "--config"])
+        .arg(&config)
+        .state_home(home.join("xdg"))
+        .output()
+        .unwrap();
+    set_mode(&root.join("ro"), 0o755).unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(23), "{err}");
+    assert!(err.contains(".irsync.stuck.part"), "{err}");
+}
+
 /// An export whose tree holds another export's root (the home, exported
 /// automatically, around `/home/u/photos`) leaves that subtree to the
 /// inner export's own GC: its parts and their records stay.
@@ -682,7 +715,7 @@ async fn outer_gc_leaves_a_nested_export_alone() {
     let export = |path: &Path| Export {
         path: path.to_path_buf(),
         read_only: false,
-        warm_index: false,
+        index_at_start: false,
         fsync: false,
         auto: false,
         rw: Vec::new(),

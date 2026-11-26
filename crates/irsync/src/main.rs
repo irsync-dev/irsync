@@ -15,9 +15,9 @@ use irsync::cli::progress::screen::{LogWriter, Screen, WriterTerm};
 use irsync::cli::progress::summary::SessionSummary;
 use irsync::cli::progress::Reporter;
 use irsync::cli::{
-    validate, Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode,
-    Direction, ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs,
-    LogArgs, PairArgs, RemoteArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
+    Args, ClientArgs, ClientCmd, Command, ConfigArgs, ConfigCmd, DaemonArgs, DeleteMode, Direction,
+    ExportArgs, ExportCmd, FilesArgs, GrantArgs, GrantCmd, IdArgs, IdCmd, IndexArgs, LogArgs,
+    PairArgs, RemoteArgs, ServerAddArgs, ServerArgs, ServerCmd, SyncOptions,
 };
 use irsync::config::clients::Clients;
 use irsync::config::dial::{Dial, DialFlags};
@@ -53,6 +53,26 @@ use irsync_proto::PROTOCOL_VERSION;
 
 mod remote;
 
+/// A line on stderr that says what a command did; nothing with `-q`.
+/// Errors do not go through here: they print anyway.
+macro_rules! say {
+    ($log:expr, $($arg:tt)*) => {
+        if !$log.quiet {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+/// A confirmation on stdout, such as `server add`'s `NAME: ID`; nothing
+/// with `-q`. What a command is run for (a list, an id) is not one.
+macro_rules! say_out {
+    ($log:expr, $($arg:tt)*) => {
+        if !$log.quiet {
+            println!($($arg)*);
+        }
+    };
+}
+
 fn main() {
     let args = Args::parse();
     // The receiver holds a descriptor per file in flight; see
@@ -79,13 +99,13 @@ fn main() {
         Some(Command::Daemon(d)) => exit_after_capture(run_daemon(d, log, files)),
         Some(Command::Gc { dry_run }) => std::process::exit(run_gc(*dry_run, log, files)),
         Some(Command::Index(ix)) => std::process::exit(run_index(ix, log, files)),
-        Some(Command::Server(s)) => std::process::exit(run_server(s, files)),
-        Some(Command::Client(c)) => std::process::exit(run_client(c, files)),
+        Some(Command::Server(s)) => std::process::exit(run_server(s, log, files)),
+        Some(Command::Client(c)) => std::process::exit(run_client(c, log, files)),
         Some(Command::Export(e)) => std::process::exit(run_export(e, log, files)),
-        Some(Command::Grant(g)) => std::process::exit(run_grant(g, files)),
-        Some(Command::Id(i)) => std::process::exit(run_id(i, files)),
-        Some(Command::Config(c)) => std::process::exit(run_config(c, files)),
-        Some(Command::Pair(a)) => std::process::exit(run_pair(a, files)),
+        Some(Command::Grant(g)) => std::process::exit(run_grant(g, log, files)),
+        Some(Command::Id(i)) => std::process::exit(run_id(i, log, files)),
+        Some(Command::Config(c)) => std::process::exit(run_config(c, log, files)),
+        Some(Command::Pair(a)) => std::process::exit(run_pair(a, log, files)),
         Some(Command::Show) => std::process::exit(run_show(files)),
         Some(Command::Remote(r)) => {
             let opts = SyncOptions::for_command(&args);
@@ -177,10 +197,10 @@ fn early_settings(
     }
 }
 
-/// Exit codes: 0 ok, 1 configuration, operand or connection errors, 23
-/// partial transfer, 24 some source files vanished (`--paranoid`), 25
-/// deletions stopped at `--max-delete` (23, 24 and 25 as in rsync; a command
-/// line clap cannot parse has already exited 2).
+/// Exit codes: 0 ok, 1 configuration or connection errors, 23 partial
+/// transfer, 24 some source files vanished (`--paranoid`), 25 deletions
+/// stopped at `--max-delete` (23, 24 and 25 as in rsync; a bad command
+/// line, operands included, has already exited 2).
 fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
     let settings = match early_settings(opts.config.as_deref()) {
         Ok(s) => s,
@@ -243,10 +263,9 @@ fn run_sync(args: &Args, opts: &SyncOptions) -> i32 {
             };
             // With a block, log lines print above it.
             log.attach(screen.multi());
-            // A bad command line fails in `sync` below with the same error.
-            let source = match direction_of(args) {
-                Ok(Direction::DaemonSends) => Party::Peer,
-                Ok(Direction::ClientSends) | Err(_) => Party::Local,
+            let source = match args.sync_args().operands().direction {
+                Direction::DaemonSends => Party::Peer,
+                Direction::ClientSends => Party::Local,
             };
             let r =
                 Reporter::with_screen(screen, opts.verbose, opts.stats, opts.itemize, opts.dry_run)
@@ -345,17 +364,20 @@ fn combine_exit_codes(outcomes: &[Outcome], failed: usize, total: usize) -> i32 
     }
 }
 
-/// Partial files and sessions untouched for this long are collected.
-const CLIENT_GC_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
+/// Partial files and sessions untouched for this long are collected: as
+/// long as a daemon keeps them by default.
+const CLIENT_GC_AGE: std::time::Duration = irsync::config::settings::DORMANT_SESSION_TIMEOUT;
 /// A partial record untouched this long makes the next run's GC walk due.
 const CLIENT_GC_STALE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
-    let result = (|| -> anyhow::Result<()> {
+    let result = (|| -> anyhow::Result<usize> {
         let dir = Config::load(&file_paths(files))?.settings.state_dir;
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             let (mut parts, mut sessions, mut entries) = (0usize, 0u32, 0usize);
+            // What could not be read or removed: the exit code is 23 then.
+            let mut errors = 0usize;
             let Ok(rd) = std::fs::read_dir(dir.join("index")) else {
                 if !log.quiet {
                     println!(
@@ -363,7 +385,7 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                         verb(dry_run)
                     );
                 }
-                return Ok(());
+                return Ok(0);
             };
             let mut files: Vec<PathBuf> = rd
                 .filter_map(|e| e.ok().map(|e| e.path()))
@@ -389,14 +411,20 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                             }
                         }
                         Ok(false) => eprintln!("irsync: {}: in use, kept", file.display()),
-                        Err(e) => eprintln!("irsync: {}: {e}", file.display()),
+                        Err(e) => {
+                            errors += 1;
+                            eprintln!("irsync: {}: {e}", file.display());
+                        }
                     }
                     continue;
                 }
                 match Index::root_of_file(&file) {
                     Ok(Some(r)) => roots.push(r),
                     Ok(None) => {}
-                    Err(e) => eprintln!("irsync: {}: {e}", file.display()),
+                    Err(e) => {
+                        errors += 1;
+                        eprintln!("irsync: {}: {e}", file.display());
+                    }
                 }
             }
             for root in &roots {
@@ -406,6 +434,7 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                 let index = match Index::open(&dir, &root) {
                     Ok(i) => i.into_handle(),
                     Err(e) => {
+                        errors += 1;
                         eprintln!("irsync: {}: {e}", root.display());
                         continue;
                     }
@@ -421,11 +450,15 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                         for (p, msg) in &r.errors {
                             eprintln!("irsync: {}: {msg}", root.join(p.to_os()).display());
                         }
+                        errors += r.errors.len();
                         parts += r.parts_removed.len();
                         sessions += r.sessions_removed;
                         entries += r.entries_removed;
                     }
-                    Err(e) => eprintln!("irsync: {}: {e}", root.display()),
+                    Err(e) => {
+                        errors += 1;
+                        eprintln!("irsync: {}: {e}", root.display());
+                    }
                 }
             }
             if !log.quiet {
@@ -440,11 +473,13 @@ fn run_gc(dry_run: bool, log: LogArgs, files: &FilesArgs) -> i32 {
                     verb(dry_run)
                 );
             }
-            Ok(())
+            Ok(errors)
         })
     })();
     match result {
-        Ok(()) => 0,
+        Ok(0) => 0,
+        // Some of it could not be done, as `index` says for its files.
+        Ok(_) => 23,
         Err(e) => {
             eprintln!("irsync gc: {e:#}");
             1
@@ -492,24 +527,6 @@ struct Totals {
     sessions: usize,
     /// Sessions that ended in an error (their sources did not sync).
     failed: usize,
-}
-
-/// The sources, the destination and which way the data flows.
-fn locations(args: &Args) -> anyhow::Result<(Vec<Location>, Location, Direction)> {
-    let srcs = args
-        .sync_args()
-        .src()
-        .iter()
-        .map(|s| Location::parse(s))
-        .collect::<Result<Vec<_>, _>>()?;
-    let dest = Location::parse(args.sync_args().dest().context("missing destination")?)?;
-    let direction = validate(&srcs, &dest)?;
-    Ok((srcs, dest, direction))
-}
-
-/// Which way the data flows, from the source and destination arguments.
-fn direction_of(args: &Args) -> anyhow::Result<Direction> {
-    Ok(locations(args)?.2)
 }
 
 /// A client endpoint ready to dial `host`, plus what the session setup
@@ -579,6 +596,7 @@ async fn connect_for(host: &str, opts: &SyncOptions, log: &LogWriter) -> anyhow:
     let dial = Dial::resolve(&dial_flags(&opts)?, host_entry.as_ref(), &settings.defaults)
         .map_err(anyhow::Error::msg)?;
     opts.parallel = Some(dial.parallel);
+    opts.idle_timeout = Some(dial.idle_timeout).filter(|t| !t.is_zero());
     // Any direct address means isolated mode: dial those and nothing else.
     // Resolved before the identity is loaded so a bad address never prompts
     // for a passphrase.
@@ -635,7 +653,10 @@ fn dial_flags(opts: &SyncOptions) -> anyhow::Result<DialFlags> {
         dial_retries: opts.dial_retries,
         relay: opts.relay.clone(),
         no_dht: opts.no_dht,
+        no_dns: opts.no_dns,
+        no_mdns: opts.no_mdns,
         pq_key_exchange: opts.pq_key_exchange,
+        idle_timeout: opts.idle_timeout,
         address: opts.addresses.clone(),
     })
 }
@@ -667,8 +688,14 @@ fn report_onboarded(log: &LogWriter, o: &irsync::ssh::onboard::Onboarded) {
 }
 
 /// `irsync pair HOST`: sets the server up over ssh and saves it.
-fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
+fn run_pair(a: &PairArgs, quiet: LogArgs, files: &FilesArgs) -> i32 {
     let log = LogWriter::new();
+    // What pair did, line by line; nothing with `-q`.
+    let say = |line: &str| {
+        if !quiet.quiet {
+            log.eprintln(line);
+        }
+    };
     finish(
         "pair",
         (|| {
@@ -680,20 +707,20 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
             );
             let t = irsync::ssh::pair::target(&config.servers, &config.clients, &a.host)?;
             if let Some(typed) = &t.found_as {
-                log.eprintln(&format!("irsync: {typed} is saved as {}", t.host));
+                say(&format!("irsync: {typed} is saved as {}", t.host));
             }
             // No ssh call yet: these errors need no "over ssh failed" context.
             match &t.alias {
                 Some(alias) => irsync::ssh::onboard::check(alias, &t.dest)?,
                 None => irsync::ssh::onboard::check_dest(&t.dest)?,
             }
-            let secret = client_key(a.identity.as_deref(), &config.settings, &pass)?;
+            let secret = client_key(files.identity.as_deref(), &config.settings, &pass)?;
             let rsh = irsync::ssh::client::Rsh::from_opts(a.rsh.as_deref());
-            log.eprintln(&format!("irsync: pairing with {} over ssh", t.host));
+            say(&format!("irsync: pairing with {} over ssh", t.host));
             let flags = SetupFlags {
                 recheck: t.kind == irsync::ssh::pair::PairKind::Saved,
-                no_dht: a.no_dht,
-                no_install: a.no_install
+                no_dht: a.server_no_dht,
+                no_install: a.no_ssh_install
                     || !Dial::resolve(&DialFlags::default(), None, &config.settings.defaults)
                         .map_err(anyhow::Error::msg)?
                         .ssh_install,
@@ -721,14 +748,16 @@ fn run_pair(a: &PairArgs, files: &FilesArgs) -> i32 {
                     format!("checking {host} over ssh failed")
                 }
             })?;
-            report_onboarded(&log, &o);
+            if !quiet.quiet {
+                report_onboarded(&log, &o);
+            }
             if o.report.grant == irsync::ssh::setup::GrantOutcome::Missing {
                 bail!(irsync::session::reconnect::no_access_hint(
                     &format!("{}:", o.alias),
                     &secret.public()
                 ));
             }
-            log.eprintln(&format!(
+            say(&format!(
                 "irsync: {}",
                 irsync::ssh::pair::paired_line(&o.alias)
             ));
@@ -754,7 +783,7 @@ fn client_key(
 ) -> anyhow::Result<iroh::SecretKey> {
     let (secret, source) = client_identity(explicit, settings, pass)?;
     if let KeySource::Generated(path) = &source {
-        eprintln!("generated identity {}", path.display());
+        eprintln!("irsync: generated identity {}", path.display());
         eprintln!("{}", irsync::identity::public_key_line(&secret, "irsync"));
         eprintln!("{}", secret.public());
     }
@@ -795,7 +824,10 @@ fn client_state_dir(opts: &SyncOptions) -> PathBuf {
 /// HOST:PATH` lists a directory: a dry-run pull into a temporary directory
 /// that also holds the run's index, so nothing is written or kept.
 fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
-    let operand = args.sync_args().paths[0].clone();
+    let Some(Command::List(list)) = &args.cmd else {
+        unreachable!("run_list takes a list command")
+    };
+    let operand = list.operand.clone();
     let dir_listing = match Location::parse(&operand) {
         Ok(Location::Remote { path, .. }) => !path.is_empty(),
         _ => false,
@@ -812,11 +844,10 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
         // With the slash a listed file keeps its own name.
         let dest = format!("{}/", tmp.path().join("list").display());
         // The listing is a dry-run pull into the temporary directory.
-        let Some(Command::List(mut s)) = args.cmd.take() else {
+        let Some(Command::List(list)) = args.cmd.take() else {
             unreachable!("run_list takes a list command")
         };
-        s.paths = vec![operand, dest];
-        args.cmd = Some(Command::Sync(s));
+        args.cmd = Some(Command::Sync(list.as_sync(vec![operand, dest])));
         let mut opts = opts.clone();
         opts.dry_run = true;
         opts.verbose = opts.verbose.max(1);
@@ -934,7 +965,7 @@ fn run_remote(r: &RemoteArgs, opts: &SyncOptions) -> i32 {
         c.endpoint.close().await;
         done
     });
-    match done.and_then(|outcome| remote::print(&plan.shape, &r.server, outcome)) {
+    match done.and_then(|outcome| remote::print(&plan.shape, &r.server, outcome, opts.quiet)) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("irsync remote: {}", escape_text(&format!("{e:#}")));
@@ -950,7 +981,11 @@ async fn sync(
     bus: &EventBus,
     log: &LogWriter,
 ) -> anyhow::Result<Totals> {
-    let (srcs, dest, direction) = locations(args)?;
+    let irsync::cli::Operands {
+        srcs,
+        dest,
+        direction,
+    } = args.sync_args().operands();
     let remote = match direction {
         Direction::ClientSends => &dest,
         Direction::DaemonSends => &srcs[0],
@@ -1041,7 +1076,7 @@ async fn sync(
                     // With a trailing slash the remote path must be a directory.
                     Direction::DaemonSends if !*remote_co => {
                         let (endpoint, target) = (&conn.endpoint, conn.target.clone());
-                        let timeout = conn.opts.timeout;
+                        let timeout = conn.opts.idle_timeout;
                         let kind =
                             probe_path(endpoint, target, rpath, &remote_text, ropts, timeout)
                                 .await?;
@@ -1296,19 +1331,20 @@ async fn session(
 /// index (see `irsync::warm`). Exit code 23 when something could not be
 /// read or listed, 1 when a target could not be resolved at all.
 fn run_index(a: &IndexArgs, log: LogArgs, files: &FilesArgs) -> i32 {
-    let state = match Config::load(&file_paths(files)) {
-        Ok(c) => c.settings.state_dir,
-        Err(e) => {
-            eprintln!("irsync index: {e:#}");
-            return 1;
+    let result = (|| -> anyhow::Result<i32> {
+        let config = Config::load(&file_paths(files))?;
+        let state = config.settings.state_dir;
+        let mut targets: Vec<(PathBuf, PathBuf)> = a
+            .targets
+            .iter()
+            .map(|t| (state.clone(), t.clone()))
+            .collect();
+        for root in export_roots(&config.exports, &a.exports)? {
+            targets.push((state.clone(), root));
         }
-    };
-    let targets = a
-        .targets
-        .iter()
-        .map(|t| (state.clone(), t.clone()))
-        .collect();
-    match index_roots(targets, a.dry_run, log.quiet) {
+        index_roots(targets, a.dry_run, log.quiet)
+    })();
+    match result {
         Ok(code) => code,
         Err(e) => {
             eprintln!("irsync index: {e:#}");
@@ -1317,37 +1353,32 @@ fn run_index(a: &IndexArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-/// `export update`: the named exports (`all`: every export) under the
-/// daemon's state directory.
-fn export_update(paths: &Paths, names: &[String], dry_run: bool, log: LogArgs) -> i32 {
-    let result = (|| -> anyhow::Result<i32> {
-        let config = Config::load(paths)?;
-        let (settings, exports) = (config.settings, config.exports);
-        let names: Vec<&str> = if names.iter().any(|n| n == "all") {
-            anyhow::ensure!(names.len() == 1, "all names every export; give it alone");
-            exports.exports.keys().map(String::as_str).collect()
-        } else {
-            names.iter().map(String::as_str).collect()
-        };
-        let targets = names
-            .into_iter()
-            .map(|n| {
-                let m = exports
-                    .exports
-                    .get(n)
-                    .with_context(|| format!("no export {n:?} in {}", exports.path.display()))?;
-                Ok((settings.state_dir.clone(), m.path.clone()))
-            })
-            .collect::<anyhow::Result<_>>()?;
-        index_roots(targets, dry_run, log.quiet)
-    })();
-    match result {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("irsync export update: {e:#}");
-            1
+/// The paths of the exports `names` gives (`all`: every export), each
+/// once, in the order given.
+fn export_roots(
+    exports: &irsync::config::exports::Exports,
+    names: &[String],
+) -> anyhow::Result<Vec<PathBuf>> {
+    let names: Vec<&str> = if names.iter().any(|n| n == "all") {
+        anyhow::ensure!(
+            names.len() == 1,
+            "--export all names every export; give it alone"
+        );
+        exports.exports.keys().map(String::as_str).collect()
+    } else {
+        names.iter().map(String::as_str).collect()
+    };
+    let mut roots = Vec::new();
+    for n in names {
+        let e = exports
+            .exports
+            .get(n)
+            .with_context(|| format!("no export {n:?} in {}", exports.path.display()))?;
+        if !roots.contains(&e.path) {
+            roots.push(e.path.clone());
         }
     }
+    Ok(roots)
 }
 
 /// Hashes each `(state directory, root)` into the root's index and prints
@@ -1509,7 +1540,7 @@ fn run_daemon(d: &DaemonArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
+fn run_config(c: &ConfigArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     use irsync::manage::config as cfg;
     let paths = file_paths(files);
     // A noun alone lists.
@@ -1560,7 +1591,7 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                 let before = peer_ids(&msg, &paths.config);
                 cfg::set(&mut msg, &path, value).with_context(|| key.to_string())?;
                 lock.save(&mut msg).with_context(|| key.to_string())?;
-                note_moved_grants("config set", &before, &msg, &paths.config);
+                note_moved_grants(log, "config set", &before, &msg, &paths.config);
                 Ok(())
             })(),
         ),
@@ -1603,7 +1634,7 @@ fn run_config(c: &ConfigArgs, files: &FilesArgs) -> i32 {
                     }
                 }
                 lock.save(&mut msg).with_context(|| key.to_string())?;
-                note_moved_grants("config unset", &before, &msg, &paths.config);
+                note_moved_grants(log, "config unset", &before, &msg, &paths.config);
                 Ok(())
             })(),
         ),
@@ -1621,13 +1652,14 @@ fn peer_ids(
 /// Says on stderr which grants now apply to another id; see
 /// [`manage::clients::moved_grant_notes`].
 fn note_moved_grants(
+    log: LogArgs,
     cmd: &str,
     before: &std::collections::BTreeMap<String, iroh::EndpointId>,
     msg: &irsync_proto::config::Config,
     path: &Path,
 ) {
     for note in manage::clients::moved_grant_notes(cmd, before, msg, path) {
-        eprintln!("{note}");
+        say!(log, "{note}");
     }
 }
 
@@ -1769,14 +1801,20 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                     .with_context(|| format!("identity {}", daemon_key.display()))?;
                 let mut lock = manage::lock_config(&paths.config)?;
                 let mut msg = lock.load()?;
-                manage::exports::add_export(&mut msg, &name, &path, a.ro, a.warm_index)?;
+                let flags = manage::exports::ExportFlags {
+                    read_only: a.read_only,
+                    index_at_start: a.index_at_start,
+                    fsync: a.fsync,
+                };
+                let old = manage::exports::add_export(&mut msg, &name, &path, flags)?;
                 // The daemon identity comes first: when it cannot be had, the
                 // export is not added either.
                 let secret = identity_of(daemon_key, "irsync-daemon", &pass)?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "{}",
-                    manage::exports::added_line(&name, &path, &paths.config)
+                    manage::exports::added_line(&name, &path, old.as_deref(), &paths.config)
                 );
                 println!("{}", secret.public());
                 Ok(())
@@ -1790,11 +1828,51 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
                 manage::exports::remove_export(&mut msg, name)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!("{}", manage::exports::removed_line(name, &paths.config));
+                say!(
+                    log,
+                    "{}",
+                    manage::exports::removed_line(name, &paths.config)
+                );
                 Ok(())
             })(),
         ),
-        ExportCmd::Update { dry_run, names } => export_update(&paths, names, *dry_run, log),
+        ExportCmd::Set { name, settings } => finish(
+            "export set",
+            (|| {
+                // Every pair is read before anything changes.
+                let settings: Vec<_> = settings
+                    .iter()
+                    .map(|s| manage::exports::parse_setting(s))
+                    .collect::<Result<_, _>>()?;
+                load_first(&paths)?;
+                let mut lock = manage::lock_config(&paths.config)?;
+                let mut msg = lock.load()?;
+                manage::exports::export_set(&mut msg, name, &settings)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                lock.save(&mut msg)?;
+                if let Some(line) = manage::exports::set_line(&msg, name) {
+                    say!(log, "{line}");
+                }
+                Ok(())
+            })(),
+        ),
+        ExportCmd::Rename { old, new } => finish(
+            "export rename",
+            (|| {
+                load_first(&paths)?;
+                let mut lock = manage::lock_config(&paths.config)?;
+                let mut msg = lock.load()?;
+                manage::exports::rename_export(&mut msg, old, new)
+                    .with_context(|| format!("in {}", paths.config.display()))?;
+                lock.save(&mut msg)?;
+                say!(
+                    log,
+                    "{}",
+                    manage::exports::renamed_line(old, new, &paths.config)
+                );
+                Ok(())
+            })(),
+        ),
         ExportCmd::List => finish(
             "export list",
             (|| {
@@ -1808,7 +1886,7 @@ fn run_export(e: &ExportArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
+fn run_grant(g: &GrantArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     let paths = file_paths(files);
     // A noun alone lists.
     let list = GrantCmd::List { target: None };
@@ -1827,7 +1905,8 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                 manage::grants::grant_add(&mut msg, export, &spec, *ro, &resolve)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "{}",
                     manage::grants::added_line(&spec, &clients, export, *ro)
                 );
@@ -1864,9 +1943,9 @@ fn run_grant(g: &GrantArgs, files: &FilesArgs) -> i32 {
                     }
                 };
                 lock.save(&mut msg)?;
-                eprintln!("{}", manage::grants::removed_line(n));
+                say!(log, "{}", manage::grants::removed_line(n));
                 for line in &held {
-                    eprintln!("{line}");
+                    say!(log, "{line}");
                 }
                 Ok(())
             })(),
@@ -1935,12 +2014,12 @@ fn load_first(paths: &Paths) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_server(s: &ServerArgs, files: &FilesArgs) -> i32 {
+fn run_server(s: &ServerArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ServerCmd::List;
     match s.cmd.as_ref().unwrap_or(&list) {
-        ServerCmd::Add(a) => finish("server add", server_add(a, &paths)),
+        ServerCmd::Add(a) => finish("server add", server_add(a, log, &paths)),
         ServerCmd::Remove { name } => finish(
             "server remove",
             (|| {
@@ -1950,7 +2029,7 @@ fn run_server(s: &ServerArgs, files: &FilesArgs) -> i32 {
                 manage::servers::server_remove(&mut msg, name)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!("removed server {name} from {}", paths.config.display());
+                say!(log, "removed server {name} from {}", paths.config.display());
                 Ok(())
             })(),
         ),
@@ -1963,7 +2042,8 @@ fn run_server(s: &ServerArgs, files: &FilesArgs) -> i32 {
                 manage::servers::server_rename(&mut msg, old, new)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "renamed server {old} to {new} in {}",
                     paths.config.display()
                 );
@@ -1985,7 +2065,7 @@ fn run_server(s: &ServerArgs, files: &FilesArgs) -> i32 {
     }
 }
 
-fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
+fn run_client(c: &ClientArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     let paths = file_paths(files);
     // A noun alone lists.
     let list = ClientCmd::List;
@@ -1999,9 +2079,9 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 let before = peer_ids(&msg, &paths.config);
                 let old = manage::clients::client_add(&mut msg, name, id)?;
                 lock.save(&mut msg)?;
-                println!("{}", manage::clients::added_line(name, old, id));
+                say_out!(log, "{}", manage::clients::added_line(name, old, id));
                 // The id the grants are for may have changed: say so.
-                note_moved_grants("client add", &before, &msg, &paths.config);
+                note_moved_grants(log, "client add", &before, &msg, &paths.config);
                 Ok(())
             })(),
         ),
@@ -2014,7 +2094,8 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 let grants = manage::clients::remove_client(&mut msg, &paths.config, name, *force)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "{}",
                     manage::clients::removed_line(name, grants, &paths.config)
                 );
@@ -2030,7 +2111,8 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                 let grants = manage::clients::rename_client(&mut msg, &paths.config, old, new)
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
-                eprintln!(
+                say!(
+                    log,
                     "{}",
                     manage::clients::renamed_line(old, new, grants, &paths.config)
                 );
@@ -2052,7 +2134,7 @@ fn run_client(c: &ClientArgs, files: &FilesArgs) -> i32 {
                     .with_context(|| format!("in {}", paths.config.display()))?;
                 lock.save(&mut msg)?;
                 if let Some(line) = manage::clients::set_line(&msg, name) {
-                    eprintln!("{line}");
+                    say!(log, "{line}");
                 }
                 Ok(())
             })(),
@@ -2104,25 +2186,31 @@ fn identity_of(
     let (secret, generated) = load_or_generate(path, pass, comment)
         .with_context(|| format!("identity {}", path.display()))?;
     if generated {
-        eprintln!("generated identity {}", path.display());
+        eprintln!("irsync: generated identity {}", path.display());
     }
     Ok(secret)
 }
 
-fn run_id(i: &IdArgs, files: &FilesArgs) -> i32 {
+fn run_id(i: &IdArgs, log: LogArgs, files: &FilesArgs) -> i32 {
     // A noun alone lists.
     match i.cmd.as_ref().unwrap_or(&IdCmd::List) {
         IdCmd::List => id_list(files),
-        IdCmd::Show { daemon, all } => id_show(files, *daemon, *all),
+        IdCmd::Show { daemon, all } => id_show(files, log, *daemon, *all),
         IdCmd::Generate { daemon, out, force } => {
-            id_generate(files, *daemon, out.as_deref(), *force)
+            id_generate(files, log, *daemon, out.as_deref(), *force)
         }
     }
 }
 
 /// `irsync id generate`: writes the key pair, prints the public key line
 /// and the EndpointId. Replaces an existing file only with `force`.
-fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force: bool) -> i32 {
+fn id_generate(
+    f: &FilesArgs,
+    log: LogArgs,
+    daemon: bool,
+    out: Option<&std::path::Path>,
+    force: bool,
+) -> i32 {
     finish(
         "id generate",
         (|| {
@@ -2139,7 +2227,8 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
                     if daemon {
                         (settings.daemon.identity, "irsync-daemon")
                     } else {
-                        (settings.identity, "irsync")
+                        // `--identity` names the client's key for every command.
+                        (f.identity.clone().unwrap_or(settings.identity), "irsync")
                     }
                 }
             };
@@ -2188,7 +2277,7 @@ fn id_generate(f: &FilesArgs, daemon: bool, out: Option<&std::path::Path>, force
                 irsync::identity::generate_openssh_with(&path, comment, passphrase.as_deref())?;
             let line = std::fs::read_to_string(&pub_path)
                 .with_context(|| format!("reading {}", pub_path.display()))?;
-            eprintln!("wrote {} and {}", path.display(), pub_path.display());
+            say!(log, "wrote {} and {}", path.display(), pub_path.display());
             println!("{}", line.trim());
             println!("{}", secret.public());
             Ok(())
@@ -2232,11 +2321,16 @@ fn print_identity(secret: &iroh::SecretKey, role: IdRole) {
     println!("{}", secret.public());
 }
 
-/// The client's identity, generated when no key serves.
-fn print_client_identity(settings: &Settings, pass: &PassphraseSource) -> anyhow::Result<()> {
-    let (secret, source) = client_identity(None, settings, pass)?;
+/// The client's identity (`--identity` when given), generated when no key
+/// serves.
+fn print_client_identity(
+    explicit: Option<&Path>,
+    settings: &Settings,
+    pass: &PassphraseSource,
+) -> anyhow::Result<()> {
+    let (secret, source) = client_identity(explicit, settings, pass)?;
     if let KeySource::Generated(p) = &source {
-        eprintln!("generated identity {}", p.display());
+        eprintln!("irsync: generated identity {}", p.display());
     }
     print_identity(&secret, IdRole::Client);
     Ok(())
@@ -2261,7 +2355,7 @@ fn print_daemon_identity(settings: &Settings, pass: &PassphraseSource) -> anyhow
     Ok(())
 }
 
-fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
+fn id_show(f: &FilesArgs, log: LogArgs, daemon: bool, all: bool) -> i32 {
     finish(
         "id show",
         (|| {
@@ -2271,14 +2365,15 @@ fn id_show(f: &FilesArgs, daemon: bool, all: bool) -> i32 {
                 settings.unsafe_config_allowed,
             );
             if all {
-                print_client_identity(&settings, &pass)?;
+                print_client_identity(f.identity.as_deref(), &settings, &pass)?;
                 print_daemon_identity(&settings, &pass)?;
             } else if daemon {
                 print_daemon_identity(&settings, &pass)?;
             } else {
-                print_client_identity(&settings, &pass)?;
+                print_client_identity(f.identity.as_deref(), &settings, &pass)?;
                 if has_daemon_identity(&settings) {
-                    eprintln!(
+                    say!(
+                        log,
                         "irsync: this machine also has a daemon identity; clients connect \
                          to the daemon, whose id irsync id show --daemon prints"
                     );
@@ -2300,7 +2395,7 @@ fn id_list(f: &FilesArgs) -> i32 {
                 f.passphrase_file.clone(),
                 settings.unsafe_config_allowed,
             );
-            print_client_identity(&settings, &pass)?;
+            print_client_identity(f.identity.as_deref(), &settings, &pass)?;
             // Only a missing file means "no daemon here". A key that
             // cannot be looked at is an error, not a daemon left out.
             let path = &settings.daemon.identity;
@@ -2332,9 +2427,9 @@ fn run_show(f: &FilesArgs) -> i32 {
                 f.passphrase_file.clone(),
                 settings.unsafe_config_allowed,
             );
-            let (client, source) = client_identity(None, settings, &pass)?;
+            let (client, source) = client_identity(f.identity.as_deref(), settings, &pass)?;
             if let KeySource::Generated(p) = &source {
-                eprintln!("generated identity {}", p.display());
+                eprintln!("irsync: generated identity {}", p.display());
             }
             let client_line = irsync::identity::public_key_line(&client, "irsync");
             // Read-only, like `id show`: the daemon's key is never made here.
@@ -2361,7 +2456,7 @@ fn run_show(f: &FilesArgs) -> i32 {
 }
 
 /// `server add`: the server `NAME`, set to dial `ID`.
-fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
+fn server_add(a: &ServerAddArgs, log: LogArgs, paths: &Paths) -> anyhow::Result<()> {
     let id = parse_endpoint_id(&a.id).with_context(|| format!("ID {:?}", a.id))?;
     let flags = manage::servers::ServerFlags {
         relay: a.relay.clone(),
@@ -2386,8 +2481,8 @@ fn server_add(a: &ServerAddArgs, paths: &Paths) -> anyhow::Result<()> {
     let old = manage::servers::server_add(&mut msg, &a.name, id, &flags)?;
     lock.save(&mut msg)?;
     match old {
-        Some(old) => println!("{}: {old} -> {id}", a.name),
-        None => println!("{}: {id}", a.name),
+        Some(old) => say_out!(log, "{}: {old} -> {id}", a.name),
+        None => say_out!(log, "{}: {id}", a.name),
     }
     Ok(())
 }

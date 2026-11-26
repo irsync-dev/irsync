@@ -55,6 +55,7 @@ message Defaults {
   optional bool mdns = 12;
   optional Congestion congestion = 13;
   optional PqKeyExchange pq_key_exchange = 14;
+  google.protobuf.Duration idle_timeout = 15;
 }
 
 message Daemon {
@@ -119,7 +120,7 @@ message Export {
   string name = 4;
   string path = 5;             // as written
   optional bool read_only = 6;
-  optional bool warm_index = 7;
+  optional bool index_at_start = 7;
   optional bool fsync = 8;
   optional bool auto = 9;
   repeated Entry rw = 10;

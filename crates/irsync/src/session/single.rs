@@ -149,7 +149,7 @@ pub fn source_is_single(path: &Path, contents_only: bool) -> Result<bool, PlaceE
 /// Asks the daemon what `path` (as typed, without a trailing slash) is,
 /// before the client picks a local root for a pull. A refusal comes back
 /// as [`SessionRefused`], with the codes a pull of `path` would get. The
-/// wait for the reply ends after `timeout` (`--timeout`; none or zero:
+/// wait for the reply ends after `timeout` (`--idle-timeout`; none or zero:
 /// no limit), as for a session's Hello.
 pub async fn probe(
     conn: &Connection,

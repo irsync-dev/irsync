@@ -184,7 +184,7 @@ async fn sync_through(
 }
 
 /// `test-blackout`: the client's link goes dead for a few seconds once
-/// 256 KiB have crossed it. With `--timeout 2` the client gives up on the
+/// 256 KiB have crossed it. With `--idle-timeout 2` the client gives up on the
 /// connection, redials, and resumes the same session, in both directions.
 #[tokio::test(start_paused = true)]
 async fn a_dead_zone_forces_a_reconnect_and_the_session_resumes() {
@@ -193,7 +193,7 @@ async fn a_dead_zone_forces_a_reconnect_and_the_session_resumes() {
             let h = Harness::new().await;
             std::fs::write(h.src(flow).join("big"), noise(4 << 20)).unwrap();
             let mut opts = archive_opts();
-            opts.timeout = Some(Duration::from_secs(2));
+            opts.idle_timeout = Some(Duration::from_secs(2));
             let (out, reconnects, sessions, _) = sync_through(&h, flow, &opts).await;
             out.unwrap_or_else(|e| panic!("{flow:?}: {e:#}"));
             assert!(
@@ -272,7 +272,7 @@ async fn a_big_push_through_repeated_dead_zones_keeps_going_while_data_moves() {
         );
         std::fs::write(h.local.path().join("big"), big).unwrap();
         let mut opts = archive_opts();
-        opts.timeout = Some(Duration::from_secs(2));
+        opts.idle_timeout = Some(Duration::from_secs(2));
         let ropts = ReconnectOpts {
             max: Duration::from_secs(90),
             backoff_max: Duration::from_secs(4),
@@ -312,7 +312,7 @@ async fn single_file_push_resumes_after_blackout() {
         let src = h.local.path().join("big.bin");
         std::fs::write(&src, noise(16 << 20)).unwrap();
         let mut opts = archive_opts();
-        opts.timeout = Some(Duration::from_secs(2));
+        opts.idle_timeout = Some(Duration::from_secs(2));
 
         let (parent, name) = irsync::session::single::split_last(&src);
         let mut hello = Harness::hello(Flow::Push);
@@ -350,7 +350,7 @@ async fn single_file_pull_resumes_after_blackout() {
         let src = h.export.path().join("big.bin");
         std::fs::write(&src, noise(16 << 20)).unwrap();
         let mut opts = archive_opts();
-        opts.timeout = Some(Duration::from_secs(2));
+        opts.idle_timeout = Some(Duration::from_secs(2));
 
         let remote = b"m/big.bin";
         let kind = h.probe(remote).await.unwrap();

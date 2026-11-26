@@ -63,6 +63,8 @@ struct RawDefaults {
     mdns: Option<bool>,
     congestion: Option<Text<Congestion>>,
     pq_key_exchange: Option<Text<PqKeyExchange>>,
+    #[serde(default, deserialize_with = "de_opt_duration")]
+    idle_timeout: Option<Duration>,
 }
 
 #[derive(Deserialize)]
@@ -141,7 +143,7 @@ impl RawClientEntry {
 struct RawExport {
     path: PathBuf,
     read_only: Option<bool>,
-    warm_index: Option<bool>,
+    index_at_start: Option<bool>,
     fsync: Option<bool>,
     auto: Option<bool>,
     rw: Option<Vec<String>>,
@@ -372,6 +374,7 @@ fn defaults(r: RawDefaults) -> pb::Defaults {
         mdns: r.mdns,
         congestion: r.congestion.map(number),
         pq_key_exchange: r.pq_key_exchange.map(number),
+        idle_timeout: r.idle_timeout.map(duration::to_proto),
         ..Default::default()
     }
 }
@@ -557,7 +560,7 @@ fn exports(
             name,
             path: written,
             read_only: e.read_only,
-            warm_index: e.warm_index,
+            index_at_start: e.index_at_start,
             fsync: e.fsync,
             auto: e.auto,
             rw,

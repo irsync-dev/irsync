@@ -915,7 +915,7 @@ async fn probe_reports_an_empty_reply_as_malformed() {
 }
 
 /// A daemon that takes the probe but never answers: the wait for the reply
-/// ends at `--timeout`, as a transport error (so `probe_path` retries it).
+/// ends at `--idle-timeout`, as a transport error (so `probe_path` retries it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn probe_without_a_reply_times_out() {
     within30(async {

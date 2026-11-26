@@ -53,24 +53,25 @@ the same `--config`, so that they write to the daemon's `state_dir`.
 - Hash one export, or every export:
 
   ```sh
-  irsync export update photos
-  irsync export update all
+  irsync index --export photos
+  irsync index --export all
   ```
 
-  `-n` counts what would be hashed, as for `irsync index`. The daemon uses
-  the new rows from its next session on.
+  `--export` may be given more than once, and beside local roots. `-n`
+  counts what would be hashed. The daemon uses the new rows from its next
+  session on.
 
 - Or let the daemon hash an export every time it starts, which suits an export
   whose files change outside `irsync`:
 
   ```sh
-  irsync config set exports.photos.warm_index true
+  irsync config set exports.photos.index_at_start true
   ```
 
-  For a new export, `irsync export add photos:/srv/photos --warm-index` does
+  For a new export, `irsync export add photos:/srv/photos --index-at-start` does
   the same. The daemon hashes the export in the background when it starts, or
   at the first connection for an export added while it runs, and logs
-  `index warmed` when done.
+  `export indexed` when done.
 
 ## See also
 

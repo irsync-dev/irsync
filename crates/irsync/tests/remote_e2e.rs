@@ -109,7 +109,7 @@ fn remote_grant_list_matches_local() {
             "export",
             "add",
             "photos:~/Photos",
-            "--ro",
+            "--read-only",
         ],
     );
     ok(

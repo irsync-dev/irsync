@@ -108,6 +108,9 @@ pub static KEYS: &[Key] = &[
     with("defaults.pq_key_exchange", Str, || {
         one(Dial::default().pq_key_exchange.as_str())
     }),
+    with("defaults.idle_timeout", Duration, || {
+        one(super::duration::format(Dial::default().idle_timeout))
+    }),
     key("daemon", Table),
     with("daemon.identity", Path, || {
         as_written(&Settings::default().daemon.identity)
@@ -193,7 +196,7 @@ pub static KEYS: &[Key] = &[
     key("exports.*.path", Path),
     // A flag left out of an export is off.
     with("exports.*.read_only", Bool, || one(false)),
-    with("exports.*.warm_index", Bool, || one(false)),
+    with("exports.*.index_at_start", Bool, || one(false)),
     with("exports.*.fsync", Bool, || one(false)),
     with("exports.*.auto", Bool, || one(false)),
     key("exports.*.rw", StrArray),

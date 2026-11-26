@@ -694,7 +694,7 @@ async fn all_paths_off_rejects_unexported_path() {
     let export = irsync::config::exports::Export {
         path: exported,
         read_only: false,
-        warm_index: false,
+        index_at_start: false,
         fsync: false,
         auto: false,
         rw: Vec::new(),
@@ -798,7 +798,7 @@ fn export_at(
     irsync::config::exports::Export {
         path: path.to_path_buf(),
         read_only: false,
-        warm_index: false,
+        index_at_start: false,
         fsync: false,
         auto,
         rw,

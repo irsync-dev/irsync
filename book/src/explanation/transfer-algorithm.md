@@ -231,7 +231,7 @@ The first hides the per-file round trips; the second fills the link.
 - **Opportunistic candidates.** Before fetching a whole file, the receiver
   hashes only destination files of exactly its size, at most four, of at
   least 64 KiB, and only those its walk has already listed. Seeding the index with `irsync index` or
-  `warm_index` covers the rest.
+  `index_at_start` covers the rest.
 - **Largest file.** A chunk list holds at most 2^24 records, about 4 TiB of
   typical data; rsync has no such limit.
 - **Extended attributes and ACLs.** rsync copies them with `-X` and `-A`;

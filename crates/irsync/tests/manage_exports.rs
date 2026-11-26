@@ -3,7 +3,10 @@ use irsync::config::file::Config;
 use irsync::config::reader;
 use irsync::config::writer::write;
 use irsync::manage::exports::parse_add_target;
-use irsync::manage::exports::{add_auto_export, add_export, remove_export};
+use irsync::manage::exports::{
+    add_auto_export, add_export, export_set, parse_setting, remove_export, rename_export, set_line,
+    ExportFlags,
+};
 use irsync::manage::{ManageError, PeerSpec};
 use irsync_proto::config as pb;
 use std::path::Path;
@@ -19,13 +22,29 @@ fn typed(m: &pb::Config) -> Config {
 }
 
 #[test]
-fn add_writes_only_what_was_asked_and_refuses_duplicates_and_reserved() {
+fn add_writes_only_what_was_asked_updates_an_existing_one_and_refuses_reserved() {
     let mut m = pb::Config::default();
-    add_export(&mut m, "photos", Path::new("/srv/photos"), false, false).unwrap();
-    add_export(&mut m, "docs", Path::new("/srv/docs"), true, true).unwrap();
+    add_export(
+        &mut m,
+        "photos",
+        Path::new("/srv/photos"),
+        ExportFlags::default(),
+    )
+    .unwrap();
+    add_export(
+        &mut m,
+        "docs",
+        Path::new("/srv/docs"),
+        ExportFlags {
+            read_only: true,
+            index_at_start: true,
+            fsync: true,
+        },
+    )
+    .unwrap();
     let x = typed(&m).exports;
-    assert!(!x.exports["photos"].read_only && !x.exports["photos"].warm_index);
-    assert!(x.exports["docs"].read_only && x.exports["docs"].warm_index);
+    assert!(!x.exports["photos"].read_only && !x.exports["photos"].index_at_start);
+    assert!(x.exports["docs"].read_only && x.exports["docs"].index_at_start);
     assert_eq!(m.exports[0].read_only, None);
     assert_eq!(m.exports[1].read_only, Some(true));
     assert!(
@@ -33,33 +52,93 @@ fn add_writes_only_what_was_asked_and_refuses_duplicates_and_reserved() {
         "only true flags are written:\n{}",
         write(&m)
     );
+    assert!(typed(&m).exports.exports["docs"].fsync);
+    // An existing name: the new path, the flags given turned on, the
+    // rest as it was.
+    let old = add_export(
+        &mut m,
+        "docs",
+        Path::new("/x"),
+        ExportFlags {
+            fsync: true,
+            ..ExportFlags::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(old.as_deref(), Some("/srv/docs"));
+    let docs = &typed(&m).exports.exports["docs"];
+    assert_eq!(docs.path, Path::new("/x"));
+    assert!(docs.read_only && docs.index_at_start && docs.fsync);
     assert!(matches!(
-        add_export(&mut m, "photos", Path::new("/x"), false, false),
-        Err(ManageError::Exists(_))
-    ));
-    assert!(matches!(
-        add_export(&mut m, "all", Path::new("/x"), false, false),
+        add_export(&mut m, "all", Path::new("/x"), ExportFlags::default()),
         Err(ManageError::Reserved(_))
     ));
 }
 
 #[test]
+fn set_and_rename_change_one_export_and_keep_its_grants() {
+    let mut m = msg("[exports.p]\npath = \"/p\"\nrw = [\"x\"]\n[exports.q]\npath = \"/q\"\n");
+    let settings: Vec<_> = ["read_only=true", "fsync=true"]
+        .iter()
+        .map(|s| parse_setting(s).unwrap())
+        .collect();
+    export_set(&mut m, "p", &settings).unwrap();
+    assert_eq!(
+        set_line(&m, "p").unwrap(),
+        "p: read_only=true index_at_start=false fsync=true"
+    );
+    export_set(&mut m, "p", &[parse_setting("read_only=false").unwrap()]).unwrap();
+    assert_eq!(m.exports[0].read_only, None, "false is the default: no key");
+    for bad in ["read_only", "rw=true", "fsync=yes"] {
+        assert!(
+            matches!(parse_setting(bad), Err(ManageError::BadValue(_))),
+            "{bad}"
+        );
+    }
+    assert!(matches!(
+        export_set(&mut m, "nope", &settings),
+        Err(ManageError::NotFound(_))
+    ));
+
+    rename_export(&mut m, "p", "photos").unwrap();
+    let x = typed(&m).exports;
+    assert_eq!(x.exports["photos"].rw, vec!["x"]);
+    assert!(x.exports["photos"].fsync && !x.exports.contains_key("p"));
+    assert_eq!(m.exports[0].name, "photos", "it keeps its place");
+    for (old, new) in [
+        ("nope", "z"),
+        ("photos", "q"),
+        ("photos", "all"),
+        ("photos", "a/b"),
+        ("photos", ""),
+    ] {
+        assert!(rename_export(&mut m, old, new).is_err(), "{old} -> {new}");
+    }
+}
+
+#[test]
 fn add_writes_under_exports_as_a_dotted_header_and_refuses_all() {
     let mut m = pb::Config::default();
-    add_export(&mut m, "photos", Path::new("/srv/photos"), false, false).unwrap();
+    add_export(
+        &mut m,
+        "photos",
+        Path::new("/srv/photos"),
+        ExportFlags::default(),
+    )
+    .unwrap();
     assert_eq!(write(&m), "[exports.photos]\npath = \"/srv/photos\"\n");
-    let e = add_export(&mut m, "all", Path::new("/srv/all"), false, false).unwrap_err();
+    let e = add_export(&mut m, "all", Path::new("/srv/all"), ExportFlags::default()).unwrap_err();
     assert_eq!(
         e.to_string(),
-        "\"all\" is reserved: it is the word `grant remove all WHO` and `export update all` use for every export"
+        "\"all\" is reserved: it is the word `grant remove all WHO` and `index --export all` use for every export"
     );
-    assert!(add_export(&mut m, "rw", Path::new("/srv/rw"), false, false).is_ok());
+    assert!(add_export(&mut m, "rw", Path::new("/srv/rw"), ExportFlags::default()).is_ok());
 }
 
 #[test]
 fn a_new_export_goes_last_and_the_path_stays_as_written() {
     let mut m = msg("[exports.b]\npath = \"/b\"\n[exports.a]\npath = \"/a\"\n");
-    add_export(&mut m, "c", Path::new("~/c"), false, false).unwrap();
+    add_export(&mut m, "c", Path::new("~/c"), ExportFlags::default()).unwrap();
     let names: Vec<_> = m.exports.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["b", "a", "c"]);
     assert_eq!(m.exports[2].path, "~/c");
@@ -252,14 +331,10 @@ fn an_edit_that_makes_the_message_invalid_is_refused_on_load() {
 #[test]
 fn add_and_remove_keep_an_inline_exports_table() {
     let mut m = msg("exports = { photos = { path = \"/p\", rw = [\"x\"] } }\n");
-    add_export(&mut m, "q", Path::new("/q"), false, false).unwrap();
+    add_export(&mut m, "q", Path::new("/q"), ExportFlags::default()).unwrap();
     let c = typed(&m).exports;
     assert_eq!(c.exports["photos"].rw, vec!["x"]);
     assert_eq!(c.exports["q"].path, Path::new("/q"));
-    assert!(matches!(
-        add_export(&mut m, "photos", Path::new("/x"), false, false),
-        Err(ManageError::Exists(_))
-    ));
     assert_eq!(
         write(&m),
         "[exports.photos]\npath = \"/p\"\nrw = [\"x\"]\n\n[exports.q]\npath = \"/q\"\n"

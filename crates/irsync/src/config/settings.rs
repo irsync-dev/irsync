@@ -236,7 +236,7 @@ pub struct Defaults {
     /// Retries for a server that has not answered yet.
     pub dial_retries: Option<u32>,
     /// Set the server up over ssh by copying irsync there. `false` is
-    /// `--no-install` for every run.
+    /// `--no-ssh-install` for every run.
     pub ssh_install: Option<bool>,
     pub relay: Option<Relay>,
     pub dht: Option<bool>,
@@ -245,7 +245,14 @@ pub struct Defaults {
     /// For pushes.
     pub congestion: Option<Congestion>,
     pub pq_key_exchange: Option<PqKeyExchange>,
+    /// Drop a connection idle this long; zero: never.
+    pub idle_timeout: Option<Duration>,
 }
+
+/// How long an interrupted session and its partial files are kept: the
+/// daemon's default `dormant_session_timeout`, and the age `irsync gc`
+/// collects at on a client.
+pub const DORMANT_SESSION_TIMEOUT: Duration = Duration::from_secs(7 * 86400);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonSettings {
@@ -301,7 +308,7 @@ impl Default for DaemonSettings {
         DaemonSettings {
             identity: paths::config_dir().join("daemon_ed25519"),
             idle_timeout: crate::session::engine::DAEMON_IDLE_TIMEOUT,
-            dormant_session_timeout: Duration::from_secs(7 * 86400),
+            dormant_session_timeout: DORMANT_SESSION_TIMEOUT,
             max_dormant_sessions_per_key: 25,
             listen: Vec::new(),
             portmap: true,
@@ -385,6 +392,7 @@ impl Defaults {
             relay: relay_from(c.relay.as_deref())?,
             congestion: Congestion::from_optional(c.congestion)?,
             pq_key_exchange: PqKeyExchange::from_optional(c.pq_key_exchange)?,
+            idle_timeout: duration_from(c.idle_timeout.as_ref())?,
         })
     }
 }

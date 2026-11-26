@@ -16,7 +16,7 @@ pub struct Export {
     pub path: PathBuf,
     pub read_only: bool,
     /// Hash the export's files into its index when the daemon starts.
-    pub warm_index: bool,
+    pub index_at_start: bool,
     /// Flush every file a push writes into the export before placing it,
     /// as if the client had passed `--fsync`.
     pub fsync: bool,
@@ -39,7 +39,7 @@ pub fn reserved(name: &str) -> String {
         "all_exports" | "all_paths" | "admin" => {
             format!("`irsync grant list {name}` lists the clients with that right")
         }
-        _ => "it is the word `grant remove all WHO` and `export update all` use for every export"
+        _ => "it is the word `grant remove all WHO` and `index --export all` use for every export"
             .to_string(),
     };
     format!("{name:?} is reserved: {why}")
@@ -89,7 +89,7 @@ impl Exports {
             let export = Export {
                 path: expanded,
                 read_only: e.read_only.unwrap_or(false),
-                warm_index: e.warm_index.unwrap_or(false),
+                index_at_start: e.index_at_start.unwrap_or(false),
                 fsync: e.fsync.unwrap_or(false),
                 auto: e.auto.unwrap_or(false),
                 rw: values(&e.rw),

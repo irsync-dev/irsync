@@ -299,7 +299,7 @@ fn start_daemon<'a>(
             .with_context(|| format!("writing {}", setup.config.display()))?;
     }
     let mut extra: Vec<OsString> = vec![
-        "--timeout".into(),
+        "--idle-timeout".into(),
         profile.defaults().client_timeout_secs.to_string().into(),
     ];
     extra.extend(cli.client_args.iter().cloned());

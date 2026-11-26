@@ -88,8 +88,8 @@ pub fn plan(server: &str, cmd: &RemoteCmd) -> anyhow::Result<Plan> {
                 )?;
                 change(Op::ExportAdd(ExportAdd {
                     target: a.target.clone(),
-                    read_only: a.ro,
-                    warm_index: a.warm_index,
+                    read_only: a.read_only,
+                    index_at_start: a.index_at_start,
                 }))
             }
             RemoteExportCmd::Remove { name } => {
@@ -382,7 +382,7 @@ pub fn view_to_config(v: &View) -> pb::Config {
                 name: e.name.clone(),
                 path: e.path.clone(),
                 read_only: e.read_only.then_some(true),
-                warm_index: e.warm_index.then_some(true),
+                index_at_start: e.index_at_start.then_some(true),
                 fsync: e.fsync.then_some(true),
                 auto: e.is_auto.then_some(true),
                 rw: entries(&e.rw),
@@ -414,8 +414,15 @@ pub fn view_to_config(v: &View) -> pb::Config {
 }
 
 /// Prints `outcome` the way the local command does; the exit code.
-pub fn print(shape: &Shape, server: &str, outcome: RemoteOutcome) -> anyhow::Result<i32> {
+pub fn print(
+    shape: &Shape,
+    server: &str,
+    outcome: RemoteOutcome,
+    quiet: bool,
+) -> anyhow::Result<i32> {
     match outcome {
+        // What a change did: a status line, which `-q` leaves out.
+        RemoteOutcome::Applied(_) if quiet => {}
         RemoteOutcome::Applied(results) => {
             for line in results.iter().flat_map(|r| r.split('\n')) {
                 eprintln!("{}", escape_text(line));

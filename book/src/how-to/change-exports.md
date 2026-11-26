@@ -104,15 +104,15 @@ keeps running as it was.
 | `state_dir` | At the next start. A reload logs that it changed. |
 | `debug_addr` | At the next start. A reload logs that it changed. |
 | `[telemetry]` | At the next start. A reload logs that it changed. |
-| `warm_index` on an export the daemon has already opened | At the next start. |
+| `index_at_start` on an export the daemon has already opened | At the next start. |
 | Removing an export | At once for new connections; the export's index stays open, and its hourly collection keeps running, until the next start. |
 
-The daemon opens an export's index, and starts its hourly collection and its
-`warm_index` warm-up, the first time the export is used: at startup for the
+The daemon opens an export's index, and starts its hourly collection and the
+hashing `index_at_start` asks for, the first time the export is used: at startup for the
 exports already in the file, and at the first connection naming an export
 added later. Exports with the same path share one index.
 
 ## See also
 
 - [Configuration](../reference/configuration.md#daemon): every `[daemon]` key.
-- [Seed the index](seed-the-index.md): `warm_index` and `irsync export update`.
+- [Seed the index](seed-the-index.md): `index_at_start` and `irsync index --export`.

@@ -1097,7 +1097,7 @@ fn a_machine_syncs_to_itself() {
     );
 }
 
-/// `pair --no-dht` and `pair --no-install` with a host's address check the entry
+/// `pair --server-no-dht` and `pair --no-ssh-install` with a host's address check the entry
 /// the address is saved under.
 #[test]
 fn pair_takes_an_address_and_no_dht() {
@@ -1111,8 +1111,8 @@ fn pair_takes_an_address_and_no_dht() {
     irsync::fs::private::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
     let calls = w.ssh_calls();
     for (flag, said) in [
-        ("--no-dht", "turned off DHT publishing on myserver"),
-        ("--no-install", "irsync: pairing with myserver over ssh"),
+        ("--server-no-dht", "turned off DHT publishing on myserver"),
+        ("--no-ssh-install", "irsync: pairing with myserver over ssh"),
     ] {
         let err = ok(&w.irsync_bare(&["pair", flag, "192.168.1.5"]));
         assert!(err.contains("192.168.1.5 is saved as myserver"), "{err}");
@@ -1332,7 +1332,7 @@ fn pair_refuses_an_endpoint_id() {
     assert_eq!(w.ssh_calls(), 0);
 }
 
-/// `pair --no-dht` on a first pairing writes `dht = false` on the server
+/// `pair --server-no-dht` on a first pairing writes `dht = false` on the server
 /// before its daemon starts (so this test never publishes), and says so.
 #[test]
 fn no_dht_turns_server_publishing_off() {
@@ -1340,7 +1340,7 @@ fn no_dht_turns_server_publishing_off() {
     let cfg = w.server.path().join(".config/irsync/irsync.toml");
     let text = std::fs::read_to_string(&cfg).unwrap();
     irsync::fs::private::write(&cfg, text.replace("dht = false", "dht = true")).unwrap();
-    let err = ok(&w.irsync_bare(&["pair", "--no-dht", "myserver"]));
+    let err = ok(&w.irsync_bare(&["pair", "--server-no-dht", "myserver"]));
     assert!(
         err.contains("irsync:   turned off DHT publishing on myserver ([daemon] dht = false)"),
         "{err}"
@@ -1354,7 +1354,7 @@ fn no_dht_turns_server_publishing_off() {
 fn assert_stopped_by_no_install(w: &World, o: &Output) {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success(), "{err}");
-    assert!(err.contains("--no-install"), "{err}");
+    assert!(err.contains("--no-ssh-install"), "{err}");
     assert!(err.contains("Nothing was changed."), "{err}");
     assert!(
         !w.client_config().contains("[servers"),
@@ -1368,7 +1368,7 @@ fn assert_stopped_by_no_install(w: &World, o: &Output) {
 #[test]
 fn pair_no_install_stops_a_first_pairing() {
     let w = World::new();
-    let o = w.irsync_bare(&["pair", "--no-install", "myserver"]);
+    let o = w.irsync_bare(&["pair", "--no-ssh-install", "myserver"]);
     assert_stopped_by_no_install(&w, &o);
 }
 

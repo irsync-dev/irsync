@@ -387,7 +387,7 @@ impl Authorizer for MemoryAuthorizer {
         let export = Export {
             path: root.to_path_buf(),
             read_only: false,
-            warm_index: false,
+            index_at_start: false,
             fsync: false,
             auto: true,
             rw,
