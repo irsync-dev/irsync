@@ -171,8 +171,7 @@ the exports this client may use. It tries for up to 30 seconds. When the
 daemon cannot be found in that time, `pair` fails with what the server said
 about where its daemon can be reached; the server stays set up and saved, and
 running the same `irsync pair` again checks once more. A daemon that answers
-but refuses the client fails `pair` at once. See
-[Pair with a server over ssh](../how-to/pair.md#the-connection-check).
+but refuses the client fails `pair` at once.
 
 | Flag | Meaning |
 | --- | --- |
