@@ -23,7 +23,8 @@ use irsync_proto::config as pb;
 use irsync_proto::v1::{
     admin_reply, admin_request, change::Op, error::Code, hello, hello_reply, read, AdminReply,
     AdminRequest, Change, ClientAdd, ClientRemove, ClientRename, ClientSet, Commit, ExportAdd,
-    ExportRemove, GrantAdd, GrantRemove, OpenAdmin, Read, ReadConfig, ReadView, View,
+    ExportRemove, ExportRename, ExportSet, GrantAdd, GrantRemove, OpenAdmin, Read, ReadConfig,
+    ReadView, View,
 };
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
@@ -92,6 +93,14 @@ pub fn plan(server: &str, cmd: &RemoteCmd) -> anyhow::Result<Plan> {
                     index_at_start: a.index_at_start,
                 }))
             }
+            RemoteExportCmd::Set { name, settings } => change(Op::ExportSet(ExportSet {
+                name: name.clone(),
+                settings: settings.clone(),
+            })),
+            RemoteExportCmd::Rename { old, new } => change(Op::ExportRename(ExportRename {
+                old: old.clone(),
+                new: new.clone(),
+            })),
             RemoteExportCmd::Remove { name } => {
                 change(Op::ExportRemove(ExportRemove { name: name.clone() }))
             }

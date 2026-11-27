@@ -51,7 +51,7 @@ The commands that work remotely:
 
 | Command | Needs |
 | --- | --- |
-| `export list`, `export add`, `export remove` | `ro` to list, `rw` to change |
+| `export list`, `export add`, `export set`, `export rename`, `export remove` | `ro` to list, `rw` to change |
 | `grant list`, `grant add`, `grant remove` | `ro` to list, `rw` to change |
 | `client list`, `client add`, `client remove`, `client rename`, `client set` | `ro` to list, `rw` to change |
 | `show` | `ro` |
@@ -59,8 +59,7 @@ The commands that work remotely:
 
 They take the same arguments as on the server; see
 [Management commands](../reference/management.md). Not remote: `config set`,
-`config unset`, `export set`, `export rename`, `id`, `server` and
-`index --export`. Do those on the
+`config unset`, `id`, `server` and `index --export`. Do those on the
 server.
 
 The server answers each command. The lines it prints may name the server's

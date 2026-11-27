@@ -416,3 +416,45 @@ fn admin_traffic_is_captured_on_both_sides() {
         Some(Msg::AdminRequest(q)) if format!("{q:?}").contains("photos:~/Photos")
     )));
 }
+
+#[test]
+fn remote_export_set_and_rename() {
+    let s = setup(Some(Access::ReadWrite));
+    ok(
+        &s.client,
+        &["remote", "myserver", "export", "add", "photos:~/Photos"],
+    );
+    let o = irsync(
+        &s.client,
+        &[
+            "remote",
+            "myserver",
+            "export",
+            "set",
+            "photos",
+            "read_only=true",
+        ],
+    );
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("photos: read_only=true index_at_start=false fsync=false"),
+        "{}",
+        stderr(&o)
+    );
+    let o = irsync(
+        &s.client,
+        &[
+            "remote", "myserver", "export", "rename", "photos", "pictures",
+        ],
+    );
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("renamed export photos to pictures"),
+        "{}",
+        stderr(&o)
+    );
+    let local = ok(&s.server, &["export", "list"]);
+    assert!(local.contains("pictures: "), "{local}");
+    assert!(local.contains("read_only"), "{local}");
+    assert!(!local.contains("photos: "), "{local}");
+}

@@ -48,10 +48,10 @@ the how-to "Manage a server from your client". It needs
 
 | Remote | Not remote |
 | --- | --- |
-| `export list`, `add`, `remove` | `export set`, `export rename` |
-| `grant list`, `add`, `remove` | `config set`, `config unset` |
-| `client list`, `add`, `remove`, `rename`, `set` | `id` |
-| `show`, `config get`, `config list` | `server` |
+| `export list`, `add`, `set`, `rename`, `remove` | `config set`, `config unset` |
+| `grant list`, `add`, `remove` | `id` |
+| `client list`, `add`, `remove`, `rename`, `set` | `server` |
+| `show`, `config get`, `config list` | |
 
 A remote `export add` takes an absolute path or one that starts with `~`,
 quoted so that your shell leaves it alone. It has no `--fsync`. A client cannot remove or lower its
