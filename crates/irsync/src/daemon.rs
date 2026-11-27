@@ -480,7 +480,7 @@ fn spawn_run(
     export: &Export,
     index: IndexHandle,
     by: StartedBy,
-) -> Result<irsync_proto::v1::IndexRun, irsync_proto::v1::IndexRun> {
+) -> Result<irsync_proto::v1::IndexRun, Box<irsync_proto::v1::IndexRun>> {
     let root = export.path.clone();
     let (progress, status) = shared.runs.claim(&root, name, by)?;
     let (shared, name, stop) = (shared.clone(), name.to_string(), shared.tasks.clone());

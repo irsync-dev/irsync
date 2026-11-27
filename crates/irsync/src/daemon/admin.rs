@@ -375,7 +375,7 @@ fn start_index_blocking(
             );
             (false, run)
         }
-        Err(run) => (true, run),
+        Err(run) => (true, *run),
     };
     admin_reply::Msg::IndexStarted(IndexStarted {
         already_running,

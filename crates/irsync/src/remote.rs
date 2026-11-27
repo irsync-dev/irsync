@@ -23,16 +23,32 @@ use irsync_proto::config as pb;
 use irsync_proto::v1::{
     admin_reply, admin_request, change::Op, error::Code, hello, hello_reply, read, AdminReply,
     AdminRequest, Change, ClientAdd, ClientRemove, ClientRename, ClientSet, Commit, ExportAdd,
-    ExportRemove, ExportRename, ExportSet, GrantAdd, GrantRemove, OpenAdmin, Read, ReadConfig,
-    ReadView, View,
+    ExportRemove, ExportRename, ExportSet, GrantAdd, GrantRemove, IndexRun, OpenAdmin, Read,
+    ReadConfig, ReadIndexing, ReadView, StartIndex, View,
 };
 use irsync_proto::PROTOCOL_VERSION;
 use prost::Message;
 
 use irsync::client::Connected;
 
-/// How long [`converse`] waits for the server's answer.
+/// How long [`converse`] waits for each answer of the server.
 const REPLY_WAIT: Duration = Duration::from_secs(60);
+
+/// How often `remote index NAME` asks the server how its run stands.
+const POLL: Duration = Duration::from_secs(1);
+
+/// The wait of `remote index NAME` was interrupted (Ctrl-C); the run goes
+/// on on the server.
+#[derive(Debug)]
+pub struct Interrupted;
+
+impl std::fmt::Display for Interrupted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("interrupted")
+    }
+}
+
+impl std::error::Error for Interrupted {}
 
 /// What one call asks the server.
 pub enum RemoteRequest {
@@ -42,6 +58,10 @@ pub enum RemoteRequest {
     View,
     /// `config get KEY`, or with an empty key `config list`.
     Config(String),
+    /// Start indexing an export, then wait until the run ends.
+    StartIndex(String),
+    /// The indexing runs.
+    Indexing,
 }
 
 /// What the server answered.
@@ -50,6 +70,9 @@ pub enum RemoteOutcome {
     Applied(Vec<String>),
     View(View),
     Config(Vec<String>),
+    /// The run asked for, as it ended.
+    Indexed(IndexRun),
+    Indexing(Vec<IndexRun>),
 }
 
 /// How [`print`] shows the answer.
@@ -61,6 +84,8 @@ pub enum Shape {
     Show,
     ConfigGet,
     ConfigList,
+    Indexed,
+    IndexList,
 }
 
 pub struct Plan {
@@ -153,6 +178,14 @@ pub fn plan(server: &str, cmd: &RemoteCmd) -> anyhow::Result<Plan> {
                 shape: Shape::ConfigList,
             },
         },
+        RemoteCmd::Index { export: Some(name) } => Plan {
+            request: RemoteRequest::StartIndex(name.clone()),
+            shape: Shape::Indexed,
+        },
+        RemoteCmd::Index { export: None } => Plan {
+            request: RemoteRequest::Indexing,
+            shape: Shape::IndexList,
+        },
     })
 }
 
@@ -232,27 +265,31 @@ async fn converse(
     let (mut send, mut recv) = conn.open_bi().await.context("open control stream")?;
     let tap = ConnTap::of(conn).stream(StreamKind::Control, u64::from(send.id()));
     let hello = irsync::session::hello(hello::Request::Admin(OpenAdmin {}));
-    let (what, requests) = match req {
+    let read_of = |what| admin_request::Msg::Read(Read { what: Some(what) });
+    let (expect, requests) = match req {
         RemoteRequest::Change(change) => (
-            None,
+            Expect::Ack,
             vec![
                 admin_request::Msg::Change(change),
                 admin_request::Msg::Commit(Commit {}),
             ],
         ),
-        RemoteRequest::View => (
-            Some(false),
-            vec![admin_request::Msg::Read(Read {
-                what: Some(read::What::View(ReadView {})),
-            })],
-        ),
+        RemoteRequest::View => (Expect::View, vec![read_of(read::What::View(ReadView {}))]),
         RemoteRequest::Config(key) => (
-            Some(true),
-            vec![admin_request::Msg::Read(Read {
-                what: Some(read::What::Config(ReadConfig { key })),
-            })],
+            Expect::Config,
+            vec![read_of(read::What::Config(ReadConfig { key }))],
+        ),
+        RemoteRequest::StartIndex(export) => (
+            Expect::IndexStarted,
+            vec![admin_request::Msg::StartIndex(StartIndex { export })],
+        ),
+        RemoteRequest::Indexing => (
+            Expect::Indexing,
+            vec![read_of(read::What::Indexing(ReadIndexing {}))],
         ),
     };
+    // A wait polls on the same stream: it stays open for writing.
+    let keep_open = matches!(expect, Expect::IndexStarted);
     // A daemon that refuses answers without waiting for the requests, and
     // may be gone when they are written: the answer, not the write, says why.
     let sent = async {
@@ -260,8 +297,10 @@ async fn converse(
         for msg in requests {
             write_msg_tapped(&mut send, &AdminRequest { msg: Some(msg) }, &tap).await?;
         }
-        send.finish()?;
-        tap.finished();
+        if !keep_open {
+            send.finish()?;
+            tap.finished();
+        }
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -284,7 +323,88 @@ async fn converse(
             }
         }
     };
-    decode_reply(server, &body, what, &tap)
+    Ok(match decode_reply(server, &body, &expect, &tap)? {
+        admin_reply::Msg::Ack(ack) => RemoteOutcome::Applied(ack.results),
+        admin_reply::Msg::View(v) => RemoteOutcome::View(v),
+        admin_reply::Msg::Config(t) => RemoteOutcome::Config(t.lines),
+        admin_reply::Msg::Indexing(i) => RemoteOutcome::Indexing(i.runs),
+        admin_reply::Msg::IndexStarted(s) => {
+            let mine = s
+                .run
+                .with_context(|| format!("{server} did not say which run it started"))?;
+            let done = wait_for(server, &mut send, &mut recv, &tap, mine).await;
+            let _ = send.finish();
+            tap.finished();
+            RemoteOutcome::Indexed(done?)
+        }
+        _ => bail!("{server} sent an answer that does not fit the request"),
+    })
+}
+
+/// Asks every [`POLL`] how the run `mine` stands, until it has ended
+/// (see [`wait_over`]); the run as it ended.
+async fn wait_for(
+    server: &str,
+    send: &mut iroh::endpoint::SendStream,
+    recv: &mut iroh::endpoint::RecvStream,
+    tap: &StreamTap,
+    mine: IndexRun,
+) -> anyhow::Result<IndexRun> {
+    let mut last = mine;
+    if last.ended_at > 0 {
+        return Ok(last);
+    }
+    loop {
+        tokio::time::sleep(POLL).await;
+        let ask = admin_request::Msg::Read(Read {
+            what: Some(read::What::Indexing(ReadIndexing {})),
+        });
+        write_msg_tapped(send, &AdminRequest { msg: Some(ask) }, tap)
+            .await
+            .context("asking how the run stands")?;
+        let Ok(body) = tokio::time::timeout(REPLY_WAIT, read_body(recv)).await else {
+            bail!(
+                "{server} did not answer within {} seconds",
+                REPLY_WAIT.as_secs()
+            );
+        };
+        let Some(body) = body.context("reading the reply")? else {
+            bail!("the server closed the stream without an answer");
+        };
+        let admin_reply::Msg::Indexing(i) = decode_reply(server, &body, &Expect::Indexing, tap)?
+        else {
+            bail!("{server} sent an answer that does not fit the request");
+        };
+        if let Some(done) = wait_over(&last, &i.runs) {
+            return Ok(done);
+        }
+        if let Some(r) = i
+            .runs
+            .iter()
+            .find(|r| r.path == last.path && r.started_at == last.started_at)
+        {
+            last = r.clone();
+        }
+    }
+}
+
+/// Whether the wait for the run `mine` is over, from the runs the server
+/// listed: the run as it ended, or, when the path shows another run (or
+/// none), `mine` as last seen. `None` while it goes on.
+fn wait_over(mine: &IndexRun, runs: &[IndexRun]) -> Option<IndexRun> {
+    match runs.iter().find(|r| r.path == mine.path) {
+        Some(r) if r.started_at == mine.started_at => (r.ended_at > 0).then(|| r.clone()),
+        _ => Some(mine.clone()),
+    }
+}
+
+/// Which reply a request wants.
+enum Expect {
+    Ack,
+    View,
+    Config,
+    IndexStarted,
+    Indexing,
 }
 
 /// The answer to the request: the daemon's reply to Hello, which must open
@@ -301,15 +421,14 @@ async fn read_answer(
     Ok(read_body(recv).await?)
 }
 
-/// The outcome of the reply `body` to a request; `what` says which
-/// (`None`: a change, `Some(false)`: a view, `Some(true)`: config lines).
-/// The reply is reported to `tap` as received.
+/// The reply `body` to a request that wants `expect`. A NACK or a refusal
+/// is the error. The reply is reported to `tap` as received.
 fn decode_reply(
     server: &str,
     body: &[u8],
-    what: Option<bool>,
+    expect: &Expect,
     tap: &StreamTap,
-) -> anyhow::Result<RemoteOutcome> {
+) -> anyhow::Result<admin_reply::Msg> {
     let msg = match AdminReply::decode(body) {
         Ok(AdminReply { msg: Some(msg) }) => {
             tap.received(
@@ -325,18 +444,21 @@ fn decode_reply(
             bail!("malformed reply from {server}")
         }
     };
-    match (msg, what) {
-        (admin_reply::Msg::Ack(ack), None) => Ok(RemoteOutcome::Applied(ack.results)),
-        (admin_reply::Msg::Nack(n), None) => bail!("{}", n.reason),
-        (admin_reply::Msg::View(v), Some(false)) => Ok(RemoteOutcome::View(v)),
-        (admin_reply::Msg::Config(t), Some(true)) => Ok(RemoteOutcome::Config(t.lines)),
-        (admin_reply::Msg::Refused(e), _) => Err(refusal(
+    use admin_reply::Msg as M;
+    match (msg, expect) {
+        (M::Nack(n), Expect::Ack) => bail!("{}", n.reason),
+        (M::Refused(e), _) => Err(refusal(
             server,
             SessionRefused {
                 code: e.code(),
                 message: e.message,
             },
         )),
+        (m @ M::Ack(_), Expect::Ack)
+        | (m @ M::View(_), Expect::View)
+        | (m @ M::Config(_), Expect::Config)
+        | (m @ M::IndexStarted(_), Expect::IndexStarted)
+        | (m @ M::Indexing(_), Expect::Indexing) => Ok(m),
         _ => bail!("{server} sent an answer that does not fit the request"),
     }
 }
@@ -417,6 +539,67 @@ pub fn view_to_config(v: &View) -> pb::Config {
     }
 }
 
+/// One line of `remote index` with no name: how a run stands.
+fn index_line(r: &IndexRun) -> String {
+    let state = if r.ended_at == 0 {
+        "running".to_string()
+    } else if !r.error.is_empty() {
+        format!("failed: {}", r.error)
+    } else if r.incomplete {
+        "incomplete".to_string()
+    } else {
+        "done".to_string()
+    };
+    let failed = if r.failed > 0 {
+        format!(", {} failed", r.failed)
+    } else {
+        String::new()
+    };
+    let by = if r.at_start {
+        " (index_at_start)".to_string()
+    } else {
+        format!(" (by {})", r.started_by)
+    };
+    format!(
+        "{}: {}: {state}, {} file(s), {} hashed ({} bytes){failed}{by}",
+        r.export, r.path, r.examined, r.hashed, r.bytes
+    )
+}
+
+/// Prints the end of the run `r` on `server` as local `irsync index`
+/// prints it, without the files that failed: the server's log names them.
+/// The exit code: 1 when the run failed, 23 when files failed or the walk
+/// was incomplete.
+fn print_indexed(server: &str, r: &IndexRun, quiet: bool) -> i32 {
+    let path = escape_text(&r.path);
+    if !r.error.is_empty() {
+        eprintln!(
+            "irsync: indexing {path} on {server} failed: {}",
+            escape_text(&r.error)
+        );
+        return 1;
+    }
+    if !quiet {
+        println!(
+            "{path}: {} file(s), {} hashed ({} bytes)",
+            r.examined, r.hashed, r.bytes
+        );
+    }
+    let mut code = 0;
+    if r.failed > 0 {
+        eprintln!(
+            "irsync: {} file(s) could not be read; the log on {server} names them",
+            r.failed
+        );
+        code = 23;
+    }
+    if r.incomplete {
+        eprintln!("irsync: {server} could not list everything under {path}");
+        code = 23;
+    }
+    code
+}
+
 /// Prints `outcome` the way the local command does; the exit code.
 pub fn print(
     shape: &Shape,
@@ -430,6 +613,13 @@ pub fn print(
         RemoteOutcome::Applied(results) => {
             for line in results.iter().flat_map(|r| r.split('\n')) {
                 eprintln!("{}", escape_text(line));
+            }
+        }
+        RemoteOutcome::Indexed(run) => return Ok(print_indexed(server, &run, quiet)),
+        RemoteOutcome::Indexing(_) if quiet => {}
+        RemoteOutcome::Indexing(runs) => {
+            for run in &runs {
+                println!("{}", escape_text(&index_line(run)));
             }
         }
         RemoteOutcome::Config(lines) => {
@@ -492,6 +682,79 @@ pub fn print(
 mod tests {
     use super::*;
 
+    fn run(path: &str) -> IndexRun {
+        IndexRun {
+            export: "photos".into(),
+            path: path.into(),
+            started_by: "laptop".into(),
+            started_at: 100,
+            examined: 4,
+            hashed: 3,
+            bytes: 30,
+            ..IndexRun::default()
+        }
+    }
+
+    #[test]
+    fn an_index_line_says_how_the_run_stands() {
+        let running = run("/srv/photos");
+        assert_eq!(
+            index_line(&running),
+            "photos: /srv/photos: running, 4 file(s), 3 hashed (30 bytes) (by laptop)"
+        );
+        let done = IndexRun {
+            ended_at: 200,
+            failed: 2,
+            ..run("/srv/photos")
+        };
+        assert_eq!(
+            index_line(&done),
+            "photos: /srv/photos: done, 4 file(s), 3 hashed (30 bytes), 2 failed (by laptop)"
+        );
+        let failed = IndexRun {
+            ended_at: 200,
+            error: "gone".into(),
+            ..run("/srv/photos")
+        };
+        assert_eq!(
+            index_line(&failed),
+            "photos: /srv/photos: failed: gone, 4 file(s), 3 hashed (30 bytes) (by laptop)"
+        );
+        let at_start = IndexRun {
+            ended_at: 200,
+            incomplete: true,
+            at_start: true,
+            started_by: String::new(),
+            ..run("/srv/photos")
+        };
+        assert_eq!(
+            index_line(&at_start),
+            "photos: /srv/photos: incomplete, 4 file(s), 3 hashed (30 bytes) (index_at_start)"
+        );
+    }
+
+    #[test]
+    fn a_replaced_run_ends_the_wait() {
+        let mine = run("/srv/photos");
+        // The same run, still going: wait on.
+        assert_eq!(wait_over(&mine, &[run("/srv/a"), mine.clone()]), None);
+        // The same run, ended: its last state.
+        let ended = IndexRun {
+            ended_at: 150,
+            hashed: 4,
+            ..mine.clone()
+        };
+        assert_eq!(wait_over(&mine, std::slice::from_ref(&ended)), Some(ended));
+        // Another run of the path, started later: the wait is over, with
+        // the last state seen of ours.
+        let later = IndexRun {
+            started_at: 160,
+            started_by: "other".into(),
+            ..run("/srv/photos")
+        };
+        assert_eq!(wait_over(&mine, &[later]), Some(mine.clone()));
+    }
+
     fn version_error(n: u32) -> SessionRefused {
         SessionRefused {
             code: Code::VersionMismatch,
@@ -511,7 +774,13 @@ mod tests {
     /// A refusal inside the admin session is read as one, for every request.
     #[test]
     fn a_refused_request_decodes_to_its_refusal() {
-        for what in [None, Some(false), Some(true)] {
+        for expect in [
+            Expect::Ack,
+            Expect::View,
+            Expect::Config,
+            Expect::IndexStarted,
+            Expect::Indexing,
+        ] {
             let body = AdminReply {
                 msg: Some(admin_reply::Msg::Refused(irsync_proto::v1::Error {
                     code: Code::Unauthorized as i32,
@@ -519,7 +788,7 @@ mod tests {
                 })),
             }
             .encode_to_vec();
-            let Err(e) = decode_reply("myserver", &body, what, &StreamTap::off()) else {
+            let Err(e) = decode_reply("myserver", &body, &expect, &StreamTap::off()) else {
                 panic!("a refusal decoded as an answer");
             };
             assert!(

@@ -79,10 +79,10 @@ impl Runs {
         path: &Path,
         export: &str,
         by: StartedBy,
-    ) -> Result<(Arc<Progress>, v1::IndexRun), v1::IndexRun> {
+    ) -> Result<(Arc<Progress>, v1::IndexRun), Box<v1::IndexRun>> {
         let mut runs = self.by_path.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(run) = runs.get(path).filter(|r| r.ended_at.is_none()) {
-            return Err(run.status(path));
+            return Err(Box::new(run.status(path)));
         }
         let run = Run {
             export: export.to_string(),

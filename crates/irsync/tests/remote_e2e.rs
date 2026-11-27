@@ -458,3 +458,119 @@ fn remote_export_set_and_rename() {
     assert!(local.contains("read_only"), "{local}");
     assert!(!local.contains("photos: "), "{local}");
 }
+
+/// `n` small files in the server's `~/Photos`, exported as `photos`.
+fn photos(s: &Setup, n: usize) {
+    for i in 0..n {
+        std::fs::write(s.server.join(format!("Photos/{i}.jpg")), format!("{i:04}")).unwrap();
+    }
+    ok(
+        &s.client,
+        &["remote", "myserver", "export", "add", "photos:~/Photos"],
+    );
+}
+
+#[test]
+fn remote_index_waits_and_prints_the_summary() {
+    let s = setup(Some(Access::ReadWrite));
+    photos(&s, 2);
+    let out = ok(&s.client, &["remote", "myserver", "index", "photos"]);
+    assert!(
+        out.trim_end().ends_with(": 2 file(s), 2 hashed (8 bytes)"),
+        "{out}"
+    );
+    let list = ok(&s.client, &["remote", "myserver", "index"]);
+    assert!(list.starts_with("photos: "), "{list}");
+    assert!(list.contains(": done, "), "{list}");
+    assert!(list.contains("(by granted)"), "{list}");
+    let log = std::fs::read_to_string(&s.daemon.log).unwrap();
+    assert!(
+        log.contains("granted started indexing export photos"),
+        "{log}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_index_exits_23_on_a_failed_file() {
+    use irsync::platform::testutil::set_mode;
+    if irsync::platform::is_root() {
+        eprintln!("skipping: running as root, mode 0o000 does not stop reads");
+        return;
+    }
+    let s = setup(Some(Access::ReadWrite));
+    photos(&s, 1);
+    let locked = s.server.join("Photos/secret-name.jpg");
+    std::fs::write(&locked, b"x").unwrap();
+    set_mode(&locked, 0o000).unwrap();
+    let o = irsync(&s.client, &["remote", "myserver", "index", "photos"]);
+    set_mode(&locked, 0o600).unwrap();
+    assert_eq!(o.status.code(), Some(23), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("1 file(s) could not be read; the log on myserver names them"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(!stderr(&o).contains("secret-name"), "{}", stderr(&o));
+    assert!(!stdout(&o).contains("secret-name"), "{}", stdout(&o));
+    let log = std::fs::read_to_string(&s.daemon.log).unwrap();
+    assert!(log.contains("secret-name"), "{log}");
+}
+
+#[test]
+fn remote_index_of_an_unknown_export_is_an_error() {
+    let s = setup(Some(Access::ReadWrite));
+    let o = irsync(&s.client, &["remote", "myserver", "index", "nope"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(stderr(&o).contains("no export \"nope\""), "{}", stderr(&o));
+}
+
+#[test]
+fn read_only_admin_cannot_start_indexing() {
+    let s = setup(Some(Access::ReadWrite));
+    photos(&s, 1);
+    ok(&s.server, &["client", "set", "granted", "admin=ro"]);
+    let o = irsync(&s.client, &["remote", "myserver", "index", "photos"]);
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    assert_eq!(ok(&s.client, &["remote", "myserver", "index"]), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_leaves_the_run_going() {
+    use irsync::platform::testutil::{send_signal, Signal};
+    use std::time::{Duration, Instant};
+    let s = setup(Some(Access::ReadWrite));
+    photos(&s, 2000);
+    let child = common::irsync_command(&s.client)
+        .args(["remote", "myserver", "index", "photos"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !std::fs::read_to_string(&s.daemon.log)
+        .unwrap()
+        .contains("started indexing export photos")
+    {
+        assert!(Instant::now() < deadline, "the run never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    send_signal(child.id(), Signal::Interrupt).unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(130), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("indexing goes on on myserver; see irsync remote myserver index"),
+        "{}",
+        stderr(&o)
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let list = ok(&s.client, &["remote", "myserver", "index"]);
+        if list.contains(": done, 2000 file(s)") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{list}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}

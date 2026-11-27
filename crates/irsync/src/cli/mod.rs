@@ -483,6 +483,13 @@ pub enum RemoteCmd {
     Show,
     /// Read the server's config file. With no subcommand, runs `list`.
     Config(RemoteConfigArgs),
+    /// Hash an export's files on the server into its index, and wait until
+    /// done. With no name, show the indexing runs since the daemon started.
+    Index {
+        /// The export's name.
+        #[arg(value_name = "EXPORT")]
+        export: Option<String>,
+    },
 }
 
 #[derive(Debug, clap::Args)]
