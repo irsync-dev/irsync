@@ -318,7 +318,7 @@ pub fn summary(change: &v1::Change) -> String {
 }
 
 /// `s` with each control character as its Rust escape (`\n`, `\u{7}`).
-fn escape_controls(s: &str) -> String {
+pub(crate) fn escape_controls(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_control() {

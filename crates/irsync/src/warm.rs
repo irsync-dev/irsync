@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
@@ -91,6 +92,21 @@ pub struct WarmReport {
     pub incomplete: bool,
 }
 
+/// The counts of an [`index_root_tracked`] run while it goes on, for
+/// whoever watches it: what the [`WarmReport`] will say, so far.
+#[derive(Debug, Default)]
+pub struct Progress {
+    /// Regular files seen.
+    pub examined: AtomicU64,
+    /// Files read and recorded.
+    pub hashed: AtomicU64,
+    /// Their bytes.
+    pub bytes: AtomicU64,
+    /// Files that could not be read, and, at the end, the places the walk
+    /// could not list.
+    pub failed: AtomicU64,
+}
+
 /// Walks `root` and hashes every regular file whose index row is not fresh
 /// (size, mtime, ctime and inode unchanged), `workers` at a time, storing
 /// the digests in `index`. irsync's own temporary files are left out. With
@@ -100,6 +116,17 @@ pub async fn index_root(
     root: &Path,
     workers: usize,
     dry_run: bool,
+) -> io::Result<WarmReport> {
+    index_root_tracked(index, root, workers, dry_run, &Progress::default()).await
+}
+
+/// [`index_root`], counting in `progress` as it goes.
+pub async fn index_root_tracked(
+    index: IndexHandle,
+    root: &Path,
+    workers: usize,
+    dry_run: bool,
+    progress: &Progress,
 ) -> io::Result<WarmReport> {
     let workers = workers.max(1);
     let hasher = Hasher::new(index, root.to_path_buf(), workers);
@@ -140,11 +167,13 @@ pub async fn index_root(
             let stale = {
                 let mut r = lock();
                 r.examined += 1;
+                progress.examined.fetch_add(1, Relaxed);
                 match hasher.cached(&item) {
                     Ok(Some(_)) => false,
                     Ok(None) => true,
                     Err(e) => {
                         r.errors.push((item.path.clone(), e.to_string()));
+                        progress.failed.fetch_add(1, Relaxed);
                         false
                     }
                 }
@@ -156,6 +185,8 @@ pub async fn index_root(
                 let mut r = lock();
                 r.hashed += 1;
                 r.bytes += item.entry.size;
+                progress.hashed.fetch_add(1, Relaxed);
+                progress.bytes.fetch_add(item.entry.size, Relaxed);
                 return;
             }
             let res = hasher.digest(&item).await;
@@ -164,8 +195,13 @@ pub async fn index_root(
                 Ok(d) => {
                     r.hashed += 1;
                     r.bytes += d.digest.size;
+                    progress.hashed.fetch_add(1, Relaxed);
+                    progress.bytes.fetch_add(d.digest.size, Relaxed);
                 }
-                Err(e) => r.errors.push((item.path.clone(), e.to_string())),
+                Err(e) => {
+                    r.errors.push((item.path.clone(), e.to_string()));
+                    progress.failed.fetch_add(1, Relaxed);
+                }
             }
         })
         .await;
@@ -179,6 +215,9 @@ pub async fn index_root(
         .map_err(io::Error::other)?;
     let mut r = report.into_inner().unwrap_or_else(|e| e.into_inner());
     r.incomplete = summary.incomplete;
+    progress
+        .failed
+        .fetch_add(summary.errors.len() as u64, Relaxed);
     r.errors.extend(summary.errors);
     Ok(r)
 }

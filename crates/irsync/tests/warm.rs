@@ -307,3 +307,36 @@ async fn a_daemon_with_index_at_start_hashes_its_export_at_start() {
     })
     .await;
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn progress_matches_the_report() {
+    use irsync::warm::{index_root_tracked, Progress};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::Ordering::SeqCst;
+    if irsync::platform::is_root() {
+        eprintln!("skipping: running as root, mode 0o000 does not stop reads");
+        return;
+    }
+    let state = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    write(root.path(), "a.bin", &data(10 * KIB, 1));
+    write(root.path(), "b.bin", &data(20 * KIB, 2));
+    write(root.path(), "locked.bin", &data(5 * KIB, 3));
+    let locked = root.path().join("locked.bin");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let ix = Index::open(state.path(), root.path())
+        .unwrap()
+        .into_handle();
+    let progress = Progress::default();
+    let r = within30(index_root_tracked(ix, root.path(), 4, false, &progress))
+        .await
+        .unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(progress.examined.load(SeqCst), 3);
+    assert_eq!(r.hashed, 2, "{r:?}");
+    assert_eq!(progress.hashed.load(SeqCst), r.hashed);
+    assert_eq!(progress.bytes.load(SeqCst), r.bytes);
+    assert_eq!(r.errors.len(), 1, "{r:?}");
+    assert_eq!(progress.failed.load(SeqCst), 1);
+}

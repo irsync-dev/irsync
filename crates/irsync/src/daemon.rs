@@ -46,8 +46,10 @@ use crate::session::FaultInjector;
 use crate::session::{DaemonSessions, SyncHello, HASH_WORKERS};
 
 mod admin;
+mod indexing;
 mod inner;
 pub use admin::{ADMIN_IDLE, ADMIN_MAX_CHANGES, ADMIN_MAX_PENDING, ADMIN_MAX_REQUEST};
+use indexing::StartedBy;
 
 /// How often each export is garbage-collected, and the delay before the first
 /// run (so startup stays quick).
@@ -65,6 +67,8 @@ struct Shared {
     indexes: Mutex<HashMap<PathBuf, IndexHandle>>,
     /// Cancels the per-index background tasks; cancelled when `run` ends.
     tasks: CancellationToken,
+    /// The indexing runs since the daemon started, the latest per path.
+    runs: indexing::Runs,
     /// Age (seconds) after which dormant sessions and abandoned partial
     /// files are collected; read at every collection, so a reload applies.
     dormant_secs: AtomicU64,
@@ -224,6 +228,7 @@ impl Daemon {
             home,
             indexes: Mutex::new(HashMap::new()),
             tasks: CancellationToken::new(),
+            runs: indexing::Runs::default(),
             dormant_secs: AtomicU64::new(settings.daemon.dormant_session_timeout.as_secs()),
             hosting: Mutex::new(DaemonSessions {
                 idle_timeout: Some(settings.daemon.idle_timeout),
@@ -463,34 +468,58 @@ fn open_index(shared: &Shared, name: &str, export: &Export) -> Result<(IndexHand
     Ok((index, true))
 }
 
+/// Starts hashing `export`'s folder into `index` in the background, as
+/// `by` asked, stopped by `shared.tasks`, and records the run in
+/// `shared.runs`; its status. `Err` with the run in progress when the
+/// folder is being indexed already: no second run is started. The run's
+/// end is logged with its counts, and each file it could not read with
+/// its path.
+fn spawn_run(
+    shared: &Arc<Shared>,
+    name: &str,
+    export: &Export,
+    index: IndexHandle,
+    by: StartedBy,
+) -> Result<irsync_proto::v1::IndexRun, irsync_proto::v1::IndexRun> {
+    let root = export.path.clone();
+    let (progress, status) = shared.runs.claim(&root, name, by)?;
+    let (shared, name, stop) = (shared.clone(), name.to_string(), shared.tasks.clone());
+    tokio::spawn(async move {
+        let indexing =
+            crate::warm::index_root_tracked(index, &root, HASH_WORKERS, false, &progress);
+        let result = tokio::select! {
+            _ = stop.cancelled() => return,
+            r = indexing => r,
+        };
+        match &result {
+            Ok(r) => {
+                for (p, msg) in &r.errors {
+                    let file = root.join(p.to_os()).display().to_string();
+                    tracing::warn!(export = %name, "{}", indexing::failed_line(&file, msg));
+                }
+                tracing::info!(
+                    export = %name,
+                    examined = r.examined,
+                    hashed = r.hashed,
+                    bytes = r.bytes,
+                    errors = r.errors.len(),
+                    "export indexed"
+                );
+            }
+            Err(e) => tracing::warn!(export = %name, "indexing the export failed: {e}"),
+        }
+        shared.runs.finish(&root, &result);
+    });
+    Ok(status)
+}
+
 /// Starts the GC loop of `index` and, with `index_at_start`, the hashing of
 /// the export's files into it, both stopped by `shared.tasks`.
 fn start_tasks(shared: &Arc<Shared>, name: &str, export: &Export, index: IndexHandle) {
     let (name, root) = (name.to_string(), export.path.clone());
     if export.index_at_start {
-        let (index, name, root, stop) = (
-            index.clone(),
-            name.clone(),
-            root.clone(),
-            shared.tasks.clone(),
-        );
-        tokio::spawn(async move {
-            let indexing = crate::warm::index_root(index, &root, HASH_WORKERS, false);
-            tokio::select! {
-                _ = stop.cancelled() => {}
-                r = indexing => match r {
-                    Ok(r) => tracing::info!(
-                        export = %name,
-                        examined = r.examined,
-                        hashed = r.hashed,
-                        bytes = r.bytes,
-                        errors = r.errors.len(),
-                        "export indexed"
-                    ),
-                    Err(e) => tracing::warn!(export = %name, "indexing the export at start failed: {e}"),
-                },
-            }
-        });
+        // A run already going (asked for by a client) is the one that counts.
+        let _ = spawn_run(shared, &name, export, index.clone(), StartedBy::AtStart);
     }
     let (shared, stop, gc_index) = (shared.clone(), shared.tasks.clone(), index);
     tokio::spawn(async move {

@@ -146,6 +146,23 @@ message ClientView {
   map<string, string> rights = 3; // key -> "rw" | "ro", only set rights
 }
 
+// One indexing run of an export's folder: in progress (ended_at 0) or
+// the latest that ended. Counts only, never a file inside the export.
+message IndexRun {
+  string export = 1;     // the export's name when the run started
+  string path = 2;       // the folder
+  string started_by = 3; // the client, as the audit log names it; empty at start
+  bool at_start = 4;     // started by index_at_start
+  uint64 started_at = 5; // Unix seconds
+  uint64 ended_at = 6;   // Unix seconds; 0 while running
+  uint64 examined = 7;
+  uint64 hashed = 8;
+  uint64 bytes = 9;
+  uint64 failed = 10;
+  bool incomplete = 11;  // the walk could not list everything
+  string error = 12;     // why the run failed as a whole
+}
+
 message ConfigText {
   repeated string lines = 1;
 }
