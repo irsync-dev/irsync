@@ -161,8 +161,11 @@ checks, so read the live result for the current numbers.
 `tools/github_settings.py` holds the settings for `irsync-dev/irsync`,
 `irsync-dev/iroh`, `irsync-dev/homebrew-tap` and `irsync-dev/packages`.
 These are the rulesets, environments, deploy keys, secret scanning, SHA
-pinning, immutable releases and private vulnerability reporting. `apply`
-never adds or removes a deploy key; it says what to do by hand.
+pinning, immutable releases and private vulnerability reporting. It also
+checks two settings of the `irsync-dev` organisation: two-factor login,
+which it can't set, and whether repositories may have deploy keys, which
+`apply` turns on. `apply` never adds or removes a deploy key; it says what
+to do by hand.
 
 ```sh
 tools/github_settings.py check    # prints every difference, changes nothing
