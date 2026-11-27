@@ -2,7 +2,7 @@
 //! anything, resolves and validates the requested export, then hands off to a session.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -46,6 +46,7 @@ use crate::session::FaultInjector;
 use crate::session::{DaemonSessions, SyncHello, HASH_WORKERS};
 
 mod admin;
+mod inner;
 pub use admin::{ADMIN_IDLE, ADMIN_MAX_CHANGES, ADMIN_MAX_PENDING, ADMIN_MAX_REQUEST};
 
 /// How often each export is garbage-collected, and the delay before the first
@@ -742,18 +743,80 @@ async fn admit_target<'a>(
     id: iroh::EndpointId,
     t: &Target<'_>,
 ) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
-    match validate(snap, grants, shared.home.as_deref(), t)? {
-        Some(v) => Ok(v),
+    let (resolved, rel) = match validate(snap, grants, shared.home.as_deref(), t)? {
+        Some(v) => v,
         None if grants.all_paths.is_some() => {
             let (s, abs) = serve_all_paths(shared, snap, id, t).await?;
             let fresh: &'a Snapshot = fresh.insert(s);
             let grants = fresh.permissions(&id);
             match containing(&abs, &fresh.exports, &grants, None) {
-                Some(resolved) => admit(resolved, t),
-                None => Err(no_access(t.path)),
+                Some(resolved) => admit(resolved, t)?,
+                None => return Err(no_access(t.path)),
             }
         }
-        None => Err(no_access(t.path)),
+        None => return Err(no_access(t.path)),
+    };
+    inner_export_check(snap, grants, id, t, resolved, rel).await
+}
+
+/// A request must not reach another export's directory through an outer
+/// export, in whatever spelling (see [`inner::inner_export`]): on a
+/// volume that ignores case, `/srv/RO` is the export `/srv/ro` too, but
+/// only `/srv` matches it by name. Every kind of session passes here, a
+/// probe too.
+async fn inner_export_check<'a>(
+    snap: &Snapshot,
+    grants: &Permissions,
+    id: iroh::EndpointId,
+    t: &Target<'_>,
+    resolved: Resolved<'a>,
+    rel: RelPath,
+) -> Result<(Resolved<'a>, RelPath), (Code, String)> {
+    // Only exports this peer has a grant for, as `containing` chooses
+    // among: a grant on an outer export reaches everything below it, and
+    // the reply never names an export the peer may not see. (An automatic
+    // export just added is the chosen one.)
+    let others: Vec<(String, PathBuf)> = snap
+        .exports
+        .iter()
+        .filter(|(n, e)| n.as_str() != resolved.name && grants.access_to(n, e).is_some())
+        .map(|(n, e)| (n.clone(), e.path.clone()))
+        .collect();
+    let (root, r) = (resolved.export.path.clone(), rel.clone());
+    let auto = resolved.export.auto;
+    let crossed = tokio::task::spawn_blocking(move || {
+        if auto {
+            inner::auto_export_reaches(&root, &r, &others)
+        } else {
+            inner::inner_export(&root, &r, &others)
+        }
+    })
+    .await;
+    match crossed {
+        Ok(found) => check_answer(t.path, id, found).map(|()| (resolved, rel)),
+        Err(e) => {
+            tracing::warn!(peer = %id.fmt_short(), "checking for an inner export: {e}");
+            Err((Code::Internal, "checking the path failed".into()))
+        }
+    }
+}
+
+/// The answer to a request from the check for another export
+/// ([`inner::inner_export`], [`inner::auto_export_reaches`]): `Ok` to go
+/// ahead; a request that reaches export `name` is refused naming it; a
+/// check that could not finish refuses too, it never allows.
+fn check_answer(
+    path: &[u8],
+    peer: iroh::EndpointId,
+    found: io::Result<Option<String>>,
+) -> Result<(), (Code, String)> {
+    match found {
+        Ok(Some(name)) => Err(inside_export(path, &name)),
+        Ok(None) => Ok(()),
+        Err(e) => {
+            tracing::warn!(peer = %peer.fmt_short(), "checking for an inner export: {e}");
+            Err((Code::Internal, format!("checking the path failed: {e}")))
+        }
     }
 }
 
@@ -889,10 +952,55 @@ async fn serve_all_paths(
         Ok(None) => return Err(no_access(t.path)),
         Err(ResolveError::BadPath) => return Err((Code::BadPath, "invalid path".into())),
     };
+    // Another spelling of a path an export this peer has a grant for
+    // holds: the request's deepest existing part is resolved to its real
+    // place, and the ordinary exact match runs once more on that real path.
+    // If such an export holds it, the request is served through that export
+    // under its rules, as if the peer had typed the real spelling. It
+    // cannot widen access: the peer gets what that spelling gives it.
+    let base = abs.clone();
+    let real = tokio::task::spawn_blocking(move || inner::real_place(&base))
+        .await
+        .unwrap_or_else(|e| Err(io::Error::other(e.to_string())));
+    match real {
+        Ok(Some((real, missing))) => {
+            let real = real.join(missing);
+            if containing(&real, &snap.exports, &grants, None).is_some() {
+                return Ok((snap.clone(), real));
+            }
+        }
+        Ok(None) => {}
+        Err(e) => check_answer(t.path, id, Err(e))?,
+    }
     // Before `auto_export_dir`, which makes a missing push target. The reply is
     // the one for a push into a read-only export.
     if push && !level.permits(true) {
         return Err(read_only());
+    }
+    // Then a granted export at, above or on the way to `abs` in another
+    // spelling refuses the request, before the automatic route makes a
+    // directory or adds an export (see `inner::auto_export_reaches`). The
+    // name a push joins below the path (`admit`) is part of the way, so a
+    // request that the check after `admit` would refuse adds nothing
+    // either.
+    let others: Vec<(String, PathBuf)> = usable
+        .iter()
+        .map(|(n, e)| (n.clone(), e.path.clone()))
+        .collect();
+    let base = abs.clone();
+    let below = (!t.single_file)
+        .then(|| RelPath::new(t.name).ok())
+        .flatten()
+        .unwrap_or_else(RelPath::root);
+    let reached =
+        tokio::task::spawn_blocking(move || inner::auto_export_reaches(&base, &below, &others))
+            .await;
+    match reached {
+        Ok(found) => check_answer(t.path, id, found)?,
+        Err(e) => {
+            tracing::warn!(peer = %id.fmt_short(), "checking for an inner export: {e}");
+            return Err((Code::Internal, "checking the path failed".into()));
+        }
     }
     // A single file pushed to a name, not into a directory.
     let file_dest = t.single_file && push && !t.contents_only;
@@ -941,6 +1049,18 @@ fn add_auto_export(
         .map_err(internal)?;
     let fresh = shared.authz.snapshot().map_err(internal)?;
     Ok((fresh, abs))
+}
+
+/// The reply for a request that reaches the granted export `name` in
+/// another spelling than its own.
+fn inside_export(path: &[u8], name: &str) -> (Code, String) {
+    (
+        Code::BadPath,
+        format!(
+            "{} is inside export {name}; ask for it by that export",
+            escape_path(path)
+        ),
+    )
 }
 
 /// The reply for a push this key may not make.

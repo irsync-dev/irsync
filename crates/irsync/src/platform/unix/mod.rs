@@ -237,6 +237,17 @@ impl Dir {
             .map_err(errno_of)
     }
 
+    /// Whether a name made in this directory is looked up ignoring case,
+    /// as far as this system can tell; `None` when it cannot. macOS says
+    /// so per volume (`_PC_CASE_SENSITIVE`). On Linux it is a flag of the
+    /// directory (`chattr +F`), read only on the file systems that have
+    /// it (ext4, f2fs, tmpfs); btrfs always keeps case apart. Any other
+    /// file system is `None`: vfat, exFAT, CIFS and others can ignore
+    /// case for the whole mount, which no flag shows.
+    pub fn ignores_case(&self) -> Option<bool> {
+        ignores_case(&self.0)
+    }
+
     /// The target of the link `name`, as stored.
     pub fn read_link(&self, name: &[u8]) -> io::Result<Vec<u8>> {
         let name = one_name(name)?;
@@ -909,6 +920,49 @@ pub mod daemonize;
 /// from the system goes through here.
 #[doc(hidden)]
 pub mod testutil;
+
+/// See [`Dir::ignores_case`].
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn ignores_case(fd: &OwnedFd) -> Option<bool> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `fd` is an open descriptor borrowed for the call, and
+    // fpathconf only reads it and returns a number.
+    match unsafe { libc::fpathconf(fd.as_raw_fd(), libc::_PC_CASE_SENSITIVE) } {
+        0 => Some(true),
+        1 => Some(false),
+        _ => None,
+    }
+}
+
+/// See [`Dir::ignores_case`].
+#[cfg(target_os = "linux")]
+fn ignores_case(fd: &OwnedFd) -> Option<bool> {
+    use nix::sys::statfs::{
+        fstatfs, BTRFS_SUPER_MAGIC, EXT4_SUPER_MAGIC, F2FS_SUPER_MAGIC, TMPFS_MAGIC,
+    };
+    use std::os::fd::AsRawFd;
+    /// `FS_CASEFOLD_FL` in `linux/fs.h`, which libc does not name.
+    const FS_CASEFOLD_FL: libc::c_int = 0x4000_0000;
+    let kind = fstatfs(fd).ok()?.filesystem_type();
+    if kind == BTRFS_SUPER_MAGIC {
+        return Some(false);
+    }
+    if ![EXT4_SUPER_MAGIC, F2FS_SUPER_MAGIC, TMPFS_MAGIC].contains(&kind) {
+        return None;
+    }
+    let mut flags: libc::c_int = 0;
+    // SAFETY: `fd` is an open descriptor borrowed for the call, and
+    // FS_IOC_GETFLAGS writes one int, the inode's flags, to `flags`, a
+    // local that outlives the call.
+    let r = unsafe { libc::ioctl(fd.as_raw_fd(), libc::FS_IOC_GETFLAGS, &mut flags) };
+    (r == 0).then_some(flags & FS_CASEFOLD_FL != 0)
+}
+
+/// See [`Dir::ignores_case`].
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
+fn ignores_case(_: &OwnedFd) -> Option<bool> {
+    None
+}
 
 #[cfg(test)]
 mod tests {

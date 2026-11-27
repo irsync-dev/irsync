@@ -270,6 +270,93 @@ async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
     let _ = within(d.task).await;
 }
 
+/// Whether names in `dir` ignore case: the volume finds `probe` under
+/// `PROBE`. The macOS default does; Linux by default does not.
+#[cfg(unix)]
+fn names_ignore_case(dir: &std::path::Path) -> bool {
+    std::fs::create_dir(dir.join("probe")).unwrap();
+    dir.join("PROBE").exists()
+}
+
+/// On a volume that ignores case, another spelling of an inner export's
+/// path names the same directory. The daemon must still apply the inner
+/// export's rules: its `read_only`, and a client's read-only access to it,
+/// hold whichever way the client spells the path, and a push is refused.
+/// An outer export the client may write to must not open a way around
+/// them: another spelling is refused, naming the export to ask by.
+#[tokio::test]
+#[cfg(unix)]
+async fn another_spelling_of_an_inner_export_keeps_its_rules() {
+    use irsync::platform::testutil::name_bytes;
+    let tmp = tempfile::tempdir().unwrap();
+    if !names_ignore_case(tmp.path()) {
+        eprintln!(
+            "skipping: {} keeps case apart, so other spellings are other directories",
+            tmp.path().display()
+        );
+        return;
+    }
+    let (srv, inner) = (tmp.path().join("srv"), tmp.path().join("srv/ro"));
+    std::fs::create_dir_all(&inner).unwrap();
+    // The inner export is read-only, and the client may write to both.
+    let read_only_export = (
+        vec![("srv", srv.clone(), false), ("ro", inner.clone(), true)],
+        Permissions {
+            exports: [
+                ("srv".to_string(), Access::ReadWrite),
+                ("ro".to_string(), Access::ReadWrite),
+            ]
+            .into(),
+            ..Permissions::default()
+        },
+    );
+    // The client may only read the inner export, and write to the outer one.
+    let read_only_grant = (
+        vec![("srv", srv.clone(), false), ("ro", inner.clone(), false)],
+        Permissions {
+            exports: [
+                ("srv".to_string(), Access::ReadWrite),
+                ("ro".to_string(), Access::ReadOnly),
+            ]
+            .into(),
+            ..Permissions::default()
+        },
+    );
+    let mut wrong = Vec::new();
+    for (case, (exports, grants)) in [
+        ("read-only export", read_only_export),
+        ("read-only grant", read_only_grant),
+    ] {
+        let client = client_endpoint().await;
+        let d =
+            spawn_daemon_home(exports, MemoryAuthorizer::single(client.id(), grants), None).await;
+        for spelling in ["ro", "RO", "Ro"] {
+            let path = name_bytes(srv.join(spelling).join("x").as_os_str()).to_vec();
+            let r = exchange_against(&d, &client, hello(&path, Direction::ClientSends)).await;
+            match r.unwrap() {
+                // The exact spelling meets the inner export's own rules;
+                // another spelling is refused naming the export to ask by.
+                HelloAckOrError::Err(e) if spelling == "ro" && e.code == Code::ReadOnly as i32 => {}
+                HelloAckOrError::Err(e)
+                    if spelling != "ro"
+                        && e.code == Code::BadPath as i32
+                        && e.message
+                            .ends_with("is inside export ro; ask for it by that export") => {}
+                HelloAckOrError::Err(e) => wrong.push(format!(
+                    "{case}, srv/{spelling}/x: {:?}: {}",
+                    e.code, e.message
+                )),
+                HelloAckOrError::Ack(_) => {
+                    wrong.push(format!("{case}, srv/{spelling}/x: push accepted"))
+                }
+            }
+        }
+        d.shutdown.cancel();
+        let _ = within(d.task).await;
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 #[tokio::test]
 async fn ro_grant_can_pull() {
     match exchange(Access::ReadOnly, hello(b"rw", Direction::DaemonSends)).await {
@@ -1259,4 +1346,110 @@ async fn the_daemon_waits_for_the_client_to_close_up_to_a_bound() {
         let _ = d.task.await;
     })
     .await;
+}
+
+/// A client with `all_paths` that spells an export's path in another case
+/// gets that export's rules, not an automatic export over the same
+/// directory: a push into a read-only export stays refused, and nothing is
+/// added.
+#[tokio::test]
+#[cfg(unix)]
+async fn all_paths_in_another_spelling_keeps_an_exports_rules() {
+    use irsync::authz::Authorizer;
+    use irsync::config::exports::Export;
+    let tmp = tempfile::tempdir().unwrap();
+    if !names_ignore_case(tmp.path()) {
+        eprintln!(
+            "skipping: {} keeps case apart, so other spellings are other directories",
+            tmp.path().display()
+        );
+        return;
+    }
+    let ro = tmp.path().join("srv/ro");
+    std::fs::create_dir_all(&ro).unwrap();
+    let client = client_endpoint().await;
+    let export = Export {
+        path: ro.clone(),
+        read_only: true,
+        index_at_start: false,
+        fsync: false,
+        auto: false,
+        rw: Vec::new(),
+        ro: Vec::new(),
+    };
+    let mut g = all_paths();
+    g.exports = [("ro".to_string(), Access::ReadWrite)].into();
+    let authz = Arc::new(
+        MemoryAuthorizer::single(client.id(), g).with_exports([("ro".to_string(), export)].into()),
+    );
+    let d = spawn_memory(&authz).await;
+    let mut wrong = Vec::new();
+    for spelling in ["srv/ro/x", "srv/RO/x", "SRV/Ro", "srv/RO"] {
+        let path = bytes(&tmp.path().join(spelling));
+        let r = exchange_against(&d, &client, hello(&path, Direction::ClientSends)).await;
+        match r.unwrap() {
+            HelloAckOrError::Err(e)
+                if e.code == Code::ReadOnly as i32
+                    || (e.code == Code::BadPath as i32
+                        && e.message
+                            .ends_with("is inside export ro; ask for it by that export")) => {}
+            HelloAckOrError::Err(e) => {
+                wrong.push(format!("{spelling}: {:?}: {}", e.code, e.message))
+            }
+            HelloAckOrError::Ack(_) => wrong.push(format!("{spelling}: push accepted")),
+        }
+    }
+    let snap = authz.snapshot().unwrap();
+    assert_eq!(snap.exports.len(), 1, "{:?}", snap.exports);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
+}
+
+/// Below a directory that keeps case apart, another case is another name:
+/// an inner export whose root is not made yet does not refuse a push to a
+/// name that differs from its root's only in case, which is another
+/// directory there. The exact name still meets the inner export's rules.
+#[tokio::test]
+#[cfg(unix)]
+async fn another_case_below_a_case_sensitive_directory_is_another_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let srv = tmp.path().join("srv");
+    std::fs::create_dir(&srv).unwrap();
+    let said = irsync::platform::Dir::open_root(&srv)
+        .unwrap()
+        .ignores_case();
+    if said != Some(false) {
+        eprintln!(
+            "skipping: {} is not known to keep case apart ({said:?})",
+            srv.display()
+        );
+        return;
+    }
+    let client = client_endpoint().await;
+    let d = spawn_daemon_home(
+        vec![("srv", srv.clone(), false), ("ro", srv.join("ro"), true)],
+        MemoryAuthorizer::single(
+            client.id(),
+            Permissions {
+                exports: [
+                    ("srv".to_string(), Access::ReadWrite),
+                    ("ro".to_string(), Access::ReadWrite),
+                ]
+                .into(),
+                ..Permissions::default()
+            },
+        ),
+        None,
+    )
+    .await;
+    let push = |p: &str| hello(&bytes(&srv.join(p)), Direction::ClientSends);
+    let r = exchange_against(&d, &client, push("RO/x")).await;
+    assert!(matches!(r.unwrap(), HelloAckOrError::Ack(_)), "srv/RO/x");
+    expect_err(
+        exchange_against(&d, &client, push("ro/x")).await,
+        Code::ReadOnly,
+    );
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
 }
