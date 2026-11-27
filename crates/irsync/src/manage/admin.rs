@@ -129,6 +129,20 @@ fn apply_one(
             exports::remove_export(msg, &r.name)?;
             Ok(exports::removed_line(&r.name, path))
         }
+        Op::ExportSet(s) => {
+            // Every pair is read before anything changes.
+            let settings = s
+                .settings
+                .iter()
+                .map(|s| exports::parse_setting(s))
+                .collect::<Result<Vec<_>, _>>()?;
+            exports::export_set(msg, &s.name, &settings)?;
+            Ok(exports::set_line(msg, &s.name).unwrap_or_default())
+        }
+        Op::ExportRename(r) => {
+            exports::rename_export(msg, &r.old, &r.new)?;
+            Ok(exports::renamed_line(&r.old, &r.new, path))
+        }
         Op::GrantAdd(g) => {
             grants::check_add_export(&g.export, g.ro)?;
             let config = typed(msg, path)?;
@@ -281,6 +295,8 @@ pub fn summary(change: &v1::Change) -> String {
             s
         }
         Some(Op::ExportRemove(r)) => format!("removed export {}", r.name),
+        Some(Op::ExportSet(s)) => format!("set export {} {}", s.name, s.settings.join(" ")),
+        Some(Op::ExportRename(r)) => format!("renamed export {} to {}", r.old, r.new),
         Some(Op::GrantAdd(g)) => {
             let mode = if g.ro { "ro" } else { "rw" };
             format!("granted {} {mode} on {}", g.who, g.export)

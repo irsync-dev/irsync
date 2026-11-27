@@ -31,6 +31,8 @@ message Change {
     ClientRemove client_remove = 6;
     ClientRename client_rename = 7;
     ClientSet client_set = 8;
+    ExportSet export_set = 9;
+    ExportRename export_rename = 10;
   }
 }
 
@@ -42,6 +44,16 @@ message ExportAdd {
 
 message ExportRemove {
   string name = 1;
+}
+
+message ExportSet {
+  string name = 1;
+  repeated string settings = 2; // "KEY=VALUE" as typed
+}
+
+message ExportRename {
+  string old = 1;
+  string new = 2;
 }
 
 message GrantAdd {
