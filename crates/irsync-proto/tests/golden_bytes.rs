@@ -27,6 +27,7 @@ fn control_heartbeat_golden_bytes() {
         listed: None,
         listed_settled: 0,
         received_bytes: 0,
+        placed_before: None,
     }));
     assert_eq!(hb, [0x6A, 0x05, 0x0A, 0x01, 0x61, 0x10, 0x05]);
 }

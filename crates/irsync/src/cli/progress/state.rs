@@ -174,6 +174,10 @@ pub struct Live {
     /// dealt with before it. It takes in the skips and the files done up
     /// to then, so the percent counts it or the skips, whichever is larger.
     pub settled: u64,
+    /// Latest `PlacedBefore`: what earlier connections placed, when this
+    /// one lists again. It takes in the files done up to then; the skips
+    /// this connection reports are the other files, so the two add up.
+    pub placed_before: u64,
     pub xfr: u64,
     pub rows: BTreeMap<RelPath, Row>,
     pub conn: ConnState,
@@ -208,6 +212,7 @@ impl Live {
             skipped_before: 0,
             skipped_peer: 0,
             settled: 0,
+            placed_before: 0,
             xfr: 0,
             rows: BTreeMap::new(),
             conn: ConnState::Connecting,
@@ -393,13 +398,17 @@ impl Live {
             Event::PeerSkipped(n) => self.skipped_peer = self.skipped_peer.max(*n),
             Event::Settled(n) => {
                 // The files done so far are part of `n`, and every other
-                // file is requested again: its row starts over, and its
-                // matched estimate is reported anew.
+                // file is requested again.
                 self.settled = *n;
-                self.done_bytes = 0;
-                let estimates: u64 = self.rows.values().map(|r| r.matched_counted).sum();
-                self.matched = self.matched.saturating_sub(estimates);
-                self.rows.clear();
+                self.placed_before = 0;
+                self.restart_files();
+            }
+            Event::PlacedBefore(n) => {
+                // The same for a connection that lists again; its skips
+                // come anew, so an earlier `Settled` is out of date too.
+                self.placed_before = *n;
+                self.settled = 0;
+                self.restart_files();
             }
             Event::Scanned {
                 party,
@@ -543,9 +552,20 @@ impl Live {
             .saturating_add(self.skipped_peer);
         let done = self
             .done_bytes
+            .saturating_add(self.placed_before)
             .saturating_add(skipped.max(self.settled))
             .saturating_add(in_flight);
         (done.min(total), total)
+    }
+
+    /// A new connection's credit replaces the files done so far, and every
+    /// file not placed is requested again: its row starts over, and its
+    /// matched estimate is reported anew.
+    fn restart_files(&mut self) {
+        self.done_bytes = 0;
+        let estimates: u64 = self.rows.values().map(|r| r.matched_counted).sum();
+        self.matched = self.matched.saturating_sub(estimates);
+        self.rows.clear();
     }
 
     /// 0..=100, `None` when the denominator is 0.

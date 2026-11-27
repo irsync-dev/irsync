@@ -171,6 +171,8 @@ pub(super) struct Prior {
     by_path: HashMap<RelPath, (u64, bool)>,
     /// The highest file id used so far.
     max_id: u64,
+    /// Bytes of the files an earlier connection placed.
+    placed_bytes: u64,
 }
 
 impl Prior {
@@ -178,11 +180,24 @@ impl Prior {
         let mut p = Prior::default();
         for e in &plan.entries {
             if let Ok(path) = RelPath::new(&e.path) {
-                p.by_path.insert(path, (e.file_id, is_done(e.file_id)));
+                let done = is_done(e.file_id);
+                if done {
+                    let size = e.entry.as_ref().map_or(0, |f| f.size);
+                    p.placed_bytes = p.placed_bytes.saturating_add(size);
+                }
+                p.by_path.insert(path, (e.file_id, done));
             }
             p.max_id = p.max_id.max(e.file_id);
         }
         p
+    }
+
+    /// Bytes of the files an earlier connection placed: the planner
+    /// reports none of them as skipped (see [`Event::PlacedBefore`]).
+    ///
+    /// [`Event::PlacedBefore`]: crate::session::Event::PlacedBefore
+    pub fn placed_bytes(&self) -> u64 {
+        self.placed_bytes
     }
 }
 
@@ -425,8 +440,8 @@ impl Planner {
 
     /// A source file found up to date: counted, reported on the bus and
     /// added to the bytes the heartbeat tells the peer about. A file an
-    /// earlier connection of this session placed is only counted: its
-    /// `FileDone` already put its size in the progress percent.
+    /// earlier connection of this session placed is only counted: the
+    /// connection's `PlacedBefore` already put its size in the percent.
     fn note_skipped(&mut self, path: &RelPath, size: u64) {
         self.report.skipped += 1;
         if matches!(self.prior.by_path.get(path), Some(&(_, true))) {

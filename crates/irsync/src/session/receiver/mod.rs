@@ -1673,6 +1673,18 @@ pub(super) async fn run(
         r.resume_plan(stored).await;
     } else {
         let prior = Prior::new(&stored, |id| r.persist.is_done(id));
+        if ctx.resumed {
+            // Both progress displays learn what earlier connections placed
+            // (the sender's ahead of the first request): the planner does
+            // not report those files again, and a new process has no
+            // `FileDone` of them.
+            let placed = prior.placed_bytes();
+            ctx.bus.emit(super::Event::PlacedBefore(placed));
+            r.out.send(Msg::Heartbeat(irsync_proto::v1::Heartbeat {
+                placed_before: Some(placed),
+                ..ctx.busy.heartbeat()
+            }));
+        }
         let (local_tx, local_rx) = mpsc::channel(LISTING_QUEUE);
         let root = ctx.root.clone();
         let root_missing = blocking(move || Ok(std::fs::symlink_metadata(&root).is_err()))

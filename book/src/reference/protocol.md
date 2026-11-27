@@ -320,7 +320,12 @@ which is the last message on its control stream. A receiver that resumes its sto
 one extra `Heartbeat` before its first request, with `listed`, the totals of
 the sender's listing on the first connection, and `listed_settled`, how many of
 those bytes need nothing more: files found up to date or already placed.
-Nothing is listed again, and the sender shows its progress from these. See
+Nothing is listed again, and the sender shows its progress from these. A
+receiver that resumes a session but lists and plans again (its stored plan was
+not complete) sends instead one extra `Heartbeat` with `placed_before`, the
+bytes of the files earlier connections placed. Its `skipped_bytes` leave
+those files out, so the sender counts them from this number, also when it is
+a new process that never saw them acknowledged. See
 [Sessions and resume](../explanation/sessions-and-resume.md#timeouts).
 
 ## Persisted state

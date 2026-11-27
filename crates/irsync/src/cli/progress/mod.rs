@@ -363,6 +363,7 @@ impl Reporter {
             | Event::Skipped(..)
             | Event::PeerSkipped(_)
             | Event::Settled(_)
+            | Event::PlacedBefore(_)
             | Event::Delete { .. }
             | Event::SessionStart { .. } => {}
             // On a terminal with the block, the block's `errors` section

@@ -906,6 +906,52 @@ fn settled_bytes_are_not_added_to_what_the_block_counted_itself() {
     assert_eq!(l.transfer_fraction(), (1000, 1000));
 }
 
+/// A connection that lists and plans again: what earlier connections placed
+/// counts from the start, and the files found up to date are added as the
+/// planner reports them again. Within one run, nothing is counted twice.
+#[test]
+fn placed_before_takes_in_the_finished_files_and_adds_to_the_skips() {
+    use irsync::session::reconnect::ConnState;
+    let total = Event::Total {
+        party: Party::Local,
+        files: 4,
+        bytes: 1000,
+    };
+    let (mut l, t) = (live(), Instant::now());
+    l.apply(&total, t);
+    l.apply(&Event::Skipped(rp("a"), 100), t);
+    l.apply(&Event::FileStart(rp("b"), 200), t);
+    l.apply(&Event::FileBytes(rp("b"), 200), t);
+    l.apply(&Event::FileDone(rp("b"), 200), t);
+    l.apply(&Event::FileStart(rp("c"), 600), t);
+    l.apply(&Event::FileMatched(rp("c"), 50), t);
+    l.apply(&Event::FileBytes(rp("c"), 300), t);
+    assert_eq!(l.transfer_fraction(), (650, 1000));
+
+    l.apply(&Event::Conn(ConnState::Reconnecting { attempt: 1 }), t);
+    // `b` was placed; `c` is requested again.
+    l.apply(&Event::PlacedBefore(200), t);
+    assert_eq!(l.transfer_fraction(), (300, 1000));
+    assert_eq!(l.in_flight(), 0);
+    assert_eq!(l.matched, 0, "the dropped row's estimate");
+    // The planner reports `a` again, and finds `d` up to date too.
+    l.apply(&Event::Skipped(rp("a"), 100), t);
+    assert_eq!(l.transfer_fraction(), (300, 1000));
+    l.apply(&Event::Skipped(rp("d"), 100), t);
+    l.apply(&Event::FileStart(rp("c"), 600), t);
+    l.apply(&Event::FileMatched(rp("c"), 300), t);
+    l.apply(&Event::FileBytes(rp("c"), 300), t);
+    l.apply(&Event::FileDone(rp("c"), 600), t);
+    assert_eq!(l.transfer_fraction(), (1000, 1000));
+
+    // A new process: it has seen nothing finish, and starts at what the
+    // earlier one placed.
+    let mut fresh = live();
+    fresh.apply(&total, t);
+    fresh.apply(&Event::PlacedBefore(200), t);
+    assert_eq!(fresh.transfer_fraction(), (200, 1000));
+}
+
 /// A push writes a small file to its stream at once, then waits for the
 /// receiver's acknowledgement with no event for the row. It is not drawn
 /// (so never as `stalled`) and still counts toward the percent.

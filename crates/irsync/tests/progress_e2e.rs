@@ -55,10 +55,21 @@ async fn try_run_with(
     o: &SyncOptions,
     flow: Flow,
     ropts: ReconnectOpts,
+    on_event: impl FnMut(&Event) + Send + 'static,
+) -> (anyhow::Result<Outcome>, Vec<Event>) {
+    try_run_side(h, o, flow, ropts, h.local_side(), on_event).await
+}
+
+/// [`try_run_with`] on this client side (with its own hooks).
+async fn try_run_side(
+    h: &Harness,
+    o: &SyncOptions,
+    flow: Flow,
+    ropts: ReconnectOpts,
+    local: irsync::session::LocalSide,
     mut on_event: impl FnMut(&Event) + Send + 'static,
 ) -> (anyhow::Result<Outcome>, Vec<Event>) {
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
-    let local = h.local_side();
     let mut rx = local.bus.subscribe();
     let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
     let collector = tokio::spawn(async move {
@@ -894,7 +905,11 @@ async fn a_restarted_client_that_resumes_counts_what_is_already_settled() {
             fs::write(src.join("same.txt"), vec![7u8; SAME as usize]).unwrap();
             run(&h, &opts(&[]), flow).await;
             for i in 0..FILES {
-                fs::write(src.join(format!("f{i:02}.bin")), noise(SIZE as usize, i + 1)).unwrap();
+                fs::write(
+                    src.join(format!("f{i:02}.bin")),
+                    noise(SIZE as usize, i + 1),
+                )
+                .unwrap();
             }
             h.daemon.sender_parallel(2);
             let fast = ReconnectOpts {
@@ -904,6 +919,14 @@ async fn a_restarted_client_that_resumes_counts_what_is_already_settled() {
             // First "process": the connection drops and it gives up. A
             // pull is cut once it has placed four files; the daemon's fault
             // cannot see a push's files finish, so that is cut by bytes.
+            // The receiver has two files in flight at most, so its planner
+            // is still waiting for a slot at the cut: the stored plan is
+            // incomplete, and the second run lists and plans again.
+            let mut local = h.local_side();
+            match flow {
+                Flow::Push => h.daemon.hooks.lock().unwrap().max_inflight = Some(2),
+                Flow::Pull => local.hooks.max_inflight = Some(2),
+            }
             let once = ReconnectOpts {
                 max: Duration::ZERO,
                 ..fast
@@ -921,7 +944,7 @@ async fn a_restarted_client_that_resumes_counts_what_is_already_settled() {
                     }
                 }
             };
-            let (first, events) = try_run_with(&h, &opts(&[]), flow, once, arm).await;
+            let (first, events) = try_run_side(&h, &opts(&[]), flow, once, local, arm).await;
             assert!(first.is_err(), "{flow:?}: the first run should fail");
             let done: u64 = events
                 .iter()
@@ -950,13 +973,27 @@ async fn a_restarted_client_that_resumes_counts_what_is_already_settled() {
                 }
                 live.apply(e, now);
             }
+            // The second run lists again: the files the first one placed
+            // count from the start, the up-to-date one once it is planned.
             let start = at_first_data.unwrap_or_else(|| panic!("{flow:?}: no data sent"));
             assert!(
-                start >= SAME + done,
-                "{flow:?}: the percent starts at {start} bytes, with {SAME} up to date and {done} placed"
+                start >= done,
+                "{flow:?}: the percent starts at {start} bytes, with {done} placed"
             );
-            // Not capped into place: what the second run finishes is the rest.
-            assert_eq!(live.settled + live.done_bytes, TOTAL, "{flow:?}");
+            assert!(
+                live.placed_before >= done,
+                "{flow:?}: {}",
+                live.placed_before
+            );
+            // Not capped into place: placed, up to date and finished by the
+            // second run add up to the total, nothing counted twice.
+            let skipped = live.skipped_local + live.skipped_peer;
+            assert_eq!(skipped, SAME, "{flow:?}: skipped");
+            assert_eq!(
+                live.placed_before + skipped + live.done_bytes,
+                TOTAL,
+                "{flow:?}"
+            );
             assert_eq!(live.transfer_fraction(), (TOTAL, TOTAL), "{flow:?}");
         }
     })

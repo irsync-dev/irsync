@@ -280,6 +280,11 @@ message Heartbeat {
   // sender counts it as progress: a big file sent over several connections,
   // none of which finishes it, still moves the session on.
   uint64 received_bytes = 7;
+  // A receiver that resumes a session and lists and plans again, once,
+  // before its first request: bytes of the files earlier connections
+  // placed. Its `skipped_bytes` leave them out, and a new client process
+  // has not seen them acknowledged.
+  optional uint64 placed_before = 8;
 }
 // Every frame on the control stream after the handshake.
 message Control {
