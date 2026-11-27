@@ -1522,3 +1522,44 @@ fn verify_signature_help_mentions_minisign() {
     assert_eq!(o.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&o.stdout).contains("minisign"));
 }
+
+#[test]
+fn remote_export_set_and_rename_parse() {
+    use irsync::cli::{RemoteCmd, RemoteExportCmd};
+    let a = parse(&[
+        "remote",
+        "myserver",
+        "export",
+        "set",
+        "photos",
+        "read_only=true",
+    ]);
+    match &a.cmd {
+        Some(Command::Remote(r)) => match &r.cmd {
+            RemoteCmd::Export(e) => match &e.cmd {
+                Some(RemoteExportCmd::Set { name, settings }) => {
+                    assert_eq!(name, "photos");
+                    assert_eq!(settings, &["read_only=true"]);
+                }
+                c => panic!("not Set: {c:?}"),
+            },
+            c => panic!("not Export: {c:?}"),
+        },
+        c => panic!("not Remote: {c:?}"),
+    }
+    let a = parse(&[
+        "remote", "myserver", "export", "rename", "photos", "pictures",
+    ]);
+    assert!(matches!(
+        &a.cmd,
+        Some(Command::Remote(r)) if matches!(
+            &r.cmd,
+            RemoteCmd::Export(e) if matches!(
+                &e.cmd,
+                Some(RemoteExportCmd::Rename { old, new }) if old == "photos" && new == "pictures"
+            )
+        )
+    ));
+    let e = parse_err(&["remote", "myserver", "export", "set", "photos"]);
+    assert!(e.contains("KEY=VALUE"), "{e}");
+}

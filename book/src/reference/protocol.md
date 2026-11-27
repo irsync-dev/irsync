@@ -25,7 +25,7 @@ a change to it needs no new version.
 | Item | Value |
 | --- | --- |
 | ALPN | `irsync/1` |
-| `PROTOCOL_VERSION` | `8`, carried in `Hello.protocol_version` |
+| `PROTOCOL_VERSION` | `9`, carried in `Hello.protocol_version` |
 | Framing | A protobuf varint length (at most 4 bytes for `MAX_FRAME`), then that many bytes of one protobuf message: protobuf's standard length-delimited form |
 | `MAX_FRAME` | 16 MiB. A longer length is refused before anything is allocated for it. |
 | Content hash | BLAKE3, 32 bytes, for chunks and whole files |
@@ -178,14 +178,26 @@ daemon answers each with an `AdminReply`:
 
 | Message | Direction | Meaning |
 | --- | --- | --- |
-| `Change` | client to daemon | One change: an export, grant or client add, remove, rename or set. Held, not applied. No reply. |
+| `Change` | client to daemon | One change: an export add, set, rename or remove; a grant add or remove; a client add, remove, rename or set. Held, not applied. No reply. |
 | `Commit` | client to daemon | Apply the held changes, all or nothing: answered with `Ack` (one result line per change) or `Nack`. At most 100 changes; a session idle for 10 minutes is closed. |
-| `Read` | client to daemon | `ReadView` for the exports, clients and daemon facts, or `ReadConfig` for one key (empty: every key). Answered with `View` or `ConfigText`, from the saved config. Needs `admin` `ro` or `rw`. |
+| `StartIndex` | client to daemon | Hash an export's folder into its index, in the background. Outside the transaction: it names an export of the saved config. Needs `admin` `rw`. Answered at once with `IndexStarted`: the run, and `already_running` when the folder was being indexed already. |
+| `Read` | client to daemon | `ReadView` for the exports, clients and daemon facts, `ReadConfig` for one key (empty: every key), or `ReadIndexing` for the indexing runs. Answered with `View` or `ConfigText` from the saved config, or with `Indexing` from the daemon's memory. Needs `admin` `ro` or `rw`. |
 | `Nack` | daemon to client | Nothing was applied. `change` is the 1-based number of the change at fault, or 0 for the whole transaction (busy, not allowed, own `admin` right, too many changes). |
 
 A request the daemon refuses inside the session (one it cannot read, a read
 of a key that does not exist, a request too large) gets an `AdminReply`
-whose `refused` holds the `Error`.
+whose `refused` holds the `Error`. So does a `StartIndex` from a client
+with only `admin = "ro"` (`UNAUTHORIZED`) or for an export that does not
+exist (`BAD_REQUEST`); the session then goes on.
+
+`Indexing` lists one `IndexRun` per folder the daemon has indexed since it
+started: the latest run, going or ended. It carries the export's name and
+folder, who started it (a client's name, or `at_start` for
+`index_at_start`), when it started and ended (Unix seconds; `ended_at` is 0
+while it runs), and its counts: files examined, files hashed, bytes, files
+that failed. Once over, `incomplete` says the walk could not list
+everything and `error` why a run failed as a whole. It never names a file
+inside the export: the daemon's log does.
 
 ## Errors
 

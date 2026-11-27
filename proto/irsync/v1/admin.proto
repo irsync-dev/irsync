@@ -14,7 +14,14 @@ message AdminRequest {
     Change change = 1;
     Commit commit = 2;
     Read read = 3;
+    // Start hashing an export's folder into its index, outside the
+    // transaction; answered at once with IndexStarted.
+    StartIndex start_index = 4;
   }
+}
+
+message StartIndex {
+  string export = 1; // by name, as in the saved config
 }
 
 // Apply every change sent since the stream opened (or the last commit),
@@ -31,6 +38,8 @@ message Change {
     ClientRemove client_remove = 6;
     ClientRename client_rename = 7;
     ClientSet client_set = 8;
+    ExportSet export_set = 9;
+    ExportRename export_rename = 10;
   }
 }
 
@@ -42,6 +51,16 @@ message ExportAdd {
 
 message ExportRemove {
   string name = 1;
+}
+
+message ExportSet {
+  string name = 1;
+  repeated string settings = 2; // "KEY=VALUE" as typed
+}
+
+message ExportRename {
+  string old = 1;
+  string new = 2;
 }
 
 message GrantAdd {
@@ -82,8 +101,12 @@ message Read {
     ReadView view = 1;
     // config get KEY, or config list (empty key)
     ReadConfig config = 2;
+    // the indexing runs since the daemon started
+    ReadIndexing indexing = 3;
   }
 }
+
+message ReadIndexing {}
 
 message ReadView {}
 
@@ -98,7 +121,18 @@ message AdminReply {
     View view = 3;
     ConfigText config = 4;
     Error refused = 5;
+    IndexStarted index_started = 6;
+    Indexing indexing = 7;
   }
+}
+
+message IndexStarted {
+  bool already_running = 1; // run is the one that was going already
+  IndexRun run = 2;
+}
+
+message Indexing {
+  repeated IndexRun runs = 1; // the latest run per path, in path order
 }
 
 message Ack {
@@ -132,6 +166,24 @@ message ClientView {
   string name = 1;
   bytes id = 2;
   map<string, string> rights = 3; // key -> "rw" | "ro", only set rights
+}
+
+// One indexing run of an export's folder: in progress (ended_at 0) or
+// the latest that ended. Counts only, never a file inside the export.
+message IndexRun {
+  string export = 1;     // the export's name when the run started
+  string path = 2;       // the folder
+  string started_by = 3; // the client, as the audit log names it; empty at start
+  bool at_start = 4;     // started by index_at_start
+  uint64 started_at = 5; // Unix seconds
+  uint64 ended_at = 6;   // Unix seconds; 0 while running
+  uint64 examined = 7;
+  uint64 hashed = 8;
+  uint64 bytes = 9;
+  uint64 failed = 10;
+  bool incomplete = 11;  // the walk could not list everything
+  string error = 12;     // why the run failed as a whole; a folder that
+                         // cannot be listed is incomplete, not an error
 }
 
 message ConfigText {

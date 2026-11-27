@@ -483,6 +483,13 @@ pub enum RemoteCmd {
     Show,
     /// Read the server's config file. With no subcommand, runs `list`.
     Config(RemoteConfigArgs),
+    /// Hash an export's files on the server into its index, and wait until
+    /// done. With no name, show the indexing runs since the daemon started.
+    Index {
+        /// The export's name.
+        #[arg(value_name = "EXPORT")]
+        export: Option<String>,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -497,6 +504,23 @@ pub enum RemoteExportCmd {
     /// and turn the flags given on. Quote a path that starts with ~, so the
     /// shell leaves it for the server: `'photos:~/Photos'`.
     Add(RemoteExportAddArgs),
+    /// Set an export's settings: read_only, index_at_start and fsync,
+    /// each true or false.
+    Set {
+        /// The export's name.
+        name: String,
+        /// A setting and its value, such as `read_only=true`.
+        #[arg(required = true, value_name = "KEY=VALUE")]
+        settings: Vec<String>,
+    },
+    /// Rename an export. Its path, settings and grants stay; clients
+    /// then name it by the new name in HOST:PATH.
+    Rename {
+        /// The current name.
+        old: String,
+        /// The new name.
+        new: String,
+    },
     /// Stop exporting a directory, with its grants.
     Remove {
         /// The export's name.

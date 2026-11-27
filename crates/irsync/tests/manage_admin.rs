@@ -419,9 +419,102 @@ fn summaries_say_what_a_change_does() {
         summary(&client_set("laptop", &["admin=ro"])),
         "set laptop admin=ro"
     );
+    assert_eq!(
+        summary(&export_set("photos", &["read_only=true"])),
+        "set export photos read_only=true"
+    );
+    assert_eq!(
+        summary(&export_rename("photos", "pictures")),
+        "renamed export photos to pictures"
+    );
     // Text from the client cannot start a new log line.
     assert_eq!(
         summary(&client_set("laptop\nforged", &["admin=ro"])),
         "set laptop\\nforged admin=ro"
     );
+}
+
+fn export_set(name: &str, settings: &[&str]) -> v1::Change {
+    change(Op::ExportSet(v1::ExportSet {
+        name: name.to_string(),
+        settings: settings.iter().map(|s| s.to_string()).collect(),
+    }))
+}
+
+fn export_rename(old: &str, new: &str) -> v1::Change {
+    change(Op::ExportRename(v1::ExportRename {
+        old: old.to_string(),
+        new: new.to_string(),
+    }))
+}
+
+#[test]
+fn export_set_and_rename_apply_as_the_local_commands() {
+    let d = tempfile::tempdir().unwrap();
+    let mut m = config_with("admin = \"rw\"");
+    run(
+        &mut m,
+        &[export_add(&format!("photos:{}", d.path().display()))],
+    )
+    .unwrap();
+    let lines = run(
+        &mut m,
+        &[
+            export_set("photos", &["read_only=true"]),
+            export_rename("photos", "pictures"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        lines,
+        [
+            "photos: read_only=true index_at_start=false fsync=false".to_string(),
+            format!("renamed export photos to pictures in {FILE}"),
+        ]
+    );
+    assert_eq!(m.exports.len(), 1);
+    let e = &m.exports[0];
+    assert_eq!(e.name, "pictures");
+    assert_eq!(e.read_only, Some(true));
+    assert_eq!(e.path, d.path().to_string_lossy());
+}
+
+#[test]
+fn a_bad_export_setting_nacks_its_change() {
+    let d = tempfile::tempdir().unwrap();
+    let original = config_with("admin = \"rw\"");
+    let mut m = original.clone();
+    let nack = run(
+        &mut m,
+        &[
+            export_add(&format!("photos:{}", d.path().display())),
+            export_set("photos", &["colour=red"]),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(nack.change, 2);
+    assert!(
+        nack.reason.contains("is not a setting of an export"),
+        "{}",
+        nack.reason
+    );
+    assert_eq!(m, original);
+}
+
+#[test]
+fn export_rename_to_a_taken_name_nacks() {
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut m = config_with("admin = \"rw\"");
+    run(
+        &mut m,
+        &[
+            export_add(&format!("a:{}", a.path().display())),
+            export_add(&format!("b:{}", b.path().display())),
+        ],
+    )
+    .unwrap();
+    let before = m.clone();
+    let nack = run(&mut m, &[export_rename("a", "b")]).unwrap_err();
+    assert_eq!(nack.change, 1);
+    assert_eq!(m, before);
 }

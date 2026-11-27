@@ -364,12 +364,20 @@ or the daemon's `EndpointId`. This client needs `admin = "rw"` on the server
 to change things, and `admin = "ro"` or `"rw"` to read. `remote` dials the
 server like a sync does. It never sets one up: use `irsync pair` for that.
 
-`COMMAND` is one of `export list|add|remove`, `grant list|add|remove`,
-`client list|add|remove|rename|set`, `show`, `config get KEY` and
-`config list`. Each takes the arguments it takes on the server; see
+`COMMAND` is one of `export list|add|set|rename|remove`,
+`grant list|add|remove`, `client list|add|remove|rename|set`, `show`,
+`config get KEY`, `config list` and `index [EXPORT]`. Each takes the arguments it takes on the server; see
 [Management commands](management.md#remote-use). Each call sends one change,
 which the server applies all or not at all. Quote a path that starts with
 `~`: `irsync remote myserver export add 'photos:~/Photos'`.
+
+`irsync remote SERVER index EXPORT` hashes an export's files on the server,
+in the background, and waits until it is done. It prints what
+`irsync index --export` prints there, but not the files it could not read:
+the server's log names them. It exits 0, 23 when files could not be read or
+a directory could not be listed, 1 when the run failed, and 130 on Ctrl-C,
+which stops the wait but not the run. With no `EXPORT`, it prints a line for
+each export the server has indexed since its daemon started.
 
 The book has a how-to, "Manage a server from your client".
 

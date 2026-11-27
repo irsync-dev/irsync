@@ -685,13 +685,27 @@ fn run_remote(r: &RemoteArgs, opts: &SyncOptions) -> i32 {
     };
     let done = rt.block_on(async {
         let c = irsync::client::connect(&r.server, opts, &|line| log.eprintln(line)).await?;
+        let work = remote::run_remote(&c, plan.request);
+        // Ctrl-C ends the wait for an indexing run, not the run.
+        let done = if matches!(plan.shape, remote::Shape::Indexed) {
+            tokio::select! {
+                d = work => d,
+                _ = tokio::signal::ctrl_c() => Err(remote::Interrupted.into()),
+            }
+        } else {
+            work.await
+        };
         // Closed on every way out (#256).
-        let done = remote::run_remote(&c, plan.request).await;
         c.endpoint.close().await;
         done
     });
     match done.and_then(|outcome| remote::print(&plan.shape, &r.server, outcome, opts.quiet)) {
         Ok(code) => code,
+        Err(e) if e.is::<remote::Interrupted>() => {
+            let server = escape_text(&r.server);
+            eprintln!("irsync: indexing goes on on {server}; see irsync remote {server} index");
+            130
+        }
         Err(e) => {
             eprintln!("irsync remote: {}", escape_text(&format!("{e:#}")));
             1

@@ -48,10 +48,11 @@ the how-to "Manage a server from your client". It needs
 
 | Remote | Not remote |
 | --- | --- |
-| `export list`, `add`, `remove` | `export set`, `export rename` |
-| `grant list`, `add`, `remove` | `config set`, `config unset` |
-| `client list`, `add`, `remove`, `rename`, `set` | `id` |
-| `show`, `config get`, `config list` | `server` |
+| `export list`, `add`, `set`, `rename`, `remove` | `config set`, `config unset` |
+| `grant list`, `add`, `remove` | `id` |
+| `client list`, `add`, `remove`, `rename`, `set` | `server` |
+| `show`, `config get`, `config list` | |
+| `index EXPORT`, `index` | |
 
 A remote `export add` takes an absolute path or one that starts with `~`,
 quoted so that your shell leaves it alone. It has no `--fsync`. A client cannot remove or lower its
@@ -59,6 +60,26 @@ own `admin` right this way.
 
 A running daemon picks up `client`, `export` and `grant` changes on its next
 connection; nothing needs a restart.
+
+`irsync remote SERVER index EXPORT` stands in for `irsync index --export` on
+the server: it hashes the export's files there, in the background, and
+waits. Its last line is the one `irsync index` prints:
+`/srv/photos: 1204 file(s), 1204 hashed (5120000 bytes)`. Files it could not
+read are counted, not named: the server's log names them. Exit codes: 0, 23
+(files not read, or a directory not listed), 1 (the run failed) and 130
+(Ctrl-C: the wait stops, the run goes on). Run while another run of the same
+folder goes on, it waits for that one.
+
+`irsync remote SERVER index` prints one line per folder the daemon has
+indexed since it started, the latest run of each:
+
+```text
+pics: /srv/pics: done, 3 file(s), 3 hashed (30 bytes) (by laptop)
+tv: /tv: running, 9 file(s), 4 hashed (8 bytes) (index_at_start)
+```
+
+The state is `running`, `done`, `incomplete` (a directory could not be
+listed) or `failed: WHY`; `, N failed` counts the files not read.
 
 ## server
 

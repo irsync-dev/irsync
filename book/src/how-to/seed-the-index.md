@@ -73,6 +73,16 @@ the same `--config`, so that they write to the daemon's `state_dir`.
   at the first connection for an export added while it runs, and logs
   `export indexed` when done.
 
+- Or, from a client with `admin = "rw"` on the server, ask its daemon to
+  hash an export now, and wait until it is done:
+
+  ```sh
+  irsync remote myserver index photos
+  ```
+
+  It counts the files it could not read; the server's log names them. See
+  [Manage a server from your client](remote-admin.md#index-an-export).
+
 ## See also
 
 - [Clean up state](clean-up.md): how index entries of deleted files are

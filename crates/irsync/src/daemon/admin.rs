@@ -18,15 +18,16 @@ use iroh::EndpointId;
 use irsync_proto::config as pb;
 use irsync_proto::v1::{
     admin_reply, admin_request, error::Code, hello_reply, read, AdminReady, AdminReply,
-    AdminRequest, Change, Error, HelloReply, Nack,
+    AdminRequest, Change, Error, HelloReply, IndexStarted, Indexing, Nack,
 };
 use prost::Message;
 
+use super::indexing::{Runs, StartedBy};
 use super::Shared;
 use crate::authz::{lock_config_waiting, Access, Snapshot};
 use crate::config::clients::Clients;
 use crate::config::file::Config;
-use crate::manage::admin::{self as engine, Committer, NOT_ALLOWED};
+use crate::manage::admin::{self as engine, escape_controls, Committer, NOT_ALLOWED};
 use crate::manage::{load_message, ManageError};
 use crate::net::finish_answer;
 use crate::net::frame::{read_msg_max_tapped, write_msg_tapped, FrameTooLarge};
@@ -174,12 +175,13 @@ pub(super) async fn serve_admin(
                     admin_reply::Msg::Nack(Nack { change: 0, reason })
                 }
             },
+            admin_request::Msg::StartIndex(s) => start_index(&shared, &path, id, s.export).await,
             admin_request::Msg::Read(r) => match r.what {
                 None => return bad_request(&conn, &mut send, &tap, &path, id).await,
                 Some(what) => {
-                    let (p, home) = (path.clone(), shared.home.clone());
+                    let (p, home, sh) = (path.clone(), shared.home.clone(), shared.clone());
                     let answered = tokio::task::spawn_blocking(move || {
-                        answer(&p, home.as_deref(), local, &id, what)
+                        answer(&p, home.as_deref(), local, &id, what, &sh.runs)
                     })
                     .await
                     .unwrap_or_else(|e| {
@@ -297,15 +299,109 @@ fn commit_blocking(
     (result, who)
 }
 
-/// The reply to a read by `id`, from the config file as saved now; `None`
-/// when `id` has no `admin` right in it (or it cannot be read). `home` is
-/// the daemon's home, which a `~` path of an export is under.
+/// Starts indexing `export` for `id`, which must have `admin = "rw"` in
+/// the config file as saved now. Answered at once, and never closes the
+/// session: a refusal or "no export" is a `Refused`, a run already going
+/// is `already_running`.
+async fn start_index(
+    shared: &Arc<Shared>,
+    path: &Path,
+    id: EndpointId,
+    export: String,
+) -> admin_reply::Msg {
+    let (p, sh) = (path.to_path_buf(), shared.clone());
+    // The index is opened off the runtime; the run itself is spawned on it.
+    tokio::task::spawn_blocking(move || start_index_blocking(&sh, &p, id, &export))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("admin: starting the indexing failed: {e}");
+            refused(Code::BadRequest, "internal error".to_string())
+        })
+}
+
+/// [`start_index`]'s work.
+fn start_index_blocking(
+    shared: &Arc<Shared>,
+    path: &Path,
+    id: EndpointId,
+    export: &str,
+) -> admin_reply::Msg {
+    let not_allowed = || refused(Code::Unauthorized, NOT_ALLOWED.to_string());
+    let Some(saved) = read_config(path) else {
+        return not_allowed();
+    };
+    let who = label(&saved, path, &id);
+    if engine::admin_of(&saved, path, &id) != Some(Access::ReadWrite) {
+        tracing::warn!("admin: {who}: indexing refused");
+        return not_allowed();
+    }
+    let config = match Config::from_message(&saved, path) {
+        Ok(c) => c,
+        Err(e) => {
+            cannot_read(path, &e);
+            return not_allowed();
+        }
+    };
+    let Some(e) = config.exports.exports.get(export) else {
+        return refused(Code::BadRequest, format!("no export {export:?}"));
+    };
+    let (index, fresh) = match super::open_index(shared, export, e) {
+        Ok(opened) => opened,
+        Err(err) => {
+            tracing::error!(export = %escape_controls(export), "admin: {err:#}");
+            return refused(
+                Code::BadRequest,
+                format!("cannot open the index of export {export}"),
+            );
+        }
+    };
+    // Before the tasks of a fresh index: an `index_at_start` export's own
+    // run then finds this one going and is not started.
+    let run = super::spawn_run(
+        shared,
+        export,
+        e,
+        index.clone(),
+        StartedBy::Client(who.clone()),
+    );
+    if fresh {
+        super::start_tasks(shared, export, e, index);
+    }
+    let (already_running, run) = match run {
+        Ok(run) => {
+            tracing::info!(
+                "admin: {who} started indexing export {}",
+                escape_controls(export)
+            );
+            (false, run)
+        }
+        Err(run) => (true, *run),
+    };
+    admin_reply::Msg::IndexStarted(IndexStarted {
+        already_running,
+        run: Some(run),
+    })
+}
+
+/// A refusal that leaves the session open.
+fn refused(code: Code, message: String) -> admin_reply::Msg {
+    admin_reply::Msg::Refused(Error {
+        code: code as i32,
+        message,
+    })
+}
+
+/// The reply to a read by `id`, from the config file as saved now, and
+/// for the indexing runs from `runs`; `None` when `id` has no `admin`
+/// right in it (or it cannot be read). `home` is the daemon's home, which
+/// a `~` path of an export is under.
 fn answer(
     path: &Path,
     home: Option<&Path>,
     local: EndpointId,
     id: &EndpointId,
     what: read::What,
+    runs: &Runs,
 ) -> Option<admin_reply::Msg> {
     let msg = read_config(path)?;
     engine::admin_of(&msg, path, id)?;
@@ -317,6 +413,7 @@ fn answer(
             let allow_all_paths = config.settings.daemon.allow_all_paths;
             admin_reply::Msg::View(engine::view(&msg, local, allow_all_paths, home))
         }
+        read::What::Indexing(_) => admin_reply::Msg::Indexing(Indexing { runs: runs.list() }),
         read::What::Config(c) => match engine::config_text(&msg, &c.key) {
             Ok(text) => admin_reply::Msg::Config(text),
             Err(message) => admin_reply::Msg::Refused(Error {
