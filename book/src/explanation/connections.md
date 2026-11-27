@@ -116,4 +116,4 @@ downlink, Cubic was 1.6 to 1.8 times faster than BBR. In the lossy
 `4g-vehicle` profile BBR was 23 to 50% faster, and Cubic's full queue cost
 other traffic on the line about 0.5 s of latency. Neither wins everywhere, so
 BBR stays the default. The runs are in
-[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
+[NETSTRESS_DECISIONS.md](../../../docs/NETSTRESS_DECISIONS.md).

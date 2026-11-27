@@ -17,10 +17,10 @@ are not.
 It is a separate rig; irsync-stress tests over loopback without faults.
 [How netstress works](netstress-internals.md) explains the simulated network
 inside. The design is in
-[2026-11-06-network-faults-design.md](https://github.com/irsync-dev/irsync/blob/main/docs/superpowers/specs/2026-11-06-network-faults-design.md);
+[2026-11-06-network-faults-design.md](../../../docs/superpowers/specs/2026-11-06-network-faults-design.md);
 the calls made while building it, and the results of the first real runs,
 are in
-[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
+[NETSTRESS_DECISIONS.md](../../../docs/NETSTRESS_DECISIONS.md).
 
 ## Use
 
@@ -97,7 +97,7 @@ using the values from the failed run's `run.toml`. Some hints:
 
 ### Sweeps
 
-`crates/netstress/tools/sweep.sh` runs many seeds, both real profiles and both directions, a few
+[`sweep.sh`](../../../crates/netstress/tools/sweep.sh) runs many seeds, both real profiles and both directions, a few
 runs at a time, always with `--keep-going`. It deletes the roots of passing
 runs (they can be repeated from their seed) and keeps the roots of failing
 ones.
@@ -120,7 +120,7 @@ JOBS=2 crates/netstress/tools/sweep.sh --iterations 3
 
 Any arguments go to every `irsync-netstress` run, before the root.
 `sweep.sh --concurrent` runs the [concurrent mode](bug-hunting.md#writing-during-the-sync---concurrent):
-filegen writes to the source during each sync. `matrix.sh` has two rows for
+filegen writes to the source during each sync. [`matrix.sh`](../../../crates/stress/tools/matrix.sh) has two rows for
 it, `net-concurrent` and `net-concurrent-paranoid`, each with a one-hour
 budget.
 
@@ -239,7 +239,7 @@ thing and run the same seed again. If a failure goes away with gentler
 numbers in the profile, the profile was too harsh. If it stays even under
 `test-blackout`, which has no shaping at all, look at irsync or the
 transport. The first-run findings and the open questions are in
-[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
+[NETSTRESS_DECISIONS.md](../../../docs/NETSTRESS_DECISIONS.md).
 
 ### Using the fault layer by hand
 
@@ -275,29 +275,29 @@ changes the ACKs this side asks of the other; see `--acks` under
 
 The profiles live in two places:
 
-- `crates/irsync/src/net/netsim/profile.rs`: the link in each direction
+- [`netsim/profile.rs`](../../../crates/irsync/src/net/netsim/profile.rs): the link in each direction
   (`link()`) and the handovers and dead zone (`outages()`). The fields are
   documented in the file and explained in
   [How netstress works](netstress-internals.md).
-- `crates/netstress/src/profile.rs`: the run defaults (iterations, steps,
+- [`src/profile.rs`](../../../crates/netstress/src/profile.rs): the run defaults (iterations, steps,
   sizes), the client `--idle-timeout`, and whether the profile has dead zones.
 
 To change numbers, edit those tables and rebuild the fault build. The unit
-tests in `crates/irsync/src/net/netsim/link.rs` and `outage.rs` check some
+tests in [`link.rs`](../../../crates/irsync/src/net/netsim/link.rs) and [`outage.rs`](../../../crates/irsync/src/net/netsim/outage.rs) check some
 profile behaviour (for example that 4G loses about 1% in bursts, and that
 `dsl-video`'s video leaves room for irsync); a big change may need their
 bounds updated. Record why in
-[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
+[NETSTRESS_DECISIONS.md](../../../docs/NETSTRESS_DECISIONS.md).
 
 To add a profile:
 
-1. Add a variant to `ProfileName` in `crates/irsync/src/net/netsim/mod.rs`,
+1. Add a variant to `ProfileName` in [`netsim/mod.rs`](../../../crates/irsync/src/net/netsim/mod.rs),
    and its name to `FromStr` and `Display` there.
 2. Add its link and outage parameters in
-   `crates/irsync/src/net/netsim/profile.rs`.
-3. Add the same name to `Profile` in `crates/netstress/src/profile.rs`,
+   [`netsim/profile.rs`](../../../crates/irsync/src/net/netsim/profile.rs).
+3. Add the same name to `Profile` in [`src/profile.rs`](../../../crates/netstress/src/profile.rs),
    with its defaults.
-4. Add a unit test in `link.rs` or `outage.rs` that checks the behaviour
+4. Add a unit test in [`link.rs`](../../../crates/irsync/src/net/netsim/link.rs) or [`outage.rs`](../../../crates/irsync/src/net/netsim/outage.rs) that checks the behaviour
    the profile is meant to have.
 5. Document it under [Profiles](#profiles) on this page.
 
@@ -333,12 +333,12 @@ The fault layer's own tests:
 
 - `crates/irsync/src/net/netsim/*.rs`: the link model, outages, seeds and
   addresses.
-- `crates/irsync/tests/netsim.rs`: client and daemon in one process, on
+- [`netsim.rs`](../../../crates/irsync/tests/netsim.rs): client and daemon in one process, on
   tokio's paused clock and an in-memory network, sync a 4 MiB file
   through a dead zone and resume, and push 3 MiB over `test-slow` in over
   a minute of network time; each takes about a second. With the real
   binaries and no `IRSYNC_NETSIM`, nothing changes.
-- `crates/irsync/tests/netsim_endpoint.rs`: an endpoint with the fault
+- [`netsim_endpoint.rs`](../../../crates/irsync/tests/netsim_endpoint.rs): an endpoint with the fault
   layer on offers no ordinary IP or relay address, so no packet can go
   around it.
 
@@ -478,7 +478,7 @@ it for campaigns.
 A clean 256 kbit/s uplink with a 64 KiB queue, an unlimited downlink, no
 loss, no delay, no outages. irsync's test
 `a_slow_uplink_that_needs_more_than_a_minute_still_delivers_everything`
-(in `crates/irsync/tests/netsim.rs`) uses it to push data that takes over
+(in [`netsim.rs`](../../../crates/irsync/tests/netsim.rs)) uses it to push data that takes over
 a minute of network time, on tokio's paused clock. `irsync-netstress` does not offer it.
 
 #### `test-dead-zones`: for irsync's own tests
@@ -486,7 +486,7 @@ a minute of network time, on tokio's paused clock. `irsync-netstress` does not o
 The `test-slow` link with a 6 s dead zone every 512 KiB of traffic, again
 and again. irsync's test
 `a_big_push_through_repeated_dead_zones_keeps_going_while_data_moves` (in
-`crates/irsync/tests/netsim.rs`) uses it to push one 8 MiB file that no
+[`netsim.rs`](../../../crates/irsync/tests/netsim.rs)) uses it to push one 8 MiB file that no
 single connection can finish, and checks that the client keeps redialling
 while each connection moves part of it. A connection carries less than the
 file's largest chunk, so that chunk arrives over several connections. `irsync-netstress` does not offer it.
@@ -496,15 +496,15 @@ file's largest chunk, so that chunk arrives over several connections. `irsync-ne
 A fast, clean long-distance link: 100 Mbit/s each way, 40 ms of delay in
 each direction (80 ms round trip), a 2 MiB queue, no loss, no outages. It
 was added to measure how `--parallel` bounds files per round trip (see
-`docs/IRSYNC_DECISIONS.md`, 2.1 item 7); set `IRSYNC_NETSIM` by hand, as for
+[`IRSYNC_DECISIONS.md`](../../../docs/IRSYNC_DECISIONS.md), 2.1 item 7); set `IRSYNC_NETSIM` by hand, as for
 `test-slow`. `irsync-netstress` does not offer it.
 
 #### Where the numbers come from
 
 The numbers are a first proposal based on what these networks are known to
 do, not measurements. The exact values are in two places:
-`crates/irsync/src/net/netsim/profile.rs` (the link and the outages) and
-`crates/netstress/src/profile.rs` (run sizes and client timeout). See
+[`netsim/profile.rs`](../../../crates/irsync/src/net/netsim/profile.rs) (the link and the outages) and
+[`src/profile.rs`](../../../crates/netstress/src/profile.rs) (run sizes and client timeout). See
 [Changing or adding a profile](#changing-or-adding-a-profile).
 
 ### What a run does

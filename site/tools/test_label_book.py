@@ -12,6 +12,7 @@ import label_book as book
 ROOT = Path(__file__).resolve().parent.parent.parent
 TOOL = ROOT / "site" / "tools" / "label_book.py"
 SHA = "b5618f4701f405b818304bf917f7da77eb7f0a60"
+URL = "https://github.com/irsync-dev/irsync"
 
 
 class PrepareTests(unittest.TestCase):
@@ -167,6 +168,76 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('site-url = "/dev/"', self.toml())
         self.assertFalse((self.work / "theme" / "source.js").exists())
+
+    def page(self, rel, text):
+        p = self.work / "src" / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_source_links_follow_the_dev_commit(self):
+        p = self.page("contributing/x.md",
+                      "See [`label_book.py`](../../../site/tools/label_book.py#L1), "
+                      "[`site/tools/`](../../../site/tools/) and [the top](../../../).\n")
+        book.prepare(self.work, "dev", None, SHA, "main")
+        self.assertEqual(p.read_text(encoding="utf-8"),
+                         f"See [`label_book.py`]({URL}/blob/{SHA}/site/tools/label_book.py#L1), "
+                         f"[`site/tools/`]({URL}/tree/{SHA}/site/tools) and [the top]({URL}/tree/{SHA}).\n")
+
+    def test_source_links_of_a_release_go_to_its_tag(self):
+        head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        p = self.page("reference/x.md", "[`Cargo.toml`](../../../Cargo.toml)\n")
+        book.prepare(self.work, "beta", "0.1.0-beta.7", head)
+        self.assertEqual(p.read_text(encoding="utf-8"),
+                         f"[`Cargo.toml`]({URL}/blob/v0.1.0-beta.7/Cargo.toml)\n")
+
+    def test_source_links_without_a_commit_go_to_main(self):
+        self.page("introduction.md", "# Introduction\n\nSee [`Cargo.toml`](../../Cargo.toml).\n")
+        book.prepare(self.work, "dev", None)
+        self.assertIn(f"See [`Cargo.toml`]({URL}/blob/main/Cargo.toml).", self.intro())
+        self.assertIn("This is the documentation of the unreleased", self.intro())
+
+    def test_other_links_are_left_alone(self):
+        text = ("[Pair](../how-to/pair.md), [theme](../../theme/x.css), [web](https://example.org/)\n"
+                "`[code](../../../Cargo.toml)`\n"
+                "```text\n[fenced](../../../Cargo.toml)\n```\n")
+        p = self.page("contributing/x.md", text)
+        book.prepare(self.work, "dev", None, SHA)
+        self.assertEqual(p.read_text(encoding="utf-8"), text)
+
+    def test_a_missing_path_stops_the_build(self):
+        p = self.page("contributing/x.md",
+                      "[`gone.rs`](../../../crates/gone.rs)\n[up](../../../../x)\n"
+                      "[dots](../../../site/../Cargo.toml)\n")
+        with self.assertRaises(book.BookError) as e:
+            book.prepare(self.work, "dev", None, SHA)
+        msg = str(e.exception)
+        self.assertIn("contributing/x.md:1: ../../../crates/gone.rs: no such file", msg)
+        self.assertIn("contributing/x.md:2: ../../../../x goes above the repository", msg)
+        self.assertIn("contributing/x.md:3: ../../../site/../Cargo.toml: write the path", msg)
+        # Nothing was written by a refused call.
+        self.assertIn('site-url = "/book/"\n', self.toml())
+        self.assertIn("gone.rs`](../../../crates/gone.rs)", p.read_text(encoding="utf-8"))
+
+    def test_a_release_checks_the_paths_of_its_commit(self):
+        first = subprocess.run(["git", "-C", str(ROOT), "rev-list", "--max-parents=0", "HEAD"],
+                               capture_output=True, text=True, check=True).stdout.split()[0]
+        self.page("contributing/x.md", "[`label_book.py`](../../../site/tools/label_book.py)\n")
+        with self.assertRaisesRegex(book.BookError, "no such file or directory at v0.1.0-beta.7"):
+            book.prepare(self.work, "beta", "0.1.0-beta.7", first)
+
+    def test_the_book_links_only_to_files_that_exist(self):
+        shutil.rmtree(self.work / "src")
+        shutil.copytree(ROOT / "book" / "src", self.work / "src")
+        book.prepare(self.work, "dev", None, SHA)
+        for page in (self.work / "src").rglob("*.md"):
+            # Fenced blocks and code spans are examples, left as they are.
+            text = re.sub(r"^```.*?^```", "", page.read_text(encoding="utf-8"), flags=re.M | re.S)
+            text = re.sub(r"`[^`\n]*`(?!\])", "", text)
+            for target in re.findall(r"\]\((\.\./[^)]*)\)", text):
+                depth = len(page.relative_to(self.work / "src").parts) + 1
+                self.assertLess(target.count("../"), depth, f"{page}: {target}")
 
     def test_cli_error(self):
         r = subprocess.run([sys.executable, str(TOOL), str(self.work), "nope", "-", "-", "-"],

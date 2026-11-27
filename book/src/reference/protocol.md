@@ -1,8 +1,8 @@
 # Protocol
 
 The protobuf definitions in
-[`proto/irsync/v1/`](https://github.com/irsync-dev/irsync/tree/main/proto/irsync/v1)
-(`common.proto`, `control.proto`, `data.proto`, `admin.proto`, `session.proto`) are
+[`proto/irsync/v1/`](../../../proto/irsync/v1)
+([`common.proto`](../../../proto/irsync/v1/common.proto), [`control.proto`](../../../proto/irsync/v1/control.proto), [`data.proto`](../../../proto/irsync/v1/data.proto), [`admin.proto`](../../../proto/irsync/v1/admin.proto), [`session.proto`](../../../proto/irsync/v1/session.proto)) are
 normative. This page summarises the constants, the streams and the messages;
 where it disagrees with the `.proto` files, they win. The Rust types are
 generated from them in the `irsync-proto` crate.
@@ -14,10 +14,10 @@ compatibility paths until the first release. A client that speaks another
 version is refused with `VERSION_MISMATCH`.
 
 Any change to the wire format bumps `PROTOCOL_VERSION`
-(`crates/irsync-proto/src/lib.rs`), in the same change: a message or field
+([`src/lib.rs`](../../../crates/irsync-proto/src/lib.rs)), in the same change: a message or field
 added, removed or renumbered, a field's type changed, an enum value added or
 renumbered, or a field's meaning changed. Two peers of one version always
-read each other's frames the same way. `session.proto` is not on the wire;
+read each other's frames the same way. [`session.proto`](../../../proto/irsync/v1/session.proto) is not on the wire;
 a change to it needs no new version.
 
 ## Constants
@@ -171,7 +171,7 @@ directory, a symlink included), then closes. A client uses it to learn
 whether a pull without a trailing slash names a file.
 
 An `admin` request turns the control stream into an admin session, defined
-in `admin.proto`. A key without `admin` gets an `error` with
+in [`admin.proto`](../../../proto/irsync/v1/admin.proto). A key without `admin` gets an `error` with
 `UNAUTHORIZED` and the message `not allowed`. Otherwise the daemon answers
 with `admin_ready`; the client then sends `AdminRequest` frames and the
 daemon answers each with an `AdminReply`:
@@ -330,7 +330,7 @@ a new process that never saw them acknowledged. See
 
 ## Persisted state
 
-`session.proto` describes what each side stores in its index for a session
+[`session.proto`](../../../proto/irsync/v1/session.proto) describes what each side stores in its index for a session
 that may resume: the plan (`SessionPlan`, with `PlanEntry` per file) and the
 progress (`SessionProgress`). These messages never go on the wire. Partial
 files are stored as `PartialRanges` (of `Range`s): the verified bytes, and the
@@ -340,12 +340,12 @@ verified bytes alone. See
 
 ## Cross-implementation check
 
-`crates/irsync-proto/tests/golden/chunk_1mib.json` is a golden vector: the
+[`chunk_1mib.json`](../../../crates/irsync-proto/tests/golden/chunk_1mib.json) is a golden vector: the
 whole-file hash and the exact chunk boundaries (offset, length, BLAKE3 hash)
 of 1 MiB from the xorshift64 generator seeded with `0x9E3779B97F4A7C15` (see
-`crates/irsync-proto/tests/chunk.rs`). An independent implementation must
+[`chunk.rs`](../../../crates/irsync-proto/tests/chunk.rs)). An independent implementation must
 reproduce it exactly to interoperate, because chunk boundaries decide which
 chunks a client and a daemon consider equal.
-`crates/irsync-proto/tests/golden_bytes.rs` pins `PROTOCOL_VERSION` and the
+[`golden_bytes.rs`](../../../crates/irsync-proto/tests/golden_bytes.rs) pins `PROTOCOL_VERSION` and the
 exact wire bytes of several messages, so a change of field number or wire
 type shows, and with it a version that was not bumped.

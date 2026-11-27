@@ -13,9 +13,9 @@ network beyond loopback; [irsync-netstress](netstress.md) runs the same loop
 over a simulated bad network.
 
 The design is in
-[2026-10-21-stress-harness-design.md](https://github.com/irsync-dev/irsync/blob/main/docs/superpowers/specs/2026-10-21-stress-harness-design.md),
+[2026-10-21-stress-harness-design.md](../../../docs/superpowers/specs/2026-10-21-stress-harness-design.md),
 the calls made while building it and the bugs it found in
-[IRSYNC_HARNESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_HARNESS_DECISIONS.md).
+[IRSYNC_HARNESS_DECISIONS.md](../../../docs/IRSYNC_HARNESS_DECISIONS.md).
 [Hunting bugs](bug-hunting.md) is the strategy for making it find more.
 
 ## Run the loop
@@ -64,7 +64,7 @@ continues from here.
 
 ### Campaign tools
 
-`crates/stress/tools/breadth.sh` runs a breadth sweep: many seeds, short
+[`breadth.sh`](../../../crates/stress/tools/breadth.sh) runs a breadth sweep: many seeds, short
 runs, both directions, several runs at a time. It deletes the root of every
 passing run and keeps the root of every failing one. Its environment
 variables, with their defaults:
@@ -83,7 +83,7 @@ variables, with their defaults:
 Extra arguments go to every `irsync-stress` run, before the root. Each run
 needs up to twice `TOTAL` on disk while it runs.
 
-`crates/stress/tools/matrix.sh` runs the [campaign
+[`matrix.sh`](../../../crates/stress/tools/matrix.sh) runs the [campaign
 matrix](bug-hunting.md#the-campaign-matrix), one breadth sweep per row. The
 rows are `hardlink`, `rename`, `rename-off`, `sparse`, `metadata`,
 `timestamps`, `symlinks`, `deletion`, `listing`, `longnames`, `parallel1`,
@@ -91,11 +91,11 @@ rows are `hardlink`, `rename`, `rename-off`, `sparse`, `metadata`,
 `concurrent-paranoid`, `net-concurrent` and `net-concurrent-paranoid`. The
 last four write to the source during the sync and take an hour each; see
 [Writing during the sync](bug-hunting.md#writing-during-the-sync---concurrent).
-The two `net-*` rows run `netstress/tools/sweep.sh` and need the fault build
+The two `net-*` rows run [`sweep.sh`](../../../crates/netstress/tools/sweep.sh) and need the fault build
 (`NETBIN` names its directory).
 `matrix.sh hardlink rename` runs only those rows; with `DRY=1` it only checks that filegen
 accepts every row's settings. Each passing run is checked with
-`tools/clean-check.sh`, which runs `tools/paranoid-check.sh` (a
+[`clean-check.sh`](../../../crates/stress/tools/clean-check.sh), which runs [`paranoid-check.sh`](../../../crates/stress/tools/paranoid-check.sh) (a
 `fileset check --paranoid` of the final destination against the source
 manifest, link counts included) and then asserts that no `.irsync.*.part`
 is left in either tree. The rows before `concurrent` take about three hours
@@ -205,17 +205,17 @@ client exit, such as 25 from `--max-delete`, is a harness error.
 ### Bugs the harness has found
 
 Each is fixed, with a regression test in the `irsync` crate.
-[IRSYNC_HARNESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_HARNESS_DECISIONS.md)
+[IRSYNC_HARNESS_DECISIONS.md](../../../docs/IRSYNC_HARNESS_DECISIONS.md)
 has the full record of each.
 
 | Bug | Found by | Regression tests |
 | --- | --- | --- |
-| A file name longer than about 242 bytes could not be transferred: its staging name `.irsync.<name>.part` exceeded `NAME_MAX`. | a default run | `tests/posix_extras.rs` `name_max_entries_transfer`, `tests/gc.rs` `gc_handles_shortened_part_names`, the `temp_names` tests in `tests/recv.rs` |
-| A FIFO whose only change was its modification time was never updated. | the acceptance run | `tests/posix_extras.rs` `fifo_mtime_is_applied_and_updated`, `tests/plan.rs` `special_metadata_only_difference_is_meta_only` |
-| One side's long local work, such as the daemon hashing with `-c`, was invisible to the other side's inactivity watchdog. | the `bigfile` matrix row | `tests/resume.rs` `peer_local_progress_resets_idle_watchdog` |
-| Metadata applied to a destination file with several links reached the names the source had unlinked. | the `hardlink` matrix row | `tests/posix_extras.rs` `link_broken_at_source_with_equal_content_is_broken_at_destination`, `mode_change_does_not_reach_a_destination_link_outside_the_tree` |
-| A file whose mode, owner or group changed between the listing and the hash was placed with the listing's. | `--concurrent` | `tests/change_detection.rs` `*_before_hash_places_the_new_*`, `tests/ids_e2e.rs` `chunk_list_ids_are_mapped_by_name_unless_numeric_ids` |
-| With `-H`, a name replaced or renamed away after the listing was still linked to the copy of the file it used to name. | `--concurrent` | `tests/change_detection.rs` `replaced_link_is_sent_as_its_own_file*`, `link_renamed_away_is_not_linked*`, `tests/posix_extras.rs` `links_to_files_placed_before_a_drop_are_checked` |
+| A file name longer than about 242 bytes could not be transferred: its staging name `.irsync.<name>.part` exceeded `NAME_MAX`. | a default run | [`posix_extras.rs`](../../../crates/irsync/tests/posix_extras.rs) `name_max_entries_transfer`, [`gc.rs`](../../../crates/irsync/tests/gc.rs) `gc_handles_shortened_part_names`, the `temp_names` tests in [`recv.rs`](../../../crates/irsync/tests/recv.rs) |
+| A FIFO whose only change was its modification time was never updated. | the acceptance run | [`posix_extras.rs`](../../../crates/irsync/tests/posix_extras.rs) `fifo_mtime_is_applied_and_updated`, [`plan.rs`](../../../crates/irsync/tests/plan.rs) `special_metadata_only_difference_is_meta_only` |
+| One side's long local work, such as the daemon hashing with `-c`, was invisible to the other side's inactivity watchdog. | the `bigfile` matrix row | [`resume.rs`](../../../crates/irsync/tests/resume.rs) `peer_local_progress_resets_idle_watchdog` |
+| Metadata applied to a destination file with several links reached the names the source had unlinked. | the `hardlink` matrix row | [`posix_extras.rs`](../../../crates/irsync/tests/posix_extras.rs) `link_broken_at_source_with_equal_content_is_broken_at_destination`, `mode_change_does_not_reach_a_destination_link_outside_the_tree` |
+| A file whose mode, owner or group changed between the listing and the hash was placed with the listing's. | `--concurrent` | [`change_detection.rs`](../../../crates/irsync/tests/change_detection.rs) `*_before_hash_places_the_new_*`, [`ids_e2e.rs`](../../../crates/irsync/tests/ids_e2e.rs) `chunk_list_ids_are_mapped_by_name_unless_numeric_ids` |
+| With `-H`, a name replaced or renamed away after the listing was still linked to the copy of the file it used to name. | `--concurrent` | [`change_detection.rs`](../../../crates/irsync/tests/change_detection.rs) `replaced_link_is_sent_as_its_own_file*`, `link_renamed_away_is_not_linked*`, [`posix_extras.rs`](../../../crates/irsync/tests/posix_extras.rs) `links_to_files_placed_before_a_drop_are_checked` |
 
 ### Tests
 

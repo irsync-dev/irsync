@@ -14,7 +14,13 @@ is, before mdbook builds it:
 - theme/source.js, which tells theme/home-link.js where the book was built
   from: BRANCH@COMMIT for the unreleased book (the commit alone when no
   branch is checked out), release-X.Y@vVERSION for a release, each part
-  linked to that branch, commit or tag on GitHub.
+  linked to that branch, commit or tag on GitHub;
+- links to files of the repository: a page links to a source file with a
+  relative path from book/src up to the repository, such as
+  [`delta.rs`](../../../crates/irsync/src/delta.rs). Each becomes a link to
+  that file on GitHub at the book's own version: the tag for a release, the
+  commit for the unreleased book, main when the commit is not known. A path
+  that is not in that version stops the build.
 
 It only ever writes into the working copy. The book/ directory of the
 repository, and the pages of a release, stay as they are.
@@ -27,6 +33,7 @@ Usage: label_book.py WORK PATH VERSION COMMIT BRANCH
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -35,6 +42,12 @@ import versions
 PATHS = ("book", "stable", "beta", "alpha", "dev")
 REPO_URL = "https://github.com/irsync-dev/irsync"
 SOURCE_JS = "theme/source.js"
+REPO = Path(__file__).resolve().parents[2]
+
+# A link whose target starts with ../ (the climb) and then a path. Only the
+# target is matched: the text of a link may be anything, code included.
+_LINK = re.compile(r"\]\(((?:\.\./)+)([^()\s#]*)(#[^()\s]*)?\)")
+_FENCE = re.compile(r"^\s*(```|~~~)")
 
 
 class BookError(Exception):
@@ -82,6 +95,81 @@ def _with_source_js(text, path):
     return text.replace(found[0], found[0].replace(old, f'"{SOURCE_JS}", {old}'))
 
 
+def _repo_paths(repo, commit, worktree):
+    """The files and the directories of the repository at `repo`: of its
+    working tree (tracked and new files) when `worktree` is true, else of
+    `commit`."""
+    if worktree:
+        args = ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+        what = f"the working tree of {repo}"
+    else:
+        args = ["ls-tree", "-r", "-z", "--name-only", commit]
+        what = f"commit {commit}"
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+    if r.returncode != 0:
+        raise BookError(f"cannot list the files of {what}: "
+                        f"{r.stderr.decode(errors='replace').strip()}")
+    files = {f for f in r.stdout.decode().split("\0") if f}
+    dirs = {"/".join(f.split("/")[:i]) for f in files for i in range(1, f.count("/") + 1)}
+    return files, dirs
+
+
+def _source_links(src, ref, paths):
+    """Each page under `src` with its links to files of the repository
+    turned into links to GitHub at `ref`, for the pages that have any.
+    `paths` is called, once, for the files and directories to check the
+    links against. Raises BookError naming every link that does not work."""
+    found, problems, listing = {}, [], None
+    for page in sorted(src.rglob("*.md")):
+        rel = page.relative_to(src)
+        # From book/src/DIR/page.md: one ../ per DIR, then book/src.
+        climb = len(rel.parts) + 1
+        text = page.read_text(encoding="utf-8")
+        lines, fenced, changed = text.split("\n"), False, False
+        for n, line in enumerate(lines):
+            if _FENCE.match(line):
+                fenced = not fenced
+            if fenced or "](../" not in line:
+                continue
+
+            def link(m):
+                nonlocal listing, changed
+                ups, path, anchor = len(m.group(1)) // 3, m.group(2), m.group(3) or ""
+                if ups < climb:
+                    return m.group(0)  # a page or file of the book
+                where = f"{rel.as_posix()}:{n + 1}: {m.group(1)}{path}"
+                if ups > climb:
+                    problems.append(f"{where} goes above the repository")
+                    return m.group(0)
+                path = path.rstrip("/")
+                if any(part in (".", "..") for part in path.split("/")):
+                    problems.append(f"{where}: write the path without . or ..")
+                    return m.group(0)
+                if listing is None:
+                    listing = paths()
+                files, dirs = listing
+                if path in files:
+                    kind = "blob"
+                elif path in dirs or path == "":
+                    kind = "tree"
+                else:
+                    problems.append(f"{where}: no such file or directory at {ref}")
+                    return m.group(0)
+                changed = True
+                url = f"{REPO_URL}/{kind}/{ref}/{path}".rstrip("/")
+                return f"]({url}{anchor})"
+
+            # Code spans hold no links: only the parts between them are read.
+            parts = line.split("`")
+            parts[::2] = [_LINK.sub(link, p) for p in parts[::2]]
+            lines[n] = "`".join(parts)
+        if changed:
+            found[page] = "\n".join(lines)
+    if problems:
+        raise BookError("links to the repository that do not work:\n  " + "\n  ".join(problems))
+    return found
+
+
 def _title_page(text, path, version):
     """The title page with the sentence that names the version."""
     heading, _, rest = text.partition("\n")
@@ -98,12 +186,14 @@ def _title_page(text, path, version):
     return f"{heading}\n\n{sentence}\n{body}"
 
 
-def prepare(work, path, version, commit=None, branch=None):
+def prepare(work, path, version, commit=None, branch=None, repo=REPO):
     """Label the working copy at `work`, served at /PATH/. `version` is None
     for the unreleased book; `commit`, the full commit the pages are from, is
     None when it is not known, and then the title names no source. `branch`
     is the branch checked out for the unreleased book, None when there is
-    none; a release names its release branch instead."""
+    none; a release names its release branch instead. `repo` is the
+    repository the links to source files are checked against: its working
+    tree for the unreleased book, `commit` for a release."""
     if path not in PATHS:
         raise BookError(f"unknown path {path!r}: one of {', '.join(PATHS)}")
     if version is not None and versions.parse(version) is None:
@@ -120,7 +210,23 @@ def prepare(work, path, version, commit=None, branch=None):
             settings = _with_source_js(settings, path)
     except FileNotFoundError as e:
         raise BookError(f"{path}: {e.filename} is missing") from e
-    # Both are worked out before either is written.
+    ref = f"v{version}" if version else commit or "main"
+    if version and not commit:
+        def paths():
+            raise BookError(f"{path}: the pages link to the repository, "
+                            f"but the commit of {version} is not known")
+    else:
+        def paths():
+            return _repo_paths(repo, commit, worktree=version is None)
+    try:
+        pages = _source_links(Path(work) / "src", ref, paths)
+    except BookError as e:
+        raise BookError(f"{path}: {e}") from e
+    if intro in pages:
+        page = _title_page(pages.pop(intro), path, version)
+    # Everything is worked out before anything is written.
+    for p, text in pages.items():
+        p.write_text(text, encoding="utf-8")
     toml.write_text(settings, encoding="utf-8")
     intro.write_text(page, encoding="utf-8")
     if commit:
