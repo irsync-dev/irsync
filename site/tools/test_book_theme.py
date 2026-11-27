@@ -129,20 +129,39 @@ class BookThemeTest(unittest.TestCase):
         self.assertIn("menu-title-rest", js)
         self.assertRegex(RULES, r"\.menu-title-rest\s*\{[^}]*display: none")
 
+    def test_book_title_is_the_name(self):
+        # "Documentation" says nothing a reader doesn't know.
+        self.assertRegex(_read("book", "book.toml"), r'(?m)^title = "irsync"$')
+
     def test_title_names_its_source(self):
-        # site/tools/label_book.py writes window.irsyncSource; the link goes
-        # after the home link, in muted text, without the mark, and is hidden
-        # with the rest of the title on a narrow screen.
+        # site/tools/label_book.py writes window.irsyncSource; the links go
+        # after the home link and an aqua dot, without brackets, in the
+        # title's colour at regular weight, without the mark, and are hidden
+        # on a narrow screen.
         js = _read("book", "theme", "home-link.js")
         self.assertIn("window.irsyncSource", js)
         self.assertIn("menu-source", js)
         self.assertNotIn("innerHTML", js)
+        self.assertNotIn('"("', js)
+        self.assertIn('"•"', js)
+        self.assertIn('rest.append("@")', js)
         rule = re.search(r"\.menu-title a\.menu-source(?:,[^{]*)?\{([^}]*)\}", RULES)
         self.assertIsNotNone(rule)
-        self.assertIn("color: var(--ir-muted)", rule.group(1))
+        self.assertIn("color: var(--ir-ink)", rule.group(1))
         self.assertIn("font-weight: 400", rule.group(1))
-        self.assertIn('rest.append("@")', js)
         self.assertRegex(RULES, r"\.menu-title a\.menu-source::before\s*\{[^}]*content: none")
+        dot = re.search(r"\.menu-source-dot\s*\{([^}]*)\}", RULES)
+        self.assertIsNotNone(dot)
+        self.assertIn("color: var(--ir-aqua)", dot.group(1))
+
+    def test_title_is_the_size_of_the_version_picker(self):
+        # The name and its source read like the bar's other controls.
+        picker = "font-size: calc(var(--ir-text-body) * var(--ir-book-rem))"
+        for sel in (r"\.menu-title a\.menu-home", r"\.menu-source-parts"):
+            rule = re.search(sel + r"(?:,[^{]*)?\s*\{([^}]*)\}", RULES)
+            self.assertIsNotNone(rule, sel)
+            self.assertIn(picker, rule.group(1), sel)
+        self.assertIn("menu-home", _read("book", "theme", "home-link.js"))
 
     def test_a11y_script_is_loaded(self):
         toml = _read("book", "book.toml")
