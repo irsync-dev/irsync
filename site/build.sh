@@ -66,7 +66,7 @@ mkdir -p "$out"
 # label_book.py labels with the version. Nothing under book/ is changed.
 python3 "$root/site/tools/versions.py" books "$root" >"$out/VERSIONS"
 books=$root/target/site-books
-while read -r path version commit _; do
+while read -r path version commit state; do
   work=$books/$path
   rm -rf "$work"
   mkdir -p "$work"
@@ -81,7 +81,7 @@ while read -r path version commit _; do
       exit 1
     }
   fi
-  python3 "$root/site/tools/label_book.py" "$work" "$path" "$version"
+  python3 "$root/site/tools/label_book.py" "$work" "$path" "$version" "$commit" "$state"
   mdbook build "$work" -d "$out/$path"
   # The book uses the system font stacks from the tokens. The empty
   # theme/fonts/fonts.css keeps mdbook's web fonts out; drop that file too,

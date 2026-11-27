@@ -129,6 +129,21 @@ class BookThemeTest(unittest.TestCase):
         self.assertIn("menu-title-rest", js)
         self.assertRegex(RULES, r"\.menu-title-rest\s*\{[^}]*display: none")
 
+    def test_title_names_its_source(self):
+        # site/tools/label_book.py writes window.irsyncSource; the link goes
+        # after the home link, in muted text, without the mark, and is hidden
+        # with the rest of the title on a narrow screen.
+        js = _read("book", "theme", "home-link.js")
+        self.assertIn("window.irsyncSource", js)
+        self.assertIn("menu-source", js)
+        self.assertNotIn("innerHTML", js)
+        rule = re.search(r"\.menu-title a\.menu-source(?:,[^{]*)?\{([^}]*)\}", RULES)
+        self.assertIsNotNone(rule)
+        self.assertIn("color: var(--ir-muted)", rule.group(1))
+        self.assertIn("font-weight: 400", rule.group(1))
+        self.assertIn('rest.append("@")', js)
+        self.assertRegex(RULES, r"\.menu-title a\.menu-source::before\s*\{[^}]*content: none")
+
     def test_a11y_script_is_loaded(self):
         toml = _read("book", "book.toml")
         self.assertRegex(toml, r'additional-js\s*=\s*\[[^\]]*"theme/a11y\.js"')

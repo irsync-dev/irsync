@@ -392,6 +392,25 @@ input:focus-visible,
   text-underline-offset: 3px;
 }
 
+/* Where the book was built from, after the title (theme/home-link.js):
+   smaller and muted, without the mark; the "@" between the links too. */
+.menu-source-parts {
+  color: var(--ir-muted);
+  font-weight: 400;
+  font-size: 0.6em;
+  margin-left: 0.3em;
+}
+
+.menu-title a.menu-source,
+.menu-title a.menu-source:visited {
+  color: var(--ir-muted);
+  font-weight: 400;
+}
+
+.menu-title a.menu-source::before {
+  content: none;
+}
+
 /* On a narrow screen only "irsync" fits beside the controls
    (theme/home-link.js puts the rest of the title in this span). */
 @media only screen and (max-width: 520px) {

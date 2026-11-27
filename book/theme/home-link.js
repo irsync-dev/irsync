@@ -7,6 +7,12 @@
 // It is the name of the site, not the heading of the page, so it stops
 // being a heading here. Everything after its first word is in a span that
 // irsync.css hides on a narrow screen, where the whole title does not fit.
+//
+// On the site, the title also says where the book was built from:
+// "(main@b5618f4)" for the Dev book, "(release-0.1@v0.1.0-beta.7)" for a
+// release. Each part links to its branch, commit or tag; the "@" and the
+// brackets do not. site/tools/label_book.py writes the parts into
+// theme/source.js as window.irsyncSource; a bare mdbook build has none.
 (function () {
   "use strict";
   const title = document.querySelector(".menu-title");
@@ -27,4 +33,22 @@
     link.append(rest);
   }
   title.replaceChildren(link);
+  const parts = window.irsyncSource;
+  if (Array.isArray(parts) && parts.length) {
+    const rest = document.createElement("span");
+    rest.className = "menu-title-rest menu-source-parts";
+    rest.append("(");
+    parts.forEach(function (part, i) {
+      if (i) {
+        rest.append("@");
+      }
+      const to = document.createElement("a");
+      to.className = "menu-source";
+      to.href = part.url;
+      to.textContent = part.text;
+      rest.append(to);
+    });
+    rest.append(")");
+    title.append(rest);
+  }
 })();
