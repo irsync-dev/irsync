@@ -485,6 +485,8 @@ fn spawn_run(
     let (progress, status) = shared.runs.claim(&root, name, by)?;
     let (shared, name, stop) = (shared.clone(), name.to_string(), shared.tasks.clone());
     tokio::spawn(async move {
+        // Ends the run however this task ends, a panic included.
+        let end = indexing::Finish::new(&shared.runs, &root);
         let indexing =
             crate::warm::index_root_tracked(index, &root, HASH_WORKERS, false, &progress);
         let result = tokio::select! {
@@ -508,7 +510,7 @@ fn spawn_run(
             }
             Err(e) => tracing::warn!(export = %name, "indexing the export failed: {e}"),
         }
-        shared.runs.finish(&root, &result);
+        end.finish(&result);
     });
     Ok(status)
 }

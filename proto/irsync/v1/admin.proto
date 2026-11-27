@@ -182,7 +182,8 @@ message IndexRun {
   uint64 bytes = 9;
   uint64 failed = 10;
   bool incomplete = 11;  // the walk could not list everything
-  string error = 12;     // why the run failed as a whole
+  string error = 12;     // why the run failed as a whole; a folder that
+                         // cannot be listed is incomplete, not an error
 }
 
 message ConfigText {

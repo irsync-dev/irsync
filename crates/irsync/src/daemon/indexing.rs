@@ -126,6 +126,43 @@ impl Runs {
     }
 }
 
+/// The error of a run that stopped before its end: its task panicked, or
+/// the daemon is stopping.
+pub(super) const STOPPED: &str = "the run stopped before its end";
+
+/// Ends a run on every way out of its task: with its result through
+/// [`Finish::finish`], else, when dropped (a panic, a cancelled task), with
+/// [`STOPPED`], so that the path never stays "running".
+pub(super) struct Finish<'a> {
+    runs: &'a Runs,
+    path: &'a Path,
+    done: bool,
+}
+
+impl<'a> Finish<'a> {
+    pub(super) fn new(runs: &'a Runs, path: &'a Path) -> Finish<'a> {
+        Finish {
+            runs,
+            path,
+            done: false,
+        }
+    }
+
+    /// Ends the run with `result`.
+    pub(super) fn finish(mut self, result: &io::Result<WarmReport>) {
+        self.done = true;
+        self.runs.finish(self.path, result);
+    }
+}
+
+impl Drop for Finish<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.runs.finish(self.path, &Err(io::Error::other(STOPPED)));
+        }
+    }
+}
+
 /// The log line for a file a run could not read; the client's (or the
 /// file system's) text cannot start a log line of its own.
 pub(super) fn failed_line(file: &str, msg: &str) -> String {
@@ -222,6 +259,33 @@ mod tests {
             .unwrap();
         let names: Vec<_> = runs.list().into_iter().map(|r| r.export).collect();
         assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn a_run_that_stops_without_finishing_ends_with_an_error() {
+        let runs = Runs::default();
+        let p = Path::new("/srv/photos");
+        runs.claim(p, "photos", StartedBy::AtStart).unwrap();
+        drop(Finish::new(&runs, p));
+        let list = runs.list();
+        assert!(list[0].ended_at > 0, "{list:?}");
+        assert_eq!(list[0].error, STOPPED);
+        // The path is free again.
+        assert!(runs.claim(p, "photos", StartedBy::AtStart).is_ok());
+    }
+
+    #[test]
+    fn a_finished_guard_keeps_the_result() {
+        let runs = Runs::default();
+        let p = Path::new("/srv/photos");
+        runs.claim(p, "photos", StartedBy::AtStart).unwrap();
+        let report = WarmReport {
+            examined: 1,
+            ..WarmReport::default()
+        };
+        Finish::new(&runs, p).finish(&Ok(report));
+        let list = runs.list();
+        assert_eq!((list[0].examined, list[0].error.as_str()), (1, ""));
     }
 
     #[test]
