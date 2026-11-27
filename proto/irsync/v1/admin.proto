@@ -14,7 +14,14 @@ message AdminRequest {
     Change change = 1;
     Commit commit = 2;
     Read read = 3;
+    // Start hashing an export's folder into its index, outside the
+    // transaction; answered at once with IndexStarted.
+    StartIndex start_index = 4;
   }
+}
+
+message StartIndex {
+  string export = 1; // by name, as in the saved config
 }
 
 // Apply every change sent since the stream opened (or the last commit),
@@ -94,8 +101,12 @@ message Read {
     ReadView view = 1;
     // config get KEY, or config list (empty key)
     ReadConfig config = 2;
+    // the indexing runs since the daemon started
+    ReadIndexing indexing = 3;
   }
 }
+
+message ReadIndexing {}
 
 message ReadView {}
 
@@ -110,7 +121,18 @@ message AdminReply {
     View view = 3;
     ConfigText config = 4;
     Error refused = 5;
+    IndexStarted index_started = 6;
+    Indexing indexing = 7;
   }
+}
+
+message IndexStarted {
+  bool already_running = 1; // run is the one that was going already
+  IndexRun run = 2;
+}
+
+message Indexing {
+  repeated IndexRun runs = 1; // the latest run per path, in path order
 }
 
 message Ack {

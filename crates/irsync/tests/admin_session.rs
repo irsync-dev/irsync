@@ -16,8 +16,8 @@ use irsync::daemon::{ADMIN_MAX_CHANGES, ADMIN_MAX_PENDING, ADMIN_MAX_REQUEST};
 use irsync::net::frame::{read_msg, write_msg};
 use irsync_proto::v1::{
     admin_reply, admin_request, change::Op, error::Code, hello, hello_reply, read, AdminReply,
-    AdminRequest, Change, Commit, ExportAdd, ExportRemove, GrantAdd, Hello, HelloReply, Nack,
-    OpenAdmin, Read, ReadConfig, ReadView,
+    AdminRequest, Change, Commit, ExportAdd, ExportRemove, GrantAdd, Hello, HelloReply, IndexRun,
+    IndexStarted, Nack, OpenAdmin, Read, ReadConfig, ReadIndexing, ReadView, StartIndex,
 };
 use irsync_proto::{ALPN, PROTOCOL_VERSION};
 
@@ -523,4 +523,234 @@ async fn an_idle_session_is_closed() {
         stop(d).await;
     })
     .await;
+}
+
+impl Session {
+    async fn start_index(&mut self, export: &str) -> admin_reply::Msg {
+        self.send(admin_request::Msg::StartIndex(StartIndex {
+            export: export.to_string(),
+        }))
+        .await;
+        self.reply().await.expect("a reply to START_INDEX")
+    }
+
+    async fn read_indexing(&mut self) -> Vec<IndexRun> {
+        self.send(admin_request::Msg::Read(Read {
+            what: Some(read::What::Indexing(ReadIndexing {})),
+        }))
+        .await;
+        match self.reply().await.expect("a reply to READ") {
+            admin_reply::Msg::Indexing(i) => i.runs,
+            other => panic!("expected the indexing runs, got {other:?}"),
+        }
+    }
+
+    /// Polls until the run of `path` has ended; that run.
+    async fn wait_indexed(&mut self, path: &Path) -> IndexRun {
+        let path = path.display().to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let runs = self.read_indexing().await;
+            if let Some(r) = runs.iter().find(|r| r.path == path && r.ended_at > 0) {
+                return r.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never indexed: {runs:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+fn started(m: admin_reply::Msg) -> IndexStarted {
+    match m {
+        admin_reply::Msg::IndexStarted(s) => s,
+        other => panic!("expected IndexStarted, got {other:?}"),
+    }
+}
+
+fn refused(m: admin_reply::Msg) -> irsync_proto::v1::Error {
+    match m {
+        admin_reply::Msg::Refused(e) => e,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// An export `photos` of `dir/photos`, in the config text.
+fn photos_export(dir: &Path, index_at_start: bool) -> String {
+    format!(
+        "[exports.photos]\npath = {:?}\nindex_at_start = {index_at_start}\n",
+        dir.join("photos").display().to_string()
+    )
+}
+
+#[tokio::test]
+async fn an_admin_starts_indexing_and_polls_it() {
+    let (_tmp, dir) = temp_dir();
+    std::fs::write(dir.join("photos/a.jpg"), b"aaaa").unwrap();
+    std::fs::write(dir.join("photos/b.jpg"), b"bbbbbb").unwrap();
+    let client = client_endpoint().await;
+    let config = format!(
+        "{}{}",
+        photos_export(&dir, false),
+        laptop(client.id(), "admin = \"rw\"\n")
+    );
+    let (d, _) = spawn_from_file(&dir, &config).await;
+    let mut s = Session::open(&d, &client).await;
+    let st = started(s.start_index("photos").await);
+    assert!(!st.already_running);
+    let run = st.run.unwrap();
+    assert_eq!(run.started_by, "laptop");
+    assert_eq!(run.export, "photos");
+    assert!(!run.at_start);
+    let r = s.wait_indexed(&dir.join("photos")).await;
+    assert_eq!(
+        (r.examined, r.hashed, r.bytes, r.failed),
+        (2, 2, 10, 0),
+        "{r:?}"
+    );
+    assert_eq!(r.error, "");
+    stop(d).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_start_while_running_says_already_running() {
+    let (_tmp, dir) = temp_dir();
+    for i in 0..1000 {
+        std::fs::write(dir.join(format!("photos/{i}.jpg")), format!("{i}")).unwrap();
+    }
+    let client = client_endpoint().await;
+    let config = format!(
+        "{}{}",
+        photos_export(&dir, false),
+        laptop(client.id(), "admin = \"rw\"\n")
+    );
+    let (d, _) = spawn_from_file(&dir, &config).await;
+    let mut s = Session::open(&d, &client).await;
+    let first = started(s.start_index("photos").await).run.unwrap();
+    let second = started(s.start_index("photos").await);
+    if second.already_running {
+        assert_eq!(second.run.unwrap().started_at, first.started_at);
+    } else {
+        // Only when the first run had ended by then.
+        let runs = s.read_indexing().await;
+        assert_eq!(runs.len(), 1, "{runs:?}");
+    }
+    let r = s.wait_indexed(&dir.join("photos")).await;
+    assert_eq!(r.examined, 1000, "{r:?}");
+    assert_eq!(s.read_indexing().await.len(), 1);
+    stop(d).await;
+}
+
+#[tokio::test]
+async fn a_read_only_admin_cannot_start_but_can_read() {
+    let (_tmp, dir) = temp_dir();
+    let client = client_endpoint().await;
+    let config = format!(
+        "{}{}",
+        photos_export(&dir, false),
+        laptop(client.id(), "admin = \"ro\"\n")
+    );
+    let (d, _) = spawn_from_file(&dir, &config).await;
+    let mut s = Session::open(&d, &client).await;
+    let e = refused(s.start_index("photos").await);
+    assert_eq!(e.code, Code::Unauthorized as i32, "{}", e.message);
+    assert_eq!(e.message, "not allowed");
+    assert!(s.read_indexing().await.is_empty());
+    stop(d).await;
+}
+
+#[tokio::test]
+async fn an_uncommitted_or_unknown_export_is_no_export() {
+    let (_tmp, dir) = temp_dir();
+    let client = client_endpoint().await;
+    let (d, _) = spawn_from_file(&dir, &laptop(client.id(), "admin = \"rw\"\n")).await;
+    let mut s = Session::open(&d, &client).await;
+    let e = refused(s.start_index("nope").await);
+    assert_eq!(e.code, Code::BadRequest as i32);
+    assert!(e.message.contains("no export \"nope\""), "{}", e.message);
+    s.change(export_add("photos", &dir.join("photos"))).await;
+    let e = refused(s.start_index("photos").await);
+    assert!(e.message.contains("no export \"photos\""), "{}", e.message);
+    assert_eq!(ack(s.commit().await).len(), 1);
+    assert!(!started(s.start_index("photos").await).already_running);
+    s.wait_indexed(&dir.join("photos")).await;
+    stop(d).await;
+}
+
+#[tokio::test]
+async fn an_index_at_start_run_shows_in_the_status() {
+    let (_tmp, dir) = temp_dir();
+    std::fs::write(dir.join("photos/a.jpg"), b"aaaa").unwrap();
+    let client = client_endpoint().await;
+    let config = format!(
+        "{}{}",
+        photos_export(&dir, true),
+        laptop(client.id(), "admin = \"ro\"\n")
+    );
+    let (d, _) = spawn_from_file(&dir, &config).await;
+    let mut s = Session::open(&d, &client).await;
+    let r = s.wait_indexed(&dir.join("photos")).await;
+    assert!(r.at_start);
+    assert_eq!(r.started_by, "");
+    assert_eq!(r.hashed, 1);
+    stop(d).await;
+}
+
+#[tokio::test]
+async fn a_requested_run_on_a_fresh_index_at_start_export_is_the_clients() {
+    let (_tmp, dir) = temp_dir();
+    std::fs::write(dir.join("photos/a.jpg"), b"aaaa").unwrap();
+    let client = client_endpoint().await;
+    let (d, _) = spawn_from_file(&dir, &laptop(client.id(), "admin = \"rw\"\n")).await;
+    let mut s = Session::open(&d, &client).await;
+    s.change(Op::ExportAdd(ExportAdd {
+        target: format!("photos:{}", dir.join("photos").display()),
+        read_only: false,
+        index_at_start: true,
+    }))
+    .await;
+    ack(s.commit().await);
+    let st = started(s.start_index("photos").await);
+    assert!(!st.already_running);
+    assert_eq!(st.run.unwrap().started_by, "laptop");
+    let r = s.wait_indexed(&dir.join("photos")).await;
+    assert_eq!(r.started_by, "laptop");
+    assert_eq!(s.read_indexing().await.len(), 1);
+    stop(d).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_status_carries_no_file_paths() {
+    use irsync::platform::testutil::set_mode;
+    use prost::Message as _;
+    if irsync::platform::is_root() {
+        eprintln!("skipping: running as root, mode 0o000 does not stop reads");
+        return;
+    }
+    let (_tmp, dir) = temp_dir();
+    let locked = dir.join("photos/secret-name.jpg");
+    std::fs::write(&locked, b"x").unwrap();
+    set_mode(&locked, 0o000).unwrap();
+    let client = client_endpoint().await;
+    let config = format!(
+        "{}{}",
+        photos_export(&dir, false),
+        laptop(client.id(), "admin = \"rw\"\n")
+    );
+    let (d, _) = spawn_from_file(&dir, &config).await;
+    let mut s = Session::open(&d, &client).await;
+    started(s.start_index("photos").await);
+    let r = s.wait_indexed(&dir.join("photos")).await;
+    set_mode(&locked, 0o600).unwrap();
+    assert_eq!(r.failed, 1, "{r:?}");
+    let bytes = irsync_proto::v1::Indexing {
+        runs: s.read_indexing().await,
+    }
+    .encode_to_vec();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(!text.contains("secret-name"), "{text}");
+    stop(d).await;
 }
