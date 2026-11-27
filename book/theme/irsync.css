@@ -392,18 +392,29 @@ input:focus-visible,
   text-underline-offset: 3px;
 }
 
-/* Where the book was built from, after the title (theme/home-link.js):
-   smaller and muted, without the mark; the "@" between the links too. */
+/* The name and where the book was built from (theme/home-link.js) are the
+   size of the version picker, like the bar's other controls. */
+.menu-title a.menu-home {
+  font-size: calc(var(--ir-text-body) * var(--ir-book-rem));
+}
+
+/* Where the book was built from, after an aqua dot: in ink at regular
+   weight, without the mark; the "@" between the links too. */
 .menu-source-parts {
-  color: var(--ir-muted);
+  font-size: calc(var(--ir-text-body) * var(--ir-book-rem));
+  color: var(--ir-ink);
   font-weight: 400;
-  font-size: 0.6em;
-  margin-left: 0.3em;
+  margin-left: 0.4em;
+}
+
+.menu-source-dot {
+  color: var(--ir-aqua);
+  margin-right: 0.4em;
 }
 
 .menu-title a.menu-source,
 .menu-title a.menu-source:visited {
-  color: var(--ir-muted);
+  color: var(--ir-ink);
   font-weight: 400;
 }
 
