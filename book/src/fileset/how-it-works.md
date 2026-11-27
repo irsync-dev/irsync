@@ -2,7 +2,7 @@
 
 This page explains what a manifest holds, what a check compares, and what
 `fileset` cannot see. Commands and options are in the [reference](reference.md).
-`fileset` lives in `crates/fileset`. It shares no code with `irsync` on the
+`fileset` lives in [`crates/fileset`](../../../crates/fileset). It shares no code with `irsync` on the
 way it records and checks a tree; only the wildcard matcher of `fileset list`
 (the `irsync-glob` crate) is shared.
 

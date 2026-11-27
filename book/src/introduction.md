@@ -163,10 +163,10 @@ The source is at [github.com/irsync-dev/irsync](https://github.com/irsync-dev/ir
   command you ran and what it printed.
 - **Security problems.** Do not open a public issue. Email
   [security@irsync.org](mailto:security@irsync.org) instead; the
-  [security policy](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md)
+  [security policy](../../SECURITY.md)
   says what to include.
 
 ## License
 
 irsync, and the tools in its repository, are MIT licensed; see the
-[LICENSE](https://github.com/irsync-dev/irsync/blob/main/LICENSE) file.
+[LICENSE](../../LICENSE) file.

@@ -4,7 +4,7 @@ irsync runs on machines that hold people's data, often as a daemon, so a
 backdoored irsync would be a backdoor into all of them. This page lists what
 guards the way from a commit to a user's install, and the steps only a
 maintainer can do. Why each choice was made is in
-[SUPPLY_CHAIN_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/SUPPLY_CHAIN_DECISIONS.md).
+[SUPPLY_CHAIN_DECISIONS.md](../../../docs/SUPPLY_CHAIN_DECISIONS.md).
 
 ## What guards what
 
@@ -21,7 +21,7 @@ maintainer can do. Why each choice was made is in
   `tools/github_settings.py check` reports it.
 - `release-*` branches take changes only through a pull request that passed
   `CI result`, like `main`. The one exception is the deploy key
-  `release-branch`, with which `release-prepare.yml` creates
+  `release-branch`, with which [`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) creates
   `release-X.Y` or rebases it onto `main`. Its private half lives in the
   `release-branch` environment, which opens only for runs on `main` and
   only after a maintainer approves; the job that checks the version holds
@@ -36,24 +36,24 @@ maintainer can do. Why each choice was made is in
 - The Cloudflare tokens live in the `site` environment, which opens only
   for runs on `main`.
 - Every Action is pinned to a commit, not a version tag its owner could
-  move. `.github/scripts/tests/test_workflow_policy.py` fails CI when a
+  move. [`test_workflow_policy.py`](../../../.github/scripts/tests/test_workflow_policy.py) fails CI when a
   workflow breaks one of these rules.
 - Secret scanning and push protection catch a secret before it's pushed.
 
 **A dependency goes bad.**
 
-- `cargo deny --locked check` runs on every change (`deny.toml`). It fails on:
+- `cargo deny --locked check` runs on every change ([`deny.toml`](../../../deny.toml)). It fails on:
   - any RustSec advisory, including unmaintained or yanked crates;
   - a license that isn't on the list;
   - a crate from anywhere but crates.io and the pinned upstream iroh commit;
   - a second version of a crate that isn't listed as accepted (see
     [Accepting a second version of a crate](#accepting-a-second-version-of-a-crate)).
 
-  An exception in `deny.toml` that no longer matches anything also fails
+  An exception in [`deny.toml`](../../../deny.toml) that no longer matches anything also fails
   the check, so a stale one gets removed.
 
   It looks at the crates built for the platforms irsync and its tools are
-  built for, listed under `targets` in `deny.toml`. Both Windows targets are
+  built for, listed under `targets` in [`deny.toml`](../../../deny.toml). Both Windows targets are
   there, because `filegen` and `fileset` are built for them, so the check
   covers every crate only a Windows build uses, those of the whole workspace
   and iroh's too. A crate built only for a platform not listed (illumos, say)
@@ -65,14 +65,14 @@ maintainer can do. Why each choice was made is in
   [issue 174](https://github.com/irsync-dev/irsync/issues/174). Among the
   accepted duplicates, one is temporary: `nix` 0.31, which `ctrlc` 3.5.2 asks
   for while everything else is on 0.32. It goes when `ctrlc` moves to 3.5.3,
-  which is not before 2026-11-25. The reasons are in `deny.toml` and in
+  which is not before 2026-11-25. The reasons are in [`deny.toml`](../../../deny.toml) and in
   [Accepting an advisory](#accepting-an-advisory) and
   [Accepting a second version of a crate](#accepting-a-second-version-of-a-crate).
-- The licenses of every crate in `Cargo.lock`, for every platform, are
-  checked too (`deny-license-check.toml`, the `deny-license-check` job). A
+- The licenses of every crate in [`Cargo.lock`](../../../Cargo.lock), for every platform, are
+  checked too ([`deny-license-check.toml`](../../../deny-license-check.toml), the `deny-license-check` job). A
   failure there shows on a pull request without blocking it, but it stops
   a release. The two files must allow the same licenses; a test checks that.
-- The same advisory check runs daily (`advisories.yml`), so a new advisory
+- The same advisory check runs daily ([`advisories.yml`](../../../.github/workflows/advisories.yml)), so a new advisory
   against untouched code is noticed.
 - Dependency review flags a pull request that adds a vulnerable crate.
 - Dependabot proposes updates weekly, but only once a release is 7 days old.
@@ -87,14 +87,14 @@ maintainer can do. Why each choice was made is in
 - Every file on a release is signed with a minisign key that is kept
   offline, on a USB stick, and never goes into GitHub. A maintainer signs
   the draft on their own computer and then publishes it
-  (`.github/scripts/sign-release.sh`, see
+  ([`sign-release.sh`](../../../.github/scripts/sign-release.sh), see
   [Releasing](releasing.md#signing-the-release)). Someone who takes over
   the organisation, a token or a workflow can build a release, but can't
   make a signature that passes. Users check it as in
   [Verify a download](../how-to/verify-a-download.md). The one-off key setup
   is in [The release signing key](release-signing-key.md).
 - Releases are immutable once published: no file can be replaced or added.
-- `install.sh` refuses plain HTTP, even after a redirect.
+- [`install.sh`](../../../site/install.sh) refuses plain HTTP, even after a redirect.
 - The apt/dnf key's primary part is kept offline. GitHub holds only a
   signing subkey, which can be revoked and replaced without users trusting
   a new key.
@@ -104,7 +104,7 @@ maintainer can do. Why each choice was made is in
 - Fuzzing feeds the code that reads bytes from a peer millions of made-up
   inputs and watches for a crash. The seeds are checked on every pull
   request, and each target is fuzzed for ten minutes every night
-  (`nightly.yml`). A crash fails the run and uploads the input, which is
+  ([`nightly.yml`](../../../.github/workflows/nightly.yml)). A crash fails the run and uploads the input, which is
   public, as the Fuzzing section of [Testing](testing.md#fuzzing) explains.
 - Every `unsafe` block needs a `// SAFETY:` comment, and clippy refuses one
   without. Miri runs the tests it can run every night, and stops at
@@ -119,7 +119,7 @@ maintainer can do. Why each choice was made is in
 
 - There are two ways to report it: the **Report a vulnerability** button on
   the repository's Security tab (private vulnerability reporting), or an
-  email to `security@irsync.org`. [SECURITY.md](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md)
+  email to `security@irsync.org`. [SECURITY.md](../../../SECURITY.md)
   says so.
 - A report is answered within 7 days.
 - `tools/github_settings.py check` reports the setting if it is turned off.
@@ -129,7 +129,7 @@ maintainer can do. Why each choice was made is in
 The [OpenSSF Scorecard](https://scorecard.dev) grades a public repository on
 about 18 security habits, such as pinned Actions, a security policy and
 fuzzing, and gives each a score from 0 to 10 and the project an overall
-score out of 10. `scorecard.yml` runs it on every push to `main`, every
+score out of 10. [`scorecard.yml`](../../../.github/workflows/scorecard.yml) runs it on every push to `main`, every
 week, and when the branch protection settings change. The result is at
 [scorecard.dev](https://scorecard.dev/viewer/?uri=github.com/irsync-dev/irsync),
 the badge in the README links to it, and the findings also show in the
@@ -149,16 +149,16 @@ Packaging is: irsync has no package registry).
 | Contributors | 0 | All contributors belong to one organisation. | Accepted. We can't change this. |
 | CII-Best-Practices | 0 | irsync has no OpenSSF Best Practices badge. It is a form the maintainer fills in. | Later. |
 | Signed-Releases | 3 | Scorecard looks at the last five releases. Only the two newest are signed, and none has provenance (a signed record of how it was built). | Rises with each signed release. The old ones can't be changed. |
-| Token-Permissions | 0 | `release.yml` is written by dist and has `contents: write` at the top. The release jobs also need their write permissions to publish. Scorecard scores any such write as a failure. | Accepted. |
-| Pinned-Dependencies | 8 | Three downloads are piped into a shell without a hash: the dist installer in `release.yml` (two places) and the rustup install in `tools/dev-setup.sh`. Every Action is pinned. | Accepted. The first two are written by dist, the third is a developer setup script. |
-| Vulnerabilities | 9 | Scorecard reads every entry in `Cargo.lock`, also for crates that are not built for the platforms irsync ships on. One advisory is left: `chrono` is unmaintained. It is built on Windows only, through iroh. `cargo deny` also checks the Windows targets now, so it sees `chrono`; it passes because `deny.toml` accepts that one advisory, with the reason, and no other. | We asked upstream to drop it. See [issue 174](https://github.com/irsync-dev/irsync/issues/174). |
+| Token-Permissions | 0 | [`release.yml`](../../../.github/workflows/release.yml) is written by dist and has `contents: write` at the top. The release jobs also need their write permissions to publish. Scorecard scores any such write as a failure. | Accepted. |
+| Pinned-Dependencies | 8 | Three downloads are piped into a shell without a hash: the dist installer in [`release.yml`](../../../.github/workflows/release.yml) (two places) and the rustup install in [`dev-setup.sh`](../../../tools/dev-setup.sh). Every Action is pinned. | Accepted. The first two are written by dist, the third is a developer setup script. |
+| Vulnerabilities | 9 | Scorecard reads every entry in [`Cargo.lock`](../../../Cargo.lock), also for crates that are not built for the platforms irsync ships on. One advisory is left: `chrono` is unmaintained. It is built on Windows only, through iroh. `cargo deny` also checks the Windows targets now, so it sees `chrono`; it passes because [`deny.toml`](../../../deny.toml) accepts that one advisory, with the reason, and no other. | We asked upstream to drop it. See [issue 174](https://github.com/irsync-dev/irsync/issues/174). |
 
 The scores move when the repository changes and when Scorecard changes its
 checks, so read the live result for the current numbers.
 
 ## Checking the settings
 
-`tools/github_settings.py` holds the settings for `irsync-dev/irsync`,
+[`github_settings.py`](../../../tools/github_settings.py) holds the settings for `irsync-dev/irsync`,
 `irsync-dev/iroh`, `irsync-dev/homebrew-tap` and `irsync-dev/packages`.
 These are the rulesets, environments, deploy keys, secret scanning, SHA
 pinning, immutable releases and private vulnerability reporting. It also
@@ -180,8 +180,8 @@ setting by hand.
 ## Accepting an advisory
 
 When `cargo deny` fails on an advisory, first try to upgrade:
-`cargo update -p <crate>`, or bump the version in `Cargo.toml`. If you
-can't yet, accept it in `deny.toml` under `[advisories]`, with the ID and
+`cargo update -p <crate>`, or bump the version in [`Cargo.toml`](../../../Cargo.toml). If you
+can't yet, accept it in [`deny.toml`](../../../deny.toml) under `[advisories]`, with the ID and
 the real reason:
 
 ```toml
@@ -197,7 +197,7 @@ why is not a reason.
 
 Each copy of a crate is more code to build, ship and keep an eye on. So
 `cargo deny` fails when a crate is in the tree in more than one version,
-unless `deny.toml` lists that version under `skip` in `[bans]`. A routine
+unless [`deny.toml`](../../../deny.toml) lists that version under `skip` in `[bans]`. A routine
 `cargo update` or a new dependency can set this off.
 
 First see who pulls in each version:
@@ -308,11 +308,11 @@ run on a pre-release. See
 
 ## When more maintainers join
 
-These are settings changes in `tools/github_settings.py`, not a redesign:
+These are settings changes in [`github_settings.py`](../../../tools/github_settings.py), not a redesign:
 
 - the `main` ruleset requires one approving review;
-- add a `CODEOWNERS` file so changes to `.github/`, `packaging/`,
-  `dist-workspace.toml`, `deny.toml` and `site/install.sh` need a
+- add a `CODEOWNERS` file so changes to [`.github/`](../../../.github), [`packaging/`](../../../packaging),
+  [`dist-workspace.toml`](../../../dist-workspace.toml), [`deny.toml`](../../../deny.toml) and [`install.sh`](../../../site/install.sh) need a
   maintainer's review;
 - the `release` environment gets `prevent_self_review`, so whoever starts a
   release can't also approve it. This is not enough alone: the resume

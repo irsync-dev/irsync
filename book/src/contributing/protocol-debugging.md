@@ -107,7 +107,7 @@ once sent, once received.
 
 Each packet holds one `irsync.capture.v1.Record`, a protobuf message that
 exists only in the capture and is never sent. It is defined in
-`proto/irsync/capture/v1/record.proto`. It holds:
+[`record.proto`](../../../proto/irsync/capture/v1/record.proto). It holds:
 
 - the irsync message exactly as sent or received, in the `msg` field, or a
   stream event or a path change instead;
@@ -169,14 +169,14 @@ tools/wireshark/open-capture.sh ~/push.pcapng
 
 The script starts Wireshark with two settings, nothing saved: decode every
 packet as `irsync.capture.v1.Record`, and load the `.proto` files from
-`proto/`. Wireshark's own protobuf decoder does the rest; no plugin is
-needed. To keep the settings, import the profile in `tools/wireshark/profile/`;
-[`tools/wireshark/README.md`](https://github.com/irsync-dev/irsync/blob/main/tools/wireshark/README.md)
+[`proto/`](../../../proto). Wireshark's own protobuf decoder does the rest; no plugin is
+needed. To keep the settings, import the profile in [`tools/wireshark/profile/`](../../../tools/wireshark/profile);
+[`wireshark/README.md`](../../../tools/wireshark/README.md)
 says how, and gives the same two settings for `tshark`.
 
 The decoding and the flow graph below were checked with tshark 4.6. On
 Ubuntu, tshark cannot read `.proto` files in your home directory and shows
-every packet as `<UNKNOWN>`; `tools/wireshark/README.md` gives the
+every packet as `<UNKNOWN>`; [`wireshark/README.md`](../../../tools/wireshark/README.md) gives the
 workaround. The Wireshark GUI is not affected.
 
 In the packet details, each record opens up into its fields and the irsync
@@ -465,7 +465,7 @@ the numbering of the envelope's fields:
 `--no-unwrap` skips that and walks each packet as `--type` from the top,
 sizes being those of the bytes in the file. It cannot be combined with
 `--where` or `--group-by`, which need the envelope unwrapped. The file
-format and the envelope are in `crates/pbcap`.
+format and the envelope are in [`crates/pbcap`](../../../crates/pbcap).
 
 ### Exit status
 

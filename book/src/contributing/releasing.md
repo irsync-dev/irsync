@@ -37,14 +37,14 @@ usual order. Pre-releases are only of `X.Y.0`: there is no
 `X.Y.1-beta.1`.
 
 Until `X.Y.0` is out, `release-X.Y` follows `main`. Before each alpha,
-beta and `X.Y.0`, the workflow `release-prepare.yml` creates
+beta and `X.Y.0`, the workflow [`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) creates
 `release-X.Y` at `main`, or rebases it onto `main`. Rebasing replays the
 branch's own commits, if it has any, on top of `main`. Once `X.Y.0` is
 out, the branch no longer moves with `main`, and only takes fixes.
 
 `main` and every `release-X.Y` branch only take changes through a pull
 request that passed the `CI result` check. The one exception is
-`release-prepare.yml`, which pushes `release-X.Y` with a deploy key (see
+[`release-prepare.yml`](../../../.github/workflows/release-prepare.yml), which pushes `release-X.Y` with a deploy key (see
 [One-time setup](#one-time-setup)). The gate refuses to run on the wrong
 branch, and refuses a version out of the line's order.
 
@@ -54,7 +54,7 @@ There are three cases. They differ only in where the version bump goes:
 
 - **`main` is on the line.** A pre-release or `X.Y.0` while `main`
   still works towards `X.Y`, including the first alpha of a new line. The
-  bump goes to `main`, then `release-prepare.yml` brings `release-X.Y`
+  bump goes to `main`, then [`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) brings `release-X.Y`
   up to `main` (step 5).
 - **`main` has left the line.** `main` already holds a later version,
   such as `1.4.0-alpha.1` while `1.3` is still in beta. The bump goes to
@@ -62,7 +62,7 @@ There are three cases. They differ only in where the version bump goes:
   with `main` any more.
 - **A patch** (`X.Y.Z` with `Z` above 0). The bump goes to `release-X.Y`.
 
-`bump-version.sh` works out which case it is, from the version and from
+[`bump-version.sh`](../../../.github/scripts/bump-version.sh) works out which case it is, from the version and from
 `origin/main`, and prints the right commands.
 
 1. Fetch, and switch to the branch the bump goes to, up to date and with no
@@ -76,11 +76,11 @@ There are three cases. They differ only in where the version bump goes:
    ```
 
    It stops if you are on the wrong branch, and names the right one. It sets the version in
-   `Cargo.toml` (`[workspace.package]`) and `packaging/dist/dist.toml`, and
-   updates `Cargo.lock` and `fuzz/Cargo.lock` to match. It commits the four
+   [`Cargo.toml`](../../../Cargo.toml) (`[workspace.package]`) and [`dist.toml`](../../../packaging/dist/dist.toml), and
+   updates [`Cargo.lock`](../../../Cargo.lock) and [`fuzz/Cargo.lock`](../../../fuzz/Cargo.lock) to match. It commits the four
    files as `Release v1.2.3` on a new branch, `bump-v1.2.3`. It doesn't
    push or tag. It prints the commands for the next steps.
-2. Write the release notes: a section `## v1.2.3` in `CHANGELOG.md`, above
+2. Write the release notes: a section `## v1.2.3` in [`CHANGELOG.md`](../../../CHANGELOG.md), above
    the older ones, and commit it on the bump branch. See
    [The release notes](#the-release-notes) for what goes in it.
 
@@ -104,7 +104,7 @@ There are three cases. They differ only in where the version bump goes:
    [The books](website.md#the-books)). Until the release is published,
    the site cannot be promoted to irsync.org.
 5. If the bump went to `main`, bring `release-X.Y` up to `main`. Start
-   `release-prepare.yml` on `main`, with the version:
+   [`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) on `main`, with the version:
 
    ```sh
    gh workflow run release-prepare.yml --ref main -f version=1.2.0-beta.1
@@ -163,7 +163,7 @@ For a pre-release, use a version such as `1.3.0-beta.1` or `1.3.0-alpha.1`.
 ### If the rebase conflicts
 
 When `release-X.Y` has commits of its own that clash with `main`,
-`release-prepare.yml` stops and pushes nothing. Its error names the files.
+[`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) stops and pushes nothing. Its error names the files.
 Rebase the branch by hand into a branch of your own, then hand that in:
 
 ```sh
@@ -185,7 +185,7 @@ second run deletes the draft the first one made.
 
 ## The release notes
 
-Every release has a section in `CHANGELOG.md`, at the root of the
+Every release has a section in [`CHANGELOG.md`](../../../CHANGELOG.md), at the root of the
 repository, under a heading that is exactly `## v` and the version:
 
 ```markdown
@@ -212,14 +212,14 @@ dist reads the section and puts it at the top of the GitHub Release, under
 of changes still follows it (see below). These checks keep a release from
 going out without its notes:
 
-- A test (`crates/irsync/tests/release_version.rs`) fails when
-  `CHANGELOG.md` has no section for the version in `Cargo.toml`, so the
+- A test ([`release_version.rs`](../../../crates/irsync/tests/release_version.rs)) fails when
+  [`CHANGELOG.md`](../../../CHANGELOG.md) has no section for the version in [`Cargo.toml`](../../../Cargo.toml), so the
   pull request with the bump cannot pass `CI result` without one.
 - The release gate stops within seconds when the section is missing or
-  empty (`.github/scripts/changelog-section.sh`).
+  empty ([`changelog-section.sh`](../../../.github/scripts/changelog-section.sh)).
 
 A pull request that only touches Markdown skips the tests. So CI also runs
-that script on every pull request, and an edit to `CHANGELOG.md` that
+that script on every pull request, and an edit to [`CHANGELOG.md`](../../../CHANGELOG.md) that
 breaks the section of the current version fails `CI result` too.
 
 A change merged after the notes were written and before the gate starts is
@@ -230,11 +230,11 @@ in the release and not in the section. The full list below it has it.
 If you change the version by hand instead, keep all four files in step.
 These checks catch a mismatch:
 
-- A test (`crates/irsync/tests/release_version.rs`) fails if `Cargo.toml` and
-  `dist.toml` differ.
-- CI builds with `--locked`, so it fails if `Cargo.lock` is out of date. The
+- A test ([`release_version.rs`](../../../crates/irsync/tests/release_version.rs)) fails if [`Cargo.toml`](../../../Cargo.toml) and
+  [`dist.toml`](../../../packaging/dist/dist.toml) differ.
+- CI builds with `--locked`, so it fails if [`Cargo.lock`](../../../Cargo.lock) is out of date. The
   release build uses `--locked` too, and would fail later. The `check` and
-  `fuzz-build` jobs do the same for `fuzz/Cargo.lock`.
+  `fuzz-build` jobs do the same for [`fuzz/Cargo.lock`](../../../fuzz/Cargo.lock).
 - The release gate stops within seconds if the two files don't hold the
   version you gave it.
 
@@ -243,7 +243,7 @@ These checks catch a mismatch:
 Fixes go to the lines that have not reached `X.Y.0` yet, and to the
 newest stable line. Land the fix on `main` first. Before `X.Y.0`, a line
 whose branch still follows `main` gets the fix with the next
-`release-prepare.yml` run, and needs nothing else. For any other line,
+[`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) run, and needs nothing else. For any other line,
 copy the fix to its branch with a pull request (here for `release-1.2`):
 
 ```sh
@@ -259,17 +259,17 @@ once `CI result` passes. Then release the patch as above, from
 `release-1.2`.
 
 Before `X.Y.0`, a commit added to `release-X.Y` this way stays on it: each
-`release-prepare.yml` run replays it on top of `main`, and drops it once
+[`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) run replays it on top of `main`, and drops it once
 `main` has the same change.
 
 ## What the workflow does
 
-You start `.github/workflows/release-gate.yml` by hand. It is the only way a
+You start [`release-gate.yml`](../../../.github/workflows/release-gate.yml) by hand. It is the only way a
 release starts. It does this, in order:
 
 1. **Check.** It checks the version, that it runs on the right branch, and
-   that the version in `Cargo.toml` and `packaging/dist/dist.toml` is the
-   one you gave. It checks that `CHANGELOG.md` has the release notes of
+   that the version in [`Cargo.toml`](../../../Cargo.toml) and [`dist.toml`](../../../packaging/dist/dist.toml) is the
+   one you gave. It checks that [`CHANGELOG.md`](../../../CHANGELOG.md) has the release notes of
    that version (see [The release notes](#the-release-notes)). It checks that the tag doesn't exist yet and that there are
    no stray release tags (see
    [Protecting the release tags](#protecting-the-release-tags)). It checks
@@ -277,7 +277,7 @@ release starts. It does this, in order:
    earlier releases (see
    [Where a release is cut from](#where-a-release-is-cut-from)). This takes
    seconds.
-2. **Test.** It runs `ci.yml` on the branch's commit, with the musl release
+2. **Test.** It runs [`ci.yml`](../../../.github/workflows/ci.yml) on the branch's commit, with the musl release
    targets added. If anything fails, it stops. Nothing is published, and no
    tag exists.
 3. **Pin.** It makes a branch `pinned/vX.Y.Z` at the tested commit, so the
@@ -285,10 +285,10 @@ release starts. It does this, in order:
    merge a change to a workflow file into the branch while the gate runs:
    GitHub then refuses to let the gate make this branch (see
    [If a release fails](#if-a-release-fails)). It deletes a `pinned/vX.Y.Z` left over from an earlier failed attempt. It
-   refuses to go on if a `release.yml` run from an earlier attempt is still
+   refuses to go on if a [`release.yml`](../../../.github/workflows/release.yml) run from an earlier attempt is still
    going. It also deletes a draft release left over for the tag.
-4. **Draft.** It launches `release.yml` on the pinned branch and waits for
-   it. `release.yml` builds `irsync` and `fileset` for Linux x86_64, Linux
+4. **Draft.** It launches [`release.yml`](../../../.github/workflows/release.yml) on the pinned branch and waits for
+   it. [`release.yml`](../../../.github/workflows/release.yml) builds `irsync` and `fileset` for Linux x86_64, Linux
    arm64 and macOS on Apple Silicon. Each tarball also holds the man pages
    `irsync(1)`, `fileset(1)` and `irsync.toml(5)`, built from the book with
    pandoc. It creates a **draft** GitHub Release with the tarballs,
@@ -298,12 +298,12 @@ release starts. It does this, in order:
    then deletes the `pinned/` branch and prints the command that signs and
    publishes the draft. It ends there.
 
-You then run `.github/scripts/sign-release.sh`, on your own computer (see
+You then run [`sign-release.sh`](../../../.github/scripts/sign-release.sh), on your own computer (see
 [Signing the release](#signing-the-release)). It signs the files and
 publishes the draft. Publishing creates the tag `vX.Y.Z`. That is the point
 of no return: the release is immutable from then on, and no file on it can
 be replaced or added. The script then starts
-`.github/workflows/release-resume.yml` on the new tag. That run does the
+[`release-resume.yml`](../../../.github/workflows/release-resume.yml) on the new tag. That run does the
 rest, because the secrets of the `release` environment open only for runs
 on a `v*` tag:
 
@@ -311,15 +311,15 @@ on a `v*` tag:
   you to approve the `release` environment. Open the resume run, click
   "Review deployments", tick `release` and approve: one click lets both
   start.
-  - `.github/workflows/packages.yml` builds the `.deb` and `.rpm` files
+  - [`packages.yml`](../../../.github/workflows/packages.yml) builds the `.deb` and `.rpm` files
     from the released Linux tarballs. It signs the `.rpm` files, adds
     everything to `irsync-dev/packages`, signs the apt and dnf metadata
     and pushes. It keeps the newest 3 versions. GitHub Pages serves the
     result at `dist.irsync.org`. The packages get attestations, but are
     not attached to the release.
-  - `.github/workflows/publish-homebrew.yml` pushes the formula from the
+  - [`publish-homebrew.yml`](../../../.github/workflows/publish-homebrew.yml) pushes the formula from the
     release to `irsync-dev/homebrew-tap`. First it runs
-    `.github/scripts/formula-man-pages.sh`, which adds two lines to the
+    [`formula-man-pages.sh`](../../../.github/scripts/formula-man-pages.sh), which adds two lines to the
     formula (`man1.install` and `man5.install`), so brew puts the man
     pages where `man` looks. This happens before the tap is checked out
     with its token. The script fails if dist's formula template changed,
@@ -330,11 +330,11 @@ on a `v*` tag:
 
 The release tag is a lightweight tag made by GitHub, not an annotated one.
 
-The install script `site/install.sh` (served as `irsync.org/install.sh`)
+The install script [`install.sh`](../../../site/install.sh) (served as `irsync.org/install.sh`)
 picks the newest release for its channel: stable by default, `--beta` for
 betas and stable, `--alpha` for all. `--require-signature` makes it fail
 when it cannot check the installer's minisign signature. Other arguments
-go to the installer `irsync-installer.sh` that `release.yml` attached to
+go to the installer `irsync-installer.sh` that [`release.yml`](../../../.github/workflows/release.yml) attached to
 the release. It puts the programs in `~/.local/bin` and the three man
 pages in `~/.local/share/man/man1` and `man5`, and has no updater. It writes no
 receipt and never edits the shell's startup files. If `~/.local/bin` is not
@@ -353,17 +353,17 @@ install directory variables (`IRSYNC_INSTALL_DIR`,
 when one is set, the installer stops before it does anything, since it
 always installs under `~/.local`. On an Apple Silicon Mac under
 Rosetta it installs the Apple Silicon build. Intel Macs are not supported.
-Its source is `packaging/installer/irsync-installer.sh.in`.
+Its source is [`irsync-installer.sh.in`](../../../packaging/installer/irsync-installer.sh.in).
 
 ## The release workflow is generated
 
-`.github/workflows/release.yml` is made by
-`.github/scripts/release-yml.sh` from what `dist generate` writes (cargo
+[`release.yml`](../../../.github/workflows/release.yml) is made by
+[`release-yml.sh`](../../../.github/scripts/release-yml.sh) from what `dist generate` writes (cargo
 dist 0.34.0), with `--draft` added so the release is created as a draft.
 dist does not manage the file any more (`allow-dirty = ["ci"]` in
-`dist-workspace.toml`). Never edit it by hand. The settings are in
-`dist-workspace.toml`, and the package is described in
-`packaging/dist/dist.toml`. After you change `dist-workspace.toml`, run:
+[`dist-workspace.toml`](../../../dist-workspace.toml)). Never edit it by hand. The settings are in
+[`dist-workspace.toml`](../../../dist-workspace.toml), and the package is described in
+[`dist.toml`](../../../packaging/dist/dist.toml). After you change [`dist-workspace.toml`](../../../dist-workspace.toml), run:
 
 ```sh
 .github/scripts/release-yml.sh write
@@ -372,17 +372,17 @@ dist does not manage the file any more (`allow-dirty = ["ci"]` in
 and commit the result. `.github/scripts/release-yml.sh check` says whether
 the file is up to date; CI runs it.
 
-The installer is not dist's. `dist-workspace.toml` lists
+The installer is not dist's. [`dist-workspace.toml`](../../../dist-workspace.toml) lists
 `irsync-installer.sh` under `extra-artifacts`, and dist builds it with
-`packaging/installer/build-installer.sh`, which fills in the version and the
+[`build-installer.sh`](../../../packaging/installer/build-installer.sh), which fills in the version and the
 checksums of the three tarballs. The man pages get into the tarballs through
-`packaging/dist/build.sh`, which runs `tools/build-man.sh`. The build
-runners need pandoc, which `dist-workspace.toml` lists as a dependency.
-This needed no change to `release.yml`: the workflow
+[`build.sh`](../../../packaging/dist/build.sh), which runs [`build-man.sh`](../../../tools/build-man.sh). The build
+runners need pandoc, which [`dist-workspace.toml`](../../../dist-workspace.toml) lists as a dependency.
+This needed no change to [`release.yml`](../../../.github/workflows/release.yml): the workflow
 reads the runners' packages and the extra artifact from `dist plan` when it
 runs.
 
-`release.yml` only starts when the gate launches it. **Never launch it by
+[`release.yml`](../../../.github/workflows/release.yml) only starts when the gate launches it. **Never launch it by
 hand from the Actions tab.** That skips the tests.
 
 ## If a release fails
@@ -398,9 +398,9 @@ abandoned, land the next bump or promote with `allow-unpublished` (see
 [Promoting to irsync.org](website.md#promoting-to-irsyncorg)).
 
 **The check failed.** Nothing ran. Read the error. Usually the version in
-the two files does not match, `CHANGELOG.md` has no notes for the version,
+the two files does not match, [`CHANGELOG.md`](../../../CHANGELOG.md) has no notes for the version,
 or you are on the wrong branch, or the branch `release-X.Y` is missing
-(run `release-prepare.yml` first), or the version is out of the line's
+(run [`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) first), or the version is out of the line's
 order. Fix it and start the gate again.
 A stray tag is different: see
 [Protecting the release tags](#protecting-the-release-tags).
@@ -417,18 +417,18 @@ create a branch then, and answers "Resource not accessible by
 integration". The error names the workflow files that changed and the
 command that starts the gate again; run it, on the branch's new commit.
 
-**The release step failed.** Look at the `release.yml` run it launched. The
+**The release step failed.** Look at the [`release.yml`](../../../.github/workflows/release.yml) run it launched. The
 link is in the gate's log. If the gate could not find the run, look in the
 Actions tab under the release workflow: it may still be running.
 
 - If the draft was not created, or you don't trust it, nothing was published
   and there is no tag. Fix the cause, then start the gate again with the
   same version. A leftover `pinned/vX.Y.Z` branch and a leftover draft are
-  deleted by the next run. If a `release.yml` run is still going, the gate
+  deleted by the next run. If a [`release.yml`](../../../.github/workflows/release.yml) run is still going, the gate
   refuses to start: cancel that run first (`gh run cancel <id>`), or wait
   for it to end.
-- If the draft was created but the gate lost track of the `release.yml`
-  run, the draft is fine. Sign it with `sign-release.sh`, then publish it
+- If the draft was created but the gate lost track of the [`release.yml`](../../../.github/workflows/release.yml)
+  run, the draft is fine. Sign it with [`sign-release.sh`](../../../.github/scripts/sign-release.sh), then publish it
   with `sign-release.sh --publish`.
 
 **Signing failed.** See [Signing the release](#signing-the-release).
@@ -449,7 +449,7 @@ does nothing if the heading is already there.
 
 **The release is out, but the packages, Homebrew or the notes did
 not happen.** This is what you see if the resume run was cancelled, or
-`sign-release.sh` could not start it. Start the
+[`sign-release.sh`](../../../.github/scripts/sign-release.sh) could not start it. Start the
 resume run by hand:
 
 ```sh
@@ -458,15 +458,15 @@ gh workflow run release-resume.yml --ref v1.2.3 -f tag=v1.2.3
 
 Two traps:
 
-- **Cancelling the gate run does not stop `release.yml`** once it has been
+- **Cancelling the gate run does not stop [`release.yml`](../../../.github/workflows/release.yml)** once it has been
   launched. Cancel that run too, from the Actions tab.
 - **Starting the gate twice for the same version** makes the second run
   delete the first run's draft. Don't.
 
 ### Finishing a release with the resume workflow
 
-`.github/workflows/release-resume.yml` is the second half of every release:
-`sign-release.sh` starts it on the new tag. You start it yourself to
+[`release-resume.yml`](../../../.github/workflows/release-resume.yml) is the second half of every release:
+[`sign-release.sh`](../../../.github/scripts/sign-release.sh) starts it on the new tag. You start it yourself to
 finish a release that already exists but whose resume run failed or never
 ran. It runs the same branch, packages, Homebrew and notes steps. It never
 builds or publishes a release. Start it **on the tag**, so the `release`
@@ -500,26 +500,26 @@ organisation or a workflow can build a release, but can't sign it. The
 reasons are in [Supply chain security](supply-chain.md). The one-off key
 setup is in [The release signing key](release-signing-key.md).
 
-`sign-release.sh` runs on your computer, with the key's USB stick plugged
+[`sign-release.sh`](../../../.github/scripts/sign-release.sh) runs on your computer, with the key's USB stick plugged
 in. It stops at the first check that fails:
 
 1. The draft holds exactly the files a release should have.
 2. Every checksum matches, and every file has an attestation from
-   `release.yml`.
+   [`release.yml`](../../../.github/workflows/release.yml).
 3. You confirm the list of files.
 4. minisign signs all files in one go and asks for the password once. The
    trusted comment of every signature is `irsync vX.Y.Z`.
 5. Every signature checks out against
-   `packaging/signing/release-keys.pub`. A wrong key is caught here.
+   [`release-keys.pub`](../../../packaging/signing/release-keys.pub). A wrong key is caught here.
 6. It uploads the `.minisig` files and checks that every file has one.
 7. It checks that the tag still does not exist. Then it publishes the
    draft, which creates the tag, checks that the release is immutable and
-   starts `release-resume.yml` on the tag. Then it re-runs the newest
+   starts [`release-resume.yml`](../../../.github/workflows/release-resume.yml) on the tag. Then it re-runs the newest
    staging build of the site, so the site reads this release from its tag.
    If that cannot be started, for example because that run is still going,
    it prints the commands to do it by hand; the release is published either
    way. GitHub lets a run be re-run for 30 days. After that, a push to
-   `main` that touches `site/` or `book/` rebuilds the site. It ends by printing the command that promotes the site to
+   `main` that touches [`site/`](../../../site) or [`book/`](../../../book) rebuilds the site. It ends by printing the command that promotes the site to
    irsync.org; it does not run it.
 
 Step 7 only happens with `--publish`. Without it, the script stops after
@@ -533,11 +533,11 @@ happens by accident.
 **Where the key lives.** The secret key is a password-protected file on a
 USB stick, and a copy is on a second stick kept somewhere else. The password
 is in a password manager. Nothing of it is on GitHub. The public key is in
-`packaging/signing/release-keys.pub`.
+[`release-keys.pub`](../../../packaging/signing/release-keys.pub).
 
 **A second key.** Another maintainer makes their own key, as in
 [A second key](release-signing-key.md#a-second-key), and a pull request
-adds their public key to `release-keys.pub` below the first one. A release
+adds their public key to [`release-keys.pub`](../../../packaging/signing/release-keys.pub) below the first one. A release
 signed with either key passes. The new key can sign from the first release
 that lists it.
 
@@ -582,7 +582,7 @@ releases, and not the other way round. `-f freebsd=15` picks another
 release.
 
 Inside the VM it runs `tools/ci.sh check freebsd-build` as an ordinary
-user, with the Rust version in `rust-toolchain.toml`. That is the full
+user, with the Rust version in [`rust-toolchain.toml`](../../../rust-toolchain.toml). That is the full
 regression, then the release build. A failing test means no tarball.
 Nothing is cached in the VM, so a run takes a while.
 
@@ -609,8 +609,8 @@ organisation. Create both with a README, so they have a `main` branch:
 **GitHub Pages.** In the `packages` repository, turn on Pages and serve the
 default branch. Set the custom domain to `dist.irsync.org` and turn on
 "Enforce HTTPS". You don't fill the repository by hand. Each stable release
-copies `index.html`, `irsync.repo` and `CNAME` from `packaging/repo/` into
-it, and exports the public key as `irsync.asc` (for dnf) and `irsync.gpg`
+copies [`index.html`](../../../packaging/repo/index.html), [`irsync.repo`](../../../packaging/repo/irsync.repo) and
+[`CNAME`](../../../packaging/repo/CNAME) into it, and exports the public key as `irsync.asc` (for dnf) and `irsync.gpg`
 (for apt).
 
 **DNS.** Add a `CNAME` record that points `dist.irsync.org` at
@@ -652,7 +652,7 @@ git ls-remote --heads origin 'release-*'
 
 and delete each one with `git push origin --delete <name>`.
 
-**Release branch key.** `release-prepare.yml` pushes `release-X.Y` with a
+**Release branch key.** [`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) pushes `release-X.Y` with a
 deploy key. The `Release branches` ruleset lets every deploy key of the
 repository past, so this must be the only one; `tools/github_settings.py
 check` reports any other. Make the key, add it, store its private half in
@@ -678,7 +678,7 @@ releases. See [Checking the settings](supply-chain.md#checking-the-settings).
 
 ## Creating `release-X.Y` by hand
 
-`release-prepare.yml` creates `release-X.Y`. A line released before it
+[`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) creates `release-X.Y`. A line released before it
 existed has no branch: create it at the line's newest release. For the
 `0.1` line:
 
@@ -690,7 +690,7 @@ The `Release branches` ruleset refuses to create the ref for a person. An
 admin disables that ruleset for a moment, pushes the branch, and turns the
 ruleset on again with `tools/github_settings.py apply`.
 
-**Watch the first prepare run.** The first run of `release-prepare.yml` is
+**Watch the first prepare run.** The first run of [`release-prepare.yml`](../../../.github/workflows/release-prepare.yml) is
 the first push through the deploy key. If the ruleset blocks it, check
 `tools/github_settings.py check`: the `Release branches` ruleset must let
 deploy keys past, and the key must have write access.
@@ -705,12 +705,12 @@ fix. Don't work around it by pushing tags.
 
 Do the one-time setup first. Then:
 
-1. **Merge to `main`.** (Done.) The gate can only launch `release.yml` once it is on
+1. **Merge to `main`.** (Done.) The gate can only launch [`release.yml`](../../../.github/workflows/release.yml) once it is on
    the default branch, so the merge comes first. The install steps in the
    README and the book go live with it. They say that Homebrew, apt and dnf
    start with v0.1.0, and that `--alpha` works before that.
 2. **Put the install script on irsync.org.** (Done.) The merge deploys the site,
-   with `install.sh`, to staging. Check that
+   with [`install.sh`](../../../site/install.sh), to staging. Check that
    `https://dev.irsync.org/install.sh` is there, then promote the site (see
    [Promoting to irsync.org](website.md#promoting-to-irsyncorg)).
 3. **Rehearse with a pre-release.** Done: `0.1.0-alpha.1` was rehearsed
@@ -721,7 +721,7 @@ Do the one-time setup first. Then:
    signing step. Publishing the draft creates the tag.
 
    Check that:
-   - the gate passes and leaves a draft, and `sign-release.sh` publishes it
+   - the gate passes and leaves a draft, and [`sign-release.sh`](../../../.github/scripts/sign-release.sh) publishes it
      and creates the tag `v0.1.0-beta.4`;
    - the GitHub Release is marked as a pre-release and has the tarballs, the
      checksums, the installer and a `.minisig` file for each of them, and
@@ -741,7 +741,7 @@ Do the one-time setup first. Then:
    stand-in `sysctl`.
 
    Then install the pre-release's formula with real Homebrew, with the man
-   page lines added the way `publish-homebrew.yml` adds them. It goes
+   page lines added the way [`publish-homebrew.yml`](../../../.github/workflows/publish-homebrew.yml) adds them. It goes
    into a throwaway local tap, since Homebrew may refuse a formula file
    that is not in a tap. On a Mac with Homebrew, from a clone of this
    repository:
@@ -811,9 +811,9 @@ If `main` is protected against force pushes, allow it for this push.
 
 ## Protecting the release tags
 
-Release tags are created by GitHub when `sign-release.sh` publishes the
+Release tags are created by GitHub when [`sign-release.sh`](../../../.github/scripts/sign-release.sh) publishes the
 draft release. That is not a push. **Never push a `v*` tag yourself.** The
-`Release tags` ruleset, set by `tools/github_settings.py`, makes every `v*`
+`Release tags` ruleset, set by [`github_settings.py`](../../../tools/github_settings.py), makes every `v*`
 tag permanent once it exists:
 
 | Rule | What it stops |
@@ -1039,6 +1039,6 @@ key may see signature errors on those files.
 
 The README, the book's introduction and the fileset introduction list the
 ways to install, and what the install script does and how to uninstall.
-Keep the three in step. The apt and dnf commands are in `packaging/repo/index.html`
+Keep the three in step. The apt and dnf commands are in [`index.html`](../../../packaging/repo/index.html)
 (the page at `dist.irsync.org`). If you change them there, change them in
 the docs too.

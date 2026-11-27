@@ -27,7 +27,7 @@ and its API at [docs.rs/iroh](https://docs.rs/iroh).
 ```
 
 Read it from the bottom up. Above the line is irsync's own protocol. Below it
-is iroh, which irsync configures in `crates/irsync/src/net/endpoint.rs`;
+is iroh, which irsync configures in [`endpoint.rs`](../../../crates/irsync/src/net/endpoint.rs);
 irsync supplies the key and decides which streams to open.
 
 ## Identity: an endpoint is a key
@@ -39,9 +39,9 @@ name or an IP address, and iroh makes sure the far end holds the matching
 private key.
 
 In irsync, the client and the daemon each have their own key
-(`crates/irsync/src/identity.rs`). [Identity and trust](identity-and-trust.md)
+([`identity.rs`](../../../crates/irsync/src/identity.rs)). [Identity and trust](identity-and-trust.md)
 explains where the keys come from and how the daemon decides what a key may
-reach (`crates/irsync/src/authz.rs`).
+reach ([`authz.rs`](../../../crates/irsync/src/authz.rs)).
 
 ## Finding the other side
 
@@ -61,7 +61,7 @@ An id says whom to reach, not where. iroh turns an id into addresses with
   ([RFC 6762](https://www.rfc-editor.org/rfc/rfc6762)).
 
 irsync adds each lookup that is turned on in `build` in
-`crates/irsync/src/net/endpoint.rs`. Which are on by default, and what each
+[`endpoint.rs`](../../../crates/irsync/src/net/endpoint.rs). Which are on by default, and what each
 one publishes, is in [Connections](connections.md#finding-the-daemon). With
 an address given by hand (`--address`), irsync turns every lookup off and
 dials that address.
@@ -97,9 +97,9 @@ logs which it got at info level (`connected directly` or
 how to check and how to change it.
 
 In irsync, the relay choice and the port mapper are set in
-`crates/irsync/src/net/endpoint.rs`. The in-process network tests replace all
+[`endpoint.rs`](../../../crates/irsync/src/net/endpoint.rs). The in-process network tests replace all
 of this with a simulated link, plugged in as an iroh custom transport
-(`crates/irsync/src/net/netsim/`).
+([`crates/irsync/src/net/netsim/`](../../../crates/irsync/src/net/netsim)).
 
 ## QUIC
 
@@ -111,7 +111,7 @@ connection alive while the network path under it changes.
 
 iroh's QUIC implementation is noq, a fork of the Rust library quinn. irsync
 sets its transport parameters in `transport_config` in
-`crates/irsync/src/net/endpoint.rs`: the idle timeout and keep-alive, the
+[`endpoint.rs`](../../../crates/irsync/src/net/endpoint.rs): the idle timeout and keep-alive, the
 flow-control windows, the stream limits, the congestion controller and how
 often the peer acknowledges.
 
@@ -131,12 +131,12 @@ Two TLS extensions matter here:
   bare Ed25519 public key and proves it holds the private key. The key is
   the `EndpointId`, so the handshake proves identity directly. Both sides
   present a key: the daemon learns the client's id from the handshake
-  (`conn.remote_id()` in `crates/irsync/src/daemon.rs`), before any irsync
+  (`conn.remote_id()` in [`daemon.rs`](../../../crates/irsync/src/daemon.rs)), before any irsync
   message.
 - **ALPN**, application-layer protocol negotiation
   ([RFC 7301](https://www.rfc-editor.org/rfc/rfc7301)). The client names the
   protocol it wants to speak, and the server accepts it only if it speaks it
-  too. irsync's is `irsync/1` (`ALPN` in `crates/irsync-proto/src/lib.rs`).
+  too. irsync's is `irsync/1` (`ALPN` in [`src/lib.rs`](../../../crates/irsync-proto/src/lib.rs)).
   The daemon's endpoint accepts nothing else. The version of irsync's own
   protocol travels separately, in `Hello`.
 
@@ -146,7 +146,7 @@ ML-KEM, which is built to hold against a quantum computer
 ([FIPS 203](https://csrc.nist.gov/pubs/fips/203/final)). The keys are safe
 as long as either of the two holds. irsync offers the hybrid first and the
 classical groups after it (`crypto_provider` in
-`crates/irsync/src/net/endpoint.rs`), so a peer that does not know the
+[`endpoint.rs`](../../../crates/irsync/src/net/endpoint.rs)), so a peer that does not know the
 hybrid, such as an irsync before this change, still connects, with X25519.
 ML-KEM comes from aws-lc-rs, the crypto library rustls runs on here.
 
@@ -200,15 +200,15 @@ streams carry on untouched, and irsync never notices.
 
 irsync only watches which path is in use: the trace and the capture record a
 `PathChange` whenever it changes (`selected_path` in
-`crates/irsync/src/net/tap/mod.rs`).
+[`tap/mod.rs`](../../../crates/irsync/src/net/tap/mod.rs)).
 
 ## irsync's layer
 
 On top of the streams, irsync sends protobuf messages, defined in
-`proto/irsync/v1/`. Each message is a *frame*: its length as a protobuf
+[`proto/irsync/v1/`](../../../proto/irsync/v1). Each message is a *frame*: its length as a protobuf
 varint (a number written 7 bits per byte), then the message's bytes. This is
 protobuf's standard length-delimited form. `write_msg` and `read_msg` in
-`crates/irsync/src/net/frame.rs` write and read frames; a frame over 16 MiB is
+[`frame.rs`](../../../crates/irsync/src/net/frame.rs) write and read frames; a frame over 16 MiB is
 refused before anything is allocated for it.
 
 A session uses three kinds of stream, all opened by the side that dials,
@@ -216,13 +216,13 @@ except data streams on a pull:
 
 - the **control stream**, the client's first bidirectional stream: the
   handshake, then the plan, the chunk lists, the requests and the
-  acknowledgements (`crates/irsync/src/session/engine.rs`);
+  acknowledgements ([`engine.rs`](../../../crates/irsync/src/session/engine.rs));
 - the **listing stream**, the second bidirectional one: each half carries one
-  side's listing (`crates/irsync/src/session/listing_stream.rs`);
+  side's listing ([`listing_stream.rs`](../../../crates/irsync/src/session/listing_stream.rs));
 - **data streams**, unidirectional, from the side that sends files to the side
   that receives them, one per run of chunks of one file
-  (`crates/irsync/src/data_stream.rs` opens them,
-  `crates/irsync/src/session/receiver/file_io.rs` accepts them). On a push the client opens them; on a pull the daemon does.
+  ([`data_stream.rs`](../../../crates/irsync/src/data_stream.rs) opens them,
+  [`file_io.rs`](../../../crates/irsync/src/session/receiver/file_io.rs) accepts them). On a push the client opens them; on a pull the daemon does.
 
 When a connection ends, the side that closes it gives a QUIC application
 close code: 0 done, 1 unauthorized, 2 rejected, 3 superseded, 4 idle.

@@ -7,7 +7,7 @@ layer gets between irsync and the network, how it decides what happens to
 each packet, and how the rig decides whether a run passed. For how to use
 it, see [Network stress with netstress](netstress.md). The decisions made
 while building it and the first results are in
-[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
+[NETSTRESS_DECISIONS.md](../../../docs/NETSTRESS_DECISIONS.md).
 
 ## The big picture
 
@@ -61,7 +61,7 @@ whether, when and how often it gets sent.
 The alternatives, and why they were not used:
 
 - **A proxy between client and daemon**: ruled out in the
-  [design](https://github.com/irsync-dev/irsync/blob/main/docs/superpowers/specs/2026-11-06-network-faults-design.md).
+  [design](../../../docs/superpowers/specs/2026-11-06-network-faults-design.md).
 - **The operating system's traffic shaping** (`pf` and dummynet on macOS,
   `tc netem` on Linux): needs root, and differs per system.
 - **turmoil or another whole-program simulator**: needs both peers in one
@@ -80,31 +80,31 @@ only as a failure to build the fault build, never in a normal build.
 Everything sits behind `#[cfg(feature = "netsim")]`. A normal build has
 none of this code and never reads the variable.
 
-- **The feature** (`crates/irsync/Cargo.toml`) turns on iroh's
+- **The feature** ([`irsync/Cargo.toml`](../../../crates/irsync/Cargo.toml)) turns on iroh's
   `unstable-custom-transports` and a few small dependencies the transport
   needs (`iroh-base`, `n0-watcher`, `noq-udp`, `rand`, `rand_chacha`).
-- **The version** (`crates/irsync/src/build_info.rs`): a fault build's
+- **The version** ([`build_info.rs`](../../../crates/irsync/src/build_info.rs)): a fault build's
   `irsync --version` ends with ` [netsim]`. The rig and the sweep script
   check this before doing anything.
 - **Reading the variable** (`netsim::active()` in
-  `crates/irsync/src/net/netsim/mod.rs`): read once per process and
+  [`netsim/mod.rs`](../../../crates/irsync/src/net/netsim/mod.rs)): read once per process and
   remembered. Unset means off. A value that does not parse is an error
   every time it is asked for, so irsync stops instead of silently running
   without faults.
 - **Building the endpoint** (`build_endpoint` in
-  `crates/irsync/src/net/endpoint.rs`): when the variable is set, irsync
+  [`endpoint.rs`](../../../crates/irsync/src/net/endpoint.rs)): when the variable is set, irsync
   logs `netsim active` at `warn`, removes iroh's ordinary IP transport and
   its relay transport, and adds the fault transport. With the ordinary
   paths removed, iroh has no way to reach the peer except through the
-  fault layer. A test (`crates/irsync/tests/netsim_endpoint.rs`) checks
+  fault layer. A test ([`netsim_endpoint.rs`](../../../crates/irsync/tests/netsim_endpoint.rs)) checks
   that such an endpoint offers no IP or relay address. The transport binds
   to the first IPv4 bind address irsync was given, or `127.0.0.1` on a
   free port.
 - **The daemon's address** (`listen_addrs` in
-  `crates/irsync/src/daemon.rs`): the daemon prints the fault transport's
+  [`daemon.rs`](../../../crates/irsync/src/daemon.rs)): the daemon prints the fault transport's
   socket address in its startup lines, so the rig (or a person) knows
   where to point the client.
-- **The client's dial** (`dial_addrs` in `crates/irsync/src/client/connect.rs`):
+- **The client's dial** (`dial_addrs` in [`connect.rs`](../../../crates/irsync/src/client/connect.rs)):
   the client turns each address it would dial into a fault-transport
   address. IPv6 addresses are refused.
 
@@ -128,7 +128,7 @@ client's transport drops what it sends and what it receives while a
 handover or the dead zone is on. That cuts the whole link without the two
 processes having to agree on timing.
 
-**Sending** (`Shared::send` in `transport.rs`):
+**Sending** (`Shared::send` in [`transport.rs`](../../../crates/irsync/src/net/netsim/transport.rs)):
 
 ```text
 iroh hands over a transmit (one packet, or several packed together)
@@ -147,7 +147,7 @@ iroh hands over a transmit (one packet, or several packed together)
 The send call always tells iroh "done" at once. The fault layer never
 makes iroh wait; a packet that does not fit is dropped, as on a real link.
 
-**Delivering** (`deliver` in `transport.rs`): a background task keeps the
+**Delivering** (`deliver` in [`transport.rs`](../../../crates/irsync/src/net/netsim/transport.rs)): a background task keeps the
 waiting packets sorted by delivery time. When a packet's time comes, it
 sends it on the real UDP socket to the peer. Loopback adds almost nothing,
 so the packet arrives when the model said it would, to within the tokio
@@ -156,7 +156,7 @@ the same millisecond and arrive together, so the receiver sends fewer ACKs
 than it would on a real link where they come one at a time. Measurements
 of ACK traffic undercount for this reason.
 
-**Receiving** (`poll_recv` in `transport.rs`):
+**Receiving** (`poll_recv` in [`transport.rs`](../../../crates/irsync/src/net/netsim/transport.rs)):
 
 ```text
 read a packet from the real socket
@@ -172,13 +172,13 @@ have been cut short, so it is dropped and counted instead.
 
 ## The link model
 
-`Link` in `crates/irsync/src/net/netsim/link.rs` decides each packet's
+`Link` in [`link.rs`](../../../crates/irsync/src/net/netsim/link.rs) decides each packet's
 fate. It has no clock of its own: it is told the current time with each
 packet. That keeps it simple to test: the same seed and the same packets
 at the same times always get the same fates.
 
 The parameters per profile and direction are in
-`crates/irsync/src/net/netsim/profile.rs` (`LinkParams`). For each packet
+[`netsim/profile.rs`](../../../crates/irsync/src/net/netsim/profile.rs) (`LinkParams`). For each packet
 the model does the following, in this order.
 
 ### 1. The queue
@@ -232,7 +232,7 @@ Between bursts the queue drains at the full link speed.
 A video that filled the queue completely would drop every irsync packet
 for up to about a second in every burst: a total blackout, not an
 overloaded line. See call 12 in
-[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
+[NETSTRESS_DECISIONS.md](../../../docs/NETSTRESS_DECISIONS.md).
 
 ### 4. Bursty loss
 
@@ -274,7 +274,7 @@ on the wire after the bottleneck.
 
 ## Handovers and dead zones
 
-`Outages` in `crates/irsync/src/net/netsim/outage.rs` decides when the
+`Outages` in [`outage.rs`](../../../crates/irsync/src/net/netsim/outage.rs) decides when the
 link is down. It exists only on the client. It is asked for every packet
 the client sends or receives, and answers "up", "handover" or "dead zone".
 
@@ -332,7 +332,7 @@ generator's seed is made from four things:
 - the stream number,
 - the purpose (link or outages).
 
-`fault_seed` in `crates/irsync/src/net/netsim/mod.rs` mixes these one
+`fault_seed` in [`netsim/mod.rs`](../../../crates/irsync/src/net/netsim/mod.rs) mixes these one
 after another with splitmix64, a standard way to scramble a number so that
 inputs that differ in any part give unrelated outputs.
 
@@ -349,7 +349,7 @@ depend on how many iterations ran before it: iteration 5 of seed 3 gets
 the same draws whether the run has 5 iterations or 50. A test checks
 that 10 seeds times 10 streams give 100 different seeds for each purpose.
 Simpler mixing makes many schedules come out the same; see call 5 in
-[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md).
+[NETSTRESS_DECISIONS.md](../../../docs/NETSTRESS_DECISIONS.md).
 
 ## What irsync does during a dead zone
 
@@ -384,14 +384,14 @@ The sender waits for the receiver to confirm each piece of a file it sent,
 with no time limit of its own: on a slow link, many pieces share the line
 and confirmation can take minutes. A fixed limit there fails healthy pushes
 over slow uplinks, as the first sweeps in
-[NETSTRESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/NETSTRESS_DECISIONS.md) show. A dead peer
+[NETSTRESS_DECISIONS.md](../../../docs/NETSTRESS_DECISIONS.md) show. A dead peer
 still ends the wait, through a lost connection.
 
 ## How the rig judges a run
 
 On top of irsync-stress's checks (client exit, manifests, `fileset
 check`), the rig reads each iteration's client log (`netlog.rs` in
-`crates/netstress/src`). It removes the colour codes, then walks the
+[`crates/netstress/src`](../../../crates/netstress/src)). It removes the colour codes, then walks the
 lines in order:
 
 - `netsim active`: the fault layer was on.
@@ -415,7 +415,7 @@ The iteration then fails with a reason when:
 2. there was any stray reconnect, or
 3. more dead zones opened than were resumed.
 
-Exit codes for the whole run (`report.rs`):
+Exit codes for the whole run ([`report.rs`](../../../crates/netstress/src/report.rs)):
 
 - 1 if any iteration failed, or a `.irsync.*.part` file was found
   anywhere in either tree after the daemon stopped;
@@ -473,16 +473,16 @@ Things the model does not do, on purpose or for now:
 
 | Code | What it does |
 | --- | --- |
-| `crates/irsync/src/net/netsim/mod.rs` | The variable, profile names, seeds (`fault_seed`), the address format, `netsim active`. |
-| `crates/irsync/src/net/netsim/profile.rs` | The numbers of every profile. |
-| `crates/irsync/src/net/netsim/link.rs` | The link model: queue, speed, video, loss, delay. |
-| `crates/irsync/src/net/netsim/outage.rs` | Handovers and the dead zone. |
-| `crates/irsync/src/net/netsim/transport.rs` | The iroh custom transport: sending, delivering, receiving, counts. |
-| `crates/irsync/src/net/endpoint.rs`, `daemon.rs`, `client/connect.rs`, `build_info.rs` | The hooks into irsync. |
-| `crates/netstress/src/run.rs` | The rig's run: tools check, daemon, ping, iterations, partial files. |
-| `crates/netstress/src/netlog.rs` | Reading a client log for the network story. |
-| `crates/netstress/src/report.rs` | Header, iteration lines, footer, exit codes. |
-| `crates/netstress/src/profile.rs` | Run defaults and client timeout per profile. |
-| `crates/netstress/src/cli.rs`, `run_file.rs` | Command line and `run.toml`. |
-| `crates/netstress/tools/sweep.sh` | Many runs at once. |
-| `crates/stress` | The loop, layout, daemon handling and checks the rig reuses. |
+| [`netsim/mod.rs`](../../../crates/irsync/src/net/netsim/mod.rs) | The variable, profile names, seeds (`fault_seed`), the address format, `netsim active`. |
+| [`netsim/profile.rs`](../../../crates/irsync/src/net/netsim/profile.rs) | The numbers of every profile. |
+| [`link.rs`](../../../crates/irsync/src/net/netsim/link.rs) | The link model: queue, speed, video, loss, delay. |
+| [`outage.rs`](../../../crates/irsync/src/net/netsim/outage.rs) | Handovers and the dead zone. |
+| [`transport.rs`](../../../crates/irsync/src/net/netsim/transport.rs) | The iroh custom transport: sending, delivering, receiving, counts. |
+| [`endpoint.rs`](../../../crates/irsync/src/net/endpoint.rs), [`daemon.rs`](../../../crates/irsync/src/daemon.rs), [`connect.rs`](../../../crates/irsync/src/client/connect.rs), [`build_info.rs`](../../../crates/irsync/src/build_info.rs) | The hooks into irsync. |
+| [`run.rs`](../../../crates/netstress/src/run.rs) | The rig's run: tools check, daemon, ping, iterations, partial files. |
+| [`netlog.rs`](../../../crates/netstress/src/netlog.rs) | Reading a client log for the network story. |
+| [`report.rs`](../../../crates/netstress/src/report.rs) | Header, iteration lines, footer, exit codes. |
+| [`src/profile.rs`](../../../crates/netstress/src/profile.rs) | Run defaults and client timeout per profile. |
+| [`cli.rs`](../../../crates/netstress/src/cli.rs), [`run_file.rs`](../../../crates/netstress/src/run_file.rs) | Command line and `run.toml`. |
+| [`sweep.sh`](../../../crates/netstress/tools/sweep.sh) | Many runs at once. |
+| [`crates/stress`](../../../crates/stress) | The loop, layout, daemon handling and checks the rig reuses. |

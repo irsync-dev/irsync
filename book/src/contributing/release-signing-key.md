@@ -4,7 +4,7 @@ Every file on a GitHub Release is signed with
 [minisign](https://jedisct1.github.io/minisign/), a small signing tool. The
 key that makes those signatures never goes near GitHub. It lives on a USB
 stick, and a maintainer signs each release on their own machine with
-`.github/scripts/sign-release.sh` (see [Releasing](releasing.md)). Because
+[`sign-release.sh`](../../../.github/scripts/sign-release.sh) (see [Releasing](releasing.md)). Because
 the key is not on GitHub, someone who takes over the GitHub organisation or
 a workflow still can't make a release that passes the check.
 
@@ -18,8 +18,8 @@ you have:
 - the **secret key**, a file protected by a password, on a USB stick and on
   a backup stick,
 - the **password**, in your password manager,
-- the **public key**, committed as `packaging/signing/release-keys.pub`.
-  Everyone may see it: irsync, `install.sh` and users check signatures
+- the **public key**, committed as [`release-keys.pub`](../../../packaging/signing/release-keys.pub).
+  Everyone may see it: irsync, [`install.sh`](../../../site/install.sh) and users check signatures
   against it.
 
 ## What you need
@@ -74,7 +74,7 @@ useless without the password, and the password alone is useless without
 the file.
 
 **4. Test the key the way a release uses it.** Sign a test file with a
-trusted comment, as `sign-release.sh` does with `irsync vX.Y.Z`, then check
+trusted comment, as [`sign-release.sh`](../../../.github/scripts/sign-release.sh) does with `irsync vX.Y.Z`, then check
 it:
 
 ```sh
@@ -119,9 +119,9 @@ the public key into the repository and open a pull request:
 cp "$KEYDIR/irsync-release.pub" packaging/signing/release-keys.pub
 ```
 
-`release-keys.pub` is the one place the public key lives. irsync builds it
-in, and the tests check that `site/install.sh` holds the same key. Also
-update the key shown in `README.md` and in
+[`release-keys.pub`](../../../packaging/signing/release-keys.pub) is the one place the public key lives. irsync builds it
+in, and the tests check that [`install.sh`](../../../site/install.sh) holds the same key. Also
+update the key shown in [`README.md`](../../../README.md) and in
 [Verify a download](../how-to/verify-a-download.md) in the same pull
 request.
 
@@ -154,19 +154,19 @@ before the version to publish it. Unplug the stick when it is done.
 
 So that releases don't depend on one person, another maintainer can make
 their own key with steps 1 to 5, on their own sticks and with their own
-password. Add their public key to `release-keys.pub` below the first one,
+password. Add their public key to [`release-keys.pub`](../../../packaging/signing/release-keys.pub) below the first one,
 both lines of it. A release signed with either key passes. Also add the
-key to `README.md` and `book/src/how-to/verify-a-download.md`.
+key to [`README.md`](../../../README.md) and [`verify-a-download.md`](../../../book/src/how-to/verify-a-download.md).
 
 A new key can sign from the first release that lists it. An irsync that is
 already installed only checks downloads of its own version, which were
-signed with the key in use back then, and `install.sh` comes from the
+signed with the key in use back then, and [`install.sh`](../../../site/install.sh) comes from the
 website with the current keys.
 
 ## If the key is lost or leaked
 
 **Lost:** both sticks are gone, or the password is. Make a new key with the
-steps above, add its public key to `release-keys.pub`, remove the old one,
+steps above, add its public key to [`release-keys.pub`](../../../packaging/signing/release-keys.pub), remove the old one,
 and release. Tell users the new key in the release notes, since anyone who
 checks downloads by hand needs it.
 

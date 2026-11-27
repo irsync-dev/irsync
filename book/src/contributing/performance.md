@@ -135,7 +135,7 @@ magnitude, so use its counts, not its times.
 
 **Syscalls per call site.** When `strace -c` shows a count worth cutting,
 find which code makes the calls. `strace -k` prints a stack for every
-syscall, and `tools/syscall-sites.py` groups the calls by syscall, result
+syscall, and [`syscall-sites.py`](../../../tools/syscall-sites.py) groups the calls by syscall, result
 and the innermost irsync frames. Use a small workload (a few hundred
 files), since every call writes a full stack:
 
@@ -186,7 +186,7 @@ support (`strace -k -e trace=openat true` prints stacks if it has it).
 - **WAL commits empty other connections' page caches.** Each commit makes
   every other connection reread the pages it touched. Fewer, larger commits
   (the index writer batches what arrives within 10 ms, `LINGER` in
-  `crates/irsync/src/index.rs`) and
+  [`index.rs`](../../../crates/irsync/src/index.rs)) and
   memory-mapped reads (`PRAGMA mmap_size`) keep that cheap. A larger
   `cache_size` does not help, because the misses are invalidations, not
   capacity.

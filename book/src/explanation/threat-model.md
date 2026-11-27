@@ -337,5 +337,5 @@ listed under "What is left" in each section above, and in one place under
 [What irsync does not defend against](#what-irsync-does-not-defend-against).
 
 To report a security problem, see the
-[security policy](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
+[security policy](../../../SECURITY.md).
 Please do not open a public issue for one.

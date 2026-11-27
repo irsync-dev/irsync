@@ -160,10 +160,10 @@ without it warns and ignores the OTLP settings.
 
 The repository has a Docker Compose setup with an OpenTelemetry collector,
 Jaeger and Prometheus:
-[`compose.yaml`](https://github.com/irsync-dev/irsync/blob/main/docs/telemetry/compose.yaml),
-[`collector.yaml`](https://github.com/irsync-dev/irsync/blob/main/docs/telemetry/collector.yaml)
+[`compose.yaml`](../../../docs/telemetry/compose.yaml),
+[`collector.yaml`](../../../docs/telemetry/collector.yaml)
 and
-[`prometheus.yml`](https://github.com/irsync-dev/irsync/blob/main/docs/telemetry/prometheus.yml).
+[`prometheus.yml`](../../../docs/telemetry/prometheus.yml).
 
 1. In a clone of the repository, start it:
 

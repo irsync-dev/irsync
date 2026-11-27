@@ -78,7 +78,7 @@ lists every field each tier compares.
 
 The tests run from fast and narrow to slow and broad.
 
-**Engine tests.** The tests in `crates/irsync/tests/` run two irsync engines
+**Engine tests.** The tests in [`crates/irsync/tests/`](../../../crates/irsync/tests) run two irsync engines
 in one process and sync real trees between them. A test build adds hooks
 that record the order of internal steps, so a test can pin, for example,
 that a file changed while it was sent is sent again, or that a stale local

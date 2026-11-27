@@ -4,8 +4,7 @@ How the receiver fills one changed file once the sender's chunk list is in
 hand: how it overlaps the passes over the file with each other and with the
 network, how it settles a file whose content turns out not to have changed,
 and how a chunk it lacks is rebuilt from block matches against the old file.
-Function names point at where each step lives, under
-`crates/irsync/src/`. The comparison with rsync is in
+Function names and file paths point at where each step lives. The comparison with rsync is in
 [The transfer algorithm](transfer-algorithm.md); the messages are in
 [Protocol](../reference/protocol.md).
 
@@ -29,7 +28,7 @@ network data, and a stale local source degrades to a network fetch.
 
 ### Plan time: the old file's hash starts early
 
-`Planner` (`session/receiver/planner.rs`) merge-joins the two listings and calls
+`Planner` ([`planner.rs`](../../../crates/irsync/src/session/receiver/planner.rs)) merge-joins the two listings and calls
 `plan::decide`. When the decision is `Delta`, at the moment the `PlanItem` is
 handed to the control stream, the planner spawns a task that runs
 `file_io::index_old_file` on the destination path.
@@ -55,11 +54,11 @@ turns off.
 
 The chunk list arrives as a `ChunkListStart` and `ChunkListMore` frames,
 which `Receiver::on_chunk_list_start` and `on_chunk_list_more` reassemble
-(`session/parts.rs`) into one digest. A malformed sequence fails the file. A connection lost in the middle
+([`parts.rs`](../../../crates/irsync/src/session/parts.rs)) into one digest. A malformed sequence fails the file. A connection lost in the middle
 of a sequence drops the half-built list; the resumed session gets a fresh
 sequence.
 
-`Receiver::on_chunk_list` (`session/receiver/mod.rs`) bumps the file's
+`Receiver::on_chunk_list` ([`receiver/mod.rs`](../../../crates/irsync/src/session/receiver/mod.rs)) bumps the file's
 generation, retires any earlier writer for the file, so that no stale task can
 touch the `.part` afterwards, takes the hash task's handle out of the file's
 state, and spawns `open_writer`. The handle is taken, not cloned: a second

@@ -22,9 +22,9 @@ How the chain, targets, sizes and resume work, and how to extend it, is on
 [How filegen works](filegen-internals.md).
 
 The design is in
-[2026-10-20-filegen-design.md](https://github.com/irsync-dev/irsync/blob/main/docs/superpowers/specs/2026-10-20-filegen-design.md),
+[2026-10-20-filegen-design.md](../../../docs/superpowers/specs/2026-10-20-filegen-design.md),
 the calls made while building it in
-[FILEGEN_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/FILEGEN_DECISIONS.md).
+[FILEGEN_DECISIONS.md](../../../docs/FILEGEN_DECISIONS.md).
 
 ## Generate a tree
 

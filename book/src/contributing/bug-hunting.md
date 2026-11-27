@@ -4,10 +4,10 @@ Part of [Testing](testing.md): campaigns, the slowest layer.
 
 A strategy for turning [irsync-stress](stress.md) from a loop that passes into
 a loop that finds bugs. It builds on what the harness has found so far
-([IRSYNC_HARNESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_HARNESS_DECISIONS.md)),
+([IRSYNC_HARNESS_DECISIONS.md](../../../docs/IRSYNC_HARNESS_DECISIONS.md)),
 on the knobs that filegen, fileset and the irsync client expose, and on
 irsync's list of open points (section 2 of
-[IRSYNC_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_DECISIONS.md)),
+[IRSYNC_DECISIONS.md](../../../docs/IRSYNC_DECISIONS.md)),
 which is a map of where the ice is thin.
 
 Network faults (loss, delay, dead zones that force a reconnect and resume)
@@ -57,7 +57,7 @@ irsync-stress --direction push "${FG[@]}" ROOT
 ```
 
 The same loop with another weight biases an operation instead of switching
-it off; `matrix.sh` does this with its `col` function.
+it off; [`matrix.sh`](../../../crates/stress/tools/matrix.sh) does this with its `col` function.
 
 The harness never deletes a root, and both manifests survive, so the
 observation filter can be widened **after** a run at no cost:
@@ -104,12 +104,12 @@ it hourly).
 
 Each row aims the harness at a part of irsync that the default run barely
 touches. Run each as a breadth sweep, in both directions.
-`crates/stress/tools/matrix.sh` runs the rows it names in the last column
+[`matrix.sh`](../../../crates/stress/tools/matrix.sh) runs the rows it names in the last column
 ([Campaign tools](stress.md#campaign-tools)). `--filegen-set` takes dotted
 YAML paths; weights are per transition row, so biasing an operation means
 setting its column in every row, as above.
 
-| Target in irsync | How to aim the harness | What a failure looks like | `matrix.sh` row |
+| Target in irsync | How to aim the harness | What a failure looks like | [`matrix.sh`](../../../crates/stress/tools/matrix.sh) row |
 | --- | --- | --- | --- |
 | Hard-link final pass (R23); stale target content when the target failed at planning time; link groups across directories | `hardlink` weight 10 in every row, `rename` and `rename_over` 8; post-run `--require nlink` | `nlink=` differences in paranoid, or a short-named member with old content for one iteration | `hardlink` |
 | Rename detection and content reuse | `rename` 15, `rename_over` 10, `overwrite_range` 5; run the same seed with and without `-- --no-rename-detection` | A failure only with detection on is a reuse bug; only with it off, a plain transfer bug | `rename`, `rename-off` |
@@ -127,7 +127,7 @@ setting its column in every row, as above.
 | Quick check against checksum | Run the same seed with and without `-- -c`; a difference means the size-and-mtime shortcut skipped a changed file | Pass with `-c`, fail without | `checksum` |
 | The `--paranoid` code paths (clones, second hash, final re-check) on a source that nothing writes to during the sync; the harness changes the tree only between syncs, so this does not test catching a change | `-- --paranoid` with the default mix; run on a release build to test clones, on a `test-hooks` build to test the second hash | A failure the same seed does not show without `--paranoid`; a `.irsync-clones-*` folder left in the source tree | `paranoid` |
 | Source files that change **during** the sync: the change checks (stat after hashing, the ask before placing, `--paranoid`'s clone, second hash and final re-check) | `--concurrent`: filegen writes to the source while irsync syncs it, and every destination path is judged against the states the source held (see [below](#writing-during-the-sync---concurrent)); push and pull, with and without `-- --paranoid` | A path named with the rule it broke: `no state the source held`, or `content and times disagree` | `concurrent`, `concurrent-paranoid` |
-| The same, over a bad network | `irsync-netstress --concurrent` through `crates/netstress/tools/sweep.sh`, on the fault build | As above; also exit 3 when the faults never bit | `net-concurrent`, `net-concurrent-paranoid` |
+| The same, over a bad network | `irsync-netstress --concurrent` through [`sweep.sh`](../../../crates/netstress/tools/sweep.sh), on the fault build | As above; also exit 3 when the faults never bit | `net-concurrent`, `net-concurrent-paranoid` |
 | Minimal deltas | `--steps 1 --iterations 500` | Each failing iteration names exactly one filegen operation in `filegen/filegen-<seed>.log` | `minimal` |
 | Idle syncs | `--steps 0` runs, but also empties the fill, so the tree is empty; a populated idle sync needs a separate fill step count (a harness change) | A sync of an unchanged tree that transfers anything (check `-- --stats`) is an index bug | none |
 | xattrs | `set_xattr` weight 5, post-run `--require xattr` | Expected to fail: irsync has no `-X`. Run only to document the gap | none |
@@ -289,8 +289,8 @@ should come with its own end-to-end test, like the existing one.
 
 1. **A `--check-arg` passthrough** (or `--paranoid`), so `fileset check`
    runs with `--require nlink` and the like inside the loop, not after it.
-   The harness runs `fileset check -q`; `breadth.sh`'s `CHECK` hook with
-   `paranoid-check.sh` covers only the final state of passing runs.
+   The harness runs `fileset check -q`; [`breadth.sh`](../../../crates/stress/tools/breadth.sh)'s `CHECK` hook with
+   [`paranoid-check.sh`](../../../crates/stress/tools/paranoid-check.sh) covers only the final state of passing runs.
 2. **Treat client exit 25 like 23.** `--max-delete` cannot be stress-tested
    while exit 25 is a harness error.
 3. **Kill and resume.** `--kill-after <secs>` sends SIGKILL to the client
@@ -318,7 +318,7 @@ should come with its own end-to-end test, like the existing one.
    and never leave a torn file that passes the next check.
 8. **Negative checks after every iteration.** No `.irsync.*.part` remains in
    the destination, and the index and session directories do not grow
-   without bound across iterations. `clean-check.sh` checks the first after
+   without bound across iterations. [`clean-check.sh`](../../../crates/stress/tools/clean-check.sh) checks the first after
    a passing run.
 
 ## From a failed iteration to a bug report
@@ -336,7 +336,7 @@ should come with its own end-to-end test, like the existing one.
    `logs/daemon.log`. Both carry colour codes;
    `sed 's/\x1b\[[0-9;]*m//g'` strips them for `grep`.
 5. Write the finding into
-   [IRSYNC_HARNESS_DECISIONS.md](https://github.com/irsync-dev/irsync/blob/main/docs/IRSYNC_HARNESS_DECISIONS.md)
+   [IRSYNC_HARNESS_DECISIONS.md](../../../docs/IRSYNC_HARNESS_DECISIONS.md)
    under "Known irsync bugs found by the harness", in the form of the
    entries there: what filegen did, what the check reported, the hypothesis
    marked as such, the decision. Add a regression test to the `irsync`
@@ -345,7 +345,7 @@ should come with its own end-to-end test, like the existing one.
 A campaign is only readable when known failures are subtracted
 automatically. That takes a classifier script that attributes each failure
 to a known cause by its signature; the repository has none. Keep it
-under `crates/stress/tools/` and extend it with each new signature.
+under [`crates/stress/tools/`](../../../crates/stress/tools) and extend it with each new signature.
 
 ## Cadence
 
@@ -358,7 +358,7 @@ under `crates/stress/tools/` and extend it with each new signature.
   and one large-file run, with the daemon's memory sampled per iteration.
 - **Per irsync fix:** the seed that found the bug, re-run as part of the
   fix, and its matrix row's settings added to the harness's end-to-end
-  test (`crates/stress/tests/e2e.rs`) if they are cheap enough.
+  test ([`e2e.rs`](../../../crates/stress/tests/e2e.rs)) if they are cheap enough.
 
 The measure is distinct root causes found per machine-hour, and the ledger
 is the "Known irsync bugs found by the harness" section. When a nightly

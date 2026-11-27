@@ -27,13 +27,13 @@ minisign -Vm irsync-x86_64-unknown-linux-musl.tar.xz -P RWR6ngoFwyY7D9i4MAL2T4n1
 
 `-P` is irsync's public key, the line above. It is the same key as in the
 [README](https://github.com/irsync-dev/irsync#verify-a-download) and in
-`packaging/signing/release-keys.pub` in the repository.
+[`release-keys.pub`](../../../packaging/signing/release-keys.pub) in the repository.
 
 A good file prints `Signature and comment signature verified`, and a line
 `Trusted comment: irsync vX.Y.Z`. **Check that the trusted comment names the
 version you downloaded.** Otherwise someone could give you an older release's
 signed files. A failure means: don't use the file, and please
-[report it](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
+[report it](../../../SECURITY.md).
 
 The same works for every file on the release, the checksum files included.
 Releases from before signing started have no `.minisig` files; use the
@@ -85,7 +85,7 @@ temporary branch, `pinned/vX.Y.Z`, which is deleted afterwards, so the
 attestation names that branch and not the tag. Don't use
 `--source-ref refs/tags/vX.Y.Z`: it will not match. A
 failure means: don't use the file, and please
-[report it](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md).
+[report it](../../../SECURITY.md).
 
 The same works for every other file on the release: the other archives,
 `irsync-installer.sh`, `irsync.rb` and the checksum files. Releases up to
@@ -114,7 +114,7 @@ curl --proto '=https' --tlsv1.2 -fsSL https://dist.irsync.org/irsync.asc | gpg -
 ```
 
 Compare the 40-character fingerprint it prints with the one in
-[SECURITY.md](https://github.com/irsync-dev/irsync/blob/main/SECURITY.md#how-releases-are-built).
+[SECURITY.md](../../../SECURITY.md#how-releases-are-built).
 The two must match exactly.
 
 If irsync's signing key ever changes its subkey, apt and dnf need the key
