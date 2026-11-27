@@ -161,6 +161,12 @@ never changes `book/` itself. `site/tools/label_book.py` labels the copy:
 - "Edit this page" is only in `/dev/`. A released page cannot be edited at
   its tag.
 - mdbook's `site-url` is the book's own path.
+- The title in the menu bar says where the book was built from, in
+  brackets: `main@b5618f4` for `/dev/` (the branch checked out and the
+  commit; the commit alone when no branch is), `release-0.1@v0.1.0-beta.7`
+  for a release (its release branch and its tag). Each part links to that
+  branch, commit or tag on GitHub. `label_book.py` writes them into the
+  copy's `theme/source.js`, which `book/theme/home-link.js` reads.
 
 The build stops with an error when a version's commit has no `book/src`, or
 when its title page does not start with a heading.
@@ -292,7 +298,9 @@ for this, so `book/theme/home-link.js` adds the link. A click on the bar
 around the title still scrolls to the top. A bare `mdbook serve` has no
 landing page, so the link leads nowhere there. The same script stops the
 title being a heading (mdbook makes it an `h1` beside the page's own), and
-on a screen narrower than 520px only "irsync" is shown. The mark before
+on a screen narrower than 520px only "irsync" is shown. After the title,
+smaller and muted, come the links to where the book was built from (see
+[The books](#the-books)); a bare `mdbook serve` has none. The mark before
 the title is the favicon's (`favicon.svg`), drawn in `irsync.css` as a mask
 in the theme's aqua; the landing page and the 404 page have the same mark
 as inline SVG before their "irsync".
