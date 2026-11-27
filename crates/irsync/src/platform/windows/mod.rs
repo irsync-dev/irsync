@@ -452,6 +452,13 @@ impl Dir {
         stat_of(self.0.as_handle())
     }
 
+    /// Whether a name made in this directory is looked up ignoring case;
+    /// `None`: not asked here (NTFS ignores case unless a directory is set
+    /// otherwise).
+    pub fn ignores_case(&self) -> Option<bool> {
+        None
+    }
+
     /// The target of the link `name`, as stored: a symlink's, or a
     /// junction's. Anything else is an error (`ERROR_NOT_A_REPARSE_POINT`
     /// for a plain file, which [`cause`] reads as [`Cause::Other`], as

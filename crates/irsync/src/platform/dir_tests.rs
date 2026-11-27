@@ -468,3 +468,23 @@ fn a_directory_swapped_for_a_link_is_never_left_through() {
 
 #[cfg(windows)]
 mod windows;
+
+/// What `ignores_case` says agrees with the directory: where a name is
+/// found in another case it never says case is kept apart, and where it is
+/// not found it never says case is ignored.
+#[test]
+fn ignores_case_agrees_with_a_lookup_in_another_case() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("probe")).unwrap();
+    let folds = tmp.path().join("PROBE").exists();
+    let said = Dir::open_root(tmp.path()).unwrap().ignores_case();
+    // macOS always knows, per volume.
+    #[cfg(target_os = "macos")]
+    assert_eq!(said, Some(folds), "{}", tmp.path().display());
+    assert_ne!(
+        said,
+        Some(!folds),
+        "{}: lookup in another case found it: {folds}",
+        tmp.path().display()
+    );
+}
