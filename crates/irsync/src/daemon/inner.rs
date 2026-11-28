@@ -152,26 +152,26 @@ fn other_roots(start: &Path, others: &[(String, PathBuf)]) -> io::Result<Vec<Oth
     use crate::platform::{Dir, Platform};
     let mut roots = Vec::new();
     for (name, path) in others {
-        // Windows only (on Unix every path starts at `/`): an export on
-        // another start than the chosen root. On a network share
-        // (`\server\share\…`, `\?\UNC\…`) it is skipped with nothing
-        // opened: export roots belong on local volumes (a later check
-        // refuses others when the config is read), and opening a share
-        // that is away can take many seconds, on every request.
+        // Windows only (on Unix every path starts at `/`).
+        // An export on a network share (`\\server\share\…`, `\\?\UNC\…`),
+        // on another start than the chosen root: skipped with nothing
+        // opened. Export roots belong on local volumes (a
+        // later check refuses others when the config is read), and opening
+        // a share that is away can take many seconds, on every request.
         //
-        // On another drive letter, or named another local way
-        // (`\?\Volume{…}\…`, `\?\GLOBALROOT\…`): its own root is opened
-        // once, as the daemon opens a root to serve it, and if that works
-        // its identity counts (with no names below it). That catches a
-        // `subst` or mapped drive letter that names a directory on the
-        // chosen root's volume, which the walk can meet. Any error (not
-        // there, no medium, access denied, a link) skips it, with no
-        // parent looked at: on a real other volume skipping is safe, as the
-        // walk below `start` goes through `Dir`, which refuses every
-        // reparse point (a volume mount point too) and so never reaches
-        // another volume. A letter mapped to a network share cannot be told
-        // apart from a local one here without another native call, so it
-        // is opened like one (and may be slow when the share is away); the
+        // An export on another drive letter, or named another local way
+        // (`\\?\Volume{…}\…`, `\\?\GLOBALROOT\…`): its own root is opened once,
+        // as the daemon opens a root to serve it, and if that works its
+        // identity counts (with no names below it). That catches a `subst`
+        // or mapped drive letter that names a directory on the chosen
+        // root's volume, which the walk can meet. Any error (not there, no
+        // medium, access denied, a link) skips it, with no parent looked
+        // at: on a real other volume skipping is safe, as the walk below
+        // `start` goes through `Dir`, which refuses every reparse
+        // point (a volume mount point too) and so never reaches another
+        // volume. A letter mapped to a network share cannot be told apart
+        // from a local one here without another native call, so it is
+        // opened like one (and may be slow when the share is away); the
         // later root check covers it.
         if Platform::CURRENT == Platform::Windows && !same_start(start, path) {
             if on_a_share(path) {
@@ -193,17 +193,17 @@ fn other_roots(start: &Path, others: &[(String, PathBuf)]) -> io::Result<Vec<Oth
 }
 
 /// Whether the configured path `path` is on a network share: plain UNC
-/// (`\server\share\…`, either separator) or verbatim UNC
-/// (`\?\UNC\server\share\…`, `UNC` in any case), as the resolver reads a
-/// path's start (it gives both as `\server\share`). Any other `\?\…` or
-/// `\.\…` start (a volume by its GUID, `GLOBALROOT`) is a local name, not
+/// (`\\server\share\…`, either separator) or verbatim UNC
+/// (`\\?\UNC\server\share\…`, `UNC` in any case), as the resolver reads a
+/// path's start (it gives both as `\\server\share`). Any other `\\?\…` or
+/// `\\.\…` start (a volume by its GUID, `GLOBALROOT`) is a local name, not
 /// a share.
 fn on_a_share(path: &Path) -> bool {
     use crate::platform::{os_to_bytes, Platform};
     use crate::resolve::{split_path, Start};
     match split_path(&os_to_bytes(path.as_os_str()), Platform::CURRENT).0 {
         Start::Prefix(p) => {
-            p.starts_with(br"\\") && !p.starts_with(br"\?\") && !p.starts_with(br"\.\")
+            p.starts_with(br"\\") && !p.starts_with(br"\\?\") && !p.starts_with(br"\\.\")
         }
         _ => false,
     }
@@ -211,8 +211,8 @@ fn on_a_share(path: &Path) -> bool {
 
 /// Whether the configured paths `a` and `b` start on the same drive or
 /// network share, as the resolver reads a path's start (a drive letter
-/// in either case, `\?\C:\` as `C:\`, `\?\UNC\server\share` as
-/// `\server\share`); a share's server and name compared ignoring ASCII
+/// in either case, `\\?\C:\` as `C:\`, `\\?\UNC\server\share` as
+/// `\\server\share`); a share's server and name compared ignoring ASCII
 /// case, as Windows names them.
 fn same_start(a: &Path, b: &Path) -> bool {
     use crate::platform::{os_to_bytes, Platform};
