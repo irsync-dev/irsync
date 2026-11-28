@@ -981,6 +981,12 @@ class ReleaseKeyTests(unittest.TestCase):
         self.assertEqual(self.readme_keys(), key_lines(keys),
                          f"the key in README.md is not the one in release-keys.pub; {REPLACE_KEY}")
 
+    def test_security_md_shows_every_release_key(self):
+        security = self.read_root("SECURITY.md")
+        for line in key_lines(self.read_root("packaging", "signing", "release-keys.pub")):
+            self.assertIn(line, security,
+                          f"SECURITY.md does not show the key {line}; {REPLACE_KEY}")
+
 
 if __name__ == "__main__":
     unittest.main()
