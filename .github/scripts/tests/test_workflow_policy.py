@@ -397,6 +397,10 @@ class CiWorkflowTests(unittest.TestCase):
         job = next(iter(jobs(wf).values()))
         self.assertEqual(job["permissions"], {"contents": "read", "security-events": "write"})
         self.assertEqual(sorted(job["strategy"]["matrix"]["language"]), ["actions", "rust"])
+        # The integration tests are left out, and nothing else.
+        init = next(s for s in job["steps"] if step_uses(s, "github/codeql-action/init"))
+        config = yaml.safe_load(init["with"]["config"])
+        self.assertEqual(config, {"paths-ignore": ["crates/*/tests/**"]})
 
     def test_scorecard(self):
         wf = load_workflows()["scorecard.yml"]
