@@ -18,6 +18,7 @@ someone promotes.
 | [`site/tools/`](../../../site/tools) | [`gen_tokens.py`](../../../site/tools/gen_tokens.py) (tokens to CSS), [`strip_font_link.py`](../../../site/tools/strip_font_link.py) (see [Building](#building)), [`versions.py`](../../../site/tools/versions.py) (see [The release versions](#the-release-versions)), [`label_book.py`](../../../site/tools/label_book.py) (see [The books](#the-books)), [`check.py`](../../../site/tools/check.py) (the checker) and their tests. Not deployed. |
 | [`build.sh`](../../../site/build.sh), [`serve.sh`](../../../site/serve.sh), [`deploy.sh`](../../../site/deploy.sh) | Build, serve locally and deploy. Not deployed. |
 | [`wrangler.jsonc`](../../../site/wrangler.jsonc) | The settings both Cloudflare Workers are deployed with. Not deployed. |
+| [`site/github/`](../../../site/github) | The org avatar and the repo's social preview on GitHub, with their sources (see [The pictures on GitHub](#the-pictures-on-github)). Not deployed. |
 | [`book/`](../../../book) | The mdbook: [`book.toml`](../../../book/book.toml), the pages in [`book/src/`](../../../book/src), theme overrides in [`book/theme/`](../../../book/theme) ([`irsync.css`](../../../book/theme/irsync.css); [`picker.js`](../../../book/theme/picker.js), which trims the theme picker; [`home-link.js`](../../../book/theme/home-link.js), which links the title to the landing page; [`a11y.js`](../../../book/theme/a11y.js), which adds the skip link; [`theme/favicon.svg`](../../../book/theme/favicon.svg), the same icon as the landing page's). |
 
 ## The design tokens
@@ -654,3 +655,27 @@ unchanged, and identical files cannot carry a different `robots.txt` per
 host. A `Disallow: /` would not help either: a crawler that may not fetch a
 page never sees its `noindex` header, and can still list the URL. The one
 [`robots.txt`](../../../site/robots.txt) allows everything.
+
+## The pictures on GitHub
+
+GitHub shows two pictures of irsync: the avatar of the `irsync-dev` org and
+the repo's social preview, the card a link to the repo shows when it is
+shared. Both are made in the dark theme's colours, from sources in
+[`site/github/`](../../../site/github): [`avatar.svg`](../../../site/github/avatar.svg), the mark
+of `favicon.svg` on night navy, and
+[`social-preview.html`](../../../site/github/social-preview.html), the landing page's header,
+headline and lede at 1280×640. Change a source when the mark or those words
+change.
+
+GitHub takes only PNG or JPG, so
+[`github-images.sh`](../../../site/tools/github-images.sh) draws the sources with headless
+Chrome into `avatar.png` and `social-preview.png` next to them:
+
+```sh
+site/tools/github-images.sh
+```
+
+Commit the PNGs with their sources. GitHub has no way to upload them from a
+script, so upload them by hand: the avatar under the org's Settings,
+Profile, and the preview under the repo's Settings, General, Social
+preview.

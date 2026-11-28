@@ -1,0 +1,4 @@
+<!-- The GitHub org avatar: the mark of site/favicon.svg, in the dark theme's
+     aqua on its night navy (site/tokens.json), with room for GitHub's rounded
+     crop. site/tools/github-images.sh draws it to avatar.png. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="512" height="512"><rect width="32" height="32" fill="#0e1920"/><g transform="translate(6.4 6.4) scale(0.6)"><path d="M13.2 18.8 21 11" stroke="#2cc4d1" stroke-width="4" fill="none"/><circle cx="8.5" cy="23.5" r="5.5" fill="none" stroke="#2cc4d1" stroke-width="4"/><circle cx="23.5" cy="8.5" r="7.5" fill="#2cc4d1"/></g></svg>
