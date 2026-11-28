@@ -482,11 +482,12 @@ fn spawn_run(
     by: StartedBy,
 ) -> Result<irsync_proto::v1::IndexRun, Box<irsync_proto::v1::IndexRun>> {
     let root = export.path.clone();
-    let (progress, status) = shared.runs.claim(&root, name, by)?;
+    let key = indexing::run_key(&root);
+    let (progress, status) = shared.runs.claim(&key, &root, name, by)?;
     let (shared, name, stop) = (shared.clone(), name.to_string(), shared.tasks.clone());
     tokio::spawn(async move {
         // Ends the run however this task ends, a panic included.
-        let end = indexing::Finish::new(&shared.runs, &root);
+        let end = indexing::Finish::new(&shared.runs, &key);
         let indexing =
             crate::warm::index_root_tracked(index, &root, HASH_WORKERS, false, &progress);
         let result = tokio::select! {
@@ -508,7 +509,9 @@ fn spawn_run(
                     "export indexed"
                 );
             }
-            Err(e) => tracing::warn!(export = %name, "indexing the export failed: {e}"),
+            Err(e) => {
+                tracing::warn!(export = %name, "{}", indexing::run_failed_line(&e.to_string()))
+            }
         }
         end.finish(&result);
     });

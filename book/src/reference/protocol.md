@@ -191,8 +191,10 @@ with only `admin = "ro"` (`UNAUTHORIZED`) or for an export that does not
 exist (`BAD_REQUEST`); the session then goes on.
 
 `Indexing` lists one `IndexRun` per folder the daemon has indexed since it
-started: the latest run, going or ended. It carries the export's name and
-folder, who started it (a client's name, or `at_start` for
+started: the latest run, going or ended. Two exports that reach one folder,
+one of them through a symlink, share its runs. A run carries its number
+(`run`, from 1, never used twice while the daemon runs), the export's name
+and folder, who started it (a client's name, or `at_start` for
 `index_at_start`), when it started and ended (Unix seconds; `ended_at` is 0
 while it runs), and its counts: files examined, files hashed, bytes, files
 that failed. Once over, `incomplete` says the walk could not list

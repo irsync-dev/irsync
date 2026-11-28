@@ -502,6 +502,28 @@ fn a_bad_export_setting_nacks_its_change() {
 }
 
 #[test]
+fn a_failing_rename_undoes_the_set_before_it() {
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut m = config_with("admin = \"rw\"");
+    run(
+        &mut m,
+        &[
+            export_add(&format!("a:{}", a.path().display())),
+            export_add(&format!("b:{}", b.path().display())),
+        ],
+    )
+    .unwrap();
+    let before = m.clone();
+    let nack = run(
+        &mut m,
+        &[export_set("a", &["fsync=true"]), export_rename("a", "b")],
+    )
+    .unwrap_err();
+    assert_eq!(nack.change, 2);
+    assert_eq!(m, before);
+}
+
+#[test]
 fn export_rename_to_a_taken_name_nacks() {
     let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let mut m = config_with("admin = \"rw\"");
