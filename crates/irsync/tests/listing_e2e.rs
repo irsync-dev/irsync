@@ -106,6 +106,46 @@ fn host_colon_lists_reachable_exports_with_real_paths() {
 }
 
 #[test]
+fn host_colon_says_when_nothing_is_shared() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = dir.path().join("server/home");
+    let client = dir.path().join("client/home");
+    for d in [&server, &client] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let daemon = spawn_daemon_binary(&server);
+    let client_id = ok(&client, &["id", "show"])
+        .lines()
+        .last()
+        .unwrap()
+        .to_string();
+    // Known to the server and let in, but with no export to see.
+    ok(&server, &["client", "add", "laptop", &client_id]);
+    ok(&server, &["client", "set", "laptop", "all_exports=rw"]);
+    let address = format!("127.0.0.1:{}", daemon.listen.port());
+    let operand = format!("{}:", daemon.id);
+    let o = irsync(&client, &["--address", &address, &operand]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(
+        o.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    assert!(
+        stderr(&o).contains(&format!(
+            "connected to {}; it shares no exports with this client",
+            daemon.id
+        )),
+        "{}",
+        stderr(&o)
+    );
+    // -q leaves the line out.
+    let o = irsync(&client, &["-q", "--address", &address, &operand]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert!(!stderr(&o).contains("shares no exports"), "{}", stderr(&o));
+}
+
+#[test]
 fn host_path_lists_the_directory_without_writing() {
     let s = setup();
     for operand in [

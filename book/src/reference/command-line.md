@@ -107,7 +107,9 @@ names `irsync pair`; see [irsync pair](#irsync-pair).
 - A single remote operand lists instead of copying, as `irsync list` does;
   there the colon may be left out (`irsync list HOST`). `irsync HOST:` prints the
   exports this client may reach, one `NAME PATH ACCESS` line each, where
-  `ACCESS` is `rw` or `ro` with the export's `read_only` applied.
+  `ACCESS` is `rw` or `ro` with the export's `read_only` applied. When the
+  server shares no exports with this client, it prints nothing there and says
+  so on stderr instead.
   `irsync HOST:PATH` prints the files a pull would fetch (just that file, if
   `PATH` is a file) and writes nothing; it
   recurses unless `--no-recursive` is given. A listing does not redial: if the
