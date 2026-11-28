@@ -184,6 +184,8 @@ message IndexRun {
   bool incomplete = 11;  // the walk could not list everything
   string error = 12;     // why the run failed as a whole; a folder that
                          // cannot be listed is incomplete, not an error
+  uint64 run = 13;       // the run's number, from 1, counted since the
+                         // daemon started; no two runs share one
 }
 
 message ConfigText {

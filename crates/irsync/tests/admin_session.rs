@@ -631,7 +631,7 @@ async fn a_second_start_while_running_says_already_running() {
     let first = started(s.start_index("photos").await).run.unwrap();
     let second = started(s.start_index("photos").await);
     if second.already_running {
-        assert_eq!(second.run.unwrap().started_at, first.started_at);
+        assert_eq!(second.run.unwrap().run, first.run);
     } else {
         // Only when the first run had ended by then.
         let runs = s.read_indexing().await;
@@ -640,6 +640,38 @@ async fn a_second_start_while_running_says_already_running() {
     let r = s.wait_indexed(&dir.join("photos")).await;
     assert_eq!(r.examined, 1000, "{r:?}");
     assert_eq!(s.read_indexing().await.len(), 1);
+    stop(d).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn two_exports_of_one_folder_share_one_run() {
+    let (_tmp, dir) = temp_dir();
+    std::fs::write(dir.join("photos/a.jpg"), b"aaaa").unwrap();
+    irsync::platform::symlink_path(dir.join("photos"), dir.join("link")).unwrap();
+    let client = client_endpoint().await;
+    let config = format!(
+        "{}[exports.pics]\npath = {:?}\n{}",
+        photos_export(&dir, false),
+        dir.join("link").display().to_string(),
+        laptop(client.id(), "admin = \"rw\"\n")
+    );
+    let (d, _) = spawn_from_file(&dir, &config).await;
+    let mut s = Session::open(&d, &client).await;
+    let first = started(s.start_index("photos").await).run.unwrap();
+    let second = started(s.start_index("pics").await);
+    if second.already_running {
+        assert_eq!(second.run.unwrap().run, first.run);
+    }
+    s.wait_indexed(&dir.join(if second.already_running {
+        "photos"
+    } else {
+        "link"
+    }))
+    .await;
+    // One folder, one run in the list, whichever export started it.
+    let runs = s.read_indexing().await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
     stop(d).await;
 }
 

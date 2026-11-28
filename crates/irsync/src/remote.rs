@@ -350,9 +350,8 @@ async fn wait_for(
     tap: &StreamTap,
     mine: IndexRun,
 ) -> anyhow::Result<IndexRun> {
-    let mut last = mine;
-    if last.ended_at > 0 {
-        return Ok(last);
+    if mine.ended_at > 0 {
+        return Ok(mine);
     }
     loop {
         tokio::time::sleep(POLL).await;
@@ -375,26 +374,36 @@ async fn wait_for(
         else {
             bail!("{server} sent an answer that does not fit the request");
         };
-        if let Some(done) = wait_over(&last, &i.runs) {
-            return Ok(done);
-        }
-        if let Some(r) = i
-            .runs
-            .iter()
-            .find(|r| r.path == last.path && r.started_at == last.started_at)
-        {
-            last = r.clone();
+        match wait_over(&mine, &i.runs) {
+            Wait::On => {}
+            Wait::Ended(done) => return Ok(done),
+            Wait::Lost => bail!(
+                "the run ended and another started before its end was seen, \
+                 so how it ended is not known; see irsync remote {server} index"
+            ),
         }
     }
 }
 
+/// How the wait for a run stands.
+#[derive(Debug, PartialEq)]
+enum Wait {
+    /// The run goes on.
+    On,
+    /// The run, as it ended.
+    Ended(IndexRun),
+    /// The server no longer lists the run: it ended and a newer run of its
+    /// folder replaced it between two polls.
+    Lost,
+}
+
 /// Whether the wait for the run `mine` is over, from the runs the server
-/// listed: the run as it ended, or, when the path shows another run (or
-/// none), `mine` as last seen. `None` while it goes on.
-fn wait_over(mine: &IndexRun, runs: &[IndexRun]) -> Option<IndexRun> {
-    match runs.iter().find(|r| r.path == mine.path) {
-        Some(r) if r.started_at == mine.started_at => (r.ended_at > 0).then(|| r.clone()),
-        _ => Some(mine.clone()),
+/// listed, found by its number.
+fn wait_over(mine: &IndexRun, runs: &[IndexRun]) -> Wait {
+    match runs.iter().find(|r| r.run == mine.run) {
+        Some(r) if r.ended_at > 0 => Wait::Ended(r.clone()),
+        Some(_) => Wait::On,
+        None => Wait::Lost,
     }
 }
 
@@ -734,25 +743,32 @@ mod tests {
     }
 
     #[test]
-    fn a_replaced_run_ends_the_wait() {
-        let mine = run("/srv/photos");
+    fn the_wait_follows_the_run_by_its_number() {
+        let mine = IndexRun {
+            run: 7,
+            ..run("/srv/photos")
+        };
         // The same run, still going: wait on.
-        assert_eq!(wait_over(&mine, &[run("/srv/a"), mine.clone()]), None);
+        assert_eq!(wait_over(&mine, &[run("/srv/a"), mine.clone()]), Wait::On);
         // The same run, ended: its last state.
         let ended = IndexRun {
             ended_at: 150,
             hashed: 4,
             ..mine.clone()
         };
-        assert_eq!(wait_over(&mine, std::slice::from_ref(&ended)), Some(ended));
-        // Another run of the path, started later: the wait is over, with
-        // the last state seen of ours.
+        assert_eq!(
+            wait_over(&mine, std::slice::from_ref(&ended)),
+            Wait::Ended(ended)
+        );
+        // Another run of the path, started in the same second: ours ended
+        // and was replaced before it was seen, so how it ended is unknown.
         let later = IndexRun {
-            started_at: 160,
+            run: 8,
             started_by: "other".into(),
             ..run("/srv/photos")
         };
-        assert_eq!(wait_over(&mine, &[later]), Some(mine.clone()));
+        assert_eq!(wait_over(&mine, &[later]), Wait::Lost);
+        assert_eq!(wait_over(&mine, &[]), Wait::Lost);
     }
 
     fn version_error(n: u32) -> SessionRefused {

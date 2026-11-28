@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,6 +26,9 @@ pub(super) enum StartedBy {
 
 /// One run: in progress until `ended_at` is set.
 struct Run {
+    number: u64,
+    /// The folder as the export names it.
+    path: PathBuf,
     export: String,
     by: StartedBy,
     started_at: SystemTime,
@@ -35,7 +39,7 @@ struct Run {
 }
 
 impl Run {
-    fn status(&self, path: &Path) -> v1::IndexRun {
+    fn status(&self) -> v1::IndexRun {
         let (started_by, at_start) = match &self.by {
             StartedBy::Client(who) => (who.clone(), false),
             StartedBy::AtStart => (String::new(), true),
@@ -43,7 +47,7 @@ impl Run {
         let p = &self.progress;
         v1::IndexRun {
             export: self.export.clone(),
-            path: path.display().to_string(),
+            path: self.path.display().to_string(),
             started_by,
             at_start,
             started_at: unix(self.started_at),
@@ -54,6 +58,7 @@ impl Run {
             failed: p.failed.load(Relaxed),
             incomplete: self.incomplete,
             error: self.error.clone().unwrap_or_default(),
+            run: self.number,
         }
     }
 }
@@ -65,26 +70,40 @@ fn unix(t: SystemTime) -> u64 {
         .max(1)
 }
 
-/// The latest run of each export path since the daemon started.
+/// The key of the runs of the folder `path`: the folder itself, with
+/// symlinks resolved, so that two exports of one folder share their runs.
+/// A path that cannot be resolved is its own key.
+pub(super) fn run_key(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The latest run of each folder since the daemon started, by its
+/// [`run_key`].
 #[derive(Default)]
 pub(super) struct Runs {
     by_path: Mutex<BTreeMap<PathBuf, Run>>,
+    /// The number of the last run started.
+    last: AtomicU64,
 }
 
 impl Runs {
-    /// Starts a run for `path`, replacing the one that ended there: its
-    /// counters and its status. `Err` with the run in progress when one is.
+    /// Starts a run of the folder `path`, whose [`run_key`] is `key`,
+    /// replacing the one that ended there: its counters and its status.
+    /// `Err` with the run in progress when one is.
     pub(super) fn claim(
         &self,
+        key: &Path,
         path: &Path,
         export: &str,
         by: StartedBy,
     ) -> Result<(Arc<Progress>, v1::IndexRun), Box<v1::IndexRun>> {
         let mut runs = self.by_path.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(run) = runs.get(path).filter(|r| r.ended_at.is_none()) {
-            return Err(Box::new(run.status(path)));
+        if let Some(run) = runs.get(key).filter(|r| r.ended_at.is_none()) {
+            return Err(Box::new(run.status()));
         }
         let run = Run {
+            number: self.last.fetch_add(1, Relaxed) + 1,
+            path: path.to_path_buf(),
             export: export.to_string(),
             by,
             started_at: SystemTime::now(),
@@ -93,16 +112,16 @@ impl Runs {
             incomplete: false,
             error: None,
         };
-        let out = (run.progress.clone(), run.status(path));
-        runs.insert(path.to_path_buf(), run);
+        let out = (run.progress.clone(), run.status());
+        runs.insert(key.to_path_buf(), run);
         Ok(out)
     }
 
-    /// Ends the run of `path` with `result`: its final counts, or why it
+    /// Ends the run under `key` with `result`: its final counts, or why it
     /// failed as a whole.
-    pub(super) fn finish(&self, path: &Path, result: &io::Result<WarmReport>) {
+    pub(super) fn finish(&self, key: &Path, result: &io::Result<WarmReport>) {
         let mut runs = self.by_path.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(run) = runs.get_mut(path) else {
+        let Some(run) = runs.get_mut(key) else {
             return;
         };
         run.ended_at = Some(SystemTime::now());
@@ -119,10 +138,10 @@ impl Runs {
         }
     }
 
-    /// Every path's latest run, in path order.
+    /// Every folder's latest run, in the order of their keys.
     pub(super) fn list(&self) -> Vec<v1::IndexRun> {
         let runs = self.by_path.lock().unwrap_or_else(PoisonError::into_inner);
-        runs.iter().map(|(p, r)| r.status(p)).collect()
+        runs.values().map(Run::status).collect()
     }
 }
 
@@ -140,6 +159,7 @@ pub(super) struct Finish<'a> {
 }
 
 impl<'a> Finish<'a> {
+    /// Ends the run under `path`, a [`run_key`].
     pub(super) fn new(runs: &'a Runs, path: &'a Path) -> Finish<'a> {
         Finish {
             runs,
@@ -163,6 +183,12 @@ impl Drop for Finish<'_> {
     }
 }
 
+/// The log line for a run that failed as a whole; the error's text cannot
+/// start a log line of its own.
+pub(super) fn run_failed_line(msg: &str) -> String {
+    format!("indexing the export failed: {}", escape_controls(msg))
+}
+
 /// The log line for a file a run could not read; the client's (or the
 /// file system's) text cannot start a log line of its own.
 pub(super) fn failed_line(file: &str, msg: &str) -> String {
@@ -181,9 +207,9 @@ mod tests {
     fn a_second_claim_while_running_is_refused() {
         let runs = Runs::default();
         let p = Path::new("/srv/photos");
-        assert!(runs.claim(p, "photos", StartedBy::AtStart).is_ok());
+        assert!(runs.claim(p, p, "photos", StartedBy::AtStart).is_ok());
         let run = runs
-            .claim(p, "photos", StartedBy::Client("laptop".into()))
+            .claim(p, p, "photos", StartedBy::Client("laptop".into()))
             .unwrap_err();
         assert!(run.at_start);
         assert_eq!(run.ended_at, 0);
@@ -195,7 +221,7 @@ mod tests {
     fn a_claim_after_the_end_replaces_the_run() {
         let runs = Runs::default();
         let p = Path::new("/srv/photos");
-        runs.claim(p, "photos", StartedBy::AtStart).unwrap();
+        runs.claim(p, p, "photos", StartedBy::AtStart).unwrap();
         let report = WarmReport {
             examined: 3,
             hashed: 2,
@@ -211,7 +237,7 @@ mod tests {
             (3, 2, 10)
         );
         let (_, run) = runs
-            .claim(p, "pictures", StartedBy::Client("laptop".into()))
+            .claim(p, p, "pictures", StartedBy::Client("laptop".into()))
             .unwrap();
         assert_eq!(run.started_by, "laptop");
         assert!(!run.at_start);
@@ -227,7 +253,7 @@ mod tests {
     fn a_failed_run_ends_with_its_error() {
         let runs = Runs::default();
         let p = Path::new("/srv/photos");
-        runs.claim(p, "photos", StartedBy::AtStart).unwrap();
+        runs.claim(p, p, "photos", StartedBy::AtStart).unwrap();
         runs.finish(p, &Err(io::Error::other("gone")));
         let list = runs.list();
         assert!(list[0].ended_at > 0);
@@ -238,7 +264,7 @@ mod tests {
     fn the_counts_show_while_running() {
         let runs = Runs::default();
         let p = Path::new("/srv/photos");
-        let (progress, _) = runs.claim(p, "photos", StartedBy::AtStart).unwrap();
+        let (progress, _) = runs.claim(p, p, "photos", StartedBy::AtStart).unwrap();
         progress
             .examined
             .store(5, std::sync::atomic::Ordering::SeqCst);
@@ -253,10 +279,20 @@ mod tests {
     #[test]
     fn two_paths_are_two_runs() {
         let runs = Runs::default();
-        runs.claim(Path::new("/srv/b"), "b", StartedBy::AtStart)
-            .unwrap();
-        runs.claim(Path::new("/srv/a"), "a", StartedBy::AtStart)
-            .unwrap();
+        runs.claim(
+            Path::new("/srv/b"),
+            Path::new("/srv/b"),
+            "b",
+            StartedBy::AtStart,
+        )
+        .unwrap();
+        runs.claim(
+            Path::new("/srv/a"),
+            Path::new("/srv/a"),
+            "a",
+            StartedBy::AtStart,
+        )
+        .unwrap();
         let names: Vec<_> = runs.list().into_iter().map(|r| r.export).collect();
         assert_eq!(names, ["a", "b"]);
     }
@@ -265,20 +301,20 @@ mod tests {
     fn a_run_that_stops_without_finishing_ends_with_an_error() {
         let runs = Runs::default();
         let p = Path::new("/srv/photos");
-        runs.claim(p, "photos", StartedBy::AtStart).unwrap();
+        runs.claim(p, p, "photos", StartedBy::AtStart).unwrap();
         drop(Finish::new(&runs, p));
         let list = runs.list();
         assert!(list[0].ended_at > 0, "{list:?}");
         assert_eq!(list[0].error, STOPPED);
         // The path is free again.
-        assert!(runs.claim(p, "photos", StartedBy::AtStart).is_ok());
+        assert!(runs.claim(p, p, "photos", StartedBy::AtStart).is_ok());
     }
 
     #[test]
     fn a_finished_guard_keeps_the_result() {
         let runs = Runs::default();
         let p = Path::new("/srv/photos");
-        runs.claim(p, "photos", StartedBy::AtStart).unwrap();
+        runs.claim(p, p, "photos", StartedBy::AtStart).unwrap();
         let report = WarmReport {
             examined: 1,
             ..WarmReport::default()
@@ -286,6 +322,61 @@ mod tests {
         Finish::new(&runs, p).finish(&Ok(report));
         let list = runs.list();
         assert_eq!((list[0].examined, list[0].error.as_str()), (1, ""));
+    }
+
+    #[test]
+    fn each_run_has_a_number_of_its_own() {
+        let runs = Runs::default();
+        let (a, b) = (Path::new("/srv/a"), Path::new("/srv/b"));
+        let (_, first) = runs.claim(a, a, "a", StartedBy::AtStart).unwrap();
+        let (_, second) = runs.claim(b, b, "b", StartedBy::AtStart).unwrap();
+        assert_eq!((first.run, second.run), (1, 2));
+        // A refused claim names the run that goes on, and uses no number.
+        let busy = runs.claim(a, a, "a", StartedBy::AtStart).unwrap_err();
+        assert_eq!(busy.run, 1);
+        runs.finish(a, &Ok(WarmReport::default()));
+        let (_, third) = runs.claim(a, a, "a", StartedBy::AtStart).unwrap();
+        assert_eq!(third.run, 3);
+    }
+
+    #[test]
+    fn a_run_shows_the_path_as_written_and_is_keyed_by_another() {
+        let runs = Runs::default();
+        let key = Path::new("/srv/real");
+        runs.claim(key, Path::new("/srv/link"), "a", StartedBy::AtStart)
+            .unwrap();
+        // The same folder through another path is the same run.
+        let busy = runs
+            .claim(key, Path::new("/srv/real"), "b", StartedBy::AtStart)
+            .unwrap_err();
+        assert_eq!(
+            (busy.path.as_str(), busy.export.as_str()),
+            ("/srv/link", "a")
+        );
+        runs.finish(key, &Ok(WarmReport::default()));
+        assert!(runs.list()[0].ended_at > 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_and_its_target_have_one_key() {
+        let d = tempfile::tempdir().unwrap();
+        let real = d.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = d.path().join("link");
+        crate::platform::symlink_path(&real, &link).unwrap();
+        assert_eq!(run_key(&link), run_key(&real));
+        // A path that cannot be resolved is its own key.
+        let gone = d.path().join("gone");
+        assert_eq!(run_key(&gone), gone);
+    }
+
+    #[test]
+    fn a_control_character_in_a_failed_run_is_escaped() {
+        assert_eq!(
+            run_failed_line("bad\nline"),
+            "indexing the export failed: bad\\nline"
+        );
     }
 
     #[test]
