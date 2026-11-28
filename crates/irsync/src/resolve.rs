@@ -3,9 +3,9 @@
 //! that contains it.
 
 use crate::authz::{Access, Permissions};
-use crate::location::is_drive_path;
 use crate::config::exports::Export;
 use crate::fs::paths::RelPath;
+use crate::location::is_drive_path;
 use crate::platform::{bytes_to_os, os_to_bytes, Platform};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

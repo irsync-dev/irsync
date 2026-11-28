@@ -4,9 +4,9 @@
 
 use super::ManageError;
 use crate::authz::Access;
-use crate::location::is_drive_path;
 use crate::config::exports::RESERVED;
 use crate::config::paths::Paths;
+use crate::location::is_drive_path;
 use crate::platform::{native_path, os_to_bytes, Platform};
 use crate::resolve::{auto_export_root_allowed, remote_export_path_problem, REMOTE_NOT_LOCAL};
 use iroh::EndpointId;

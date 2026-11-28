@@ -73,7 +73,12 @@ fn add_writes_only_what_was_asked_updates_an_existing_one_and_refuses_reserved()
     assert_eq!(docs.path, fixture::abs_path("/x"));
     assert!(docs.read_only && docs.index_at_start && docs.fsync);
     assert!(matches!(
-        add_export(&mut m, "all", &fixture::abs_path("/x"), ExportFlags::default()),
+        add_export(
+            &mut m,
+            "all",
+            &fixture::abs_path("/x"),
+            ExportFlags::default()
+        ),
         Err(ManageError::Reserved(_))
     ));
 }
@@ -133,12 +138,24 @@ fn add_writes_under_exports_as_a_dotted_header_and_refuses_all() {
         write(&m),
         fixture::toml("[exports.photos]\npath = \"/srv/photos\"\n")
     );
-    let e = add_export(&mut m, "all", &fixture::abs_path("/srv/all"), ExportFlags::default()).unwrap_err();
+    let e = add_export(
+        &mut m,
+        "all",
+        &fixture::abs_path("/srv/all"),
+        ExportFlags::default(),
+    )
+    .unwrap_err();
     assert_eq!(
         e.to_string(),
         "\"all\" is reserved: it is the word `grant remove all WHO` and `index --export all` use for every export"
     );
-    assert!(add_export(&mut m, "rw", &fixture::abs_path("/srv/rw"), ExportFlags::default()).is_ok());
+    assert!(add_export(
+        &mut m,
+        "rw",
+        &fixture::abs_path("/srv/rw"),
+        ExportFlags::default()
+    )
+    .is_ok());
 }
 
 #[test]
@@ -384,7 +401,13 @@ fn an_edit_that_makes_the_message_invalid_is_refused_on_load() {
 #[test]
 fn add_and_remove_keep_an_inline_exports_table() {
     let mut m = msg("exports = { photos = { path = \"/p\", rw = [\"x\"] } }\n");
-    add_export(&mut m, "q", &fixture::abs_path("/q"), ExportFlags::default()).unwrap();
+    add_export(
+        &mut m,
+        "q",
+        &fixture::abs_path("/q"),
+        ExportFlags::default(),
+    )
+    .unwrap();
     let c = typed(&m).exports;
     assert_eq!(c.exports["photos"].rw, vec!["x"]);
     assert_eq!(c.exports["q"].path, fixture::abs_path("/q"));
