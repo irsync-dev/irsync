@@ -22,20 +22,16 @@ it, when looking for the next thing to work on.
 ## Links to GitHub
 
 When you tell the user about an issue, pull request, repository,
-commit, workflow run or anything else on GitHub, keep the short name in
-the text, such as `[#123]`, and add a footnote that holds the full URL:
+commit, workflow run or anything else on GitHub, write a Markdown link
+whose text is the short name and whose target is the full URL:
 
 ```markdown
-The fix for [#123] is in review.
-
-123: https://github.com/irsync-dev/irsync/issues/123
+The fix for [#123](https://github.com/irsync-dev/irsync/issues/123) is in review.
 ```
 
-Put the footnotes at the end of the message, one per line, with the bare
-URL on that one line and nothing after it. The user often reads through
-several layers of terminal emulator, mosh and tmux, where only a whole,
-visible URL can be clicked, so a link that hides its URL behind other
-words does not work. This is about what you say in the conversation;
+The user's terminal shows the short name and opens the URL on a click.
+Do not add footnotes or bare URLs as well. This is about what you say in
+the conversation;
 files keep their own conventions, such as `[#123]` alone in
 `CHANGELOG.md`.
 
