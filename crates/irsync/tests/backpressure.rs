@@ -447,14 +447,14 @@ fn chmod_all(base: &Path, dirs: u32, files: u32) {
 /// the receiving daemon's planner sends one `Itemized` per entry, none of
 /// which takes an in-flight slot. `--bwlimit` paces data streams only, and
 /// a metadata-only push has none, so the slow link is the client's main
-/// loop taking 0.5 ms per peer event: once the client's queue and the
-/// stream's window (2 MiB here) are full, the daemon's writer stalls. The
-/// ~48 MB of `Itemized` frames must then wait in the planner, not in the
-/// queue. (Long paths keep the backlog the client still has to read at the
-/// end, which the daemon waits for only so long, to a few thousand frames.)
-/// The client's sleeps are most of the run, so the tree is no larger than
-/// fills the budget with room to spare: on macOS, where the frames are a
-/// fifth as long, 400 directories no longer half-fill it.
+/// loop, which stops at the first `Itemized` until the daemon's budget is
+/// full: once the client's queue and the stream's window (2 MiB here) are
+/// full, the daemon's writer stalls, and the ~48 MB of `Itemized` frames
+/// must then wait in the planner, not in the queue. (A client that only
+/// reads slowly fills the budget only while the daemon plans faster than
+/// it reads, which a loaded machine does not always do.) Long paths keep
+/// the frames few enough for the client to read quickly once it reads
+/// again; on macOS they are a fifth as long.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(unix)]
 async fn itemize_over_a_slow_link_stays_within_the_out_budget() {
@@ -468,8 +468,22 @@ async fn itemize_over_a_slow_link_stays_within_the_out_budget() {
         chmod_all(&base, 0o750, 0o600);
         let peak = Arc::new(AtomicUsize::new(0));
         h.daemon.hooks.lock().unwrap().out_peak = Some(peak.clone());
+        // Full: no frame (a few KiB) fits on top. Waited for no longer than
+        // a slow planner needs, so a budget that never fills fails below.
+        let full = OUT_BUDGET - 64 * 1024;
+        let (open, gate) = tokio::sync::watch::channel(false);
+        let opener = tokio::spawn({
+            let peak = peak.clone();
+            async move {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+                while peak.load(SeqCst) < full && tokio::time::Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                let _ = open.send(true);
+            }
+        });
         let mut local = h.local_side();
-        local.hooks.slow_peer_events = Some(Duration::from_micros(500));
+        local.hooks.hold_itemized = Some(gate);
         let mut opts = archive_opts();
         opts.itemize = true;
         opts.bwlimit = Some(200 * 1024);
@@ -477,6 +491,7 @@ async fn itemize_over_a_slow_link_stays_within_the_out_budget() {
             .run_side(&opts, flow, local)
             .await
             .unwrap_or_else(|e| panic!("{e:#}"));
+        opener.await.unwrap();
         assert!(out.errors.is_empty(), "{:?}", out.errors);
         assert_trees_equal(h.src(flow), h.dst(flow), &opts.preserve);
         let peak = peak.load(SeqCst);
@@ -485,7 +500,7 @@ async fn itemize_over_a_slow_link_stays_within_the_out_budget() {
             "paced control frames peaked at {peak} bytes"
         );
         assert!(
-            peak >= OUT_BUDGET / 2,
+            peak >= full,
             "paced control frames peaked at {peak} bytes: the budget never filled"
         );
     })
