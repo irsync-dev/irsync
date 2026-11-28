@@ -425,6 +425,13 @@ impl CustomEndpoint for NetsimEndpoint {
                     let mut buf = ReadBuf::new(&mut self.scratch);
                     let from = match socket.poll_recv_from(cx, &mut buf) {
                         Poll::Pending => break,
+                        // Windows reads a datagram larger than the buffer
+                        // as an error, where Unix cuts it short: it is gone
+                        // either way, counted as cut short.
+                        Poll::Ready(Err(e)) if crate::platform::is_datagram_too_large(&e) => {
+                            self.shared.counts.truncated.fetch_add(1, Relaxed);
+                            continue;
+                        }
                         Poll::Ready(Err(e)) if filled == 0 => return Poll::Ready(Err(e)),
                         Poll::Ready(Err(_)) => break,
                         Poll::Ready(Ok(from)) => from,

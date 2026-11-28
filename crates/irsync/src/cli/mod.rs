@@ -95,12 +95,22 @@ Getting started by hand (irsync installed on both sides):
 
 impl Args {
     /// The command with the help template applied to the subcommands too,
-    /// at every level (`irsync server add --help` included).
+    /// at every level (`irsync server add --help` included). On Windows
+    /// usage names the program `irsync`, where clap would take
+    /// `irsync.exe` from the first argument.
     fn command_tree() -> clap::Command {
         fn apply(c: clap::Command) -> clap::Command {
             c.help_template(HELP_TEMPLATE).mut_subcommands(apply)
         }
-        Args::command().mut_subcommands(apply)
+        let c = Args::command();
+        // On Unix clap names the program as it was started (argv[0]'s file
+        // name), as it always did.
+        let c = if crate::platform::Platform::CURRENT == crate::platform::Platform::Windows {
+            c.bin_name("irsync")
+        } else {
+            c
+        };
+        c.mut_subcommands(apply)
     }
 
     /// Like `Parser::try_parse_from`, but also records the command-line order
@@ -145,6 +155,58 @@ impl Args {
             other => other,
         };
         Ok(args)
+    }
+
+    /// Every path option the user typed, as this system means it
+    /// ([`crate::platform::local_path`]; on Unix each is kept as it is),
+    /// for the command to keep and open: the binary calls it right after
+    /// parsing (the parse itself keeps the text as typed). A relative
+    /// `--partial-dir` is relative to the destination and stays so. The
+    /// sync operands are strings until they are read as locations; a local
+    /// one is made so where its session starts.
+    pub fn local_paths(&mut self) {
+        use crate::platform::local_path;
+        let one = |p: &mut PathBuf| *p = local_path(p);
+        let opt = |p: &mut Option<PathBuf>| {
+            if let Some(p) = p {
+                *p = local_path(p);
+            }
+        };
+        let from_files = |filters: &mut Vec<FilterRule>| {
+            for f in filters {
+                match f {
+                    FilterRule::IncludeFrom(p) | FilterRule::ExcludeFrom(p) => *p = local_path(p),
+                    FilterRule::Include(_) | FilterRule::Exclude(_) => {}
+                }
+            }
+        };
+        opt(&mut self.files.config);
+        opt(&mut self.files.passphrase_file);
+        opt(&mut self.files.identity);
+        let sync = |s: &mut SyncArgs| {
+            // A rooted path without a drive (`\tmp`, Windows) is not
+            // relative to the destination either (on Unix `has_root` is
+            // `is_absolute`).
+            if let Some(p) = s
+                .partial_dir
+                .as_mut()
+                .filter(|p| p.is_absolute() || p.has_root())
+            {
+                *p = local_path(p);
+            }
+            from_files(&mut s.filters);
+        };
+        sync(&mut self.sync);
+        match &mut self.cmd {
+            Some(Command::Sync(s)) => sync(s),
+            Some(Command::List(l)) => from_files(&mut l.filters),
+            Some(Command::Index(ix)) => ix.targets.iter_mut().for_each(one),
+            Some(Command::Id(IdArgs {
+                cmd: Some(IdCmd::Generate { out, .. }),
+                ..
+            })) => opt(out),
+            _ => {}
+        }
     }
 
     /// The options of a `sync`, which every sync is by the time
@@ -220,7 +282,8 @@ fn sub_matches<'a>(m: &'a clap::ArgMatches, name: &str) -> &'a clap::ArgMatches 
 /// A sync with one remote operand is a listing (`irsync HOST:`, `irsync
 /// HOST:PATH`), which takes the flags of `list` only; a lone local path
 /// is a usage error. The operands of a sync are checked here, so that
-/// every usage error exits 2.
+/// every usage error exits 2. Read as any sync operand: on Windows
+/// `irsync C:` is the drive, so a usage error.
 fn sync_or_list(s: SyncArgs, m: &clap::ArgMatches) -> Result<Command, clap::Error> {
     let locations = s
         .paths
@@ -288,7 +351,7 @@ fn list_operand(mut l: ListArgs) -> Result<ListArgs, clap::Error> {
     if !op.contains(':') && !op.contains('/') && op != "." && op != ".." {
         op.push(':');
     }
-    let remote = Location::parse(op)
+    let remote = Location::parse_listed(op)
         .map_err(|e| list_error(clap::error::ErrorKind::ValueValidation, &e.0))?
         .is_remote();
     if !remote {

@@ -9,8 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, Flow, Harness};
-#[cfg(unix)]
-use irsync::platform::{nlink_of, testutil::symlink};
+use irsync::platform::testutil::{nlink, symlink};
 use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
@@ -98,7 +97,6 @@ async fn peer_listing_temp_name_is_rejected() {
 }
 
 #[tokio::test]
-#[cfg(unix)]
 async fn hardlink_target_outside_root_rejected() {
     let h = Harness::new().await;
     let outside = tempfile::tempdir().unwrap();
@@ -114,10 +112,7 @@ async fn hardlink_target_outside_root_rejected() {
     .await;
     assert!(has_error(&out, b"b", "hard link"), "{:?}", out.errors);
     assert!(fs::symlink_metadata(h.export.path().join("b")).is_err());
-    assert_eq!(
-        nlink_of(&fs::metadata(outside.path().join("secret")).unwrap()),
-        1
-    );
+    assert_eq!(nlink(&outside.path().join("secret")).unwrap(), 1);
 }
 
 #[tokio::test]

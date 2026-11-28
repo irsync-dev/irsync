@@ -179,13 +179,22 @@ fn itemize_codes_for_other_kinds() {
         itemize(&Decision::Delete, None, None, '>', &arch()),
         "*deleting  "
     );
-    // Push: `<`; checksum-only difference: `c`; permissions: `p`.
+    // Push: `<`; checksum-only difference: `c`.
     let a = view(Kind::Regular, 5, 1);
-    let mut b = view(Kind::Regular, 5, 1);
+    let b = view(Kind::Regular, 5, 1);
     assert_eq!(
         itemize(&Decision::Delta, Some(&a), Some(&b), '<', &arch()),
         "<fc........"
     );
+}
+
+/// Permissions: `p`. Unix only: a receiver on Windows sets no modes, so a
+/// mode is never a difference there.
+#[test]
+#[cfg(unix)]
+fn itemize_code_for_a_mode_change() {
+    let a = view(Kind::Regular, 5, 1);
+    let mut b = view(Kind::Regular, 5, 1);
     b.entry.mode = 0o600;
     assert_eq!(
         itemize(&Decision::MetaOnly, Some(&a), Some(&b), '>', &arch()),

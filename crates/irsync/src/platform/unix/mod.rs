@@ -90,6 +90,52 @@ pub fn bytes_to_os(bytes: &[u8]) -> io::Result<OsString> {
     Ok(OsString::from_vec(bytes.to_vec()))
 }
 
+/// A path the local user typed or wrote in the config, as this system
+/// means it, to keep and open from then on: on Unix the path as it is
+/// (every name means what it says; nothing changes at any caller). See the
+/// Windows version for what it does there.
+pub fn local_path(path: &Path) -> std::path::PathBuf {
+    path.to_path_buf()
+}
+
+/// `path` as the system opens it: on Unix the path itself (Unix opens
+/// every name as it is written). See the Windows version for what it does
+/// there.
+pub fn native_path(path: &Path) -> io::Result<std::borrow::Cow<'_, Path>> {
+    Ok(std::borrow::Cow::Borrowed(path))
+}
+
+/// Whether `e`, from receiving a datagram, says it was larger than the
+/// buffer: never on Unix, which cuts such a datagram short instead.
+pub fn is_datagram_too_large(_e: &io::Error) -> bool {
+    false
+}
+
+/// Whether a tree may lie at `root`: on Unix always, with no call made.
+/// See the Windows version, which refuses a volume that is not local NTFS.
+pub fn check_root(_root: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// [`check_root`] for a root already open as `_dir`: on Unix always Ok,
+/// with no call made.
+pub fn check_root_dir(_dir: &Dir, _shown: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Whether `name` at the top of a volume is one the system keeps there for
+/// itself, which a walk leaves out: on Unix no name is.
+pub fn is_builtin_exclude(_name: &[u8]) -> bool {
+    false
+}
+
+/// Whether the directory `root` is the top of a volume, where
+/// [`is_builtin_exclude`] applies: on Unix it never applies, so never
+/// (nothing is looked up).
+pub fn is_volume_top(_root: &Path) -> bool {
+    false
+}
+
 /// `name` if it is one component: not empty, `.` or `..`, and without `/`
 /// or NUL. Checked before any call, so no operation of [`Dir`] can reach
 /// past the directory it holds.
@@ -474,6 +520,18 @@ pub fn file_metadata(file: &File) -> io::Result<Stat> {
 /// trusts them.
 pub fn symlink_metadata(path: &Path) -> io::Result<Stat> {
     std::fs::symlink_metadata(path).map(|m| stat_of_metadata(&m))
+}
+
+/// Takes the exclusive lock on the open `file`, without waiting:
+/// [`File::try_lock`] (`flock(LOCK_EX | LOCK_NB)`), an advisory lock that
+/// leaves the content readable and writable through other descriptors.
+pub fn try_lock_file(file: &File) -> Result<(), std::fs::TryLockError> {
+    file.try_lock()
+}
+
+/// Releases the lock [`try_lock_file`] took on `file`: [`File::unlock`].
+pub fn unlock_file(file: &File) -> io::Result<()> {
+    file.unlock()
 }
 
 /// Which file `m` describes: its device and inode numbers.

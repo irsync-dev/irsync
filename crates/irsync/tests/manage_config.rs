@@ -1,3 +1,6 @@
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::config::file::Config;
 use irsync::config::keys::KEYS;
 use irsync::config::reader::read;
@@ -9,7 +12,7 @@ use irsync_proto::config as pb;
 use std::path::Path;
 
 fn msg(s: &str) -> pb::Config {
-    read(s, Path::new("f")).unwrap()
+    read(&fixture::toml(s), Path::new("f")).unwrap()
 }
 fn p(s: &str) -> Vec<String> {
     parse_key(s).unwrap()
@@ -269,14 +272,23 @@ fn defaults_for_settings_keys() {
     assert_eq!(default_of(&p("daemon.listen")), Some(vec![]));
     assert_eq!(default_of(&p("daemon.relay")), Some(vec!["default".into()]));
     assert_eq!(default_of(&p("daemon.dht")), Some(vec!["true".into()]));
-    // Path defaults print as the file would hold them: home as `~`.
+    // Path defaults print as the file would hold them: home as `~`. The
+    // config directory is `~/.config/irsync` on Unix, `%APPDATA%\irsync`
+    // (`AppData\Roaming` in the profile) on Windows, shown with its `\`.
+    let dir = if cfg!(windows) {
+        Path::new("AppData").join("Roaming").join("irsync")
+    } else {
+        Path::new(".config/irsync").to_path_buf()
+    };
+    let sep = if cfg!(windows) { '\\' } else { '/' };
+    let under_home = |name: &str| format!("~{sep}{}", dir.join(name).display());
     assert_eq!(
         default_of(&p("defaults.identity")),
-        Some(vec!["~/.config/irsync/id_ed25519".into()])
+        Some(vec![under_home("id_ed25519")])
     );
     assert_eq!(
         default_of(&p("daemon.identity")),
-        Some(vec!["~/.config/irsync/daemon_ed25519".into()])
+        Some(vec![under_home("daemon_ed25519")])
     );
     // The [defaults] keys book/src/reference/configuration.md lists with defaults: the effective ones.
     assert_eq!(
@@ -332,16 +344,19 @@ fn list_is_dotted_keys_in_the_writers_order_with_quoting() {
     assert_eq!(
         list(&m),
         vec![
-            "daemon.identity = \"/k\"",
-            "daemon.listen = [\"a:1\"]",
-            "daemon.dht = false",
-            "exports.\"www.example.com\".path = \"/w\"",
+            fixture::toml("daemon.identity = \"/k\""),
+            "daemon.listen = [\"a:1\"]".to_string(),
+            "daemon.dht = false".to_string(),
+            fixture::toml("exports.\"www.example.com\".path = \"/w\""),
         ]
     );
     let m = msg("state_dir = \"/k\"\n[defaults]\nparallel = 2\n");
     assert_eq!(
         list(&m),
-        vec!["state_dir = \"/k\"", "defaults.parallel = 2"]
+        vec![
+            fixture::toml("state_dir = \"/k\""),
+            "defaults.parallel = 2".to_string()
+        ]
     );
 }
 
@@ -350,7 +365,7 @@ fn list_has_the_keys_and_values_the_writer_writes() {
     let mut m = base();
     for (key, values) in ALL_KEYS {
         let path = parse_key(key).unwrap();
-        let value = parse_value(kind_of(&path).unwrap(), &strings(values)).unwrap();
+        let value = parse_value(kind_of(&path).unwrap(), &key_values(values)).unwrap();
         set(&mut m, &path, value).unwrap();
     }
     // Every key the writer writes, as `[table]` headers and `key = value` lines.
@@ -550,6 +565,20 @@ fn set_telemetry_endpoint() {
     );
 }
 
+/// The values of an `ALL_KEYS` entry, a Unix path (`/k`) made absolute
+/// here (see `fixture::abs`).
+fn key_values(v: &[&str]) -> Vec<String> {
+    v.iter()
+        .map(|s| {
+            if s.starts_with('/') {
+                fixture::abs(s)
+            } else {
+                s.to_string()
+            }
+        })
+        .collect()
+}
+
 /// One key per arm of `kind_of` that is not a table, with a value
 /// that loads.
 const ALL_KEYS: &[(&str, &[&str])] = &[
@@ -730,7 +759,7 @@ fn every_known_key_can_be_set_read_and_unset() {
         set(
             &mut m,
             &path,
-            parse_value(kind_of(&path).unwrap(), &strings(values)).unwrap(),
+            parse_value(kind_of(&path).unwrap(), &key_values(values)).unwrap(),
         )
         .unwrap();
         assert!(matches!(get(&m, &path).unwrap(), Got::Lines(_)), "{key}");

@@ -3,6 +3,7 @@
 
 pub mod bin;
 pub use bin::{irsync_command, StateHome};
+pub mod fixture;
 
 /// Creates a file named with raw non-UTF-8 `name` bytes in `dir`. Returns `None`
 /// (after a note on stderr) when the filesystem refuses such names, so callers
@@ -35,6 +36,88 @@ pub fn try_create_non_utf8(dir: &std::path::Path, name: &[u8]) -> Option<std::pa
         }
         Err(e) => panic!("creating non-UTF-8 name failed: {e}"),
     }
+}
+
+/// Whether this process may make symlinks. Always on Unix; on Windows it
+/// needs the privilege or Developer Mode, and a test that needs symlinks
+/// returns early when not (a line that starts `skipping:` says so). With
+/// `CI` set, not being able to is a failure.
+pub fn symlinks_available() -> bool {
+    #[cfg(unix)]
+    let available = true;
+    #[cfg(windows)]
+    let available = irsync::platform::testutil::symlinks_available();
+    available
+}
+
+/// Removes the link at `link` itself, never what it leads to. Windows
+/// makes a link to a directory as a directory, removed as one; Unix
+/// removes any link as a file.
+pub fn remove_link(link: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        let t = std::fs::symlink_metadata(link)?.file_type();
+        if t.is_dir() || t.is_symlink_dir() {
+            return std::fs::remove_dir(link);
+        }
+    }
+    std::fs::remove_file(link)
+}
+
+/// Opens `p` for reading and writing as another program would, sharing
+/// what `share` says (1 read, 2 write, 4 delete).
+#[cfg(windows)]
+pub fn open_sharing(p: &std::path::Path, share: u32) -> std::fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(share)
+        .open(p)
+        .unwrap()
+}
+
+/// A Windows name from its UTF-16 units, which may hold a lone surrogate.
+#[cfg(windows)]
+pub fn name_from_units(units: &[u16]) -> std::ffi::OsString {
+    use std::os::windows::ffi::OsStringExt;
+    std::ffi::OsString::from_wide(units)
+}
+
+/// A drive letter made with `subst` (no privilege needed), removed again
+/// when dropped.
+#[cfg(windows)]
+pub struct Subst(pub char);
+
+#[cfg(windows)]
+impl Drop for Subst {
+    /// Removes the drive, once: a letter given back is free for another
+    /// test to take, so it is never removed a second time.
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("subst")
+            .arg(format!("{}:", self.0))
+            .arg("/d")
+            .output();
+    }
+}
+
+/// A free drive letter `subst` makes for `dir`, if one takes it (a letter
+/// held by a mapped network drive that is away is refused); removed when
+/// the result is dropped.
+#[cfg(windows)]
+pub fn subst_of(dir: &std::path::Path) -> Option<Subst> {
+    ('D'..='Z').rev().find_map(|l| {
+        if std::fs::metadata(format!(r"{l}:\")).is_ok() {
+            return None;
+        }
+        let made = std::process::Command::new("subst")
+            .arg(format!("{l}:"))
+            .arg(dir)
+            .output()
+            .ok()?;
+        made.status.success().then(|| Subst(l))
+    })
 }
 
 use std::future::Future;
@@ -494,18 +577,22 @@ impl Harness {
     /// A harness whose export and local dirs are created under `base`
     /// (a filesystem with properties the default temp dir may lack).
     pub async fn new_in(base: &std::path::Path) -> Harness {
-        Self::build(Some(base), |_| {}, |_| {}).await.0
+        Self::build(Some(base), |_| {}, |_| {}, |_| Vec::new())
+            .await
+            .0
     }
 
     /// A harness plus a second client endpoint the daemon also authorises.
     pub async fn with_guest() -> (Harness, Endpoint) {
-        Self::build(None, |_| {}, |_| {}).await
+        Self::build(None, |_| {}, |_| {}, |_| Vec::new()).await
     }
 
     /// A harness whose export is filled by `seed` before the daemon starts,
     /// with `index_at_start` set on it.
     pub async fn warm(seed: impl FnOnce(&std::path::Path)) -> Harness {
-        Self::build(None, |e| e.index_at_start = true, seed).await.0
+        Self::build(None, |e| e.index_at_start = true, seed, |_| Vec::new())
+            .await
+            .0
     }
 
     /// A harness whose export is first adjusted by `configure`.
@@ -513,13 +600,66 @@ impl Harness {
     pub async fn with_export(
         configure: impl FnOnce(&mut irsync::config::exports::Export),
     ) -> Harness {
-        Self::build(None, configure, |_| {}).await.0
+        Self::build(None, configure, |_| {}, |_| Vec::new()).await.0
+    }
+
+    /// A harness whose export `m` holds a second export, `name`, at the
+    /// directory `dir` below it (made here), adjusted by `configure`.
+    #[allow(dead_code)]
+    pub async fn with_inner_export(
+        name: &'static str,
+        dir: &'static str,
+        configure: impl FnOnce(&mut irsync::config::exports::Export),
+    ) -> Harness {
+        Self::with_other_export(
+            name,
+            move |m| {
+                let path = m.join(dir);
+                std::fs::create_dir_all(&path).unwrap();
+                path
+            },
+            configure,
+        )
+        .await
+    }
+
+    /// A harness with a second export, `name`, at the path `path` gives for
+    /// the root of `m` (`path` makes what it wants made), adjusted by
+    /// `configure`.
+    #[allow(dead_code)]
+    pub async fn with_other_export(
+        name: &'static str,
+        path: impl FnOnce(&std::path::Path) -> std::path::PathBuf,
+        configure: impl FnOnce(&mut irsync::config::exports::Export),
+    ) -> Harness {
+        Self::build(
+            None,
+            |_| {},
+            |_| {},
+            move |m| {
+                let path = path(m);
+                let mut e = irsync::config::exports::Export {
+                    path,
+                    read_only: false,
+                    index_at_start: false,
+                    fsync: false,
+                    auto: false,
+                    rw: Vec::new(),
+                    ro: Vec::new(),
+                };
+                configure(&mut e);
+                vec![(name, e)]
+            },
+        )
+        .await
+        .0
     }
 
     async fn build(
         base: Option<&std::path::Path>,
         configure: impl FnOnce(&mut irsync::config::exports::Export),
         seed: impl FnOnce(&std::path::Path),
+        extra: impl FnOnce(&std::path::Path) -> Vec<(&'static str, irsync::config::exports::Export)>,
     ) -> (Harness, Endpoint) {
         let tmp = || match base {
             Some(b) => tempfile::tempdir_in(b).unwrap(),
@@ -545,7 +685,9 @@ impl Harness {
             ro: Vec::new(),
         };
         configure(&mut m);
-        let daemon = spawn_daemon_exports(vec![("m", m)], authz).await;
+        let mut exports = vec![("m", m)];
+        exports.extend(extra(export.path()));
+        let daemon = spawn_daemon_exports(exports, authz).await;
         let h = Harness {
             daemon,
             client,
@@ -784,6 +926,44 @@ impl Harness {
     }
 }
 
+/// Sets the permission bits of `p` (`chmod`, which follows a link), for a
+/// test whose setup gives a file a mode but is not about modes. Windows
+/// has none: nothing is done there. On Unix this is
+/// `platform::testutil::set_mode`.
+pub fn set_mode_where_modes_exist(p: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    irsync::platform::set_mode_path_following(p, mode)
+}
+
+/// The process's real user id, as a clone folder's name holds it. Windows
+/// has none: 0 there, the id irsync gives itself (`platform::euid`).
+pub fn real_uid() -> u32 {
+    #[cfg(unix)]
+    let uid = irsync::platform::testutil::real_uid();
+    #[cfg(windows)]
+    let uid = irsync::platform::euid();
+    uid
+}
+
+/// Sets the modification time of `p`, a file or a directory, a final link
+/// followed. On Unix through `p` opened for reading (`futimens`); Windows
+/// sets a time only through a handle opened to write attributes.
+pub fn set_modified(p: &std::path::Path, t: std::time::SystemTime) -> std::io::Result<()> {
+    #[cfg(unix)]
+    let file = std::fs::File::open(p)?;
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
+        };
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(p)?
+    };
+    file.set_modified(t)
+}
+
 /// Builds the `src` and `dst` trees, then runs one session in direction `flow`.
 pub async fn sync_trees(
     src: impl FnOnce(&std::path::Path),
@@ -950,14 +1130,20 @@ impl BinaryDaemon {
         self.guard.0.id()
     }
 
-    /// Ends the daemon with `SIGTERM`, as a service manager does, and waits
-    /// for it: it writes out its protocol capture first.
+    /// Ends the daemon and waits for it: on Unix with `SIGTERM`, as a
+    /// service manager does; on Windows it is killed. Its protocol capture
+    /// is written out after every batch, so it holds what the daemon did.
     pub fn stop(mut self) {
-        let status = std::process::Command::new("kill")
-            .args(["-TERM", &self.pid().to_string()])
-            .status()
-            .unwrap();
-        assert!(status.success(), "kill -TERM failed");
+        #[cfg(unix)]
+        {
+            let status = std::process::Command::new("kill")
+                .args(["-TERM", &self.pid().to_string()])
+                .status()
+                .unwrap();
+            assert!(status.success(), "kill -TERM failed");
+        }
+        #[cfg(windows)]
+        bin::stop_child(&mut self.guard.0);
         let _ = self.guard.0.wait();
     }
 

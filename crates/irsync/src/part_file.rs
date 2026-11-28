@@ -215,7 +215,7 @@ fn paths(
         ));
     }
     let (part_root, mut part_rel, skip) = match partial_dir {
-        Some(pd) => match RelPath::new(&crate::platform::os_to_bytes(pd.dir.as_os_str())) {
+        Some(pd) => match RelPath::from_os(pd.dir.as_os_str()) {
             Ok(below) if pd.dir.is_relative() => {
                 (root.to_path_buf(), below.as_bytes().to_vec(), pd.skip)
             }
@@ -251,7 +251,7 @@ pub(crate) fn discard_part(
         .open(part_open(true, false, Create::No, 0))
         .and_then(|f| require_regular(&f, &part.path()).map(|()| f))
     {
-        Ok(file) => match file.try_lock() {
+        Ok(file) => match crate::platform::try_lock_file(&file) {
             Ok(()) => part.unlink()?,
             Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
             Err(std::fs::TryLockError::Error(e)) => return Err(e),
@@ -412,7 +412,7 @@ fn open_locked_part(part: &Beneath, activity: &AtomicU64) -> io::Result<(File, S
         // A momentary descriptor shortage is waited out rather than failing
         // the file (see `fs::transient`).
         let file = crate::fs::transient::retry(|| open_part(part))?;
-        match file.try_lock() {
+        match crate::platform::try_lock_file(&file) {
             Ok(()) => {
                 let meta = crate::platform::file_metadata(&file)?;
                 if meta.kind != crate::platform::Kind::File {
@@ -1367,8 +1367,13 @@ impl Verified {
                     if inplace {
                         return Ok(());
                     }
-                    part.rename_to(&dest).map_err(|e| {
+                    // Another program holding the destination is waited
+                    // out briefly (Windows), then said to hold it.
+                    crate::fs::transient::retry_in_use(|| part.rename_to(&dest)).map_err(|e| {
                         let (part, dest) = (part.path(), dest.path());
+                        if crate::fs::transient::is_in_use(&e) {
+                            return e;
+                        }
                         if cause(&e) == Cause::IsADirectory {
                             return io::Error::other(format!(
                                 "refusing to replace directory {} with a file",

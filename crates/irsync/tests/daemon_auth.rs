@@ -68,7 +68,7 @@ fn export_dir() -> (tempfile::TempDir, Vec<u8>, Vec<u8>) {
 }
 
 fn no_access(path: &[u8]) -> String {
-    format!("no access to {}", irsync::fs::paths::escape_path(path))
+    format!("no access to {}", irsync::fs::paths::escape_os_path(path))
 }
 
 fn reply(r: Result<HelloAckOrError, String>) -> (i32, String) {
@@ -239,9 +239,7 @@ async fn an_ungranted_name_is_no_export_even_with_a_granted_twin_on_the_same_pat
 /// inner export included: the reply is the same as for any other path
 /// under the outer one, so a key cannot map where other exports sit.
 #[tokio::test]
-#[cfg(unix)]
 async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
-    use irsync::platform::testutil::name_bytes;
     let tmp = tempfile::tempdir().unwrap();
     let (srv, inner) = (tmp.path().join("srv"), tmp.path().join("srv/photos"));
     std::fs::create_dir_all(&inner).unwrap();
@@ -259,7 +257,7 @@ async fn outer_grant_reaches_paths_inside_an_ungranted_inner_export() {
     )
     .await;
     for path in [
-        name_bytes(inner.as_os_str()),
+        &irsync::platform::os_to_bytes(inner.as_os_str())[..],
         &b"srv/photos"[..],
         &b"srv/other"[..],
     ] {
@@ -355,6 +353,69 @@ async fn another_spelling_of_an_inner_export_keeps_its_rules() {
         let _ = within(d.task).await;
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// On Windows, where the daemon also checks by identity that a request
+/// does not pass through another export's directory, that check knows only
+/// the exports the key has a grant for: through the outer export the key
+/// reaches the ungranted inner one's directory in any spelling, and no
+/// reply names the inner export.
+#[tokio::test]
+#[cfg(windows)]
+async fn the_identity_check_knows_only_granted_exports() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (srv, inner) = (
+        tmp.path().join("srv"),
+        tmp.path().join("srv").join("photos"),
+    );
+    std::fs::create_dir_all(inner.join("d")).unwrap();
+    std::fs::write(inner.join("f"), b"f").unwrap();
+    let client = client_endpoint().await;
+    let d = spawn_daemon_home(
+        vec![
+            ("srv", srv.clone(), false),
+            ("hidden-name", inner.clone(), true),
+        ],
+        MemoryAuthorizer::single(
+            client.id(),
+            Permissions {
+                exports: [("srv".to_string(), Access::ReadWrite)].into(),
+                ..Permissions::default()
+            },
+        ),
+        None,
+    )
+    .await;
+    for path in [
+        &b"srv/photos"[..],
+        b"srv/PHOTOS",
+        b"srv/Photos/d",
+        b"srv/photos/new",
+    ] {
+        for dir in [Direction::ClientSends, Direction::DaemonSends] {
+            match exchange_against(&d, &client, hello(path, dir))
+                .await
+                .unwrap()
+            {
+                HelloAckOrError::Ack(_) => {}
+                HelloAckOrError::Err(e) => {
+                    assert!(
+                        !e.message.contains("hidden-name"),
+                        "{path:?}: {}",
+                        e.message
+                    );
+                    // Only a pull of a path that is not there may fail.
+                    assert!(
+                        dir == Direction::DaemonSends && path.ends_with(b"new"),
+                        "{path:?} {dir:?}: {}",
+                        e.message
+                    );
+                }
+            }
+        }
+    }
+    d.shutdown.cancel();
+    let _ = within(d.task).await;
 }
 
 #[tokio::test]
@@ -828,7 +889,13 @@ async fn all_paths_refuses_root_and_non_utf8_roots() {
     use irsync::authz::Authorizer;
     let tmp = tempfile::tempdir().unwrap();
     let mut bad = bytes(tmp.path());
-    bad.extend_from_slice(b"/caf\xe9");
+    // A name that is not UTF-8: any bytes on Unix; on Windows, where names
+    // are UTF-16 and stored as WTF-8, an unpaired surrogate (U+D800).
+    bad.extend_from_slice(if cfg!(windows) {
+        &b"/caf\xed\xa0\x80"[..]
+    } else {
+        &b"/caf\xe9"[..]
+    });
     let client = client_endpoint().await;
     let authz = Arc::new(MemoryAuthorizer::single(client.id(), all_paths()));
     let d = spawn_memory(&authz).await;
@@ -868,7 +935,7 @@ async fn all_paths_missing_path_is_bad_path() {
             Code::BadPath as i32,
             format!(
                 "no such file or directory: {}",
-                irsync::fs::paths::escape_path(&path)
+                irsync::fs::paths::escape_os_path(&path)
             )
         )
     );

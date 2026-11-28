@@ -12,8 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{archive_opts, Flow, Harness};
-#[cfg(unix)]
-use irsync::platform::file_id;
+use irsync::platform::testutil::file_id;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * 1024;
@@ -52,7 +51,6 @@ fn count(events: &[String], prefix: &str) -> usize {
 
 /// A harness whose trees live under `target/`, where the filesystem may
 /// clone files; `None` (after a note) when it does not.
-#[cfg(unix)]
 async fn reflink_harness() -> Option<Harness> {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
     fs::create_dir_all(base).unwrap();
@@ -75,7 +73,6 @@ async fn seeded_in(h: &Harness, flow: Flow, content: &[u8]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn a_cloned_part_writes_only_the_changed_chunk() {
     within30(async {
         let Some(h) = reflink_harness().await else {
@@ -86,7 +83,7 @@ async fn a_cloned_part_writes_only_the_changed_chunk() {
         let src = h.src(flow).join("x.bin");
         let dst = h.dst(flow).join("x.bin");
         patch(&src, 2 * MIB as u64 + 999, &[0x77]);
-        let before = file_id(&fs::metadata(&dst).unwrap()).1;
+        let before = file_id(&dst).unwrap().1;
         let log: irsync::session::EventLog = Arc::default();
         let mut local = h.local_side();
         local.hooks.events = Some(log.clone());
@@ -99,23 +96,21 @@ async fn a_cloned_part_writes_only_the_changed_chunk() {
         assert_eq!(count(&events, "copied:x.bin"), 0, "{events:?}");
         assert_eq!(count(&events, "chunk:x.bin"), 1, "{events:?}");
         // Still placed by rename: a new inode, no `.part` left.
-        assert_ne!(file_id(&fs::metadata(&dst).unwrap()).1, before);
+        assert_ne!(file_id(&dst).unwrap().1, before);
         assert!(!h.dst(flow).join(".irsync.x.bin.part").exists());
         assert!(out.bytes_transferred < 16 * KIB as u64);
     })
     .await;
 }
 
-#[cfg(unix)]
 fn inplace_opts() -> irsync::options::SyncOptions {
     let args = irsync::cli::Args::try_parse_from(["irsync", "-a", "--inplace", "src/", "host:m/"])
         .unwrap();
     irsync::options::SyncOptions::from_args(&args)
 }
 
-#[cfg(unix)]
 fn inode(p: &Path) -> u64 {
-    file_id(&fs::metadata(p).unwrap()).1
+    file_id(p).unwrap().1
 }
 
 /// Seeds `x.bin` with `content` in direction `flow` on a plain harness.
@@ -126,7 +121,6 @@ async fn seeded(flow: Flow, content: &[u8]) -> Harness {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn inplace_keeps_the_inode_and_writes_only_the_changed_chunk() {
     within30(async {
         let flow = Flow::Pull;
@@ -158,7 +152,6 @@ async fn inplace_keeps_the_inode_and_writes_only_the_changed_chunk() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn inplace_deletion_near_the_start_reuses_chunks_from_above() {
     within30(async {
         let flow = Flow::Pull;
@@ -191,7 +184,6 @@ async fn inplace_deletion_near_the_start_reuses_chunks_from_above() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn inplace_insertion_near_the_start_takes_shifted_chunks_from_the_network() {
     within30(async {
         let flow = Flow::Pull;
@@ -225,7 +217,6 @@ async fn inplace_insertion_near_the_start_takes_shifted_chunks_from_the_network(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn inplace_on_a_push_is_honoured_by_the_daemon() {
     within30(async {
         let flow = Flow::Push;
@@ -246,7 +237,6 @@ async fn inplace_on_a_push_is_honoured_by_the_daemon() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn inplace_resumes_after_a_connection_loss() {
     within30(async {
         let flow = Flow::Pull;

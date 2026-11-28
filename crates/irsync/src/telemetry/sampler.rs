@@ -142,6 +142,8 @@ mod tests {
         build_endpoint(opts).await.unwrap()
     }
 
+    /// Process usage is Unix only: Windows reports none yet (`platform::process_usage`).
+    #[cfg(unix)]
     #[tokio::test]
     async fn stop_reports_the_process_and_the_connection() {
         let (a, b) = (loopback().await, loopback().await);

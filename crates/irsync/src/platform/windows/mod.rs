@@ -52,6 +52,7 @@ use windows_sys::Win32::Foundation::{
     ERROR_NOT_A_REPARSE_POINT, ERROR_NOT_SAME_DEVICE, ERROR_NOT_SUPPORTED,
     ERROR_NO_SYSTEM_RESOURCES, ERROR_PATH_NOT_FOUND, ERROR_REPARSE_POINT_ENCOUNTERED,
     ERROR_SHARING_VIOLATION, ERROR_STOPPED_ON_SYMLINK, ERROR_TOO_MANY_OPEN_FILES,
+    ERROR_USER_MAPPED_FILE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -106,7 +107,12 @@ pub fn cause(e: &io::Error) -> Cause {
         ERROR_DIR_NOT_EMPTY => Cause::NotEmpty,
         ERROR_NOT_SAME_DEVICE => Cause::CrossDevice,
         ERROR_TOO_MANY_OPEN_FILES | ERROR_NO_SYSTEM_RESOURCES => Cause::OutOfHandles,
-        ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION | ERROR_DELETE_PENDING => Cause::InUse,
+        // A file mapped into some process's memory cannot be cut short or
+        // replaced while it is (`ERROR_USER_MAPPED_FILE`).
+        ERROR_SHARING_VIOLATION
+        | ERROR_LOCK_VIOLATION
+        | ERROR_DELETE_PENDING
+        | ERROR_USER_MAPPED_FILE => Cause::InUse,
         ERROR_NOT_SUPPORTED | ERROR_INVALID_FUNCTION => Cause::NotSupported,
         _ => Cause::Other,
     }
@@ -200,6 +206,168 @@ fn one_name(name: &[u8]) -> io::Result<Vec<u16>> {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "name too long"));
     }
     Ok(units)
+}
+
+// ---------------------------------------------------------------------------
+// Paths as the system opens them.
+
+/// A path the local user typed (on the command line) or wrote (in the
+/// config), as Windows means it, made absolute once where it comes in and
+/// kept: `std::path::absolute`, which is `GetFullPathNameW`. Win32 strips
+/// trailing dots and spaces from the last name, resolves `.` and `..`,
+/// reads `/` as `\` and puts a relative path below the current directory,
+/// so `dst.` is `C:\…\dst`, as every Windows program reads it. Every later
+/// open of the result ([`native_path`]) then opens the same directory. A
+/// path that cannot be made absolute (empty) is kept as it is.
+pub fn local_path(path: &Path) -> std::path::PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// `path` in the verbatim form (`\\?\C:\…`, `\\?\UNC\server\share\…`), the
+/// form every function here that opens by path hands to the system. Win32
+/// changes a path in the other forms before it opens it: it strips trailing
+/// dots and spaces from a name (`ro.` opens `ro`), reads `CON` or `NUL` as
+/// a device, and stops at 260 characters. In the verbatim form each name
+/// is opened as it is written, so what was checked by name and what is
+/// opened agree.
+///
+/// - `/` becomes `\` (it separates nothing in a verbatim path).
+/// - A relative path is put below the current directory, a path rooted on
+///   the current drive (`\x`) on that drive, a drive-relative one (`C:x`)
+///   below that drive's current directory (`std::path::absolute` of the
+///   drive alone; the names after it are taken as written).
+/// - `.` is dropped and `..` takes the name before it away, as Win32 does
+///   (never above the root): every caller here takes a path the user or
+///   the configuration wrote, where `..` means that, or one built from
+///   names already checked, which holds no `..` (the name rule and
+///   [`RelPath`](crate::fs::paths::RelPath) refuse it).
+/// - A path already verbatim, or a device path (`\\.\…`), is returned as
+///   it is. A current directory that is itself verbatim (`\\?\C:\…`,
+///   `\\?\UNC\…`) is taken as it is, with the names below it.
+/// - An empty path is an error (`InvalidInput`), as is one that cannot be
+///   made absolute (no current directory).
+///
+/// Only what is opened changes: callers keep the path as given for their
+/// messages, and the errors of these calls carry no path.
+pub fn native_path(path: &Path) -> io::Result<std::borrow::Cow<'_, Path>> {
+    if path.as_os_str().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "an empty path"));
+    }
+    if passes_through(path) {
+        return Ok(std::borrow::Cow::Borrowed(path));
+    }
+    let (root, names) = verbatim_parts(path).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the path cannot be made absolute",
+        )
+    })?;
+    let mut out = root;
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            out.push("\\");
+        }
+        out.push(n);
+    }
+    Ok(std::borrow::Cow::Owned(out.into()))
+}
+
+/// Whether `path` is verbatim already or a device path: given to the
+/// system as it is.
+fn passes_through(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(p)) if !matches!(p.kind(), Prefix::Disk(_) | Prefix::UNC(..))
+    )
+}
+
+/// [`native_path`]'s pieces for a path that does not pass through: the
+/// verbatim root (`\\?\C:\`, `\\?\UNC\server\share\`) and the names below
+/// it; `None` when it cannot be made absolute.
+fn verbatim_parts(path: &Path) -> Option<(OsString, Vec<OsString>)> {
+    use std::path::{Component, Prefix};
+    let mut comps = path.components().peekable();
+    let (root, mut names) = match comps.peek().copied() {
+        Some(Component::Prefix(p)) => {
+            comps.next();
+            let rooted = comps.peek() == Some(&Component::RootDir);
+            if rooted {
+                comps.next();
+            }
+            match p.kind() {
+                Prefix::Disk(d) if rooted => (
+                    OsString::from(format!(r"\\?\{}:\", char::from(d).to_ascii_uppercase())),
+                    Vec::new(),
+                ),
+                Prefix::Disk(d) => {
+                    let drive = format!("{}:", char::from(d));
+                    base_parts(&std::path::absolute(Path::new(&drive)).ok()?)?
+                }
+                Prefix::UNC(server, share) => (unc_root(server, share), Vec::new()),
+                _ => return None,
+            }
+        }
+        Some(Component::RootDir) => {
+            comps.next();
+            let (root, _) = base_parts(&std::env::current_dir().ok()?)?;
+            (root, Vec::new())
+        }
+        _ => base_parts(&std::env::current_dir().ok()?)?,
+    };
+    for c in comps {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                names.pop();
+            }
+            Component::Normal(n) => names.push(n.to_os_string()),
+            Component::Prefix(_) | Component::RootDir => return None,
+        }
+    }
+    Some((root, names))
+}
+
+/// `\\?\UNC\server\share\`.
+fn unc_root(server: &OsStr, share: &OsStr) -> OsString {
+    let mut r = OsString::from(r"\\?\UNC\");
+    r.push(server);
+    r.push("\\");
+    r.push(share);
+    r.push("\\");
+    r
+}
+
+/// The pieces of `dir`, an absolute directory the system gave (the current
+/// directory, or a drive's): as [`verbatim_parts`], and when it is verbatim
+/// already, its own root and names as they are (the system made them).
+fn base_parts(dir: &Path) -> Option<(OsString, Vec<OsString>)> {
+    use std::path::{Component, Prefix};
+    let mut comps = dir.components();
+    let Some(Component::Prefix(p)) = comps.next() else {
+        return None;
+    };
+    let root = match p.kind() {
+        Prefix::Disk(_) | Prefix::UNC(..) => return verbatim_parts(dir),
+        Prefix::VerbatimDisk(d) => {
+            OsString::from(format!(r"\\?\{}:\", char::from(d).to_ascii_uppercase()))
+        }
+        Prefix::VerbatimUNC(server, share) => unc_root(server, share),
+        Prefix::Verbatim(name) => {
+            let mut r = OsString::from(r"\\?\");
+            r.push(name);
+            r.push("\\");
+            r
+        }
+        Prefix::DeviceNS(_) => return None,
+    };
+    let names = comps
+        .filter_map(|c| match c {
+            Component::Normal(n) => Some(n.to_os_string()),
+            _ => None,
+        })
+        .collect();
+    Some((root, names))
 }
 
 // ---------------------------------------------------------------------------
@@ -332,7 +500,7 @@ impl Dir {
                 .access_mode(DIR_ACCESS)
                 .share_mode(SHARE_ALL)
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | flags)
-                .open(path)?,
+                .open(native_path(path)?)?,
         );
         let (a, _) = attribute_tag(h.as_handle())?;
         if flags & FILE_FLAG_OPEN_REPARSE_POINT != 0 && is_reparse(a) {
@@ -667,7 +835,7 @@ pub fn open_read_nofollow(path: &Path) -> io::Result<File> {
 fn open_nofollow(mut options: std::fs::OpenOptions, path: &Path) -> io::Result<File> {
     let file = match options
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)
+        .open(native_path(path)?)
     {
         Ok(file) => file,
         // Only says which error it was: what is there is not used.
@@ -788,7 +956,7 @@ pub fn lstat(path: &Path) -> io::Result<Stat> {
         .access_mode(FILE_READ_ATTRIBUTES)
         .share_mode(SHARE_ALL)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
+        .open(native_path(path)?)?;
     stat_of(file.as_handle())
 }
 
@@ -1115,7 +1283,9 @@ pub fn no_space_error() -> io::Error {
 pub fn symlink_path(target: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
     let (target, link) = (target.as_ref(), link.as_ref());
     let base = link.parent().unwrap_or(Path::new("."));
-    if base.join(target).is_dir() {
+    // The target is stored as given; only where the link goes is opened.
+    let link = native_path(link)?;
+    if native_path(&base.join(target))?.is_dir() {
         std::os::windows::fs::symlink_dir(target, link)
     } else {
         std::os::windows::fs::symlink_file(target, link)
@@ -1141,9 +1311,24 @@ fn set_mtime_handle(h: BorrowedHandle<'_>, mtime: (i64, u32)) -> io::Result<()> 
 }
 
 /// Sets the modification time of the open `file`, as [`Dir::set_mtime`]
-/// does.
+/// does. Unix sets it through any descriptor (`futimens`); Windows needs
+/// `FILE_WRITE_ATTRIBUTES` on the handle, which a file opened to read
+/// lacks. Then the time is set through a second handle to the same open
+/// file (`ReOpenFile`, no name looked up), asking only for that access:
+/// where the user may not change the file's attributes, it is refused.
 pub fn set_mtime_file(file: &File, mtime: (i64, u32)) -> io::Result<()> {
-    set_mtime_handle(file.as_handle(), mtime)
+    match set_mtime_handle(file.as_handle(), mtime) {
+        Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+            let attrs = native::reopen(
+                file.as_handle(),
+                FILE_WRITE_ATTRIBUTES,
+                SHARE_ALL,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            )?;
+            set_mtime_handle(attrs.as_handle(), mtime)
+        }
+        r => r,
+    }
 }
 
 /// [`Dir::set_mtime`] of a path the caller trusts; a final link's own
@@ -1153,8 +1338,37 @@ pub fn set_mtime_path(path: &Path, mtime: (i64, u32)) -> io::Result<()> {
         .access_mode(FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
         .share_mode(SHARE_ALL)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
+        .open(native_path(path)?)?;
     set_mtime_handle(file.as_handle(), mtime)
+}
+
+/// Where irsync's lock on a file lies: the one byte at this offset. A
+/// Windows lock (`LockFileEx`) is mandatory: while it is held, no other
+/// handle may read or write the bytes it covers, in this process too.
+/// Locking one byte far past any content (2^63 - 2; NTFS takes a lock
+/// beyond the end of a file, and no file grows that large) excludes every
+/// other locker, which all take this same byte, and leaves the content
+/// readable and writable through other handles: what a Unix advisory lock
+/// (`flock`) gives.
+const LOCK_OFFSET: u64 = 0x7FFF_FFFF_FFFF_FFFE;
+
+/// Takes the exclusive lock on the open `file`, without waiting, as
+/// [`File::try_lock`] answers: [`std::fs::TryLockError::WouldBlock`] while
+/// another handle holds it. Released by [`unlock_file`] or when the handle
+/// is closed. See [`LOCK_OFFSET`].
+pub fn try_lock_file(file: &File) -> Result<(), std::fs::TryLockError> {
+    match native::try_lock_range(file.as_handle(), LOCK_OFFSET, 1) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) => {
+            Err(std::fs::TryLockError::WouldBlock)
+        }
+        Err(e) => Err(std::fs::TryLockError::Error(e)),
+    }
+}
+
+/// Releases the lock [`try_lock_file`] took on `file`.
+pub fn unlock_file(file: &File) -> io::Result<()> {
+    native::unlock_range(file.as_handle(), LOCK_OFFSET, 1)
 }
 
 /// Not on Windows ([`Cause::NotSupported`]).
@@ -1182,11 +1396,12 @@ pub fn make_device_path(_path: &Path, _kind: Kind, _mode: u32, _rdev: u64) -> io
     Err(unsupported("a device node"))
 }
 
-/// Not on Windows ([`Cause::NotSupported`]); the one caller, which makes
-/// its own `.part` writable again after a failed finalize, takes that as
-/// "could not".
+/// Does nothing on Windows: the one caller makes its own `.part` writable
+/// again after a failed finalize took owner write away with a mode. A
+/// Windows receiver sets no mode (see [`super::Platform::has_modes`]), so there
+/// is nothing to give back.
 pub fn make_owner_writable(_file: &File) -> io::Result<()> {
-    Err(unsupported("a file mode"))
+    Ok(())
 }
 
 /// Does nothing on Windows: a file keeps the access its directory gives
@@ -1291,12 +1506,17 @@ pub fn home_dir(env: &dyn Fn(&str) -> Option<OsString>) -> Option<std::path::Pat
 /// (roaming app data, local app data, the profile). `None` only when the
 /// system has no config or state folder either; no key without a home.
 pub fn default_locations(env: &dyn Fn(&str) -> Option<OsString>) -> Option<super::Locations> {
+    // Each as Windows means it ([`local_path`]), as a configured path is.
     Some(super::Locations {
-        config: env_or_system(env, "APPDATA", dirs::config_dir)?
-            .join("irsync")
-            .join("irsync.toml"),
-        state: env_or_system(env, "LOCALAPPDATA", dirs::data_local_dir)?.join("irsync"),
-        key: home_dir(env).map(|h| h.join(".irsync").join("id_ed25519")),
+        config: local_path(
+            &env_or_system(env, "APPDATA", dirs::config_dir)?
+                .join("irsync")
+                .join("irsync.toml"),
+        ),
+        state: local_path(
+            &env_or_system(env, "LOCALAPPDATA", dirs::data_local_dir)?.join("irsync"),
+        ),
+        key: home_dir(env).map(|h| local_path(&h.join(".irsync").join("id_ed25519"))),
     })
 }
 
@@ -1337,6 +1557,156 @@ pub use process::*;
 pub mod clone;
 
 pub mod daemonize;
+
+// ---------------------------------------------------------------------------
+// Roots: the volume a tree lies on.
+
+/// What kind of drive a volume is on, as `GetDriveTypeW` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveKind {
+    /// A disk in this machine (`DRIVE_FIXED`).
+    Fixed,
+    /// A disk that can be taken out, such as a USB stick (`DRIVE_REMOVABLE`).
+    Removable,
+    /// A RAM disk (`DRIVE_RAMDISK`).
+    RamDisk,
+    /// A network share (`DRIVE_REMOTE`), or a path the system resolves to
+    /// one (`\\?\UNC\…`).
+    Remote,
+    /// An optical drive (`DRIVE_CDROM`).
+    CdRom,
+    /// Anything the system cannot name.
+    Unknown,
+}
+
+/// Whether a tree may lie on a volume with the file system `fs_name` (as
+/// `GetVolumeInformationByHandleW` gives it) on a drive of kind `drive`:
+/// only NTFS, and only on a drive of this machine. The rest of this module
+/// relies on NTFS (handle-relative opens, reparse points, file ids, the
+/// rename and delete options); a network share may run anything behind
+/// its name.
+pub fn local_ntfs(fs_name: &str, drive: DriveKind) -> bool {
+    fs_name.eq_ignore_ascii_case("NTFS")
+        && matches!(
+            drive,
+            DriveKind::Fixed | DriveKind::Removable | DriveKind::RamDisk
+        )
+}
+
+/// The kind of drive the open directory `d` lies on, from its final path:
+/// a `\\?\UNC\…` path is a share; otherwise the drive type of the volume
+/// root at the start of the path (a `subst` drive resolves to the drive it
+/// stands for, a mapped drive to its share).
+fn drive_kind(d: &Dir) -> io::Result<DriveKind> {
+    use windows_sys::Win32::Storage::FileSystem::{VOLUME_NAME_DOS, VOLUME_NAME_GUID};
+    use windows_sys::Win32::System::WindowsProgramming::{
+        DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
+    };
+    let h = d.0.as_handle();
+    // A volume with no drive letter has no DOS name: its GUID path then.
+    let path = native::final_path(h, VOLUME_NAME_DOS)
+        .or_else(|_| native::final_path(h, VOLUME_NAME_GUID))?;
+    let head = String::from_utf16_lossy(&path[..8.min(path.len())]);
+    if head.eq_ignore_ascii_case(r"\\?\UNC\") {
+        return Ok(DriveKind::Remote);
+    }
+    // The volume root: up to the first separator after `\\?\`, kept.
+    let start = 4.min(path.len());
+    let root = match path[start..].iter().position(|&c| c == u16::from(b'\\')) {
+        Some(i) => &path[..start + i + 1],
+        None => &path[..],
+    };
+    Ok(match native::drive_type(root) {
+        DRIVE_FIXED => DriveKind::Fixed,
+        DRIVE_REMOVABLE => DriveKind::Removable,
+        DRIVE_RAMDISK => DriveKind::RamDisk,
+        DRIVE_REMOTE => DriveKind::Remote,
+        DRIVE_CDROM => DriveKind::CdRom,
+        _ => DriveKind::Unknown,
+    })
+}
+
+/// Fails unless `root` lies on a local NTFS volume ([`local_ntfs`]), with
+/// the message `{root} is not on a local NTFS volume`. A root that does
+/// not exist yet is judged by the nearest directory above it that does,
+/// where it will be made. The volume is read through the open directory,
+/// so the answer is about where the name leads.
+pub fn check_root(root: &Path) -> io::Result<()> {
+    let full = std::path::absolute(native_path(root)?)?;
+    let mut at: &Path = &full;
+    let dir = loop {
+        match Dir::open_root(at) {
+            Ok(d) => break d,
+            Err(e) if cause(&e) == Cause::NotThere => match at.parent() {
+                Some(p) => at = p,
+                None => return Err(e),
+            },
+            Err(e) => return Err(e),
+        }
+    };
+    check_root_dir(&dir, root)
+}
+
+/// [`check_root`] for a root already open as `dir`, so the check and the
+/// use are of one directory; `shown` names it in the message.
+pub fn check_root_dir(dir: &Dir, shown: &Path) -> io::Result<()> {
+    let fs_name = String::from_utf16_lossy(&native::file_system_name(dir.0.as_handle())?);
+    if local_ntfs(&fs_name, drive_kind(dir)?) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("{} is not on a local NTFS volume", shown.display()),
+        ))
+    }
+}
+
+/// Whether `e`, from receiving a datagram, says it was larger than the
+/// buffer (`WSAEMSGSIZE`): Windows then fills the buffer and drops the
+/// rest, as Unix does without an error.
+pub fn is_datagram_too_large(e: &io::Error) -> bool {
+    /// `WSAEMSGSIZE` (winsock2.h).
+    const WSAEMSGSIZE: i32 = 10040;
+    e.raw_os_error() == Some(WSAEMSGSIZE)
+}
+
+/// Whether `name`, at the top of a volume, is one Windows keeps there for
+/// itself: `System Volume Information` and `$RECYCLE.BIN`, in any case. A
+/// walk of a tree whose root is the top of a volume leaves them out.
+pub fn is_builtin_exclude(name: &[u8]) -> bool {
+    [&b"System Volume Information"[..], b"$RECYCLE.BIN"]
+        .iter()
+        .any(|n| name.eq_ignore_ascii_case(n))
+}
+
+/// Whether the directory `root` is the top of a volume, where
+/// [`is_builtin_exclude`] applies: as given (`C:\`, `\\?\C:\`, a `subst`
+/// drive's root), or as the open directory resolves (a volume mounted in a
+/// folder, or `\\?\Volume{…}\`): its path by volume GUID is the volume's
+/// root, with nothing after it.
+pub fn is_volume_top(root: &Path) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::VOLUME_NAME_GUID;
+    let as_given = std::path::absolute(root).is_ok_and(|p| {
+        let mut c = p.components();
+        matches!(c.next(), Some(std::path::Component::Prefix(_)))
+            && matches!(c.next(), Some(std::path::Component::RootDir))
+            && c.next().is_none()
+    });
+    as_given
+        || native_path(root)
+            .and_then(|p| Dir::open_root(&p))
+            .and_then(|d| native::final_path(d.0.as_handle(), VOLUME_NAME_GUID))
+            .is_ok_and(|p| is_volume_guid_root(&String::from_utf16_lossy(&p)))
+}
+
+/// Whether `path` is a volume's root by GUID: `\\?\Volume{…}\` and no
+/// more.
+fn is_volume_guid_root(path: &str) -> bool {
+    path.get(..11)
+        .is_some_and(|head| head.eq_ignore_ascii_case(r"\\?\Volume{"))
+        && path.ends_with(r"}\")
+        && path[11..path.len() - 2].bytes().all(|b| b != b'\\')
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers.

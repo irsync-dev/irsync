@@ -45,6 +45,75 @@ impl Platform {
             Platform::Windows => "windows",
         }
     }
+
+    /// Whether files carry a permission mode a receiver can set (`-p`).
+    /// Windows has none, so a receiver there leaves modes alone, as the
+    /// user did not ask for them; setting one stays an error in the
+    /// platform calls ([`Dir::set_mode`] and the rest), never a silent
+    /// success.
+    pub const fn has_modes(self) -> bool {
+        match self {
+            Platform::Unix => true,
+            Platform::Windows => false,
+        }
+    }
+
+    /// The separator this kind of system writes between the components of
+    /// a path: `/` on Unix, `\` on Windows.
+    pub const fn separator(self) -> u8 {
+        match self {
+            Platform::Unix => b'/',
+            Platform::Windows => b'\\',
+        }
+    }
+
+    /// Whether two different spellings may name one directory: on Windows
+    /// a name in another case (NTFS folds case by default) or an 8.3 short
+    /// name. Where they may, the daemon also checks the directories a
+    /// request passes through by identity (see `daemon::inner_export`).
+    /// Not on Unix, where irsync makes no such check (a case-insensitive
+    /// macOS volume has the same gap; recorded, not handled here).
+    pub const fn names_may_alias(self) -> bool {
+        match self {
+            Platform::Unix => false,
+            Platform::Windows => true,
+        }
+    }
+
+    /// Whether a directory takes two names that differ only in case for one
+    /// (NTFS does by default). Where it does, a receiver refuses a new name
+    /// that differs only by case from one already in its directory, instead
+    /// of writing over that one; on Unix it makes no such check and lists
+    /// no directory for it.
+    pub const fn folds_case(self) -> bool {
+        match self {
+            Platform::Unix => false,
+            Platform::Windows => true,
+        }
+    }
+
+    /// Whether resolving a path by name says less than it does on Unix:
+    /// on Windows `..` is taken away with the name before it by the text
+    /// alone (`missing\..\x` is `x`, whether `missing` is there or not),
+    /// and a name below a file reads as missing rather than as "not a
+    /// directory". Where it does, a caller that must refuse such a path
+    /// checks the directories on the way itself; Unix needs no such check.
+    pub const fn resolves_paths_lexically(self) -> bool {
+        match self {
+            Platform::Unix => false,
+            Platform::Windows => true,
+        }
+    }
+
+    /// Whether the byte `b` separates the components of a path on this kind
+    /// of system: `/` on Unix; `\` and `/` on Windows. Both are ASCII, so
+    /// they never occur inside a longer UTF-8 or WTF-8 sequence.
+    pub const fn is_separator(self, b: u8) -> bool {
+        match self {
+            Platform::Unix => b == b'/',
+            Platform::Windows => b == b'/' || b == b'\\',
+        }
+    }
 }
 
 /// What an operating-system error means to the caller, as [`cause`] reads

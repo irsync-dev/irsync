@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use common::{archive_opts, Flow, Harness};
-#[cfg(unix)]
 use irsync::session::Event;
 
 const MIB: usize = 1024 * 1024;
@@ -39,12 +38,11 @@ fn mtime(p: &Path) -> SystemTime {
 }
 
 fn set_mtime(p: &Path, t: SystemTime) {
-    fs::File::open(p).unwrap().set_modified(t).unwrap();
+    common::set_modified(p, t).unwrap();
 }
 
-#[cfg(unix)]
 fn inode(p: &Path) -> u64 {
-    irsync::platform::file_id(&fs::metadata(p).unwrap()).1
+    irsync::platform::testutil::file_id(p).unwrap().1
 }
 
 fn checksum_opts() -> irsync::options::SyncOptions {
@@ -54,7 +52,6 @@ fn checksum_opts() -> irsync::options::SyncOptions {
 }
 
 /// Itemize codes the bus carried for `name`.
-#[cfg(unix)]
 fn itemized(events: &[Event], name: &str) -> Vec<String> {
     events
         .iter()
@@ -70,7 +67,6 @@ fn has(events: &[String], what: &str) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn touched_source_is_a_metadata_only_update() {
     within30(async {
         let opts = archive_opts();
@@ -119,7 +115,6 @@ async fn touched_source_is_a_metadata_only_update() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn touched_destination_is_a_metadata_only_update() {
     within30(async {
         let opts = archive_opts();
@@ -154,7 +149,6 @@ async fn touched_destination_is_a_metadata_only_update() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn checksum_against_a_cold_index_reads_once_and_changes_nothing() {
     within30(async {
         let flow = Flow::Pull;
@@ -387,7 +381,6 @@ async fn checksum_forces_the_daemon_sender_to_read() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn checksum_reads_every_file_on_both_sides_and_rewrites_nothing() {
     within30(async {
         let flow = Flow::Push;

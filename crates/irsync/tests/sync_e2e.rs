@@ -40,7 +40,7 @@ fn data(n: usize, seed: u32) -> Vec<u8> {
 
 fn set_mtime(p: &Path, secs: u64, nanos: u32) {
     let t = SystemTime::UNIX_EPOCH + Duration::new(secs, nanos);
-    fs::File::open(p).unwrap().set_modified(t).unwrap();
+    common::set_modified(p, t).unwrap();
 }
 
 /// A tree with most kinds of entry: nested dirs, empty dir and file, a
@@ -736,6 +736,59 @@ async fn all_paths_push_then_resume_uses_index() {
         assert_eq!(h.daemon_files_hashed(), hashed, "daemon hashed files");
         let again = fs::read_to_string(&config).unwrap();
         assert_eq!(again, written, "the second push added another export");
+    })
+    .await;
+}
+
+/// A Windows receiver has no modes to set: with `-a` (which asks for them)
+/// and without `-p` alike, every file is placed with its bytes, its size and
+/// its modification time, and the session reports no error. On Unix the
+/// modes do arrive (`recv.rs`, `finalize_applies_mtime_and_mode`).
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_windows_receiver_places_files_with_and_without_p() {
+    within30(async {
+        for perms in [true, false] {
+            let mut opts = archive_opts();
+            opts.preserve.perms = perms;
+            for flow in [Flow::Push, Flow::Pull] {
+                let (out, h) = sync_trees(
+                    |r| {
+                        fs::write(r.join("small.txt"), b"hello irsync\n").unwrap();
+                        fs::write(r.join("big.bin"), data(300 * KIB, 7)).unwrap();
+                        fs::write(r.join("empty.txt"), b"").unwrap();
+                        fs::create_dir(r.join("d")).unwrap();
+                        set_mtime(&r.join("small.txt"), 1_500_000_000, 123_456_700);
+                        set_mtime(&r.join("big.bin"), 1_400_000_000, 0);
+                        set_mtime(&r.join("empty.txt"), 1_300_000_000, 5_000_000);
+                    },
+                    |_| {},
+                    &opts,
+                    flow,
+                )
+                .await;
+                let what = format!("perms {perms}, {flow:?}");
+                assert!(out.errors.is_empty(), "{what}: {:?}", out.errors);
+                for name in ["small.txt", "big.bin", "empty.txt"] {
+                    let (s, t) = (
+                        fs::metadata(h.src(flow).join(name)).unwrap(),
+                        fs::metadata(h.dst(flow).join(name)).unwrap(),
+                    );
+                    assert_eq!(s.len(), t.len(), "{what}: size of {name}");
+                    assert_eq!(
+                        irsync::platform::mtime_of(&s),
+                        irsync::platform::mtime_of(&t),
+                        "{what}: mtime of {name}"
+                    );
+                    assert_eq!(
+                        fs::read(h.src(flow).join(name)).unwrap(),
+                        fs::read(h.dst(flow).join(name)).unwrap(),
+                        "{what}: content of {name}"
+                    );
+                }
+                assert!(h.dst(flow).join("d").is_dir(), "{what}");
+            }
+        }
     })
     .await;
 }

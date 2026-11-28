@@ -1,5 +1,6 @@
 //! The operands of a sync: a local path or `HOST:PATH`.
 
+use crate::platform::Platform;
 use std::path::PathBuf;
 
 /// An operand or a set of operands that cannot be used.
@@ -33,13 +34,44 @@ impl Location {
 
     /// A `:` before any `/` makes the string remote (rsync's rule). An
     /// IPv6 host is written in brackets, `[fe80::1]:PATH` or
-    /// `user@[fe80::1]:PATH`; the host is kept without them.
+    /// `user@[fe80::1]:PATH`; the host is kept without them. On Windows a
+    /// drive path (`C:\x`, `c:/x`, `C:`) is local (see [`is_drive_path`]).
     pub fn parse(s: &str) -> Result<Location, UsageError> {
+        Self::parse_on(s, Platform::CURRENT)
+    }
+
+    /// The operand of a listing (`irsync list HOST`, `irsync HOST:`): as
+    /// [`Location::parse`], except that a letter and `:` alone is the host
+    /// of that letter, also on Windows. A listing has no local side, so
+    /// `h:` cannot mean the drive there, and `irsync list h` (which becomes
+    /// `h:`) lists a one-letter host. Elsewhere `C:` is the drive (see
+    /// [`is_drive_path`]). On Unix this is `parse`.
+    pub fn parse_listed(s: &str) -> Result<Location, UsageError> {
+        match s.as_bytes() {
+            [l, b':'] if l.is_ascii_alphabetic() => Ok(Location::Remote {
+                host: s[..1].to_string(),
+                path: Vec::new(),
+                contents_only: false,
+            }),
+            _ => Self::parse(s),
+        }
+    }
+
+    /// [`Location::parse`] as it reads `s` on `platform`. On Windows a
+    /// backslash separates as `/` does, for the rule above (so `.\C:x`,
+    /// `\\?\C:\x` and `\\server\share\x` are local) and for a local path's
+    /// trailing separator (contents only). A remote path is passed on as
+    /// typed; there only `/` means contents only, as before.
+    pub fn parse_on(s: &str, platform: Platform) -> Result<Location, UsageError> {
         let contents_only = s.ends_with('/');
+        if is_drive_path(s, platform) {
+            return Ok(local(s, platform));
+        }
+        let sep = |c: char| c.is_ascii() && platform.is_separator(c as u8);
         let remote = match bracketed(s)? {
             Bracketed::Remote(host, rest) => Some((host, rest)),
             Bracketed::Local => None,
-            Bracketed::No => match (s.find(':'), s.find('/')) {
+            Bracketed::No => match (s.find(':'), s.find(sep)) {
                 (Some(c), slash) if slash.is_none_or(|sl| c < sl) => {
                     Some((s[..c].to_string(), &s[c + 1..]))
                 }
@@ -63,21 +95,52 @@ impl Location {
                 })
             }
             None => {
-                let trimmed = s.trim_end_matches('/');
-                let path = if trimmed.is_empty() {
-                    if s.is_empty() {
-                        return Err(UsageError("empty path".into()));
-                    }
-                    PathBuf::from("/")
-                } else {
-                    PathBuf::from(trimmed)
-                };
-                Ok(Location::Local {
-                    path,
-                    contents_only,
-                })
+                if s.is_empty() {
+                    return Err(UsageError("empty path".into()));
+                }
+                Ok(local(s, platform))
             }
         }
+    }
+}
+
+/// The local path `s` (not empty), without its trailing separators (`/`,
+/// and on Windows `\` too), which make it contents only; a lone run of
+/// them is `/`, and a drive's root (`C:/`) keeps its first one, as `C:`
+/// alone is another directory (the drive's current one). On Unix only `/`
+/// is a separator, as before.
+fn local(s: &str, platform: Platform) -> Location {
+    let sep = |c: char| c.is_ascii() && platform.is_separator(c as u8);
+    let contents_only = s.ends_with(sep);
+    let trimmed = s.trim_end_matches(sep);
+    let path = if trimmed.is_empty() {
+        PathBuf::from("/")
+    } else if trimmed.len() == 2 && trimmed.len() < s.len() && is_drive_path(trimmed, platform) {
+        PathBuf::from(&s[..3])
+    } else {
+        PathBuf::from(trimmed)
+    };
+    Location::Local {
+        path,
+        contents_only,
+    }
+}
+
+/// Whether `arg` is a local drive path on `platform`, never `HOST:PATH` or
+/// `NAME:PATH`: on Windows one ASCII letter and `:`, then `\` or `/` or
+/// nothing more (`C:\x`, `c:/x`, `C:`). This is the convention of
+/// OpenSSH's scp on Windows. A one-letter host needs a path without a
+/// separator right after the colon (`h:photos`), or a name for the host.
+/// A drive-relative path (`C:x`, the current directory of drive `C:`) is
+/// not supported: it stays `HOST:PATH`. On Unix nothing is a drive path,
+/// so `C:\x` and `c:/x` are remote there, as they always were.
+pub fn is_drive_path(arg: &str, platform: Platform) -> bool {
+    match (platform, arg.as_bytes()) {
+        (Platform::Unix, _) => false,
+        (Platform::Windows, [l, b':', rest @ ..]) => {
+            l.is_ascii_alphabetic() && matches!(rest.first(), None | Some(b'\\' | b'/'))
+        }
+        (Platform::Windows, _) => false,
     }
 }
 

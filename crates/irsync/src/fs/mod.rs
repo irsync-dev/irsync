@@ -1,5 +1,6 @@
 pub mod ids;
 pub mod meta;
+pub mod names;
 pub mod paths;
 pub mod private;
 pub mod safe;

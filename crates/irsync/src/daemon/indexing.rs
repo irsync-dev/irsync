@@ -74,7 +74,9 @@ fn unix(t: SystemTime) -> u64 {
 /// symlinks resolved, so that two exports of one folder share their runs.
 /// A path that cannot be resolved is its own key.
 pub(super) fn run_key(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    crate::platform::native_path(path)
+        .and_then(std::fs::canonicalize)
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// The latest run of each folder since the daemon started, by its

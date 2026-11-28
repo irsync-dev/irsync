@@ -8,6 +8,7 @@
 use super::{clients, config, exports, grants, typed, ClientSpec, ManageError};
 use crate::authz::Access;
 use crate::config::clients::{Clients, RIGHTS};
+use crate::platform::Platform;
 use iroh::EndpointId;
 use irsync_proto::config as pb;
 use irsync_proto::v1;
@@ -246,12 +247,18 @@ pub fn view(
     }
 }
 
-/// `p` with a leading `~` as `home`; as written when there is no home.
+/// `p` with a leading `~` (`~`, `~/`; on Windows also `~\`) as `home`; as
+/// written when there is no home.
 fn under(p: &str, home: Option<&Path>) -> String {
+    let sep = |r: &&str| {
+        r.bytes()
+            .next()
+            .is_some_and(|b| Platform::CURRENT.is_separator(b))
+    };
     let rest = if p == "~" {
         Some("")
     } else {
-        p.strip_prefix("~/")
+        p.strip_prefix('~').filter(sep).map(|r| &r[1..])
     };
     match (rest, home) {
         (Some(""), Some(h)) => h.to_string_lossy().into_owned(),

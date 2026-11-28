@@ -176,6 +176,8 @@ async fn delete_pass_is_timed() {
     assert!(out.usage.busy(Activity::Plan) > Duration::ZERO);
 }
 
+/// Process usage is Unix only: Windows reports none yet (`platform::process_usage`).
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn push_usage_samples_process_and_rtt() {
     irsync::telemetry::set_enabled(true);
@@ -257,10 +259,25 @@ async fn links_and_specials_are_timed_as_place() {
 async fn a_bwlimit_pause_is_timed_as_send() {
     irsync::telemetry::set_enabled(true);
     let mut opts = archive_opts();
-    // 20 files of 64 KiB at 2 MiB/s: about 0.6 s of pauses.
-    opts.bwlimit = Some(2 << 20);
-    let (out, _h) = sync_trees(tree, |_| {}, &opts, Flow::Push).await;
+    // The sender's bucket starts empty and fills while nothing is sent, up
+    // to its burst: the lesser of one second of rate and 1 MiB. So only
+    // what goes past the burst is sure to wait, at the rate: here 4 MiB
+    // (64 different files of 64 KiB) at 2 MiB/s waits at least
+    // (4 - 1) MiB / 2 MiB/s = 1.5 s, however long the walk and the
+    // hashing took. The floor leaves a fifth of that for timer slack.
+    const RATE: u64 = 2 << 20;
+    const BURST: u64 = 1 << 20;
+    const LARGE: u64 = 64;
+    opts.bwlimit = Some(RATE);
+    let large = |root: &Path| {
+        for i in 0..LARGE {
+            fs::write(root.join(format!("f{i:02}.bin")), data(SIZE, i as u32 + 1)).unwrap();
+        }
+    };
+    let (out, _h) = sync_trees(large, |_| {}, &opts, Flow::Push).await;
     assert!(out.errors.is_empty(), "{:?}", out.errors);
+    let total = LARGE * SIZE as u64;
+    let least = Duration::from_secs_f64((total - BURST) as f64 / RATE as f64 * 0.8);
     let send = out.usage.busy(Activity::Send);
-    assert!(send >= Duration::from_millis(400), "send {send:?}");
+    assert!(send >= least, "send {send:?}, at least {least:?}");
 }

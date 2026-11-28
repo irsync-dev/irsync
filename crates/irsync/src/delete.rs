@@ -75,6 +75,10 @@ pub struct DeletePass {
     candidates: Vec<(RelPath, Kind)>,
     /// Directories that hold a protected (excluded) path: never removed.
     kept: HashSet<RelPath>,
+    /// Paths kept whole, with everything below them (see
+    /// [`DeletePass::protect_tree`]). Empty unless a case clash put one
+    /// there, which happens only where case folds (not on Unix).
+    trees: HashSet<RelPath>,
     /// Bumped per path handled (the session's inactivity watchdogs read it).
     activity: Arc<AtomicU64>,
     /// Told (handled, total) before the first candidate and after each one.
@@ -114,6 +118,7 @@ impl DeletePass {
             spent: 0,
             candidates: Vec::new(),
             kept: HashSet::new(),
+            trees: HashSet::new(),
             activity: Arc::default(),
             progress: None,
             meter: None,
@@ -173,6 +178,26 @@ impl DeletePass {
         }
     }
 
+    /// A destination path that must survive this pass whole: the path
+    /// itself, everything below it and the directories above it. A new
+    /// name the receiver refused because it differs only by case from this
+    /// one protects it so: the destination keeps what it has of that entry
+    /// instead of losing both names. Holds whatever the delete mode and
+    /// `delete_excluded`.
+    pub fn protect_tree(&mut self, path: &RelPath) {
+        self.protect(path);
+        self.trees.insert(path.clone());
+    }
+
+    /// Whether `path` is, or lies below, a path given to [`Self::protect_tree`].
+    fn in_kept_tree(&self, path: &RelPath) -> bool {
+        let b = path.as_bytes();
+        self.trees.iter().any(|t| {
+            let t = t.as_bytes();
+            b.starts_with(t) && (b.len() == t.len() || b[t.len()] == b'/')
+        })
+    }
+
     pub fn is_empty(&self) -> bool {
         self.candidates.is_empty()
     }
@@ -209,6 +234,7 @@ impl DeletePass {
             spent: self.spent,
             candidates: ready,
             kept: self.kept.clone(),
+            trees: self.trees.clone(),
             activity: self.activity.clone(),
             progress: self.progress.clone(),
             meter: self.meter.clone(),
@@ -279,6 +305,13 @@ impl DeletePass {
                     tracing::info!(?path, "not deleting a directory that holds excluded files");
                     break 'one;
                 }
+                if !self.trees.is_empty() && self.in_kept_tree(&path) {
+                    tracing::info!(
+                        ?path,
+                        "not deleting: a new name differs from it only by case"
+                    );
+                    break 'one;
+                }
                 if self.max_delete.is_some_and(|max| count >= max) {
                     rep.stopped_at_max = true;
                     break 'all;
@@ -297,7 +330,12 @@ impl DeletePass {
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(?path, error = %e, "delete failed");
-                        rep.errors.push((path, format!("delete: {e}")));
+                        let msg = if crate::fs::transient::is_in_use(&e) {
+                            e.to_string()
+                        } else {
+                            format!("delete: {e}")
+                        };
+                        rep.errors.push((path, msg));
                     }
                 }
             }
@@ -360,7 +398,7 @@ fn clear_temporaries(parent: &Dir, name: &[u8]) -> io::Result<()> {
             Err(e) if matches!(cause(&e), Cause::NotThere | Cause::LinkRefused) => continue,
             Err(e) => return Err(e),
         };
-        match file.try_lock() {
+        match crate::platform::try_lock_file(&file) {
             Ok(()) => held.push(file),
             Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
             Err(std::fs::TryLockError::Error(e)) => return Err(e),
@@ -415,11 +453,12 @@ fn remove_one(root: &Path, path: &RelPath, parent: &mut ParentCache) -> io::Resu
         Err(e) if cause(&e) == Cause::NotThere => return Ok(false),
         Err(e) => return Err(e),
     };
+    // Another program holding it is waited out briefly (Windows).
     let removed = if st.kind == FileKind::Dir {
         clear_temporaries(fd, &name)?;
-        fd.remove_dir(&name)
+        crate::fs::transient::retry_in_use(|| fd.remove_dir(&name))
     } else {
-        fd.remove_file(&name)
+        crate::fs::transient::retry_in_use(|| fd.remove_file(&name))
     };
     match removed {
         Ok(()) => Ok(true),
@@ -596,7 +635,7 @@ mod tests {
         std::fs::create_dir(t.path().join("busy")).unwrap();
         std::fs::write(t.path().join("busy/.irsync.f.part"), b"partial").unwrap();
         let held = std::fs::File::open(t.path().join("busy/.irsync.f.part")).unwrap();
-        held.lock().unwrap();
+        crate::platform::try_lock_file(&held).unwrap();
         std::fs::create_dir(t.path().join("full")).unwrap();
         std::fs::write(t.path().join("full/.irsync.f.part"), b"partial").unwrap();
         std::fs::write(t.path().join("full/kept"), b"k").unwrap();
@@ -674,5 +713,31 @@ mod tests {
         assert!(rep.errors.is_empty(), "{:?}", rep.errors);
         assert_eq!(rep.deleted, [rel("d/e/f"), rel("d/e")]);
         assert!(t.path().join("d/g").exists());
+    }
+
+    /// A tree kept whole: the path, everything below it and the
+    /// directories above it stay, in every pass split off for
+    /// `--delete-during` too; a name that only starts the same goes.
+    #[tokio::test]
+    async fn a_protected_tree_keeps_itself_and_everything_below() {
+        for mode in [DeleteMode::After, DeleteMode::During, DeleteMode::Before] {
+            let t = tree();
+            std::fs::write(t.path().join("d/ee"), b"ee").unwrap();
+            let mut p = DeletePass::new(mode, None, true, false, false);
+            plan_all(&mut p);
+            p.plan(rel("d/ee"), Kind::Regular);
+            p.protect_tree(&rel("d/e"));
+            let p = if mode == DeleteMode::During {
+                p.split_ready(&rel("z")).unwrap()
+            } else {
+                p
+            };
+            let rep = p.execute(t.path().to_path_buf(), false).await.unwrap();
+            assert!(rep.errors.is_empty(), "{mode:?}: {:?}", rep.errors);
+            let mut deleted = rep.deleted.clone();
+            deleted.sort();
+            assert_eq!(deleted, [rel("d/ee"), rel("d/g"), rel("h")], "{mode:?}");
+            assert!(t.path().join("d/e/f").exists(), "{mode:?}");
+        }
     }
 }

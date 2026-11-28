@@ -31,15 +31,15 @@ struct Setup {
 fn setup() -> Setup {
     let dir = tempfile::tempdir().unwrap();
     let tmp = dir.path();
-    let server = tmp.join("server/home");
-    let client = tmp.join("client/home");
-    let photos = tmp.join("srv/photos");
-    let docs = tmp.join("srv/docs");
-    let secret = tmp.join("srv/secret");
+    let server = tmp.join("server").join("home");
+    let client = tmp.join("client").join("home");
+    let photos = tmp.join("srv").join("photos");
+    let docs = tmp.join("srv").join("docs");
+    let secret = tmp.join("srv").join("secret");
     for d in [&server, &client, &photos.join("a"), &docs, &secret] {
         std::fs::create_dir_all(d).unwrap();
     }
-    std::fs::write(photos.join("a/x.jpg"), b"x").unwrap();
+    std::fs::write(photos.join("a").join("x.jpg"), b"x").unwrap();
     std::fs::write(photos.join("b.jpg"), b"b").unwrap();
     let daemon = spawn_daemon_binary(&server);
     let (daemon_id, listen) = (daemon.id, daemon.listen);
@@ -93,7 +93,7 @@ fn host_colon_lists_reachable_exports_with_real_paths() {
         )
     );
     // A client with no grant learns nothing.
-    let other = s.server.parent().unwrap().join("other/home");
+    let other = s.server.parent().unwrap().join("other").join("home");
     std::fs::create_dir_all(&other).unwrap();
     let o = irsync(&other, &["--address", &s.address, &operand]);
     assert!(!o.status.success());
@@ -170,7 +170,7 @@ fn directory_listing_leaves_no_state() {
     let out = ok(&s.client, &["--address", &s.address, &operand]);
     assert!(out.contains("b.jpg"), "{out:?}");
     assert!(
-        !s.client.join("xdg/irsync").exists(),
+        !s.client.join("xdg").join("irsync").exists(),
         "a listing must not create the client's state directory"
     );
 }

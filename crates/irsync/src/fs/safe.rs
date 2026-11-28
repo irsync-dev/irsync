@@ -223,8 +223,9 @@ impl Beneath {
     /// above, the root included (a name this side trusts, made by name).
     pub(crate) fn make_parent(&self) -> io::Result<()> {
         let (dir, _) = split_last(&self.rel)?;
-        if !self.root.is_dir() {
-            std::fs::create_dir_all(&self.root)?;
+        let root = platform::native_path(&self.root)?;
+        if !root.is_dir() {
+            std::fs::create_dir_all(&root)?;
         }
         create_dir_all_beneath(&self.root, &dir, 0o777).map(drop)
     }

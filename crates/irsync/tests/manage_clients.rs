@@ -1,3 +1,6 @@
+#[path = "common/fixture.rs"]
+mod fixture;
+
 use irsync::authz::Access;
 use irsync::config::clients::Right;
 use irsync::config::reader;
@@ -16,17 +19,17 @@ fn id(n: u8) -> iroh::EndpointId {
 /// The message of `text`; `config_version` stays unset, so `write` does
 /// not print it.
 fn msg(text: &str) -> pb::Config {
-    reader::read(text, Path::new("f")).unwrap()
+    reader::read(&fixture::toml(text), Path::new("f")).unwrap()
 }
 
 fn named_everywhere() -> String {
-    format!(
+    fixture::toml(&format!(
         "[clients.box]\nclient_id = \"{}\"\n[exports.a]\npath = \"/a\"\nrw = [\"box\", \"x\"]\n\
          [exports.b]\npath = \"/b\"\nrw = [\"box\"]\n\
          [exports.p]\npath = \"/p\"\nro = [\"y\", \"box\"]\n\
          [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n",
         id(1)
-    )
+    ))
 }
 
 #[test]
@@ -57,12 +60,15 @@ fn add_refuses_an_invalid_name() {
 
 #[test]
 fn remove_without_grants() {
-    let mut m = msg(&format!(
+    let mut m = msg(&fixture::toml(&format!(
         "[clients.box]\nclient_id = \"{}\"\n[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n",
         id(1)
-    ));
+    )));
     assert_eq!(client_remove(&mut m, "box", false).unwrap(), 0);
-    assert_eq!(write(&m), "[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n");
+    assert_eq!(
+        write(&m),
+        fixture::toml("[exports.p]\npath = \"/p\"\nrw = [\"other\"]\n")
+    );
     assert!(matches!(
         client_remove(&mut m, "box", false),
         Err(ManageError::NotFound(_))
@@ -91,10 +97,12 @@ fn force_removes_the_grants_then_the_client() {
     assert!(m.clients.is_empty());
     assert_eq!(
         write(&m),
-        "[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n\n\
+        fixture::toml(
+            "[exports.a]\npath = \"/a\"\nrw = [\"x\"]\n\n\
          [exports.b]\npath = \"/b\"\nrw = []\n\n\
          [exports.p]\npath = \"/p\"\nro = [\"y\"]\n\n\
          [exports.q]\npath = \"/q\"\nrw = [\"y\"]\n"
+        )
     );
 }
 

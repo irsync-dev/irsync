@@ -19,6 +19,10 @@ pub enum AutoExportError {
     /// The config file holds paths as UTF-8 text.
     #[error("automatic exports need a UTF-8 path")]
     NotUtf8,
+    /// The system cannot hold a tree there (on Windows: not a local NTFS
+    /// volume); the message says why.
+    #[error("{0}")]
+    Unfit(String),
 }
 
 /// The directory to export for `abs`: `abs` itself when it is a directory,
@@ -37,12 +41,14 @@ pub fn auto_export_dir(
     let parent = || {
         let p = abs
             .parent()
-            .filter(|p| p.is_dir())
+            .filter(|p| crate::platform::native_path(p).is_ok_and(|p| p.is_dir()))
             .ok_or(AutoExportError::NotFound)?;
         check_root(p)?;
         Ok(p.to_path_buf())
     };
-    match std::fs::metadata(abs) {
+    // Opened as written (see `native_path`): on Windows `x.` is not `x`.
+    let native = crate::platform::native_path(abs).map_err(|_| AutoExportError::NotFound)?;
+    match std::fs::metadata(&native) {
         Ok(m) if m.is_dir() => {
             check_root(abs)?;
             Ok(abs.to_path_buf())
@@ -50,14 +56,17 @@ pub fn auto_export_dir(
         Ok(_) => parent(),
         Err(_) if push && file_dest => parent(),
         Err(_) if push => {
-            if !abs.parent().is_some_and(Path::is_dir) {
+            if !abs
+                .parent()
+                .is_some_and(|p| crate::platform::native_path(p).is_ok_and(|p| p.is_dir()))
+            {
                 return Err(AutoExportError::NotFound);
             }
             check_root(abs)?;
-            match std::fs::create_dir(abs) {
+            match std::fs::create_dir(&native) {
                 Ok(()) => Ok(abs.to_path_buf()),
                 // Created meanwhile by another connection.
-                Err(_) if abs.is_dir() => Ok(abs.to_path_buf()),
+                Err(_) if native.is_dir() => Ok(abs.to_path_buf()),
                 Err(e) => Err(AutoExportError::Create {
                     path: abs.to_path_buf(),
                     error: e.to_string(),
@@ -68,7 +77,8 @@ pub fn auto_export_dir(
     }
 }
 
-/// Refuses `/` and a path that is not UTF-8 as an automatic export.
+/// Refuses `/`, a path that is not UTF-8 and (on Windows) one that is not
+/// on a local NTFS volume as an automatic export.
 pub fn check_root(root: &Path) -> Result<(), AutoExportError> {
     if root.parent().is_none() {
         return Err(AutoExportError::Root);
@@ -76,5 +86,5 @@ pub fn check_root(root: &Path) -> Result<(), AutoExportError> {
     if root.to_str().is_none() {
         return Err(AutoExportError::NotUtf8);
     }
-    Ok(())
+    crate::platform::check_root(root).map_err(|e| AutoExportError::Unfit(e.to_string()))
 }

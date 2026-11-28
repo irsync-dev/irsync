@@ -10,38 +10,33 @@
 mod common;
 
 use std::fs;
-#[cfg(unix)]
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 #[cfg(unix)]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
-#[cfg(unix)]
 use std::time::SystemTime;
 
 use common::{Flow, Harness};
-#[cfg(unix)]
 use irsync::fs::paths::RelPath;
-#[cfg(unix)]
 use irsync::hasher::HashHook;
-#[cfg(unix)]
 use irsync::platform::clone::Clones;
 #[cfg(unix)]
 use irsync::platform::testutil::set_mode;
 #[cfg(unix)]
 use irsync::platform::{mtime_of, write_all_at};
+use irsync::session::EventLog;
 #[cfg(unix)]
-use irsync::session::{EventLog, PartsFault};
+use irsync::session::PartsFault;
 
-#[cfg(unix)]
 const MIB: usize = 1024 * 1024;
-#[cfg(unix)]
 const SIZE: usize = 8 * MIB;
 #[cfg(unix)]
 const TEAR: usize = 256 * 1024;
 /// The source's mtime when it is cloned.
-#[cfg(unix)]
 const T1: u64 = 1_000_000_005;
 
 async fn within30<F: std::future::Future>(f: F) -> F::Output {
@@ -51,7 +46,6 @@ async fn within30<F: std::future::Future>(f: F) -> F::Output {
 }
 
 /// Deterministic pseudo-random bytes.
-#[cfg(unix)]
 fn data(n: usize, seed: u32) -> Vec<u8> {
     let mut x = seed.wrapping_mul(2654435761).wrapping_add(1);
     (0..n)
@@ -64,7 +58,6 @@ fn data(n: usize, seed: u32) -> Vec<u8> {
         .collect()
 }
 
-#[cfg(unix)]
 fn set_mtime(p: &Path, secs: u64) {
     fs::File::options()
         .write(true)
@@ -74,7 +67,6 @@ fn set_mtime(p: &Path, secs: u64) {
         .unwrap();
 }
 
-#[cfg(unix)]
 fn paranoid_opts(extra: &[&str]) -> irsync::options::SyncOptions {
     let mut argv = vec!["irsync"];
     argv.extend_from_slice(extra);
@@ -82,13 +74,11 @@ fn paranoid_opts(extra: &[&str]) -> irsync::options::SyncOptions {
     irsync::options::SyncOptions::from_args(&irsync::cli::Args::try_parse_from(argv).unwrap())
 }
 
-#[cfg(unix)]
 fn uid() -> u32 {
-    irsync::platform::testutil::real_uid()
+    common::real_uid()
 }
 
 /// The clone folder irsync makes in `base`.
-#[cfg(unix)]
 fn clone_dir(base: &Path) -> PathBuf {
     base.join(format!(".irsync-clones-{}", uid()))
 }
@@ -96,10 +86,9 @@ fn clone_dir(base: &Path) -> PathBuf {
 /// A temporary folder only we can write to: `tempfile` follows the umask,
 /// and a group-writable folder is no place for clones (others could swap
 /// the clone folder for a symlink).
-#[cfg(unix)]
 fn private_tempdir_in(dir: &Path) -> tempfile::TempDir {
     let t = tempfile::tempdir_in(dir).unwrap();
-    set_mode(t.path(), 0o700).unwrap();
+    common::set_mode_where_modes_exist(t.path(), 0o700).unwrap();
     t
 }
 
@@ -107,7 +96,6 @@ fn private_tempdir_in(dir: &Path) -> tempfile::TempDir {
 /// `--paranoid` makes them (`fclonefileat` on macOS, `FICLONE` elsewhere;
 /// `recv::reflink` alone says no on macOS). Dropping the clones removes
 /// their folder.
-#[cfg(unix)]
 fn reflinks(dir: &Path) -> bool {
     let probe = dir.join(".probe");
     fs::write(&probe, b"probe").unwrap();
@@ -137,7 +125,6 @@ async fn reflink_harness() -> Option<(tempfile::TempDir, Harness)> {
 
 /// Sets the sending side's hooks: clones within `base`, `hook` during
 /// every hash pass, `events` as its event log.
-#[cfg(unix)]
 fn sending_side(
     h: &Harness,
     flow: Flow,
@@ -230,7 +217,6 @@ fn any_clone_in(base: &Path) -> bool {
 }
 
 /// No clone folder (nor any session folder in it) is left under `base`.
-#[cfg(unix)]
 fn assert_no_clones(base: &Path) {
     let dir = clone_dir(base);
     let left: Vec<_> = fs::read_dir(&dir)
@@ -242,7 +228,6 @@ fn assert_no_clones(base: &Path) {
 
 /// Source and destination both hold an older `x.bin`, so the file goes as
 /// a delta; the source has mtime [`T1`].
-#[cfg(unix)]
 fn seed(h: &Harness, flow: Flow) {
     let content = data(SIZE, 7);
     let src = h.src(flow).join("x.bin");
@@ -437,7 +422,6 @@ async fn clones_are_removed_after_an_interrupted_run() {
 /// tmpfs), `--paranoid` falls back to hashing each file again before it is
 /// placed, quietly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn paranoid_without_reflink_falls_back() {
     within30(async {
         let flow = Flow::Push;

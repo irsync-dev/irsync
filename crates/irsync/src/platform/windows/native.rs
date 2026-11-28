@@ -29,14 +29,22 @@ use windows_sys::Wdk::Storage::FileSystem::{
 };
 use windows_sys::Wdk::System::SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION;
 use windows_sys::Win32::Foundation::{
-    RtlNtStatusToDosError, ERROR_DELETE_PENDING, ERROR_DIRECTORY_NOT_SUPPORTED, HANDLE, NTSTATUS,
-    OBJ_DONT_REPARSE, STATUS_DELETE_PENDING, STATUS_FILE_IS_A_DIRECTORY, STATUS_NO_MORE_FILES,
-    STATUS_NO_SUCH_FILE, STATUS_PENDING, UNICODE_STRING,
+    RtlNtStatusToDosError, ERROR_DELETE_PENDING, ERROR_DIRECTORY_NOT_SUPPORTED, ERROR_IO_PENDING,
+    HANDLE, INVALID_HANDLE_VALUE, NTSTATUS, OBJ_DONT_REPARSE, STATUS_DELETE_PENDING,
+    STATUS_FILE_IS_A_DIRECTORY, STATUS_NO_MORE_FILES, STATUS_NO_SUCH_FILE, STATUS_PENDING,
+    UNICODE_STRING,
 };
-use windows_sys::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
+use windows_sys::Win32::Storage::FileSystem::{
+    GetDriveTypeW, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW, LockFileEx,
+    ReOpenFile, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
+};
 use windows_sys::Win32::System::Ioctl::{FSCTL_GET_REPARSE_POINT, FSCTL_SET_REPARSE_POINT};
 use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
-use windows_sys::Win32::System::IO::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_0};
+use windows_sys::Win32::System::IO::{
+    GetOverlappedResult, IO_STATUS_BLOCK, IO_STATUS_BLOCK_0, OVERLAPPED, OVERLAPPED_0,
+    OVERLAPPED_0_0,
+};
 
 /// The most UTF-16 units a `UNICODE_STRING` holds: its lengths are `u16`
 /// counts of bytes.
@@ -493,6 +501,173 @@ pub(super) fn set_reparse(h: BorrowedHandle<'_>, data: &[u8]) -> io::Result<()> 
         return Err(status_error(status));
     }
     Ok(())
+}
+
+/// An `OVERLAPPED` that names the byte range starting at `offset`, with no
+/// event: what `LockFileEx` and `UnlockFileEx` take the offset in.
+fn at_offset(offset: u64) -> OVERLAPPED {
+    OVERLAPPED {
+        Anonymous: OVERLAPPED_0 {
+            Anonymous: OVERLAPPED_0_0 {
+                Offset: offset as u32,
+                OffsetHigh: (offset >> 32) as u32,
+            },
+        },
+        ..Default::default()
+    }
+}
+
+/// Waits for an overlapped call on `h` that answered `ERROR_IO_PENDING`
+/// (only an asynchronous handle does; irsync opens none), so `ov` is no
+/// longer in use when the caller returns. Returns the call's result.
+fn wait_overlapped(h: BorrowedHandle<'_>, ov: &mut OVERLAPPED) -> io::Result<()> {
+    let mut transferred = 0u32;
+    // SAFETY: `ov` is the OVERLAPPED the pending call was given, borrowed
+    // mutably and alive until this returns; `transferred` is a local. With
+    // `bWait` TRUE the call returns only once the operation has ended, so
+    // the kernel no longer writes `ov` afterwards.
+    let ok = unsafe { GetOverlappedResult(h.as_raw_handle(), ov, &mut transferred, 1) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// `LockFileEx` of the `len` bytes at `offset` of `h`: exclusive, and
+/// failing at once (`ERROR_LOCK_VIOLATION`) when another handle holds an
+/// overlapping range, instead of waiting.
+pub(super) fn try_lock_range(h: BorrowedHandle<'_>, offset: u64, len: u64) -> io::Result<()> {
+    let mut ov = at_offset(offset);
+    // SAFETY: `h` is a handle the borrow keeps open; `ov` is a local that
+    // outlives the call, and if the call answers ERROR_IO_PENDING (an
+    // asynchronous handle) `wait_overlapped` waits for it to end before
+    // `ov` goes out of scope. The reserved argument is 0, as required.
+    let ok = unsafe {
+        LockFileEx(
+            h.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            len as u32,
+            (len >> 32) as u32,
+            &mut ov,
+        )
+    };
+    if ok == 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() == Some(ERROR_IO_PENDING as i32) {
+            return wait_overlapped(h, &mut ov);
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// `UnlockFileEx` of the `len` bytes at `offset` of `h`, a range
+/// [`try_lock_range`] locked through this handle.
+pub(super) fn unlock_range(h: BorrowedHandle<'_>, offset: u64, len: u64) -> io::Result<()> {
+    let mut ov = at_offset(offset);
+    // SAFETY: as in `try_lock_range`: `h` is open for the borrow, `ov` is
+    // a local that outlives the call (or the wait for it), the reserved
+    // argument is 0.
+    let ok = unsafe {
+        UnlockFileEx(
+            h.as_raw_handle(),
+            0,
+            len as u32,
+            (len >> 32) as u32,
+            &mut ov,
+        )
+    };
+    if ok == 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() == Some(ERROR_IO_PENDING as i32) {
+            return wait_overlapped(h, &mut ov);
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// `ReOpenFile`: a new handle to the very file `h` has open, with `access`,
+/// `share` and `flags`. No name is looked up, so nothing can have been
+/// put in the file's place.
+pub(super) fn reopen(
+    h: BorrowedHandle<'_>,
+    access: u32,
+    share: u32,
+    flags: u32,
+) -> io::Result<OwnedHandle> {
+    // SAFETY: `h` is a handle the borrow keeps open; the other arguments
+    // are plain integers. ReOpenFile returns a new handle or
+    // INVALID_HANDLE_VALUE.
+    let handle = unsafe { ReOpenFile(h.as_raw_handle(), access, share, flags) };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: ReOpenFile succeeded, so `handle` is a new handle owned by
+    // nothing else; it is closed once, by the OwnedHandle.
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+
+/// `GetVolumeInformationByHandleW`: the name of the file system (`NTFS`,
+/// `ReFS`, `FAT32`, ...) of the volume that holds what `h` has open.
+pub(super) fn file_system_name(h: BorrowedHandle<'_>) -> io::Result<Vec<u16>> {
+    // MAX_PATH + 1, the size the documentation asks for.
+    let mut name = [0u16; 261];
+    // SAFETY: `h` is open for the borrow; `name` is a local buffer of the
+    // length passed; every other out pointer is null with size 0, which
+    // the call allows (it then leaves that value out).
+    let ok = unsafe {
+        GetVolumeInformationByHandleW(
+            h.as_raw_handle(),
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            name.as_mut_ptr(),
+            name.len() as u32,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let n = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    Ok(name[..n].to_vec())
+}
+
+/// `GetFinalPathNameByHandleW` with `flags`: the path of what `h` has
+/// open, as the system resolved it (a `subst` drive or a mapped drive
+/// shows as what it stands for: `\\?\C:\...` or `\\?\UNC\...`).
+pub(super) fn final_path(h: BorrowedHandle<'_>, flags: u32) -> io::Result<Vec<u16>> {
+    let mut buf = vec![0u16; 512];
+    loop {
+        // SAFETY: `h` is open for the borrow; `buf` is a live buffer of
+        // the length passed, and the call writes at most that many units.
+        let n = unsafe {
+            GetFinalPathNameByHandleW(h.as_raw_handle(), buf.as_mut_ptr(), buf.len() as u32, flags)
+        } as usize;
+        if n == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if n < buf.len() {
+            buf.truncate(n);
+            return Ok(buf);
+        }
+        // Too small: `n` is the size needed, the final NUL included.
+        buf.resize(n + 1, 0);
+    }
+}
+
+/// `GetDriveTypeW` of `root`, a volume's root directory with a final
+/// separator (`C:\`), given without its NUL: `DRIVE_FIXED`,
+/// `DRIVE_REMOTE` and the rest.
+pub(super) fn drive_type(root: &[u16]) -> u32 {
+    let mut z = root.to_vec();
+    z.push(0);
+    // SAFETY: `z` is a NUL-terminated UTF-16 string that lives across the
+    // call, which only reads it.
+    unsafe { GetDriveTypeW(z.as_ptr()) }
 }
 
 #[cfg(test)]

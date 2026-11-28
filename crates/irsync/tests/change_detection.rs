@@ -1004,9 +1004,8 @@ fn frame_counter(count: fn(&Msg) -> bool, n: Arc<AtomicU32>) -> FrameHook {
 /// rewritten in place (both names): the re-check sends `m.txt` again, as a
 /// new inode at the destination, and `n.txt` must be linked to it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn paranoid_recheck_relinks_hard_links() {
-    use irsync::platform::file_id;
+    use irsync::platform::testutil::file_id;
     within30(async {
         let flow = Flow::Push;
         let h = Harness::new().await;
@@ -1060,8 +1059,8 @@ async fn paranoid_recheck_relinks_hard_links() {
         assert_eq!(fs::read(&m).unwrap(), Y_NEW);
         assert_eq!(fs::read(&n).unwrap(), Y_NEW);
         assert_eq!(
-            file_id(&fs::metadata(&m).unwrap()).1,
-            file_id(&fs::metadata(&n).unwrap()).1,
+            file_id(&m).unwrap().1,
+            file_id(&n).unwrap().1,
             "the hard link is lost"
         );
     })
@@ -1338,7 +1337,6 @@ async fn chgrp_before_hash_places_the_new_group_on_pull() {
 /// `a.bin` is hashed (then `a.bin` is rewritten in place, which `b.bin`
 /// no longer sees).
 #[derive(Clone, Copy, Debug)]
-#[cfg(unix)]
 enum LinkChange {
     /// Replaced by a file of its own.
     Replaced,
@@ -1350,9 +1348,8 @@ enum LinkChange {
 /// linked to the copy of it. Replaced, it is sent as the file it now is,
 /// in the same run; gone, it fails (exit 23). Either way the next run
 /// leaves an exact copy.
-#[cfg(unix)]
 async fn changed_link_is_not_linked_for(flow: Flow, change: LinkChange) {
-    use irsync::platform::file_id;
+    use irsync::platform::testutil::file_id;
     let h = Harness::new().await;
     let (a, b) = (h.src(flow).join("a.bin"), h.src(flow).join("b.bin"));
     fs::write(&a, data(SIZE, 21)).unwrap();
@@ -1395,10 +1392,7 @@ async fn changed_link_is_not_linked_for(flow: Flow, change: LinkChange) {
         LinkChange::Replaced => {
             assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
             assert_eq!(fs::read(&db).unwrap(), data(1000, 22));
-            assert_ne!(
-                file_id(&fs::metadata(&da).unwrap()).1,
-                file_id(&fs::metadata(&db).unwrap()).1
-            );
+            assert_ne!(file_id(&da).unwrap().1, file_id(&db).unwrap().1);
         }
         LinkChange::Gone => {
             assert_eq!(out.exit_code(), 23, "{:?}", out.errors);
@@ -1422,7 +1416,6 @@ async fn changed_link_is_not_linked_for(flow: Flow, change: LinkChange) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn replaced_link_is_sent_as_its_own_file() {
     within30(changed_link_is_not_linked_for(
         Flow::Push,
@@ -1432,7 +1425,6 @@ async fn replaced_link_is_sent_as_its_own_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn replaced_link_is_sent_as_its_own_file_on_pull() {
     within30(changed_link_is_not_linked_for(
         Flow::Pull,
@@ -1442,13 +1434,11 @@ async fn replaced_link_is_sent_as_its_own_file_on_pull() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn link_renamed_away_is_not_linked() {
     within30(changed_link_is_not_linked_for(Flow::Push, LinkChange::Gone)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn link_renamed_away_is_not_linked_on_pull() {
     within30(changed_link_is_not_linked_for(Flow::Pull, LinkChange::Gone)).await;
 }
@@ -1456,9 +1446,8 @@ async fn link_renamed_away_is_not_linked_on_pull() {
 /// `-H` on a tree nothing writes to: every link is checked once (one
 /// `CheckLink` each) and made.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[cfg(unix)]
 async fn unchanged_links_are_checked_and_made() {
-    use irsync::platform::file_id;
+    use irsync::platform::testutil::file_id;
     within30(async {
         let flow = Flow::Pull;
         let h = Harness::new().await;
@@ -1478,8 +1467,7 @@ async fn unchanged_links_are_checked_and_made() {
         assert_eq!(out.exit_code(), 0, "{:?}", out.errors);
         assert_eq!(checks.load(Ordering::SeqCst), 6);
         for i in 0..3u32 {
-            let ino =
-                |n: &str| file_id(&fs::metadata(h.dst(flow).join(format!("{n}{i}"))).unwrap()).1;
+            let ino = |n: &str| file_id(&h.dst(flow).join(format!("{n}{i}"))).unwrap().1;
             assert_eq!(ino("f"), ino("g"));
             assert_eq!(ino("f"), ino("h"));
         }

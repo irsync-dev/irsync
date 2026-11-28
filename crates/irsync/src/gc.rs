@@ -243,7 +243,7 @@ pub async fn gc_skipping(
                     continue;
                 }
                 Err(e) => {
-                    tracing::warn!(path = %part.to_os().to_string_lossy(), "gc: {e}");
+                    tracing::warn!(path = %String::from_utf8_lossy(part.as_bytes()), "gc: {e}");
                     report.errors.push((part, e.to_string()));
                     continue;
                 }
@@ -272,7 +272,7 @@ pub async fn gc_skipping(
                 Ok(Removal::Removed) => report.parts_removed.push(part),
                 Ok(Removal::Missing | Removal::Skipped) => {}
                 Err(e) => {
-                    tracing::warn!(path = %part.to_os().to_string_lossy(), "gc: {e}");
+                    tracing::warn!(path = %String::from_utf8_lossy(part.as_bytes()), "gc: {e}");
                     report.errors.push((part, e.to_string()));
                 }
             }
@@ -332,7 +332,15 @@ fn prune_entries(
         {
             continue;
         }
-        let here = crate::platform::symlink_metadata(&root.join(path.to_os()))
+        // Where a path-based call may read a name as another one (Windows:
+        // trailing dots, case, short names), from the root one name at a
+        // time, no link followed. Elsewhere by whole path, as always.
+        let here = if crate::platform::Platform::CURRENT.names_may_alias() {
+            crate::fs::safe::Beneath::new(root, path.clone()).lstat()
+        } else {
+            crate::platform::symlink_metadata(&root.join(path.to_os()))
+        };
+        let here = here
             .ok()
             .filter(|m| m.kind == crate::platform::Kind::File)
             .map(|m| (m.ino, m.size));

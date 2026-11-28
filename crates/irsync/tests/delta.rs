@@ -45,7 +45,7 @@ fn patch(p: &Path, offset: u64, bytes: &[u8]) {
 }
 
 fn set_mtime(p: &Path, t: SystemTime) {
-    fs::File::open(p).unwrap().set_modified(t).unwrap();
+    common::set_modified(p, t).unwrap();
 }
 
 /// Position of the first event starting with `prefix`, or a panic naming the log.

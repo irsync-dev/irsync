@@ -234,7 +234,9 @@ fn link(from: &Path, to: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{mode_of, set_mode_path_following};
+    #[cfg(unix)]
+    use crate::platform::mode_of;
+    use crate::platform::set_mode_path_following;
 
     /// A directory with a small stand-in `irsync` (named `exe_name`).
     fn bin_dir(exe_name: &str) -> (tempfile::TempDir, PathBuf) {
@@ -384,6 +386,8 @@ mod tests {
         let meta = std::fs::symlink_metadata(&got).unwrap();
         assert!(meta.is_file(), "not a regular file");
         assert_eq!(std::fs::read(&got).unwrap(), b"fake irsync");
+        // The exec bit: Unix only, as Windows has no modes.
+        #[cfg(unix)]
         assert!(mode_of(&meta) & 0o111 != 0);
     }
 

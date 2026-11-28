@@ -6,6 +6,7 @@ use irsync_proto::v1::{file_entry::Kind, FileEntry};
 
 use crate::fs::paths::RelPath;
 use crate::options::{Append, Preserve};
+use crate::platform::Platform;
 
 /// One path as one listing (source or destination) shows it: its listing
 /// entry and, when known, its digest.
@@ -59,10 +60,18 @@ fn mtime(e: &FileEntry) -> (i64, u32) {
     (e.mtime_sec, e.mtime_nsec)
 }
 
+/// Whether `-p` asks for the permission bits and they differ. A receiver
+/// on a system without modes (Windows, see [`Platform::has_modes`]) sets
+/// none, so its own entries' mode (0) is never a difference: a second run
+/// is not a metadata update for every file.
+fn perms_differ(src: &FileEntry, dst: &FileEntry, p: &Preserve) -> bool {
+    p.perms && Platform::CURRENT.has_modes() && src.mode & 0o7777 != dst.mode & 0o7777
+}
+
 /// Whether the metadata selected by `p` differs between the two entries.
 /// Whether the attributes `p` preserves differ between `src` and `dst`.
 pub(crate) fn meta_differs(src: &FileEntry, dst: &FileEntry, p: &Preserve) -> bool {
-    (p.perms && src.mode & 0o7777 != dst.mode & 0o7777)
+    perms_differ(src, dst, p)
         || (p.times && mtime(src) != mtime(dst))
         || (p.owner && src.uid != dst.uid)
         || (p.group && src.gid != dst.gid)
@@ -328,7 +337,7 @@ pub fn itemize(
                 ),
                 flag(regular && se.size != de.size, 's'),
                 flag(preserve.times && mtime(se) != mtime(de), 't'),
-                flag(preserve.perms && se.mode & 0o7777 != de.mode & 0o7777, 'p'),
+                flag(perms_differ(se, de, preserve), 'p'),
                 flag(preserve.owner && se.uid != de.uid, 'o'),
                 flag(preserve.group && se.gid != de.gid, 'g'),
                 '.',
@@ -341,4 +350,64 @@ pub fn itemize(
         _ => "+++++++++".to_string(),
     };
     format!("{update}{letter}{attrs}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A file the same in size and time on both sides, the sender's with
+    /// mode 0644, the receiver's with 0 (what a Windows file has).
+    fn sides() -> (PathView, PathView) {
+        let entry = |mode: u32| FileEntry {
+            path: b"f".to_vec(),
+            kind: Kind::Regular as i32,
+            size: 3,
+            mtime_sec: 1,
+            mode,
+            ..FileEntry::default()
+        };
+        let side = |mode| PathView {
+            entry: entry(mode),
+            digest: None,
+        };
+        (side(0o100644), side(0o100000))
+    }
+
+    fn with_perms() -> PlanOpts {
+        PlanOpts {
+            checksum: false,
+            update_only: false,
+            delete: false,
+            preserve: Preserve {
+                perms: true,
+                ..Preserve::default()
+            },
+            append: Append::Off,
+        }
+    }
+
+    /// A Windows receiver sets no modes, so with `-p` a mode it does not
+    /// have is no difference: no metadata update, no `p`.
+    #[test]
+    #[cfg(windows)]
+    fn a_receiver_without_modes_sees_no_mode_difference() {
+        let ((s, d), o) = (sides(), with_perms());
+        assert!(!meta_differs(&s.entry, &d.entry, &o.preserve));
+        assert_eq!(decide(Some(&s), Some(&d), &o), Decision::Skip);
+        let code = itemize(&Decision::MetaOnly, Some(&s), Some(&d), '>', &o.preserve);
+        assert_eq!(code, ".f.........");
+    }
+
+    /// On Unix the same pair is a mode difference: a metadata update,
+    /// itemized with `p`.
+    #[test]
+    #[cfg(unix)]
+    fn a_receiver_with_modes_sees_the_mode_difference() {
+        let ((s, d), o) = (sides(), with_perms());
+        assert!(meta_differs(&s.entry, &d.entry, &o.preserve));
+        assert_eq!(decide(Some(&s), Some(&d), &o), Decision::MetaOnly);
+        let code = itemize(&Decision::MetaOnly, Some(&s), Some(&d), '>', &o.preserve);
+        assert_eq!(code, ".f...p.....");
+    }
 }

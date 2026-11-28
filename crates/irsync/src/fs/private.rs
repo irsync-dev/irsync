@@ -36,7 +36,8 @@ pub(crate) fn read_with_problem(path: &Path) -> io::Result<(String, Option<Strin
     Ok((text, problem))
 }
 
-#[cfg(test)]
+/// Both tests are about permission modes, which Windows does not have.
+#[cfg(all(test, unix))]
 mod tests {
     use crate::platform::{mode_of, set_mode_path_following};
 

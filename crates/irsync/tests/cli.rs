@@ -578,6 +578,150 @@ fn remote_path_is_passed_as_typed() {
     ));
 }
 
+/// On Windows a letter, `:` and a separator (or nothing more) is a local
+/// drive path; everywhere else, and on Unix always, the usual rule holds.
+#[test]
+fn a_drive_path_is_local_on_windows_only() {
+    use irsync::location::is_drive_path;
+    use irsync::platform::Platform::{Unix, Windows};
+    let remote = |s: &str, p| match Location::parse_on(s, p).unwrap() {
+        Location::Remote { host, path, .. } => Some((host, String::from_utf8(path).unwrap())),
+        Location::Local { .. } => None,
+    };
+    let local = |s: &str, p| match Location::parse_on(s, p).unwrap() {
+        Location::Local {
+            path,
+            contents_only,
+        } => (path, contents_only),
+        l => panic!("{s}: {l:?}"),
+    };
+    let r = |h: &str, p: &str| Some((h.to_string(), p.to_string()));
+    for (s, drive) in [
+        (r"C:\x", true),
+        ("c:/x", true),
+        ("C:", true),
+        (r"z:\", true),
+        ("C:x", false),
+        (r"host:C:\x", false),
+        ("[::1]:path", false),
+        ("h:photos", false),
+        ("1:/x", false),
+        ("CC:/x", false),
+        ("", false),
+    ] {
+        assert_eq!(is_drive_path(s, Windows), drive, "{s:?}");
+        assert!(!is_drive_path(s, Unix), "{s:?}");
+    }
+    // Windows: drive paths are local, the rest as on Unix.
+    assert_eq!(local(r"C:\x", Windows), (PathBuf::from(r"C:\x"), false));
+    assert_eq!(local("c:/x/", Windows), (PathBuf::from("c:/x"), true));
+    assert_eq!(local("C:", Windows), (PathBuf::from("C:"), false));
+    // The root of a drive keeps its slash: `C:` alone is another place.
+    assert_eq!(local("C:/", Windows), (PathBuf::from("C:/"), true));
+    assert_eq!(local("C://", Windows), (PathBuf::from("C:/"), true));
+    assert_eq!(remote("C:x", Windows), r("C", "x"));
+    assert_eq!(remote(r"host:C:\x", Windows), r("host", r"C:\x"));
+    assert_eq!(remote("[::1]:path", Windows), r("::1", "path"));
+    assert_eq!(remote("h:photos/x", Windows), r("h", "photos/x"));
+    // Unix: unchanged, so a drive path is `HOST:PATH` there.
+    assert_eq!(remote(r"C:\x", Unix), r("C", r"\x"));
+    assert_eq!(remote("c:/x", Unix), r("c", "/x"));
+    assert_eq!(remote("C:", Unix), r("C", ""));
+    assert_eq!(remote("C:x", Unix), r("C", "x"));
+    assert_eq!(remote(r"host:C:\x", Unix), r("host", r"C:\x"));
+    assert_eq!(remote("[::1]:path", Unix), r("::1", "path"));
+    assert_eq!(remote("h:photos", Unix), r("h", "photos"));
+    assert_eq!(local("/x/", Unix), (PathBuf::from("/x"), true));
+    // Windows: `\` separates as `/` does, so a `:` after one is no host,
+    // and a trailing one is contents only, for a local path.
+    assert_eq!(
+        local(r"\\?\C:\x", Windows),
+        (PathBuf::from(r"\\?\C:\x"), false)
+    );
+    assert_eq!(
+        local(r"\\server\share\x", Windows),
+        (PathBuf::from(r"\\server\share\x"), false)
+    );
+    assert_eq!(local(r".\C:x", Windows), (PathBuf::from(r".\C:x"), false));
+    assert_eq!(local(r"..\h:x", Windows), (PathBuf::from(r"..\h:x"), false));
+    assert_eq!(local(r"C:\src\", Windows), (PathBuf::from(r"C:\src"), true));
+    assert_eq!(local(r"src\", Windows), (PathBuf::from("src"), true));
+    assert_eq!(local(r"src/\", Windows), (PathBuf::from("src"), true));
+    assert_eq!(local(r"C:\", Windows), (PathBuf::from(r"C:\"), true));
+    assert_eq!(local(r"\", Windows), (PathBuf::from("/"), true));
+    // A remote path is passed on as typed: only `/` is contents only.
+    match Location::parse_on(r"h:x\", Windows).unwrap() {
+        Location::Remote {
+            path,
+            contents_only,
+            ..
+        } => assert_eq!((path, contents_only), (br"x\".to_vec(), false)),
+        l => panic!("{l:?}"),
+    }
+    // Unix: a backslash is part of a name.
+    assert_eq!(remote(r".\C:x", Unix), r(r".\C", "x"));
+    assert_eq!(remote(r"\\?\C:\x", Unix), r(r"\\?\C", r"\x"));
+    assert_eq!(local(r"src\", Unix), (PathBuf::from(r"src\"), false));
+    assert_eq!(
+        local(r"\\server\share\x", Unix),
+        (PathBuf::from(r"\\server\share\x"), false)
+    );
+    // A listing has no local side: there `h:` is the host, as on Unix.
+    assert_eq!(
+        Location::parse_listed("h:").unwrap(),
+        Location::parse_on("h:", Unix).unwrap()
+    );
+    assert!(Location::parse_listed("h:").unwrap().is_remote());
+    assert_eq!(
+        Location::parse_listed("h:m/").unwrap(),
+        Location::parse("h:m/").unwrap()
+    );
+    // `parse` is `parse_on` this system.
+    assert_eq!(
+        Location::parse(r"C:\x").unwrap(),
+        Location::parse_on(r"C:\x", irsync::platform::Platform::CURRENT).unwrap()
+    );
+}
+
+/// `irsync C:` alone: on Windows the drive, so a sync without a
+/// destination; on Unix the host `C`, listed. `irsync list h` and
+/// `irsync list h:` list the host `h` everywhere.
+#[test]
+fn a_lone_drive_is_no_listing_on_windows_but_list_h_is() {
+    let windows = irsync::platform::Platform::CURRENT == irsync::platform::Platform::Windows;
+    let lone = Args::try_parse_from(["irsync", "C:"]);
+    if windows {
+        assert!(lone.is_err());
+    } else {
+        assert!(matches!(lone.unwrap().cmd, Some(Command::List(_))));
+    }
+    for op in ["h", "h:"] {
+        let a = parse(&["list", op]);
+        match a.cmd {
+            Some(Command::List(l)) => assert_eq!(l.operand, "h:", "{op}"),
+            c => panic!("{op}: not a listing: {c:?}"),
+        }
+    }
+}
+
+/// Usage names the program: on Windows always `irsync` (never
+/// `irsync.exe`); on Unix as it was started, as before.
+#[test]
+fn usage_names_the_program_as_each_system_expects() {
+    let usage = |argv0: &str| {
+        Args::try_parse_from([argv0, "list"])
+            .unwrap_err()
+            .to_string()
+    };
+    if irsync::platform::Platform::CURRENT == irsync::platform::Platform::Windows {
+        assert!(usage(r"C:\x\irsync.exe").contains("Usage: irsync list"));
+        assert!(usage(r"C:\x\irsync-beta.exe").contains("Usage: irsync list"));
+    } else {
+        assert!(usage("/opt/x/irsync").contains("Usage: irsync list"));
+        assert!(usage("/opt/x/irsync-beta").contains("Usage: irsync-beta list"));
+    }
+}
+
 #[test]
 fn bracketed_ipv6_host() {
     let host = |s: &str| match Location::parse(s).unwrap() {
@@ -1562,4 +1706,34 @@ fn remote_export_set_and_rename_parse() {
     ));
     let e = parse_err(&["remote", "myserver", "export", "set", "photos"]);
     assert!(e.contains("KEY=VALUE"), "{e}");
+}
+
+/// What the binary does right after parsing: a relative `--partial-dir`
+/// stays relative (to the destination); an absolute one, and on Windows
+/// one rooted without a drive (`\tmp.`), is read as this system means it.
+#[test]
+fn local_paths_keeps_a_relative_partial_dir_and_reads_a_rooted_one() {
+    let partial = |a: &[&str]| {
+        let mut args = parse(a);
+        args.local_paths();
+        args.sync_args().partial_dir.clone().unwrap()
+    };
+    assert_eq!(
+        partial(&["--partial-dir", ".p", "a", "h:m"]),
+        PathBuf::from(".p")
+    );
+    assert_eq!(
+        partial(&["--partial-dir", "x/.p", "a", "h:m"]),
+        PathBuf::from("x/.p")
+    );
+    #[cfg(windows)]
+    {
+        let got = partial(&["--partial-dir", r"\tmp.", "a", "h:m"]);
+        assert!(got.is_absolute(), "{got:?}");
+        assert_eq!(
+            got,
+            irsync::platform::local_path(std::path::Path::new(r"\tmp"))
+        );
+        assert!(!got.to_string_lossy().ends_with('.'), "{got:?}");
+    }
 }

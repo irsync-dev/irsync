@@ -162,12 +162,14 @@ fn at_of(meta: io::Result<std::fs::Metadata>) -> io::Result<At> {
 struct Followed<'a>(&'a Path);
 
 impl Lookup for Followed<'_> {
+    // Looked at as every later open reads it (see `native_path`).
     fn dest(&self) -> io::Result<At> {
-        at_of(std::fs::metadata(self.0))
+        at_of(crate::platform::native_path(self.0).and_then(std::fs::metadata))
     }
 
     fn child(&self, name: &[u8]) -> io::Result<At> {
-        at_of(std::fs::symlink_metadata(self.0.join(bytes_to_os(name)?)))
+        let target = self.0.join(bytes_to_os(name)?);
+        at_of(crate::platform::native_path(&target).and_then(std::fs::symlink_metadata))
     }
 }
 
@@ -186,7 +188,7 @@ pub fn place_file(
 /// not single, so today's error path stays. With `contents_only` (trailing
 /// slash) a non-directory is an error.
 pub fn source_is_single(path: &Path, contents_only: bool) -> Result<bool, PlaceError> {
-    match std::fs::metadata(path) {
+    match crate::platform::native_path(path).and_then(std::fs::metadata) {
         Ok(m) if m.is_dir() => Ok(false),
         Ok(_) if contents_only => Err(PlaceError::NotADirectory(path.to_path_buf())),
         Ok(_) => Ok(true),
@@ -258,7 +260,7 @@ pub(crate) fn place_single(
         .root
         .strip_prefix(export_root)
         .ok()
-        .and_then(|r| RelPath::new(&crate::platform::os_to_bytes(r.as_os_str())).ok());
+        .and_then(|r| RelPath::from_os(r.as_os_str()).ok());
     let name = RelPath::new(&placed.name)
         .ok()
         .filter(|_| is_one_component(&placed.name));

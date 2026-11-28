@@ -5,7 +5,8 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{irsync_bin as irsync, irsync_bin_env, spawn_daemon_binary_env, BinaryDaemon};
+use common::irsync_bin_env;
+use common::{irsync_bin as irsync, spawn_daemon_binary_env, BinaryDaemon};
 use irsync::authz::Access;
 use irsync_proto::capture::v1::{record::Msg, Direction, Record, Side};
 use irsync_proto::v1::{admin_reply, admin_request, hello};
@@ -95,6 +96,25 @@ fn remote_export_add_then_list() {
     let local = ok(&s.server, &["export", "list"]);
     assert!(remote.contains("photos: "), "{remote}");
     assert_eq!(remote, local);
+}
+
+/// An absolute path of the server's system (`/…` on Unix, `C:\…` on
+/// Windows) is sent as typed and added as the server reads it.
+#[test]
+fn remote_export_add_of_an_absolute_path_then_list() {
+    let s = setup(Some(Access::ReadWrite));
+    // Built from its components: one separator throughout on Windows too.
+    let photos: PathBuf = s.server.join("Photos").components().collect();
+    let target = format!("pics:{}", photos.display());
+    let o = irsync(&s.client, &["remote", "myserver", "export", "add", &target]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let remote = ok(&s.client, &["remote", "myserver", "export", "list"]);
+    let local = ok(&s.server, &["export", "list"]);
+    assert_eq!(remote, local);
+    assert!(
+        remote.contains(&format!("pics: {}", photos.display())),
+        "{remote}"
+    );
 }
 
 #[test]
@@ -338,6 +358,29 @@ fn admin_msgs(recs: &[Record]) -> Vec<(Side, Direction, &Msg)> {
         .collect()
 }
 
+/// The capture at `path` once it holds `n` admin messages, read again
+/// until it does (for at most 10 s). The daemon writes its capture out
+/// after every batch of records, so what a stopped daemon handled is there
+/// even when it was killed (Windows), not asked to stop (Unix).
+fn capture_with_admin_msgs(path: &Path, n: usize) -> Vec<Record> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let whole = std::fs::read(path).ok().and_then(|file| {
+            pbcap::Reader::new(&file[..])
+                .ok()?
+                .map(|p| Record::decode(&p.ok()?.body[..]).ok())
+                .collect::<Option<Vec<Record>>>()
+        });
+        match whole {
+            Some(recs) if admin_msgs(&recs).len() >= n => return recs,
+            _ if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            _ => return read_capture(path),
+        }
+    }
+}
+
 #[test]
 fn admin_traffic_is_captured_on_both_sides() {
     let dir = tempfile::tempdir().unwrap();
@@ -362,7 +405,7 @@ fn admin_traffic_is_captured_on_both_sides() {
 
     let change = read_capture(&c1);
     let read = read_capture(&c2);
-    let daemon = read_capture(&dcap);
+    let daemon = capture_with_admin_msgs(&dcap, 5);
 
     let is_change = |m: &Msg| matches!(m, Msg::AdminRequest(r) if matches!(r.msg, Some(admin_request::Msg::Change(_))));
     let is_commit = |m: &Msg| matches!(m, Msg::AdminRequest(r) if matches!(r.msg, Some(admin_request::Msg::Commit(_))));

@@ -1,8 +1,10 @@
 mod common;
 
 #[cfg(unix)]
+use irsync::fs::meta::create_special;
+use irsync::fs::meta::lstat_entry;
+#[cfg(unix)]
 use irsync::fs::meta::{apply_metadata, ApplyOpts};
-use irsync::fs::meta::{create_special, lstat_entry};
 use irsync::fs::paths::{is_contained, RelPath};
 #[cfg(unix)]
 use irsync::platform::file_id;
@@ -73,6 +75,9 @@ fn lstat_directory_kind() {
     assert!(root.path.is_empty());
 }
 
+/// Unix only: Windows reports no file as sparse in this step (`-S` is
+/// not reported there, see the design's "Features on Windows").
+#[cfg(unix)]
 #[test]
 fn sparse_only_for_regular_files_with_holes() {
     use std::io::Write;
@@ -90,6 +95,24 @@ fn sparse_only_for_regular_files_with_holes() {
     assert!(!l.sparse);
 }
 
+/// A link to a large file is a link, never sparse, on every system.
+#[test]
+fn a_link_to_a_file_with_holes_is_not_sparse() {
+    if !common::symlinks_available() {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let f = fs::File::create(d.path().join("holey")).unwrap();
+    f.set_len(17 << 20).unwrap();
+    drop(f);
+    symlink(Path::new("holey"), &d.path().join("l")).unwrap();
+    let l = lstat_entry(d.path(), &rp(b"l")).unwrap();
+    assert_eq!(l.kind(), Kind::Symlink);
+    assert!(!l.sparse);
+}
+
+/// Unix only: Windows has no FIFOs or device nodes.
+#[cfg(unix)]
 #[test]
 fn create_special_fifo() {
     let d = tempfile::tempdir().unwrap();

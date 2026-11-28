@@ -1,5 +1,8 @@
 //! The config message as `config::reader` reads it from irsync.toml.
 
+#[path = "common/fixture.rs"]
+mod fixture_paths;
+
 use irsync::config::file::Config;
 use irsync::config::reader::{self, read_values};
 use irsync::config::settings::DaemonSettings;
@@ -10,12 +13,13 @@ use std::path::Path;
 fn id(n: u8) -> iroh::EndpointId {
     iroh::SecretKey::from_bytes(&[n; 32]).public()
 }
-/// The message `reader::read` reads.
+/// The message `reader::read` reads (its Unix paths made absolute here,
+/// see `fixture_paths::toml`).
 fn read(text: &str, path: &Path) -> Result<pb::Config, irsync::config::ConfigError> {
-    reader::read(text, path)
+    reader::read(&fixture_paths::toml(text), path)
 }
 fn values(text: &str) -> pb::Config {
-    read_values(text, Path::new("irsync.toml")).unwrap()
+    read_values(&fixture_paths::toml(text), Path::new("irsync.toml")).unwrap()
 }
 
 #[test]
@@ -197,7 +201,7 @@ fn from_message_checks_each_edit_again() {
     };
     let export = |name: &str| pb::Export {
         name: name.into(),
-        path: "/p".into(),
+        path: fixture_paths::abs("/p"),
         ..Default::default()
     };
     let addr = |s: &str| pb::Entry {
@@ -653,7 +657,10 @@ fn corpus() -> Vec<(String, String)> {
         .filter(|p| p.extension().is_some_and(|x| x == "toml"))
         .map(|p| {
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
-            (name, std::fs::read_to_string(&p).unwrap())
+            (
+                name,
+                fixture_paths::toml(&std::fs::read_to_string(&p).unwrap()),
+            )
         })
         .collect();
     files.sort();
@@ -685,7 +692,7 @@ fn assert_no_comment_lost(name: &str, text: &str, out: &str) {
 
 #[test]
 fn the_corpus_is_commented_as_the_tests_say() {
-    assert_eq!(fixture("commented.toml"), COMMENTED);
+    assert_eq!(fixture("commented.toml"), fixture_paths::toml(COMMENTED));
 }
 
 #[test]
@@ -694,7 +701,8 @@ fn the_writers_form() {
     let out = write(&read(COMMENTED, Path::new("f")).unwrap());
     assert_eq!(
         out,
-        "\
+        fixture_paths::toml(
+            "\
 # irsync on the nas
 # second header line
 
@@ -718,6 +726,7 @@ rw = [
 ]
 # the end
 "
+        )
     );
 }
 
@@ -918,7 +927,7 @@ fn file_edges_round_trip() {
 
 #[test]
 fn inline_and_dotted_forms_become_tables() {
-    let inline_twin = format!(
+    let inline_twin = fixture_paths::toml(&format!(
         "\
 # the nas
 [servers.nas] # inline host
@@ -935,8 +944,8 @@ rw = [\"nas\", \"lap\"]
 ",
         a = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191",
         b = "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
-    );
-    let dotted_twin = format!(
+    ));
+    let dotted_twin = fixture_paths::toml(&format!(
         "\
 # top
 state_dir = \"~/k\"
@@ -950,7 +959,7 @@ dht = false # dht off
 endpoint_id = \"{a}\" # the id
 ",
         a = "069ffbb125300737c2767fed918cd5f4bc12b3102fdd9009a2a1320e2ebd3191",
-    );
+    ));
     for (name, twin, header) in [
         ("inline.toml", inline_twin, "[servers.nas]"),
         ("dotted.toml", dotted_twin, "[daemon]"),

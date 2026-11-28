@@ -20,13 +20,13 @@ fn irsync(home: &Path, args: &[&str]) -> std::process::Output {
 fn grant_remove_all_removes_a_name_that_left_the_clients_table() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    std::fs::create_dir_all(home.join("srv/p")).unwrap();
-    let cfg = home.join(".config/irsync");
+    std::fs::create_dir_all(home.join("srv").join("p")).unwrap();
+    let cfg = home.join(".config").join("irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
     let host = format!("[clients.laptop]\nclient_id = \"{id}\"\n");
     irsync::fs::private::write(cfg.join("irsync.toml"), &host).unwrap();
-    let target = format!("p:{}", home.join("srv/p").display());
+    let target = format!("p:{}", home.join("srv").join("p").display());
     assert!(irsync(&home, &["export", "add", &target]).status.success());
     assert!(irsync(&home, &["grant", "add", "p", "laptop"])
         .status
@@ -46,19 +46,23 @@ fn grant_remove_all_removes_a_name_that_left_the_clients_table() {
 fn export_add_grant_add_grant_remove_export_remove_round_trip_with_default_paths() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    std::fs::create_dir_all(home.join("srv/photos")).unwrap();
-    let target = format!("photos:{}", home.join("srv/photos").display());
+    std::fs::create_dir_all(home.join("srv").join("photos")).unwrap();
+    let target = format!("photos:{}", home.join("srv").join("photos").display());
     let o = irsync(&home, &["export", "add", &target]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
     irsync::identity::parse_endpoint_id(out.trim()).expect("stdout is the daemon id");
-    assert!(home.join(".config/irsync/daemon_ed25519").exists());
-    let exports = home.join(".config/irsync/irsync.toml");
+    assert!(home
+        .join(".config")
+        .join("irsync")
+        .join("daemon_ed25519")
+        .exists());
+    let exports = home.join(".config").join("irsync").join("irsync.toml");
     assert_eq!(
         std::fs::read_to_string(&exports).unwrap(),
         format!(
-            "config_version = 2\n\n[exports.photos]\npath = {:?}\n",
-            home.join("srv/photos")
+            "config_version = 2\n\n[exports.photos]\npath = {}\n",
+            common::fixture::toml_string(home.join("srv").join("photos").to_str().unwrap())
         )
     );
     let id = iroh::SecretKey::from_bytes(&[9; 32]).public().to_string();
@@ -75,7 +79,7 @@ fn export_add_grant_add_grant_remove_export_remove_round_trip_with_default_paths
         &[
             "export",
             "add",
-            &format!("all:{}", home.join("srv/photos").display()),
+            &format!("all:{}", home.join("srv").join("photos").display()),
         ],
     );
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("reserved"));
@@ -115,7 +119,7 @@ fn host_add_then_grant_add_by_name_then_list() {
         .status
         .success());
     assert_eq!(
-        std::fs::read_to_string(home.join(".config/irsync/irsync.toml")).unwrap(),
+        std::fs::read_to_string(home.join(".config").join("irsync").join("irsync.toml")).unwrap(),
         format!(
             "config_version = 2\n\n[servers.laptop]\nendpoint_id = \"{id}\"\nparallel = 4\n\n\
              [clients.laptop]\nclient_id = \"{id}\"\n"
@@ -131,7 +135,7 @@ fn host_add_then_grant_add_by_name_then_list() {
         .status
         .success());
     assert!(
-        std::fs::read_to_string(home.join(".config/irsync/irsync.toml"))
+        std::fs::read_to_string(home.join(".config").join("irsync").join("irsync.toml"))
             .unwrap()
             .contains("rw = [\"laptop\"]")
     );
@@ -151,7 +155,10 @@ fn host_add_then_grant_add_by_name_then_list() {
         String::from_utf8_lossy(&o.stderr),
         format!(
             "removed server laptop from {}\n",
-            home.join(".config/irsync/irsync.toml").display()
+            home.join(".config")
+                .join("irsync")
+                .join("irsync.toml")
+                .display()
         )
     );
     let o = irsync(&home, &["client", "remove", "laptop"]);
@@ -163,10 +170,14 @@ fn host_add_then_grant_add_by_name_then_list() {
         String::from_utf8_lossy(&o.stderr),
         format!(
             "removed client laptop from {}\n",
-            home.join(".config/irsync/irsync.toml").display()
+            home.join(".config")
+                .join("irsync")
+                .join("irsync.toml")
+                .display()
         )
     );
-    let text = std::fs::read_to_string(home.join(".config/irsync/irsync.toml")).unwrap();
+    let text =
+        std::fs::read_to_string(home.join(".config").join("irsync").join("irsync.toml")).unwrap();
     assert!(
         !text.contains("laptop") && text.contains("[exports.p]"),
         "{text}"
@@ -188,12 +199,20 @@ fn id_generates_and_prints_client_then_daemon_then_both() {
     assert_eq!(lines[0], "client:");
     assert!(lines[1].starts_with("ssh-ed25519 "));
     let client = irsync::identity::parse_endpoint_id(lines[2]).unwrap();
-    assert!(home.join(".config/irsync/id_ed25519").exists());
+    assert!(home
+        .join(".config")
+        .join("irsync")
+        .join("id_ed25519")
+        .exists());
     // `id show --daemon` never creates the identity.
     let o = irsync(&home, &["id", "show", "--daemon"]);
     assert!(!o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("no daemon identity"));
-    assert!(!home.join(".config/irsync/daemon_ed25519").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("daemon_ed25519")
+        .exists());
     assert!(irsync(&home, &["id", "generate", "--daemon"])
         .status
         .success());
@@ -269,9 +288,11 @@ fn show_never_creates_the_daemon_identity() {
 fn id_show_uses_the_ssh_key_until_an_irsync_key_exists() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    std::fs::create_dir_all(home.join(".ssh")).unwrap();
-    let ssh =
-        irsync::identity::generate_openssh(&home.join(".ssh/id_ed25519"), "me@laptop").unwrap();
+    // The key irsync falls back to: the ssh key on Unix (`~/.ssh`), on
+    // Windows `~/.irsync`.
+    let fallback = common::bin::locations(&home).key.unwrap();
+    std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
+    let ssh = irsync::identity::generate_openssh(&fallback, "me@laptop").unwrap();
     let endpoint_of = |o: &std::process::Output| {
         irsync::identity::parse_endpoint_id(
             String::from_utf8_lossy(&o.stdout).lines().last().unwrap(),
@@ -283,7 +304,11 @@ fn id_show_uses_the_ssh_key_until_an_irsync_key_exists() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(endpoint_of(&o), ssh.public());
     assert!(!String::from_utf8_lossy(&o.stderr).contains("generated"));
-    assert!(!home.join(".config/irsync/id_ed25519").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("id_ed25519")
+        .exists());
     assert!(irsync(&home, &["show"]).status.success());
     // An irsync key, once made, takes precedence.
     assert!(irsync(&home, &["id", "generate"]).status.success());
@@ -291,9 +316,9 @@ fn id_show_uses_the_ssh_key_until_an_irsync_key_exists() {
     let own = endpoint_of(&o);
     assert_ne!(own, ssh.public());
     // A named identity is the whole answer: generated beside the ssh key.
-    let named = home.join("elsewhere/key");
+    let named = home.join("elsewhere").join("key");
     irsync::fs::private::write(
-        home.join(".config/irsync/irsync.toml"),
+        home.join(".config").join("irsync").join("irsync.toml"),
         format!("[defaults]\nidentity = {:?}\n", named.display().to_string()),
     )
     .unwrap();
@@ -311,7 +336,7 @@ fn id_derives_the_key_line_from_the_key_not_a_pub_file() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     assert!(irsync(&home, &["id", "show"]).status.success());
-    std::fs::remove_file(home.join(".config/irsync/id_ed25519.pub")).unwrap();
+    std::fs::remove_file(home.join(".config").join("irsync").join("id_ed25519.pub")).unwrap();
     let o = irsync(&home, &["id", "show"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
@@ -344,7 +369,7 @@ fn show_lists_files_identities_exports_and_flags_unknown_names() {
         .status
         .success());
     // A hand edit of the one file: a name nobody defines.
-    let config = home.join(".config/irsync/irsync.toml");
+    let config = home.join(".config").join("irsync").join("irsync.toml");
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(text.contains("rw = [\"laptop\"]"), "{text}");
     irsync::fs::private::write(
@@ -409,12 +434,19 @@ fn sync_generates_the_client_identity_on_first_run() {
     );
     assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
-    let key = home.join(".config/irsync/id_ed25519");
+    let key = home.join(".config").join("irsync").join("id_ed25519");
     assert!(
         err.contains("generated identity") && err.contains(key.to_str().unwrap()),
         "{err}"
     );
-    assert!(key.exists() && home.join(".config/irsync/id_ed25519.pub").exists());
+    assert!(
+        key.exists()
+            && home
+                .join(".config")
+                .join("irsync")
+                .join("id_ed25519.pub")
+                .exists()
+    );
 }
 
 #[test]
@@ -426,7 +458,7 @@ fn an_unreadable_daemon_key_is_named_in_the_error() {
     assert!(irsync(&home, &["id", "generate", "--daemon"])
         .status
         .success());
-    let key = home.join(".config/irsync/daemon_ed25519");
+    let key = home.join(".config").join("irsync").join("daemon_ed25519");
     set_mode(&key, 0o000).unwrap();
     if std::fs::read(&key).is_ok() {
         eprintln!("skipping: running as root, mode 0o000 does not stop reads");
@@ -449,7 +481,11 @@ fn an_unreadable_daemon_key_is_named_in_the_error() {
         !o.status.success() && err.contains(key.to_str().unwrap()),
         "{err}"
     );
-    assert!(!home.join(".config/irsync/irsync.toml").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("irsync.toml")
+        .exists());
 }
 
 /// `id list` prints what the machine has: the client's identity (made
@@ -466,8 +502,16 @@ fn id_list_prints_the_client_and_the_daemon_when_there_is_one() {
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines.len(), 3, "{out}");
     assert_eq!(lines[0], "client:");
-    assert!(home.join(".config/irsync/id_ed25519").exists());
-    assert!(!home.join(".config/irsync/daemon_ed25519").exists());
+    assert!(home
+        .join(".config")
+        .join("irsync")
+        .join("id_ed25519")
+        .exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("daemon_ed25519")
+        .exists());
     // With a daemon identity: both blocks, exactly what `show -a` prints,
     // and no pointer on stderr.
     ok(&home, &["id", "generate", "--daemon"]);
@@ -493,7 +537,7 @@ fn id_list_names_a_daemon_key_it_cannot_read() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     ok(&home, &["id", "generate", "--daemon"]);
-    let key = home.join(".config/irsync/daemon_ed25519");
+    let key = home.join(".config").join("irsync").join("daemon_ed25519");
     set_mode(&key, 0o000).unwrap();
     if std::fs::read(&key).is_ok() {
         eprintln!("skipping: running as root, mode 0o000 does not stop reads");
@@ -511,7 +555,7 @@ fn id_list_names_a_daemon_key_it_cannot_read() {
 fn grant_add_refuses_a_pasted_key_line_with_a_multi_line_comment() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let exports = home.join(".config/irsync/irsync.toml");
+    let exports = home.join(".config").join("irsync").join("irsync.toml");
     let line = irsync::identity::public_key_line(&iroh::SecretKey::from_bytes(&[7; 32]), "x");
     let key = line.rsplit_once(' ').unwrap().0;
     let other = iroh::SecretKey::from_bytes(&[8; 32]).public();
@@ -545,17 +589,25 @@ fn grant_add_refuses_a_pasted_key_line_with_a_multi_line_comment() {
 fn export_add_of_a_bare_path_named_all_is_refused_and_writes_nothing() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    std::fs::create_dir_all(home.join("srv/all")).unwrap();
+    std::fs::create_dir_all(home.join("srv").join("all")).unwrap();
     let o = irsync(
         &home,
-        &["export", "add", home.join("srv/all").to_str().unwrap()],
+        &[
+            "export",
+            "add",
+            home.join("srv").join("all").to_str().unwrap(),
+        ],
     );
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(
         !o.status.success() && err.contains("\"all\" is reserved"),
         "{err}"
     );
-    assert!(!home.join(".config/irsync/irsync.toml").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("irsync.toml")
+        .exists());
 }
 
 #[test]
@@ -563,7 +615,7 @@ fn config_flag_after_the_noun_names_the_file() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
     std::fs::create_dir_all(home.join("dir")).unwrap();
-    let c = d.path().join("elsewhere/irsync.toml");
+    let c = d.path().join("elsewhere").join("irsync.toml");
     let c_str = c.to_str().unwrap();
     let dir = home.join("dir");
     let o = irsync(
@@ -594,7 +646,11 @@ fn config_flag_after_the_noun_names_the_file() {
         text.contains("[exports.p]\n") && text.contains("[exports.p2]\n"),
         "{text}"
     );
-    assert!(!home.join(".config/irsync/irsync.toml").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("irsync.toml")
+        .exists());
 }
 
 #[test]
@@ -707,7 +763,7 @@ fn grant_list_by_export_by_peer_and_for_an_unknown_name() {
 fn server_list_refuses_an_unknown_table() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
     irsync::fs::private::write(
@@ -757,13 +813,21 @@ fn grant_remove_all_all_empties_the_exports_but_keeps_client_rights() {
 fn index_export_hashes_the_named_export_into_the_daemon_state() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    std::fs::create_dir_all(home.join("srv/photos")).unwrap();
-    std::fs::write(home.join("srv/photos/a.jpg"), vec![1u8; 4096]).unwrap();
-    std::fs::write(home.join("srv/photos/b.jpg"), vec![2u8; 8192]).unwrap();
-    let target = format!("photos:{}", home.join("srv/photos").display());
+    std::fs::create_dir_all(home.join("srv").join("photos")).unwrap();
+    std::fs::write(
+        home.join("srv").join("photos").join("a.jpg"),
+        vec![1u8; 4096],
+    )
+    .unwrap();
+    std::fs::write(
+        home.join("srv").join("photos").join("b.jpg"),
+        vec![2u8; 8192],
+    )
+    .unwrap();
+    let target = format!("photos:{}", home.join("srv").join("photos").display());
     assert!(irsync(&home, &["export", "add", &target]).status.success());
-    let state = home.join("xdg/irsync");
-    let config = home.join(".config/irsync/irsync.toml");
+    let state = home.join("xdg").join("irsync");
+    let config = home.join(".config").join("irsync").join("irsync.toml");
     let text = std::fs::read_to_string(&config).unwrap();
     irsync::fs::private::write(&config, format!("state_dir = {:?}\n{text}", state)).unwrap();
     // A dry run reads nothing and creates no index.
@@ -809,7 +873,7 @@ fn index_export_hashes_the_named_export_into_the_daemon_state() {
 fn id_generate_writes_the_configured_identity_and_refuses_a_second_time() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     // The client's identity by default.
     let o = irsync(&home, &["id", "generate"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -849,7 +913,7 @@ fn id_generate_writes_the_configured_identity_and_refuses_a_second_time() {
     );
     assert_eq!(std::fs::read(&key).unwrap(), before);
     // The paths come from the settings file.
-    let other = home.join("elsewhere/client_key");
+    let other = home.join("elsewhere").join("client_key");
     std::fs::create_dir_all(&cfg).unwrap();
     irsync::fs::private::write(
         cfg.join("irsync.toml"),
@@ -858,14 +922,14 @@ fn id_generate_writes_the_configured_identity_and_refuses_a_second_time() {
     .unwrap();
     let o = irsync(&home, &["id", "generate"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(other.exists() && home.join("elsewhere/client_key.pub").exists());
+    assert!(other.exists() && home.join("elsewhere").join("client_key.pub").exists());
 }
 
 #[test]
 fn id_generate_force_replaces_an_existing_identity() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     let key = cfg.join("id_ed25519");
     let pub_key = cfg.join("id_ed25519.pub");
     let o = irsync(&home, &["id", "generate"]);
@@ -1069,7 +1133,7 @@ fn grant_remove_with_a_star_points_at_all() {
 fn show_names_the_config_file_once() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let out = ok(&home, &["show"]);
     let file = cfg.join("irsync.toml").display().to_string();
@@ -1131,7 +1195,7 @@ fn get_prints_defaults_and_exits_1_for_unset_optional_keys() {
 fn set_with_a_bad_value_leaves_the_file_untouched() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let config = cfg.join("irsync.toml");
     irsync::fs::private::write(&config, "[defaults]\nparallel = 4\n").unwrap();
@@ -1185,7 +1249,7 @@ fn set_with_a_bad_value_leaves_the_file_untouched() {
 fn set_unset_and_the_nouns_share_one_file() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(home.join("p")).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
@@ -1234,7 +1298,10 @@ fn dotted_names_round_trip_quoted() {
     );
     let list = ok(&home, &["config", "list"]);
     assert!(
-        list.contains(&format!("exports.\"www.example.com\".path = {w:?}")),
+        list.contains(&format!(
+            "exports.\"www.example.com\".path = {}",
+            common::fixture::toml_string(&w)
+        )),
         "{list}"
     );
     assert_eq!(
@@ -1251,7 +1318,7 @@ fn dotted_names_round_trip_quoted() {
 fn a_lock_file_blocks_edits_and_names_itself() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::write(cfg.join("irsync.toml.lock"), "").unwrap();
     let o = irsync(&home, &["config", "set", "defaults.parallel", "4"]);
@@ -1273,7 +1340,8 @@ fn unset_of_the_last_key_leaves_no_empty_table() {
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public().to_string();
     ok(&home, &["config", "set", "servers.laptop.endpoint_id", &id]);
     ok(&home, &["config", "unset", "servers.laptop.endpoint_id"]);
-    let text = std::fs::read_to_string(home.join(".config/irsync/irsync.toml")).unwrap();
+    let text =
+        std::fs::read_to_string(home.join(".config").join("irsync").join("irsync.toml")).unwrap();
     assert!(!text.contains("servers"), "{text:?}");
     let o = irsync(&home, &["config", "set", "config_version", "3"]);
     assert_eq!(o.status.code(), Some(1));
@@ -1292,7 +1360,11 @@ fn set_refuses_an_export_name_with_a_slash() {
     assert_eq!(o.status.code(), Some(1));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("is not a valid export name"), "{err}");
-    assert!(!home.join(".config/irsync/irsync.toml").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("irsync.toml")
+        .exists());
 }
 
 #[test]
@@ -1315,7 +1387,7 @@ fn index_and_gc_use_the_configured_state_dir() {
             .unwrap_or_default()
     };
     assert_eq!(files(&state).len(), 1, "{:?}", files(&state));
-    assert!(files(&home.join("xdg/irsync")).is_empty());
+    assert!(files(&home.join("xdg").join("irsync")).is_empty());
     // gc reads the same file for its state dir.
     let o = irsync(&home, &["gc", "-n", "--config", c]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -1337,7 +1409,9 @@ fn gc_removes_an_older_builds_index_file_unless_it_is_open() {
     let o = irsync(&home, &["index", "--config", c, root.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     // A version 1 build's file for another root, in WAL mode.
-    let old = state.join("index/00000000000000000000000000000000.sqlite");
+    let old = state
+        .join("index")
+        .join("00000000000000000000000000000000.sqlite");
     let held = rusqlite::Connection::open(&old).unwrap();
     held.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE meta (key TEXT PRIMARY KEY, value);")
         .unwrap();
@@ -1395,7 +1469,7 @@ fn config_sets_and_checks_the_telemetry_keys() {
         "http://c:4318\n"
     );
     assert_eq!(ok(&home, &["config", "get", "daemon.debug_addr"]), "9464\n");
-    let file = home.join(".config/irsync/irsync.toml");
+    let file = home.join(".config").join("irsync").join("irsync.toml");
     let saved = std::fs::read_to_string(&file).unwrap();
     // Values that would not load are refused, and the file is left as it was.
     for (key, bad) in [
@@ -1471,12 +1545,24 @@ fn a_bare_noun_changes_nothing_and_takes_no_list_arguments() {
     for noun in ["server", "client", "export", "grant", "config"] {
         assert!(irsync(&home, &[noun]).status.success(), "{noun}");
     }
-    assert!(!home.join(".config/irsync/irsync.toml").exists());
-    assert!(!home.join(".config/irsync/daemon_ed25519").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("irsync.toml")
+        .exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("daemon_ed25519")
+        .exists());
     let o = irsync(&home, &["id", "--help"]);
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stdout).contains("Usage: irsync id"));
-    assert!(!home.join(".config/irsync/id_ed25519").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("id_ed25519")
+        .exists());
     for args in [&["grant", "photos"][..], &["id", "--daemon"]] {
         let o = irsync(&home, args);
         assert_eq!(o.status.code(), Some(2), "{args:?}");
@@ -1494,9 +1580,9 @@ fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
     let home = d.path().join("home");
     let locked = d.path().join("locked");
     let key = locked.join("key");
-    std::fs::create_dir_all(home.join(".config/irsync")).unwrap();
+    std::fs::create_dir_all(home.join(".config").join("irsync")).unwrap();
     irsync::fs::private::write(
-        home.join(".config/irsync/irsync.toml"),
+        home.join(".config").join("irsync").join("irsync.toml"),
         format!("[daemon]\nidentity = \"{}\"\n", key.display()),
     )
     .unwrap();
@@ -1520,7 +1606,7 @@ fn id_list_names_a_daemon_key_in_a_directory_it_cannot_enter() {
 /// A home whose config is `text`; the home and the config file.
 fn home_with(d: &tempfile::TempDir, text: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let file = cfg.join("irsync.toml");
     if !text.is_empty() {
@@ -1560,25 +1646,25 @@ fn host_add_renames_existing_grants() {
     let id = peer_id(5);
     let (home, file) = home_with(
         &d,
-        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"),
+        &common::fixture::toml(&format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n")),
     );
     // A server is no client: the grant keeps the id.
     ok(&home, &["server", "add", "box", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert_eq!(
         text,
-        format!(
+        common::fixture::toml(&format!(
             "config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"
-        )
+        ))
     );
     ok(&home, &["client", "add", "box", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert_eq!(
         text,
-        format!(
+        common::fixture::toml(&format!(
             "config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n\
              [clients.box]\nclient_id = \"{id}\"\n\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
-        )
+        ))
     );
 }
 
@@ -1588,14 +1674,16 @@ fn unrelated_config_set_cleans_the_file() {
     let id = peer_id(5);
     let (home, file) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "[clients.box]\nclient_id = \"{id}\"\n[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"
-        ),
+        )),
     );
     ok(&home, &["config", "set", "defaults.parallel", "4"]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
-        text.contains("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"),
+        text.contains(&common::fixture::toml(
+            "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
+        )),
         "{text}"
     );
 }
@@ -1606,12 +1694,14 @@ fn name_set_through_config_renames_grants() {
     let id = peer_id(5);
     let (home, file) = home_with(
         &d,
-        &format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n"),
+        &common::fixture::toml(&format!("[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n")),
     );
     ok(&home, &["config", "set", "clients.box.client_id", &id]);
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(
-        text.contains("[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"),
+        text.contains(&common::fixture::toml(
+            "[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
+        )),
         "{text}"
     );
 }
@@ -1639,10 +1729,10 @@ fn key_comment_stays_beside_the_name() {
 fn client_remove_counts_a_hand_written_id_as_a_grant() {
     let d = tempfile::tempdir().unwrap();
     let id = peer_id(5);
-    let before = format!(
+    let before = common::fixture::toml(&format!(
         "[servers.box]\nendpoint_id = \"{id}\"\n[clients.box]\nclient_id = \"{id}\"\n\
          [exports.a]\npath = \"/a\"\nrw = [\"{id}\"]\n[exports.b]\npath = \"/b\"\nrw = [\"box\"]\n"
-    );
+    ));
     let (home, file) = home_with(&d, &before);
     let o = irsync(&home, &["client", "remove", "box"]);
     let err = String::from_utf8_lossy(&o.stderr);
@@ -1661,14 +1751,14 @@ fn client_remove_counts_a_hand_written_id_as_a_grant() {
     );
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!("config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[exports.a]\npath = \"/a\"\nrw = []\n\n[exports.b]\npath = \"/b\"\nrw = []\n")
+        common::fixture::toml(&format!("config_version = 2\n\n[servers.box]\nendpoint_id = \"{id}\"\n\n[exports.a]\npath = \"/a\"\nrw = []\n\n[exports.b]\npath = \"/b\"\nrw = []\n"))
     );
     // One grant: singular.
     let (home, file) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "[clients.box]\nclient_id = \"{id}\"\n[exports.p]\npath = \"/p\"\nro = [\"box\"]\n"
-        ),
+        )),
     );
     let o = irsync(&home, &["client", "remove", "--force", "box"]);
     assert_eq!(
@@ -1681,12 +1771,12 @@ fn client_remove_counts_a_hand_written_id_as_a_grant() {
 fn config_unset_does_not_remove_a_client_that_grants_name() {
     let d = tempfile::tempdir().unwrap();
     let id = peer_id(5);
-    let before = format!(
+    let before = common::fixture::toml(&format!(
         "[servers.box]\nendpoint_id = \"{id}\"\n\
          [clients.box]\nclient_id = \"{id}\"\n[clients.free]\nclient_id = \"{}\"\n\
          [exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n",
         peer_id(6)
-    );
+    ));
     let (home, file) = home_with(&d, &before);
     for key in ["clients.box.client_id", "clients.box", "clients"] {
         let o = irsync(&home, &["config", "unset", key]);
@@ -1743,27 +1833,27 @@ fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
     };
     let (home, file) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "{}[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n",
             hosts(&["amy", "zed"])
-        ),
+        )),
     );
     // The id is not amy's alone: zed still names the client.
     ok(&home, &["client", "remove", "amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!(
+        common::fixture::toml(&format!(
             "config_version = 2\n\n{}\n[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n",
             hosts(&["zed"])
-        )
+        ))
     );
     // A grant that names amy itself still stops the removal.
     std::fs::write(
         &file,
-        format!(
+        common::fixture::toml(&format!(
             "{}[exports.p]\npath = \"/p\"\nrw = [\"amy\"]\n",
             hosts(&["amy", "zed"])
-        ),
+        )),
     )
     .unwrap();
     let o = irsync(&home, &["server", "remove", "amy"]);
@@ -1771,19 +1861,19 @@ fn client_remove_leaves_an_id_grant_to_another_name_of_the_same_id() {
     // The same through config unset.
     std::fs::write(
         &file,
-        format!(
+        common::fixture::toml(&format!(
             "{}[exports.p]\npath = \"/p\"\nrw = [\"{id}\"]\n",
             hosts(&["amy", "zed"])
-        ),
+        )),
     )
     .unwrap();
     ok(&home, &["config", "unset", "clients.amy"]);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
-        format!(
+        common::fixture::toml(&format!(
             "config_version = 2\n\n{}\n[exports.p]\npath = \"/p\"\nrw = [\"zed\"]\n",
             hosts(&["zed"])
-        )
+        ))
     );
 }
 
@@ -1795,11 +1885,11 @@ fn host_add_moves_the_server_and_not_the_grants() {
     let (old, new) = (peer_id(5), peer_id(6));
     let (home, _) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "[servers.box]\nendpoint_id = \"{old}\"\n\
              [clients.box]\nclient_id = \"{old}\"\nall_exports = \"rw\"\n\
              [exports.p]\npath = \"/p\"\nro = [\"{old}\"]\n"
-        ),
+        )),
     );
     let o = irsync(&home, &["server", "add", "box", &old, "--parallel", "2"]);
     assert!(o.status.success());
@@ -1860,7 +1950,11 @@ fn config_before_a_command_names_the_file_the_command_uses() {
     assert!(std::fs::read_to_string(&other)
         .unwrap()
         .contains("[servers.laptop]"));
-    assert!(!home.join(".config/irsync/irsync.toml").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("irsync.toml")
+        .exists());
     let before = irsync(&home, &["--config", other_s, "server", "list"]);
     let after = irsync(&home, &["server", "list", "--config", other_s]);
     assert!(before.status.success() && before.stdout == after.stdout);
@@ -1928,7 +2022,7 @@ fn id_generate_encrypts_the_key_with_the_passphrase_file() {
     let d = tempfile::tempdir().unwrap();
     let (home, pf) = passphrase_home(&d, "hunter2\nnot part of it\n");
     let pf_s = pf.to_str().unwrap();
-    let key = home.join(".config/irsync/id_ed25519");
+    let key = home.join(".config").join("irsync").join("id_ed25519");
     let gen = irsync(&home, &["id", "generate", "--passphrase-file", pf_s]);
     assert!(
         gen.status.success(),
@@ -1983,7 +2077,7 @@ fn id_generate_encrypts_with_daemon_out_and_force() {
         &["id", "generate", "--daemon", "--passphrase-file", pf_s],
     );
     assert!(o.status.success());
-    let daemon_key = home.join(".config/irsync/daemon_ed25519");
+    let daemon_key = home.join(".config").join("irsync").join("daemon_ed25519");
     assert!(ssh_key::PrivateKey::read_openssh_file(&daemon_key)
         .unwrap()
         .is_encrypted());
@@ -1994,7 +2088,7 @@ fn id_generate_encrypts_with_daemon_out_and_force() {
     .status
     .success());
 
-    let out = home.join("elsewhere/key");
+    let out = home.join("elsewhere").join("key");
     let out_s = out.to_str().unwrap();
     assert!(irsync(
         &home,
@@ -2062,8 +2156,8 @@ fn id_generate_encrypts_with_daemon_out_and_force() {
 fn id_generate_with_a_bad_passphrase_file_writes_and_removes_nothing() {
     let d = tempfile::tempdir().unwrap();
     let (home, _pf) = passphrase_home(&d, "x\n");
-    let key = home.join(".config/irsync/id_ed25519");
-    let pub_key = home.join(".config/irsync/id_ed25519.pub");
+    let key = home.join(".config").join("irsync").join("id_ed25519");
+    let pub_key = home.join(".config").join("irsync").join("id_ed25519.pub");
     let empty = home.join("empty");
     irsync::fs::private::write(&empty, "").unwrap();
     let blank_first = home.join("blank");
@@ -2094,15 +2188,21 @@ fn id_generate_with_a_bad_passphrase_file_writes_and_removes_nothing() {
         ],
     );
     let err = String::from_utf8_lossy(&o.stderr).to_string();
+    // The system's own words for a missing file.
+    let no_such_file = if cfg!(windows) {
+        "The system cannot find the file specified"
+    } else {
+        "No such file"
+    };
     assert!(
         err.contains(&format!(
-            "reading passphrase file: {}: No such file",
+            "reading passphrase file: {}: {no_such_file}",
             missing.display()
         )),
         "{err}"
     );
     assert_eq!(err.matches(missing.to_str().unwrap()).count(), 1, "{err}");
-    assert_eq!(err.matches("No such file").count(), 1, "{err}");
+    assert_eq!(err.matches(no_such_file).count(), 1, "{err}");
     // With --force the existing key survives a bad passphrase file.
     assert!(irsync(&home, &["id", "generate"]).status.success());
     let before = std::fs::read(&key).unwrap();
@@ -2126,7 +2226,7 @@ fn export_add_unlocks_an_encrypted_daemon_key_with_the_passphrase_file() {
     let d = tempfile::tempdir().unwrap();
     let (home, pf) = passphrase_home(&d, "hunter2\n");
     let pf_s = pf.to_str().unwrap();
-    std::fs::create_dir_all(home.join("srv/p")).unwrap();
+    std::fs::create_dir_all(home.join("srv").join("p")).unwrap();
     let gen = irsync(
         &home,
         &["id", "generate", "--daemon", "--passphrase-file", pf_s],
@@ -2143,7 +2243,7 @@ fn export_add_unlocks_an_encrypted_daemon_key_with_the_passphrase_file() {
     assert!(show.status.success());
     let show = String::from_utf8_lossy(&show.stdout).to_string();
     let id = show.lines().last().unwrap().trim().to_string();
-    let target = format!("p:{}", home.join("srv/p").display());
+    let target = format!("p:{}", home.join("srv").join("p").display());
     let o = irsync(
         &home,
         &["export", "add", &target, "--passphrase-file", pf_s],
@@ -2175,7 +2275,7 @@ fn rust_log_overrides_the_level_the_flags_give() {
 fn only_id_generate_with_the_file_encrypts() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let key = home.join(".config/irsync/id_ed25519");
+    let key = home.join(".config").join("irsync").join("id_ed25519");
     // IRSYNC_PASSPHRASE alone never encrypts a new key (the helper removes
     // the variable, so build this Command by hand).
     let o = irsync_command(&home)
@@ -2198,9 +2298,9 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
     // A fresh home with no key of any kind (no ~/.ssh/id_ed25519 either).
     let (home, pf) = passphrase_home(&d, "hunter2\r\n");
     let pf_s = pf.to_str().unwrap();
-    let key = home.join(".config/irsync/id_ed25519");
-    let pub_key = home.join(".config/irsync/id_ed25519.pub");
-    let daemon_key = home.join(".config/irsync/daemon_ed25519");
+    let key = home.join(".config").join("irsync").join("id_ed25519");
+    let pub_key = home.join(".config").join("irsync").join("id_ed25519.pub");
+    let daemon_key = home.join(".config").join("irsync").join("daemon_ed25519");
     // Any valid endpoint id: the sync and the listing must fail on the key
     // before they dial.
     let other = d.path().join("other");
@@ -2213,7 +2313,7 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
     let dest = format!("{id}:photos/");
     let listing = format!("{id}:");
     let export = format!("photos:{}", home.join("src").display());
-    let config = home.join(".config/irsync/irsync.toml");
+    let config = home.join(".config").join("irsync").join("irsync.toml");
     for args in [
         &["id", "show", "--passphrase-file", pf_s][..],
         &["--passphrase-file", pf_s, "id", "show"],
@@ -2247,7 +2347,7 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
         );
         // The daemon takes no lock and the export is not added: the
         // refusing commands write nothing at all.
-        assert!(!home.join("xdg/irsync").exists(), "{args:?}");
+        assert!(!home.join("xdg").join("irsync").exists(), "{args:?}");
         assert!(!home.join(".config").exists(), "{args:?}");
         assert!(!config.exists(), "{args:?}");
     }
@@ -2264,7 +2364,7 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
     // Without the flag a missing key is still generated, unencrypted
     // (second fresh home).
     let home2 = d.path().join("home2");
-    let key2 = home2.join(".config/irsync/id_ed25519");
+    let key2 = home2.join(".config").join("irsync").join("id_ed25519");
     let o = irsync(&home2, &["id", "show"]);
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("generated identity"));
@@ -2277,17 +2377,17 @@ fn commands_refuse_to_generate_a_key_on_the_side_with_a_passphrase_file() {
 fn server_and_client_rename_take_their_grants_in_the_file() {
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     let id = iroh::SecretKey::from_bytes(&[5; 32]).public();
     // Export `a` names the host by its id and `b` by its name; `p` also
     // names `work`, which is no host yet.
-    let text = format!(
+    let text = common::fixture::toml(&format!(
         "[servers.laptop]\nendpoint_id = \"{id}\"\n[clients.laptop]\nclient_id = \"{id}\"\n\
          [exports.a]\npath = \"/a\"\nro = [\"{id}\"]\n\
          [exports.b]\npath = \"/b\"\nrw = [\"laptop\"]\n\
          [exports.p]\npath = \"/p\"\nrw = [\"laptop\", \"work\"]\n"
-    );
+    ));
     irsync::fs::private::write(cfg.join("irsync.toml"), &text).unwrap();
     let o = irsync(&home, &["server", "rename", "laptop", "work"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -2309,13 +2409,13 @@ fn server_and_client_rename_take_their_grants_in_the_file() {
     );
     assert_eq!(
         std::fs::read_to_string(cfg.join("irsync.toml")).unwrap(),
-        format!(
+        common::fixture::toml(&format!(
             "config_version = 2\n\n[servers.work]\nendpoint_id = \"{id}\"\n\n\
              [clients.work]\nclient_id = \"{id}\"\n\n\
              [exports.a]\npath = \"/a\"\nro = [\"work\"]\n\n\
              [exports.b]\npath = \"/b\"\nrw = [\"work\"]\n\n\
              [exports.p]\npath = \"/p\"\nrw = [\"work\"]\n"
-        )
+        ))
     );
     // A second rename of the old name fails and changes nothing.
     let before = std::fs::read_to_string(cfg.join("irsync.toml")).unwrap();
@@ -2479,10 +2579,10 @@ fn host_add_leaves_the_grants_with_the_client() {
     let (daemon, client, new) = (peer_id(5), peer_id(6), peer_id(7));
     let (home, config) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "[servers.box]\nendpoint_id = \"{daemon}\"\n[clients.box]\nclient_id = \"{client}\"\n\
              [clients.phone]\nclient_id = \"{client}\"\n[exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
-        ),
+        )),
     );
     let o = irsync(&home, &["server", "add", "box", &new]);
     assert!(o.status.success());
@@ -2509,11 +2609,11 @@ fn config_says_when_a_clients_grants_move_to_another_id() {
     let (daemon, client, new) = (peer_id(5), peer_id(6), peer_id(7));
     let (home, file) = home_with(
         &d,
-        &format!(
+        &common::fixture::toml(&format!(
             "[servers.box]\nendpoint_id = \"{daemon}\"\n[clients.box]\nclient_id = \"{client}\"\n\
              [clients.free]\nclient_id = \"{client}\"\n\
              [exports.p]\npath = \"/p\"\nrw = [\"box\"]\n"
-        ),
+        )),
     );
     let note = |cmd: &str, from: &str, to: &str| {
         format!(
@@ -2660,7 +2760,7 @@ fn a_config_open_to_other_users_stops_every_command_at_once() {
     use irsync::platform::testutil::set_mode;
     let d = tempfile::tempdir().unwrap();
     let home = d.path().join("home");
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(home.join("src")).unwrap();
     let file = cfg.join("irsync.toml");
@@ -2736,7 +2836,7 @@ fn a_key_or_passphrase_file_open_to_other_users_stops_the_command() {
     irsync::fs::private::write(&pf, "hunter2\n").unwrap();
     let pf_s = pf.to_str().unwrap();
     let chmod = |p: &Path, mode: u32| irsync::platform::testutil::set_mode(p, mode).unwrap();
-    let cfg = home.join(".config/irsync");
+    let cfg = home.join(".config").join("irsync");
     let key = cfg.join("id_ed25519");
     let config = cfg.join("irsync.toml");
     let fails = |args: &[&str], what: &str| {

@@ -627,8 +627,14 @@ impl SenderRole {
                 p.path.len()
             );
         }
-        let Ok(path) = RelPath::new(&p.path) else {
-            bail!("protocol error: PlanItem for file id {file_id} has an invalid path");
+        let path = match receiver_path(&p.path) {
+            Ok(path) => path,
+            Err(Some(why)) => {
+                bail!("protocol error: PlanItem for file id {file_id} has an invalid path: {why}")
+            }
+            Err(None) => {
+                bail!("protocol error: PlanItem for file id {file_id} has an invalid path")
+            }
         };
         // Only paths this side listed as regular files are ever read: a peer
         // cannot ask for something outside the walk (e.g. through a symlink).
@@ -1404,7 +1410,11 @@ impl SenderRole {
         if self.links_ended {
             bail!("protocol error: CheckLink after CheckLinksEnd");
         }
-        let (Ok(path), Some(want)) = (RelPath::new(&c.path), c.want) else {
+        let path = match receiver_path(&c.path) {
+            Err(Some(why)) => bail!("protocol error: CheckLink with an invalid path: {why}"),
+            r => r.ok(),
+        };
+        let (Some(path), Some(want)) = (path, c.want) else {
             bail!("protocol error: CheckLink without a path or a stat");
         };
         let want = super::parts::freshness_of(&want);
@@ -1910,6 +1920,21 @@ async fn check_links(
     out.send_paced(Msg::LinksChecked(LinksChecked {})).await;
 }
 
+/// A path the receiver names (`PlanItem`, `CheckLink`) as a path inside
+/// the tree: a canonical [`RelPath`] (else `Err(None)`) whose every
+/// component the name rule of [`crate::fs::names`] lets this system hold
+/// (else `Err(Some(why))`; never on Unix, where that rule refuses
+/// nothing). Checked where the path enters, before it is kept or looked
+/// at: on Windows a component such as `..\x` or `C:\x` must never reach
+/// anything that could read it as a path.
+fn receiver_path(bytes: &[u8]) -> Result<RelPath, Option<&'static str>> {
+    let path = RelPath::new(bytes).map_err(|_| None)?;
+    match crate::fs::names::refused_path(&path, crate::platform::Platform::CURRENT) {
+        Some(why) => Err(Some(why)),
+        None => Ok(path),
+    }
+}
+
 /// Whether this side's listing would hold `path` as a regular file: in a
 /// single-file session only the file's wire name, checked under its local
 /// name; else as [`walk_admits`] says.
@@ -1923,35 +1948,58 @@ fn admits(ctx: &Ctx, path: &RelPath) -> bool {
 /// Whether the walk (from `root`, with `filters`) would list `path` as a
 /// regular file: no component is a symlink or excluded, the file is regular
 /// and is not one of irsync's own temporary files.
+///
+/// `path` comes from the receiver. It is never made into a path of this
+/// system: `root` is opened by name (a link in it is followed: a name this
+/// side trusts), and each component is
+/// looked at (`Dir::stat`, no link followed) in the directory held open
+/// above it, then opened from there (`Dir::open_dir`, no link followed).
+/// So a component is only ever one name in one directory (on Windows one
+/// holding `\` or `:` is refused by `Dir`, never read as a path), and a
+/// directory swapped for a link meanwhile ends the walk.
+///
+/// Opening a directory needs read permission on it, where looking a name
+/// up by path needed only search permission. So on Unix a directory on
+/// the way that the daemon may search but not read (`--x`) now makes the
+/// path not admitted, where a path-based walk admitted it and the read
+/// that followed failed ("Permission denied"). Either way the file is not
+/// sent and the session goes on; only the message differs. The walk could
+/// never have listed such a path.
 fn walk_admits(root: &Path, path: &RelPath, filters: &FilterSet) -> bool {
+    use crate::platform::{Dir, Kind as FsKind};
     if path.as_bytes().is_empty() || is_own_temp(path) {
         return false;
     }
     let comps: Vec<&[u8]> = path.components().collect();
-    let (mut rel, mut full) = (Vec::new(), root.to_path_buf());
+    let Ok(mut dir) = Dir::open_root(root) else {
+        return false;
+    };
+    let mut rel = Vec::new();
     for (i, c) in comps.iter().enumerate() {
         if i > 0 {
             rel.push(b'/');
         }
         rel.extend_from_slice(c);
-        let Ok(name) = crate::platform::bytes_to_os(c) else {
-            return false;
-        };
-        full.push(name);
         let last = i + 1 == comps.len();
         let Ok(r) = RelPath::new(&rel) else {
             return false;
         };
-        let Ok(md) = std::fs::symlink_metadata(&full) else {
+        let Ok(st) = dir.stat(c) else {
             return false;
         };
         let kind_ok = if last {
-            md.is_file()
+            st.kind == FsKind::File
         } else {
-            md.is_dir() && !crate::scan::is_clone_dir(c)
+            st.kind == FsKind::Dir && !crate::scan::is_clone_dir(c)
         };
         if !kind_ok || filters.matches(&r, !last) == FilterVerdict::Exclude {
             return false;
+        }
+        if !last {
+            let Ok(next) = dir.open_dir(c) else {
+                return false;
+            };
+            dir = next;
         }
     }
     true
@@ -1968,9 +2016,13 @@ pub(super) async fn run(
 ) -> anyhow::Result<Outcome> {
     let hashed_before = ctx.files_hashed();
     let root = ctx.root.clone();
-    let root_ok = blocking(move || Ok(std::fs::metadata(&root).is_ok_and(|m| m.is_dir())))
-        .await
-        .unwrap_or(false);
+    let root_ok = blocking(move || {
+        Ok(crate::platform::native_path(&root)
+            .and_then(std::fs::metadata)
+            .is_ok_and(|m| m.is_dir()))
+    })
+    .await
+    .unwrap_or(false);
     if !root_ok {
         bail!("source {} is not a directory", ctx.root.display());
     }
@@ -2833,5 +2885,170 @@ mod tests {
             panic!("the tail was read through the link");
         };
         assert!(err.to_string().contains("symlink"), "{err}");
+    }
+
+    /// What `walk_admits` answers for each kind of path the receiver can
+    /// name: only a regular file the walk would list, below directories
+    /// that are neither links, nor excluded, nor clone folders.
+    #[test]
+    fn the_walk_admits_only_a_regular_file_it_would_list() {
+        use crate::filter::Rule;
+        use crate::platform::testutil::symlink;
+        let (root, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let r = root.path();
+        std::fs::write(r.join("f"), b"f").unwrap();
+        std::fs::create_dir_all(r.join("d/sub")).unwrap();
+        std::fs::write(r.join("d/f"), b"f").unwrap();
+        std::fs::write(r.join("d/sub/f"), b"f").unwrap();
+        std::fs::create_dir(r.join("ex")).unwrap();
+        std::fs::write(r.join("ex/f"), b"f").unwrap();
+        std::fs::write(r.join("d/f.skip"), b"f").unwrap();
+        std::fs::create_dir(r.join(".irsync-clones-1000")).unwrap();
+        std::fs::write(r.join(".irsync-clones-1000/f"), b"f").unwrap();
+        std::fs::write(r.join(".irsync.f.part"), b"f").unwrap();
+        std::fs::write(outside.path().join("f"), b"outside").unwrap();
+        symlink(outside.path(), &r.join("out")).unwrap();
+        symlink(&r.join("d"), &r.join("dlink")).unwrap();
+        symlink(&r.join("f"), &r.join("flink")).unwrap();
+        let filters = FilterSet::new(vec![
+            Rule::from_parts(false, b"ex/"),
+            Rule::from_parts(false, b"*.skip"),
+        ]);
+        let admits = |p: &str| walk_admits(r, &RelPath::new(p.as_bytes()).unwrap(), &filters);
+        for yes in ["f", "d/f", "d/sub/f"] {
+            assert!(admits(yes), "{yes}");
+        }
+        for (no, why) in [
+            ("", "the root"),
+            ("missing", "a missing file"),
+            ("d/missing", "a missing file in a directory"),
+            ("missing/f", "a missing directory on the way"),
+            ("out/f", "a symlink on the way, out of the tree"),
+            ("dlink/f", "a symlink on the way, inside the tree"),
+            ("flink", "a symlink as the final name"),
+            ("f/x", "a file in the middle"),
+            ("d", "a directory as the final name"),
+            ("d/sub", "a directory below one"),
+            ("ex/f", "below an excluded directory"),
+            ("d/f.skip", "an excluded file"),
+            (".irsync-clones-1000/f", "inside a clone folder"),
+            (".irsync.f.part", "irsync's own temporary file"),
+        ] {
+            assert!(!admits(no), "{no}: {why}");
+        }
+        // A root that is not there admits nothing.
+        let gone = r.join("gone");
+        assert!(!walk_admits(
+            &gone,
+            &RelPath::new(b"f").unwrap(),
+            &FilterSet::default()
+        ));
+    }
+
+    /// On Windows a single component a receiver names can hold `\` and
+    /// `:`; the walk never reads it as a path: a file outside the root,
+    /// a climb with `..` and a network path are all not admitted, with
+    /// the same answer as a missing file inside, and the network path is
+    /// never opened.
+    #[cfg(windows)]
+    #[test]
+    fn the_walk_never_reads_a_component_as_a_path_on_windows() {
+        let (root, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir(root.path().join("d")).unwrap();
+        std::fs::write(outside.path().join("x"), b"outside").unwrap();
+        let out_file = outside.path().join("x");
+        let up = format!(
+            r"..\..\{}\x",
+            outside.path().file_name().unwrap().to_string_lossy()
+        );
+        let filters = FilterSet::default();
+        let admits = |p: &[u8]| walk_admits(root.path(), &RelPath::new(p).unwrap(), &filters);
+        assert!(!admits(b"missing"));
+        for p in [
+            out_file.to_string_lossy().into_owned(),
+            format!("d/{}", out_file.display()),
+            up.clone(),
+            format!("d/{up}"),
+        ] {
+            assert!(!admits(p.as_bytes()), "{p}");
+        }
+        let start = std::time::Instant::now();
+        assert!(!admits(br"\\127.0.0.1\nosuchshare\x"));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "a network path was opened: {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// The same through a network path that exists: a temporary file seen
+    /// through this machine's administrative share. The walk does not
+    /// admit it (as a missing file inside), and a `PlanItem` naming it is
+    /// refused by the name rule, as any other path outside.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn an_existing_network_path_is_neither_admitted_nor_planned() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("x"), b"outside").unwrap();
+        let local = outside.path().join("x").to_string_lossy().into_owned();
+        let (drive, rest) = local.split_at(2);
+        let share = format!(
+            r"\\127.0.0.1\{}${rest}",
+            drive.trim_end_matches(':').to_ascii_uppercase()
+        );
+        if std::fs::metadata(&share).is_err() {
+            eprintln!("skipping: the administrative share is not reachable for this user");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let filters = FilterSet::default();
+        let admits = |p: &[u8]| walk_admits(root.path(), &RelPath::new(p).unwrap(), &filters);
+        assert_eq!(admits(share.as_bytes()), admits(b"missing"));
+        assert!(!admits(share.as_bytes()));
+        let (mut s, _t) = role().await;
+        let err = s.on_plan(plan_item(1, share.as_bytes())).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            format!(
+                "protocol error: PlanItem for file id 1 has an invalid path: {}",
+                crate::fs::names::NOT_ALLOWED
+            )
+        );
+        assert!(s.files.is_empty());
+    }
+
+    /// On Windows a `PlanItem` path the name rule refuses (`..\x`, a
+    /// drive, a network path) is a protocol error, before any file is
+    /// looked at.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn plan_item_with_a_path_windows_reads_as_more_than_one_name_is_refused() {
+        let (mut s, _t) = role().await;
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("x"), b"outside").unwrap();
+        let cases = [
+            br"..\..\x".to_vec(),
+            outside
+                .path()
+                .join("x")
+                .to_string_lossy()
+                .as_bytes()
+                .to_vec(),
+            br"\\127.0.0.1\nosuchshare\x".to_vec(),
+        ];
+        for (id, bad) in cases.iter().enumerate() {
+            let start = std::time::Instant::now();
+            let err = s.on_plan(plan_item(id as u64, bad)).unwrap_err();
+            assert_eq!(
+                format!("{err:#}"),
+                format!(
+                    "protocol error: PlanItem for file id {id} has an invalid path: {}",
+                    crate::fs::names::NOT_ALLOWED
+                )
+            );
+            assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        }
+        assert!(s.files.is_empty());
+        assert!(s.errors.is_empty());
     }
 }

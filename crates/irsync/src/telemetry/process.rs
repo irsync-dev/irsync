@@ -60,7 +60,9 @@ pub fn sample() -> ProcessSample {
     s
 }
 
-#[cfg(test)]
+/// Every test here reads process usage, which only Unix reports yet
+/// (`platform::process_usage` is `None` on Windows).
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::time::Instant;

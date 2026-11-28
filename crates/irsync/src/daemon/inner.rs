@@ -15,6 +15,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::fs::names::same_ignoring_case;
 use crate::fs::paths::RelPath;
 
 /// Another export a request may reach, as [`reached_export`] compares it:
@@ -146,13 +147,81 @@ pub(crate) fn reached_export<'a>(
 }
 
 /// What [`reached_export`] compares for each of `others` (name,
-/// configured path).
-fn other_roots(others: &[(String, PathBuf)]) -> io::Result<Vec<OtherRoot>> {
+/// configured path), seen from a walk that starts at `start`.
+fn other_roots(start: &Path, others: &[(String, PathBuf)]) -> io::Result<Vec<OtherRoot>> {
+    use crate::platform::{Dir, Platform};
     let mut roots = Vec::new();
     for (name, path) in others {
+        // Windows only (on Unix every path starts at `/`).
+        // An export on a network share (`\\server\share\…`, `\\?\UNC\…`),
+        // on another start than the chosen root: skipped with nothing
+        // opened. Export roots belong on local volumes (a
+        // later check refuses others when the config is read), and opening
+        // a share that is away can take many seconds, on every request.
+        //
+        // An export on another drive letter, or named another local way
+        // (`\\?\Volume{…}\…`, `\\?\GLOBALROOT\…`): its own root is opened once,
+        // as the daemon opens a root to serve it, and if that works its
+        // identity counts (with no names below it). That catches a `subst`
+        // or mapped drive letter that names a directory on the chosen
+        // root's volume, which the walk can meet. Any error (not there, no
+        // medium, access denied, a link) skips it, with no parent looked
+        // at: on a real other volume skipping is safe, as the walk below
+        // `start` goes through `Dir`, which refuses every reparse
+        // point (a volume mount point too) and so never reaches another
+        // volume. A letter mapped to a network share cannot be told apart
+        // from a local one here without another native call, so it is
+        // opened like one (and may be slow when the share is away); the
+        // later root check covers it.
+        if Platform::CURRENT == Platform::Windows && !same_start(start, path) {
+            if on_a_share(path) {
+                continue;
+            }
+            if let Ok(st) = Dir::open_root_nofollow(path).and_then(|d| d.stat_self()) {
+                roots.push(OtherRoot {
+                    name: name.clone(),
+                    ancestor: (st.dev, st.ino),
+                    rest: Vec::new(),
+                    fold: false,
+                });
+            }
+            continue;
+        }
         roots.extend(OtherRoot::find(name, path)?);
     }
     Ok(roots)
+}
+
+/// Whether the configured path `path` is on a network share: plain UNC
+/// (`\\server\share\…`, either separator) or verbatim UNC
+/// (`\\?\UNC\server\share\…`, `UNC` in any case), as the resolver reads a
+/// path's start (it gives both as `\\server\share`). Any other `\\?\…` or
+/// `\\.\…` start (a volume by its GUID, `GLOBALROOT`) is a local name, not
+/// a share.
+fn on_a_share(path: &Path) -> bool {
+    use crate::platform::{os_to_bytes, Platform};
+    use crate::resolve::{split_path, Start};
+    match split_path(&os_to_bytes(path.as_os_str()), Platform::CURRENT).0 {
+        Start::Prefix(p) => {
+            p.starts_with(br"\\") && !p.starts_with(br"\\?\") && !p.starts_with(br"\\.\")
+        }
+        _ => false,
+    }
+}
+
+/// Whether the configured paths `a` and `b` start on the same drive or
+/// network share, as the resolver reads a path's start (a drive letter
+/// in either case, `\\?\C:\` as `C:\`, `\\?\UNC\server\share` as
+/// `\\server\share`); a share's server and name compared ignoring ASCII
+/// case, as Windows names them.
+fn same_start(a: &Path, b: &Path) -> bool {
+    use crate::platform::{os_to_bytes, Platform};
+    use crate::resolve::{split_path, Start};
+    let start = |p: &Path| split_path(&os_to_bytes(p.as_os_str()), Platform::CURRENT).0;
+    match (start(a), start(b)) {
+        (Start::Prefix(x), Start::Prefix(y)) => x.eq_ignore_ascii_case(&y),
+        (x, y) => x == y,
+    }
 }
 
 /// The name of another export of `others` (name, configured path) that
@@ -184,7 +253,7 @@ pub(crate) fn inner_export(
     if rel.as_bytes().is_empty() || others.is_empty() {
         return Ok(None);
     }
-    let roots = other_roots(others)?;
+    let roots = other_roots(export_root, others)?;
     if roots.is_empty() {
         return Ok(None);
     }
@@ -221,12 +290,13 @@ pub(crate) fn inner_export(
 /// a file, moves on to the next shorter one; any other error is returned
 /// (the caller refuses). `None`: nothing of `base` exists.
 pub(crate) fn real_place(base: &Path) -> io::Result<Option<(PathBuf, PathBuf)>> {
-    use crate::platform::{cause, Cause};
+    use crate::platform::{cause, native_path, Cause};
     for ancestor in base.ancestors() {
         if ancestor.as_os_str().is_empty() {
             break;
         }
-        match std::fs::canonicalize(ancestor) {
+        // Verbatim on Windows, as every later open reads it.
+        match native_path(ancestor).and_then(|p| std::fs::canonicalize(&*p)) {
             Ok(real) => {
                 let missing = base.strip_prefix(ancestor).map_err(io::Error::other)?;
                 return Ok(Some((real, missing.to_path_buf())));
@@ -273,7 +343,7 @@ pub(crate) fn auto_export_reaches(
     let Some((real, missing)) = real_place(base)? else {
         return Ok(None);
     };
-    let roots = other_roots(others)?;
+    let roots = other_roots(&real, others)?;
     if roots.is_empty() {
         return Ok(None);
     }
@@ -336,7 +406,9 @@ pub(crate) trait Walker {
 ///
 /// - A directory: its identity is noted and the walk goes on.
 /// - A link among the resolved existing names can only be something
-///   swapped in since: that prefix is opened by path, following
+///   swapped in since, or on Windows a volume mounted in a folder (which
+///   `canonicalize` leaves in place and `Dir` refuses as a reparse
+///   point): that prefix is opened by path, following
 ///   ([`Walker::follow`]), its identity noted, and the walk goes on below
 ///   it. If that open fails, the walk fails.
 /// - The walk ends, legitimately, at a name that is not there (not made
@@ -412,56 +484,6 @@ impl Walker for RealWalker<'_> {
             }
         }
     }
-}
-
-/// Whether two names (stored bytes) differ only in case, at least as
-/// loosely as a case-insensitive file system folds them: two characters are
-/// the same when they are equal, or their uppercase is, or their lowercase
-/// is, each taken only where it is a single character (`ß`, whose
-/// uppercase is `SS`, stays as it is). A name that is WTF-8 but not UTF-8
-/// (it holds an unpaired surrogate) is compared per UTF-16 unit, each unit
-/// that is a character by itself as above, a surrogate exactly. Bytes that
-/// are not WTF-8 are compared exactly.
-fn same_ignoring_case(a: &[u8], b: &[u8]) -> bool {
-    match (std::str::from_utf8(a), std::str::from_utf8(b)) {
-        (Ok(a), Ok(b)) => {
-            a.chars().count() == b.chars().count()
-                && a.chars().zip(b.chars()).all(|(x, y)| same_char(x, y))
-        }
-        (Ok(_), Err(_)) | (Err(_), Ok(_)) => false,
-        (Err(_), Err(_)) => match (crate::wtf8::decode(a), crate::wtf8::decode(b)) {
-            (Ok(a), Ok(b)) => {
-                a.len() == b.len()
-                    && a.iter().zip(&b).all(|(&x, &y)| match (unit(x), unit(y)) {
-                        (Some(x), Some(y)) => same_char(x, y),
-                        _ => x == y,
-                    })
-            }
-            _ => a == b,
-        },
-    }
-}
-
-/// A UTF-16 unit as the character it is by itself; `None` for a surrogate.
-fn unit(u: u16) -> Option<char> {
-    char::from_u32(u32::from(u))
-}
-
-/// `c`'s case mapping (`to_uppercase` or `to_lowercase`) where it is a
-/// single character, else `c`.
-fn single(mut it: impl Iterator<Item = char>, c: char) -> char {
-    match (it.next(), it.next()) {
-        (Some(one), None) => one,
-        _ => c,
-    }
-}
-
-/// Two characters are the same ignoring case: equal, or equal in their
-/// single-character uppercase, or in their single-character lowercase.
-fn same_char(x: char, y: char) -> bool {
-    let upper = |c: char| single(c.to_uppercase(), c);
-    let lower = |c: char| single(c.to_lowercase(), c);
-    x == y || upper(x) == upper(y) || lower(x) == lower(y)
 }
 
 #[cfg(test)]
@@ -721,5 +743,68 @@ mod tests {
             reached_export(&[ROOT], &[b"r\xff"], std::slice::from_ref(&b), true),
             None
         );
+    }
+
+    /// Another export on another drive or share is skipped before anything
+    /// is opened; the same drive or share in another spelling is not.
+    #[cfg(windows)]
+    #[test]
+    fn exports_on_another_drive_or_share_are_told_apart_by_their_start() {
+        use super::same_start;
+        use std::path::Path;
+        for (a, b, same) in [
+            (r"C:\data", r"C:\data\ro", true),
+            (r"C:\data", r"c:\other", true),
+            (r"C:\data", r"\\?\C:\x", true),
+            (r"C:\data", r"D:\x", false),
+            (r"C:\data", r"\\srv\share\x", false),
+            (r"\\srv\share\a", r"\\SRV\Share\b", true),
+            (r"\\srv\share\a", r"\\?\UNC\srv\share\b", true),
+            (r"\\srv\share\a", r"\\srv\other\b", false),
+        ] {
+            assert_eq!(same_start(Path::new(a), Path::new(b)), same, "{a} {b}");
+        }
+    }
+
+    /// An other export on a network share is skipped with nothing opened:
+    /// a share that is away (here an address reserved for documentation,
+    /// which never answers) does not hold up a request elsewhere.
+    #[cfg(windows)]
+    #[test]
+    fn an_export_on_a_share_that_is_away_is_skipped_without_waiting() {
+        use super::{inner_export, on_a_share};
+        use crate::fs::paths::RelPath;
+        use std::path::{Path, PathBuf};
+        for (p, share) in [
+            (r"\\192.0.2.1\share\x", true),
+            (r"\\?\UNC\192.0.2.1\share\ro", true),
+            (r"\\.\UNC\192.0.2.1\share\x", true),
+            (r"//192.0.2.1/share/x", true),
+            (r"\\?\unc\192.0.2.1\share\x", true),
+            (r"\\.\pipe\x", false),
+            (
+                r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\data\ro",
+                false,
+            ),
+            (r"\\?\GLOBALROOT\Device\HarddiskVolume3\data", false),
+            (r"C:\x", false),
+            (r"\\?\C:\x", false),
+            (r"D:\x", false),
+        ] {
+            assert_eq!(on_a_share(Path::new(p)), share, "{p}");
+        }
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("x")).unwrap();
+        let others: Vec<(String, PathBuf)> =
+            [r"\\192.0.2.1\share\x", r"\\?\UNC\192.0.2.1\share\ro"]
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (format!("away{i}"), PathBuf::from(p)))
+                .collect();
+        let start = std::time::Instant::now();
+        let got = inner_export(root.path(), &RelPath::new(b"x/y").unwrap(), &others).unwrap();
+        let took = start.elapsed();
+        assert_eq!(got, None);
+        assert!(took < std::time::Duration::from_secs(2), "took {took:?}");
     }
 }

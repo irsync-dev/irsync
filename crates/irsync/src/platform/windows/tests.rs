@@ -25,6 +25,7 @@ fn causes_from_win32_codes() {
         (ERROR_SHARING_VIOLATION, Cause::InUse),
         (ERROR_LOCK_VIOLATION, Cause::InUse),
         (ERROR_DELETE_PENDING, Cause::InUse),
+        (ERROR_USER_MAPPED_FILE, Cause::InUse),
         (ERROR_NOT_SUPPORTED, Cause::NotSupported),
         (ERROR_INVALID_FUNCTION, Cause::NotSupported),
         // Ambiguous on Windows: never read as "in use".
@@ -400,4 +401,177 @@ fn the_listing_parser_checks_every_length() {
             "{bad:?}"
         );
     }
+}
+
+#[test]
+fn a_path_is_opened_in_its_verbatim_form() {
+    let n = |p: &str| {
+        native_path(Path::new(p))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+    assert_eq!(n(r"C:\x\ro."), r"\\?\C:\x\ro.");
+    assert_eq!(n(r"c:/x/ro /y"), r"\\?\C:\x\ro \y");
+    assert_eq!(n(r"C:\x\NUL"), r"\\?\C:\x\NUL");
+    assert_eq!(n(r"C:\x\.\y\..\z"), r"\\?\C:\x\z");
+    assert_eq!(n(r"C:\.."), r"\\?\C:\");
+    assert_eq!(n(r"C:\"), r"\\?\C:\");
+    assert_eq!(n(r"\\server\share\x."), r"\\?\UNC\server\share\x.");
+    // Already verbatim, or a device: as given.
+    assert_eq!(n(r"\\?\C:\x."), r"\\?\C:\x.");
+    assert_eq!(n(r"\\?\UNC\s\h\x"), r"\\?\UNC\s\h\x");
+    assert_eq!(n(r"\\.\pipe\x"), r"\\.\pipe\x");
+    // Relative, rooted on the current drive, and drive-relative.
+    let cwd = native_path(&std::env::current_dir().unwrap())
+        .unwrap()
+        .into_owned();
+    assert_eq!(native_path(Path::new("a/b.")).unwrap(), cwd.join(r"a\b."));
+    assert_eq!(
+        n(r"\x."),
+        format!(r"{}x.", &cwd.to_string_lossy()[..7]),
+        "the current drive's root"
+    );
+    let drive = &std::env::current_dir().unwrap().to_string_lossy()[..2].to_string();
+    assert_eq!(
+        native_path(Path::new(&format!("{drive}y."))).unwrap(),
+        cwd.join("y.")
+    );
+    // An empty path is no path.
+    assert_eq!(
+        native_path(Path::new("")).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    // A verbatim current directory is taken as it is (here as the
+    // directory std gives, the way `base_parts` reads it).
+    let (root, names) = base_parts(Path::new(r"\\?\C:\x.\y ")).unwrap();
+    assert_eq!(root, OsString::from(r"\\?\C:\"));
+    assert_eq!(names, [OsString::from("x."), OsString::from("y ")]);
+    let (root, names) = base_parts(Path::new(r"\\?\UNC\s\h\d")).unwrap();
+    assert_eq!(root, OsString::from(r"\\?\UNC\s\h\"));
+    assert_eq!(names, [OsString::from("d")]);
+}
+
+/// Win32 would open `x` for `x.` and `x `; the verbatim form opens the
+/// name as written.
+#[test]
+fn a_root_with_a_trailing_dot_or_space_is_that_directory() {
+    let t = tempfile::tempdir().unwrap();
+    let base = native_path(t.path()).unwrap().into_owned();
+    std::fs::create_dir(base.join("x")).unwrap();
+    for name in ["x.", "x "] {
+        std::fs::create_dir(base.join(name)).unwrap();
+        // Given in the ordinary form, as a caller holds it.
+        let d = Dir::open_root(&t.path().join(name)).unwrap();
+        let (want, other) = (
+            lstat(&base.join(name)).unwrap(),
+            lstat(&base.join("x")).unwrap(),
+        );
+        let got = d.stat_self().unwrap();
+        assert_eq!(got.ino, want.ino, "{name:?}");
+        assert_ne!(got.ino, other.ino, "{name:?}");
+        assert_eq!(lstat(&t.path().join(name)).unwrap().ino, want.ino);
+        assert!(Dir::open_root_nofollow(&t.path().join(name)).is_ok());
+    }
+}
+
+/// A root named like a device is an ordinary directory, and a root path
+/// longer than 260 characters opens.
+#[test]
+fn device_names_and_long_paths_are_ordinary_paths() {
+    let t = tempfile::tempdir().unwrap();
+    let base = native_path(t.path()).unwrap().into_owned();
+    for name in ["NUL", "CON", "aux"] {
+        std::fs::create_dir(base.join(name)).unwrap();
+        let d = Dir::open_root(&t.path().join(name)).unwrap();
+        d.create_dir(b"in", 0).unwrap();
+        assert!(base.join(name).join("in").is_dir(), "{name}");
+        assert_eq!(lstat(&t.path().join(name)).unwrap().kind, Kind::Dir);
+    }
+    let mut long = t.path().to_path_buf();
+    while long.as_os_str().len() < 300 {
+        long.push("a-long-directory-name-0123456789");
+    }
+    create_private_dir_all(&long).unwrap();
+    let d = Dir::open_root(&long).unwrap();
+    d.create_dir(b"deep", 0).unwrap();
+    write_private(&long.join("f"), b"x").unwrap();
+    let f = open_read_nofollow(&long.join("f")).unwrap();
+    assert_eq!(fstat(&f).unwrap().size, 1);
+    set_mtime_path(&long.join("f"), (1_600_000_000, 0)).unwrap();
+    assert_eq!(lstat(&long.join("f")).unwrap().mtime, (1_600_000_000, 0));
+}
+
+/// Only NTFS on a drive of this machine takes a tree; the decision, on
+/// volume information given as data.
+#[test]
+fn a_root_that_is_not_ntfs_is_refused() {
+    use super::{local_ntfs, DriveKind::*};
+    for drive in [Fixed, Removable, RamDisk] {
+        assert!(local_ntfs("NTFS", drive), "{drive:?}");
+        assert!(local_ntfs("ntfs", drive), "{drive:?}");
+    }
+    // A share is refused whatever it says it runs (a mapped drive
+    // resolves to one too); so is a drive the system cannot name.
+    for drive in [Remote, CdRom, Unknown] {
+        assert!(!local_ntfs("NTFS", drive), "{drive:?}");
+    }
+    for fs in ["ReFS", "FAT", "FAT32", "exFAT", "UDF", "CDFS", ""] {
+        for drive in [Fixed, Removable, Remote] {
+            assert!(!local_ntfs(fs, drive), "{fs} on {drive:?}");
+        }
+    }
+}
+
+/// The temporary directory is on a local NTFS volume on this machine and
+/// on CI; a missing root is judged where it would be made; the error
+/// names the root.
+#[test]
+fn check_root_reads_the_volume_of_a_real_directory() {
+    let t = tempfile::tempdir().unwrap();
+    super::check_root(t.path()).unwrap();
+    super::check_root(&t.path().join("not").join("yet")).unwrap();
+}
+
+#[test]
+fn the_volume_top_keeps_two_names_for_the_system() {
+    use super::{is_builtin_exclude, is_volume_top};
+    for n in [
+        &b"System Volume Information"[..],
+        b"system volume information",
+        b"$RECYCLE.BIN",
+        b"$Recycle.Bin",
+    ] {
+        assert!(is_builtin_exclude(n));
+    }
+    for n in [
+        &b"System Volume"[..],
+        b"RECYCLE.BIN",
+        b"$RECYCLE.BIN2",
+        b"x",
+    ] {
+        assert!(!is_builtin_exclude(n));
+    }
+    assert!(is_volume_top(Path::new(r"C:\")));
+    assert!(is_volume_top(Path::new(r"\\?\C:\")));
+    assert!(!is_volume_top(Path::new(r"C:\Users")));
+    assert!(!is_volume_top(Path::new("relative")));
+}
+
+/// A volume's root reached by its GUID path is the top of a volume too,
+/// as a volume mounted in a folder is; a folder on it is not.
+#[test]
+fn a_volume_root_by_guid_is_a_volume_top() {
+    use windows_sys::Win32::Storage::FileSystem::VOLUME_NAME_GUID;
+    let t = tempfile::tempdir().unwrap();
+    let d = Dir::open_root(t.path()).unwrap();
+    let path =
+        String::from_utf16_lossy(&native::final_path(d.0.as_handle(), VOLUME_NAME_GUID).unwrap());
+    let end = path.find('}').unwrap() + 2;
+    let root = &path[..end];
+    assert!(is_volume_guid_root(root), "{root}");
+    assert!(!is_volume_guid_root(&path), "{path}");
+    assert!(is_volume_top(Path::new(root)), "{root}");
+    assert!(!is_volume_top(t.path()));
+    assert!(!is_volume_top(Path::new(&path)), "{path}");
 }

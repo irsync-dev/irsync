@@ -535,13 +535,10 @@ pub fn howto(o: &Onboarded) -> Vec<String> {
     }
     // The daemon irsync started holds this lock (beside its log); the
     // service can't start until that daemon is stopped.
-    let lock = o.report.log.with_file_name("daemon.lock");
+    let lock = server_sibling(&o.report.log, "daemon.lock");
     // The service starts only once the old daemon has let go of the lock.
     let stop = [
-        format!(
-            "  pid=\"$(sed -n 's/^pid=//p' {})\"",
-            shell_path(&lock.to_string_lossy())
-        ),
+        format!("  pid=\"$(sed -n 's/^pid=//p' {})\"", shell_path(&lock)),
         "  kill \"$pid\"".to_string(),
         "  while kill -0 \"$pid\" 2>/dev/null; do sleep 0.2; done".to_string(),
     ];
@@ -586,6 +583,20 @@ pub fn howto(o: &Onboarded) -> Vec<String> {
     out.extend(stop);
     out.extend(start.iter().map(|l| l.to_string()));
     out
+}
+
+/// The file `name` beside `path`, a path on the server: a Unix host, so
+/// `/` separates its components wherever this runs. On Unix that is
+/// [`Path::with_file_name`]; elsewhere the text before the last `/`, as
+/// a separator of this system (`\` on Windows) is no separator there.
+fn server_sibling(path: &std::path::Path, name: &str) -> String {
+    if crate::platform::Platform::CURRENT == crate::platform::Platform::Unix {
+        return path.with_file_name(name).to_string_lossy().into_owned();
+    }
+    match path.to_string_lossy().rsplit_once('/') {
+        Some((dir, _)) => format!("{dir}/{name}"),
+        None => name.to_string(),
+    }
 }
 
 /// `path` for a shell command: under `~` when it is the default state dir

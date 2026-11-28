@@ -86,10 +86,13 @@ impl IdMap {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn me() -> (u32, u32) {
         (platform::euid(), platform::egid())
     }
 
+    /// Unix only: Windows has no user or group names here.
+    #[cfg(unix)]
     #[test]
     fn names_are_attached_and_mapped_back() {
         let (uid, gid) = me();

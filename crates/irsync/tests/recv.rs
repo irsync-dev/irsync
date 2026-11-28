@@ -3,11 +3,12 @@ use irsync::fs::paths::RelPath;
 use irsync::index::{Index, IndexHandle};
 use irsync::part_file::{FileWriter, FinalizeError};
 #[cfg(unix)]
-use irsync::platform::file_id;
+use irsync::platform::mode_of;
+use irsync::platform::mtime_of;
+use irsync::platform::testutil::file_id;
 use irsync::platform::testutil::symlink;
 #[cfg(unix)]
 use irsync::platform::testutil::{blocks_of, errno, mkfifo, set_mode};
-use irsync::platform::{mode_of, mtime_of};
 use irsync_proto::chunk::{digest_bytes, ChunkRecord, FileDigest};
 use irsync_proto::v1::{self, file_entry::Kind, FileEntry};
 use std::fs;
@@ -377,6 +378,8 @@ async fn finalize_applies_mtime_and_mode() {
     ent.mtime_nsec = 500;
     w.finalize(&ent, &OPTS).await.unwrap();
     let m = fs::metadata(final_path(&e.root)).unwrap();
+    // The mode half: Unix only, as Windows has no modes to apply.
+    #[cfg(unix)]
     assert_eq!(mode_of(&m) & 0o7777, 0o640);
     assert_eq!(mtime_of(&m).0, 1_234_567_890);
     assert_eq!(mtime_of(&m).1, 500);
@@ -891,7 +894,6 @@ fn clone_source<'a>(
 }
 
 #[tokio::test]
-#[cfg(unix)]
 async fn clone_of_the_old_file_adopts_its_unchanged_chunks_without_writing_them() {
     let e = env_in_target();
     if !reflinks(&e.root) {
@@ -926,13 +928,10 @@ async fn clone_of_the_old_file_adopts_its_unchanged_chunks_without_writing_them(
         .await
         .unwrap();
     assert_eq!(w.bytes_written(), u64::from(cl.chunks[changed].len));
-    let before = file_id(&fs::metadata(final_path(&e.root)).unwrap()).1;
+    let before = file_id(&final_path(&e.root)).unwrap().1;
     w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
-    assert_ne!(
-        file_id(&fs::metadata(final_path(&e.root)).unwrap()).1,
-        before
-    );
+    assert_ne!(file_id(&final_path(&e.root)).unwrap().1, before);
     assert!(!part_path(&e.root).exists());
 }
 
@@ -1004,7 +1003,6 @@ async fn clone_that_the_filesystem_refuses_falls_back_to_an_empty_part() {
 }
 
 #[tokio::test]
-#[cfg(unix)]
 async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     let e = env();
     let old = content(71);
@@ -1016,7 +1014,7 @@ async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     assert_eq!(cl.chunks.len(), old_cl.chunks.len());
     fs::write(final_path(&e.root), &old).unwrap();
     let old_file = fs::File::open(final_path(&e.root)).unwrap();
-    let ino = file_id(&fs::metadata(final_path(&e.root)).unwrap()).1;
+    let ino = file_id(&final_path(&e.root)).unwrap().1;
     let mut w = FileWriter::open_inplace(
         &e.root,
         &rel(),
@@ -1035,7 +1033,7 @@ async fn open_inplace_adopts_the_old_chunks_and_finalizes_without_a_rename() {
     assert_eq!(w.bytes_written(), u64::from(cl.chunks[changed].len));
     w.finalize(&entry(new.len() as u64), &OPTS).await.unwrap();
     assert_eq!(fs::read(final_path(&e.root)).unwrap(), new);
-    assert_eq!(file_id(&fs::metadata(final_path(&e.root)).unwrap()).1, ino);
+    assert_eq!(file_id(&final_path(&e.root)).unwrap().1, ino);
     assert!(e.index.lock().unwrap().partial(&rel()).unwrap().is_none());
 }
 
@@ -1184,7 +1182,9 @@ async fn finalize_flushes_only_when_asked() {
 
 /// Until a file is placed, its `.part` is for the owner only: the content
 /// may belong in a file other users must not read. Placed without `-p`, it
-/// gets the mode any new file gets; with `-p`, the sender's.
+/// gets the mode any new file gets; with `-p`, the sender's. Unix only:
+/// Windows has no modes.
+#[cfg(unix)]
 #[tokio::test]
 async fn part_file_is_private_until_placed() {
     let e = env();
@@ -1283,6 +1283,9 @@ async fn a_directory_swapped_for_a_link_gets_no_part_file() {
 
 /// The swap comes after the data is written: the file is not renamed into
 /// the directory the link leads to, and a file of that name there stays.
+/// Windows refuses to rename a directory that holds an open file, so there
+/// the `.part` is kept in a partial dir elsewhere below the root, and the
+/// destination's directory is free to be swapped.
 #[tokio::test]
 async fn a_directory_swapped_for_a_link_gets_no_placed_file() {
     let e = env();
@@ -1290,7 +1293,11 @@ async fn a_directory_swapped_for_a_link_gets_no_placed_file() {
     fs::write(outside.path().join("f.bin"), b"keep").unwrap();
     let data = content(83);
     let cl = chunk_list(&data);
-    let mut w = FileWriter::open(&e.root, &rel(), &cl, None, e.index.clone()).unwrap();
+    #[cfg(unix)]
+    let pd = None;
+    #[cfg(windows)]
+    let pd = Some(irsync::part_file::PartialDir::new(Path::new("p")));
+    let mut w = FileWriter::open(&e.root, &rel(), &cl, pd.as_ref(), e.index.clone()).unwrap();
     write_all(&mut w, &data, &cl, &all(&cl)).await;
     fs::rename(e.root.join("dir"), e.root.join("moved")).unwrap();
     symlink(outside.path(), &e.root.join("dir")).unwrap();

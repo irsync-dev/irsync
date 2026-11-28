@@ -6,6 +6,7 @@ use irsync::identity::{
     load_identity_interactive, load_or_generate, load_secret_key, parse_endpoint_id,
     public_key_line, read_passphrase_file, write_new, IdentityError, KeySource, PassphraseSource,
 };
+#[cfg(unix)]
 use irsync::platform::mode_of;
 #[cfg(unix)]
 use irsync::platform::testutil::set_mode;
@@ -18,8 +19,12 @@ fn generated_key_loads_and_public_matches_ssh_pub() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("id_ed25519");
     let generated = generate_openssh(&path, "test@irsync").unwrap();
-    let mode = mode_of(&std::fs::metadata(&path).unwrap()) & 0o777;
-    assert_eq!(mode, 0o600);
+    // The mode: Unix only, as Windows has none.
+    #[cfg(unix)]
+    {
+        let mode = mode_of(&std::fs::metadata(&path).unwrap()) & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 
     let loaded = load_secret_key(&path, None).unwrap();
     assert_eq!(loaded.public(), generated.public());
@@ -317,7 +322,8 @@ fn id_daemon_unlocks_encrypted_identity_from_env_without_tty() {
 fn an_ssh_key_that_does_not_unlock_is_named_in_the_error() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
-    let ssh = home.join(".ssh/id_ed25519");
+    // The key irsync falls back to: the ssh key on Unix, `~/.irsync` on Windows.
+    let ssh = bin::locations(&home).key.unwrap();
     std::fs::create_dir_all(ssh.parent().unwrap()).unwrap();
     PrivateKey::random(&mut UnwrapErr(SysRng), Algorithm::Ed25519)
         .unwrap()
@@ -348,19 +354,29 @@ fn an_ssh_key_that_does_not_unlock_is_named_in_the_error() {
         err.contains(&format!("loading identity {}:", ssh.display())),
         "{err}"
     );
-    assert!(!home.join(".config/irsync/id_ed25519").exists());
+    assert!(!home
+        .join(".config")
+        .join("irsync")
+        .join("id_ed25519")
+        .exists());
 }
 
 #[test]
 fn load_or_generate_creates_once_then_loads_same_key() {
     let d = tempfile::tempdir().unwrap();
-    let p = d.path().join("deep/dir/id_ed25519");
+    let p = d.path().join("deep").join("dir").join("id_ed25519");
     let src = PassphraseSource::default();
     let (k1, gen1) = load_or_generate(&p, &src, "irsync").unwrap();
     let (k2, gen2) = load_or_generate(&p, &src, "irsync").unwrap();
     assert!(gen1 && !gen2);
     assert_eq!(k1.public(), k2.public());
-    assert!(d.path().join("deep/dir/id_ed25519.pub").exists());
+    assert!(d
+        .path()
+        .join("deep")
+        .join("dir")
+        .join("id_ed25519.pub")
+        .exists());
+    #[cfg(unix)]
     assert_eq!(mode_of(&std::fs::metadata(&p).unwrap()) & 0o777, 0o600);
 }
 
@@ -388,6 +404,7 @@ fn write_new_never_replaces_an_existing_file() {
     let e = write_new(&p, b"second", 0o600).unwrap_err();
     assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{e}");
     assert_eq!(std::fs::read(&p).unwrap(), b"first");
+    #[cfg(unix)]
     assert_eq!(mode_of(&std::fs::metadata(&p).unwrap()) & 0o777, 0o600);
     // No temporary file is left behind.
     assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
@@ -416,8 +433,8 @@ fn load_or_generate_in_a_read_only_directory_names_the_path() {
 #[test]
 fn client_identity_prefers_the_irsync_key_then_the_ssh_key_then_generates() {
     let d = tempfile::tempdir().unwrap();
-    let own = d.path().join("irsync/id_ed25519");
-    let ssh = d.path().join("ssh/id_ed25519");
+    let own = d.path().join("irsync").join("id_ed25519");
+    let ssh = d.path().join("ssh").join("id_ed25519");
     let src = PassphraseSource::default();
     // Nothing anywhere: generated at the irsync path, the ssh path untouched.
     let (generated, source) = load_client_identity(&own, Some(&ssh), &src, "irsync").unwrap();
@@ -431,7 +448,7 @@ fn client_identity_prefers_the_irsync_key_then_the_ssh_key_then_generates() {
     assert_eq!(k.public(), generated.public());
     // No irsync key, an ssh key: the ssh key is used as it is, nothing is written.
     std::fs::remove_file(&own).unwrap();
-    std::fs::remove_file(d.path().join("irsync/id_ed25519.pub")).unwrap();
+    std::fs::remove_file(d.path().join("irsync").join("id_ed25519.pub")).unwrap();
     let (k, source) = load_client_identity(&own, Some(&ssh), &src, "irsync").unwrap();
     assert_eq!(source, KeySource::Ssh(ssh.clone()));
     assert_eq!(k.public(), ssh_key.public());
@@ -445,7 +462,7 @@ fn client_identity_prefers_the_irsync_key_then_the_ssh_key_then_generates() {
 #[test]
 fn an_encrypted_ssh_key_without_a_passphrase_is_an_error_naming_it() {
     let d = tempfile::tempdir().unwrap();
-    let own = d.path().join("irsync/id_ed25519");
+    let own = d.path().join("irsync").join("id_ed25519");
     let ssh = d.path().join("id_ed25519");
     let key = PrivateKey::random(&mut UnwrapErr(SysRng), Algorithm::Ed25519).unwrap();
     key.encrypt(&mut UnwrapErr(SysRng), "pw")
@@ -490,6 +507,7 @@ fn generate_with_a_passphrase_writes_an_encrypted_key_that_unlocks() {
     // The .pub file is the public half of the same key.
     let line = std::fs::read_to_string(d.path().join("id_ed25519.pub")).unwrap();
     assert_eq!(line.trim(), public_key_line(&secret, "irsync"));
+    #[cfg(unix)]
     assert_eq!(mode_of(&std::fs::metadata(&path).unwrap()) & 0o777, 0o600);
 }
 
@@ -524,7 +542,7 @@ fn nothing_is_generated_on_the_side_with_a_passphrase_file() {
         file: Some(pf.clone()),
         ..PassphraseSource::default()
     };
-    let path = d.path().join("sub/id_ed25519");
+    let path = d.path().join("sub").join("id_ed25519");
     let e = load_or_generate(&path, &with_file, "irsync").unwrap_err();
     assert!(matches!(e, IdentityError::NoKeyWithPassphraseFile(ref p) if p == &path));
     let msg = e.to_string();
