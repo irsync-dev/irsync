@@ -38,8 +38,23 @@ attestation of the commit and workflow that built it, and a published
 release can't be changed. To check a download, see
 [Verify a download](https://irsync.org/book/how-to/verify-a-download).
 
-The apt and dnf repositories at dist.irsync.org are signed by the key
-`irsync releases <releases@irsync.org>`, with this fingerprint:
+Every file on a release is also signed with
+[minisign](https://jedisct1.github.io/minisign/). The key that makes those
+signatures is kept offline, never on GitHub, and a maintainer signs each
+release on their own machine. So someone who takes over the GitHub
+organisation or a workflow still can't make a release that passes the
+check. The public key:
+
+```text
+RWR6ngoFwyY7D9i4MAL2T4n1UkGwrCdSGA/SMowtANaffYWkTZdrAtAZ
+```
+
+Check a file with `minisign -Vm FILE -P <key>`, and make sure the trusted
+comment reads `irsync vX.Y.Z` for your version. irsync and `install.sh`
+check this signature themselves.
+
+The apt and dnf repositories at dist.irsync.org are signed with a different
+key, the GPG key `irsync releases <releases@irsync.org>`, with this fingerprint:
 
 ```
 58A0 F740 B554 8CE7 3D16  1CCD ABDF 7107 434D F0E0

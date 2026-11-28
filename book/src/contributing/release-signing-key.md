@@ -121,9 +121,10 @@ cp "$KEYDIR/irsync-release.pub" packaging/signing/release-keys.pub
 
 [`release-keys.pub`](../../../packaging/signing/release-keys.pub) is the one place the public key lives. irsync builds it
 in, and the tests check that [`install.sh`](../../../site/install.sh) holds the same key. Also
-update the key shown in [`README.md`](../../../README.md) and in
+update the key shown in [`README.md`](../../../README.md), in
+[`SECURITY.md`](../../../SECURITY.md) and in
 [Verify a download](../how-to/verify-a-download.md) in the same pull
-request.
+request. The tests check README.md and SECURITY.md too.
 
 **7. Put the stick away.** Unmount it and unplug it. It only needs to be
 plugged in while you sign a release.
@@ -156,7 +157,7 @@ So that releases don't depend on one person, another maintainer can make
 their own key with steps 1 to 5, on their own sticks and with their own
 password. Add their public key to [`release-keys.pub`](../../../packaging/signing/release-keys.pub) below the first one,
 both lines of it. A release signed with either key passes. Also add the
-key to [`README.md`](../../../README.md) and [`verify-a-download.md`](../../../book/src/how-to/verify-a-download.md).
+key to [`README.md`](../../../README.md), [`SECURITY.md`](../../../SECURITY.md) and [`verify-a-download.md`](../../../book/src/how-to/verify-a-download.md).
 
 A new key can sign from the first release that lists it. An irsync that is
 already installed only checks downloads of its own version, which were
