@@ -697,8 +697,10 @@ fn a_lone_drive_is_no_listing_on_windows_but_list_h_is() {
     }
     for op in ["h", "h:"] {
         let a = parse(&["list", op]);
-        assert!(matches!(a.cmd, Some(Command::List(_))), "{op}");
-        assert_eq!(a.sync_args().paths, ["h:"], "{op}");
+        match a.cmd {
+            Some(Command::List(l)) => assert_eq!(l.operand, "h:", "{op}"),
+            c => panic!("{op}: not a listing: {c:?}"),
+        }
     }
 }
 
