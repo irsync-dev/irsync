@@ -2082,6 +2082,10 @@ pub(super) async fn run(
                 if let Some(d) = ctx.hooks.slow_peer_events {
                     tokio::time::sleep(d).await;
                 }
+                #[cfg(feature = "test-hooks")]
+                if let (Some(gate), Ev::Ctrl(Msg::Itemized(_))) = (&ctx.hooks.hold_itemized, &ev) {
+                    let _ = gate.clone().wait_for(|open| *open).await;
+                }
                 ev
             }
             else => break Err(anyhow::anyhow!("event channel closed")),

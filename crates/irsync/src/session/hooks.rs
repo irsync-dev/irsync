@@ -139,6 +139,11 @@ pub struct SideHooks {
     /// slow main loop, so the peer's frames back up).
     #[cfg(feature = "test-hooks")]
     pub slow_peer_events: Option<std::time::Duration>,
+    /// Sender: the main loop holds the peer's first `Itemized` until this
+    /// turns true, so the peer's frames back up however fast it makes
+    /// them (a client that stops reading for a while).
+    #[cfg(feature = "test-hooks")]
+    pub hold_itemized: Option<tokio::sync::watch::Receiver<bool>>,
     /// Both roles: the most bytes of paced control frames (see
     /// `Out::send_paced`) queued for the control stream's writer at once.
     #[cfg(feature = "test-hooks")]
