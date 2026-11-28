@@ -111,9 +111,21 @@ table or in `[daemon]`, and takes `bbr`, the default, or `cubic`.
   delay. Cubic fills the line's queue instead, which adds latency for
   everything else on the line while it sends.
 
-Measured in the netstress `dsl-video` profile, a 1 Mbit/s uplink beside a busy
-downlink, Cubic was 1.6 to 1.8 times faster than BBR. In the lossy
-`4g-vehicle` profile BBR was 23 to 50% faster, and Cubic's full queue cost
-other traffic on the line about 0.5 s of latency. Neither wins everywhere, so
-BBR stays the default. The runs are in
-[NETSTRESS_DECISIONS.md](../../../docs/NETSTRESS_DECISIONS.md).
+The two were compared on simulated links in two situations. On a home line
+with a 1 Mbit/s upload, while video streaming kept the download busy, Cubic
+was about 1.6 to 2 times as fast as BBR. On a mobile link in a moving
+vehicle, whose speed keeps changing and which loses packets in bursts, BBR
+was faster: the same syncs took 27 to 87% longer with Cubic. While Cubic
+sent, its full queue added about half a second of delay for everything else
+on the line.
+
+Neither wins everywhere. A slow sync on a bad mobile link hurts more than a
+slow one on a good line, so BBR stays the default. Set `congestion =
+"cubic"` on the side that sends if you sync a lot over a steady wired line
+whose download is often busy, and the extra delay for others on the line
+while it sends is acceptable.
+
+The numbers come from irsync's network test rig, in early November 2026;
+the transfer has changed since, so read them as the size of the difference,
+not as exact speeds. [Network stress with netstress](../contributing/netstress.md)
+describes the rig and how to repeat the runs.
