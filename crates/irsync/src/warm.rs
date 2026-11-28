@@ -128,6 +128,10 @@ pub async fn index_root_tracked(
     dry_run: bool,
     progress: &Progress,
 ) -> io::Result<WarmReport> {
+    // A tree is read only where one may lie (on Windows a local NTFS
+    // volume; on Unix every root may, with no call made), as a session
+    // checks its root.
+    crate::platform::check_root(root)?;
     let workers = workers.max(1);
     let hasher = Hasher::new(index, root.to_path_buf(), workers);
     let (rx, summary) = walk(
