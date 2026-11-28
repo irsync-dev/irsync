@@ -44,6 +44,13 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: none
+          # The integration tests never ship, and what CodeQL finds there
+          # is the tests' own throwaway data in assert messages (a test
+          # passphrase file's path, say). The product code, its unit tests
+          # included, is still read in full.
+          config: |
+            paths-ignore:
+              - crates/*/tests/**
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           category: /language:${{ matrix.language }}
