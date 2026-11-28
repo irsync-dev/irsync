@@ -679,3 +679,22 @@ Commit the PNGs with their sources. GitHub has no way to upload them from a
 script, so upload them by hand: the avatar under the org's Settings,
 Profile, and the preview under the repo's Settings, General, Social
 preview.
+
+The card's text is not in the picture: GitHub takes it from the repo's
+description, the line under About on the repo's page. Keep it the same as
+the headline, and change it with the headline:
+
+```sh
+gh repo edit irsync-dev/irsync --description 'Resilient file sync over any network'
+```
+
+To check that GitHub uses the uploaded preview, ask for it:
+
+```sh
+gh api graphql -f query='{repository(owner:"irsync-dev",name:"irsync"){usesCustomOpenGraphImage openGraphImageUrl}}'
+```
+
+`usesCustomOpenGraphImage` is `true` once the upload took, and
+`openGraphImageUrl` is the picture's address. A new upload gets a new
+address. Sites that show link cards keep a copy of the card, so a link that
+was shared before a change can show the old one for days.
