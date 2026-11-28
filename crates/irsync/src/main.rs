@@ -648,6 +648,18 @@ fn run_list(mut args: Args, opts: &SyncOptions) -> i32 {
     let say = |line: &str| log.eprintln(line);
     match rt.block_on(irsync::client::list_exports(&operand, opts, &say)) {
         Ok(entries) => {
+            // An empty list would print nothing at all, which looks like
+            // nothing happened (#353).
+            if entries.is_empty() && !opts.quiet {
+                let host = match Location::parse(&operand) {
+                    Ok(Location::Remote { host, .. }) => host,
+                    _ => operand.trim_end_matches(':').to_string(),
+                };
+                say(&format!(
+                    "irsync: connected to {}; it shares no exports with this client",
+                    escape_text(&host)
+                ));
+            }
             for e in entries {
                 let access = if e.access == export_entry::Access::Rw as i32 {
                     "rw"
